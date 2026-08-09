@@ -2964,6 +2964,24 @@ final class CardListServiceTest {
 
     // ==============================================================================================
 
+    /**
+     * The two diagnostic senders, which no delivered call site reaches, called here by name.
+     *
+     * <p>Four matrix rows are discharged here, and none of them can be discharged by driving the screen
+     * turn: {@code SEND-PLAIN-TEXT} at source line 1422 and {@code SEND-LONG-TEXT} at 1441, through the
+     * named calls to {@code sendPlainText} and {@code sendLongText} below, and their paired terminators
+     * {@code SEND-PLAIN-TEXT-EXIT} at 1433 and {@code SEND-LONG-TEXT-EXIT} at 1452, through
+     * {@code sendPlainTextExit} and {@code sendLongTextExit}, which each head calls on its only arm.
+     *
+     * <p>The two exits need no call of their own, and fabricating one would prove nothing: each is the
+     * {@code EXIT.} statement of its range and each is reachable only from the head above it, so an
+     * invocation would be this suite calling a method it had chosen to expose rather than evidence about
+     * the delivered code. Naming them is what a reader following those two rows needs.
+     *
+     * <p>Nothing reflective is used: both heads are public on the service because the member's own
+     * comments mark them as diagnostic entry points, and the production tree is held to a reflection
+     * count of zero.
+     */
     @Nested
     @DisplayName("the two unreachable diagnostic senders render at their declared widths")
     final class DiagnosticSenders {

@@ -97,53 +97,92 @@ What is **not** proven by this page, stated plainly: that a *named private metho
 during a *named test*. A row is a mapping claim and a reachability claim; it is not an execution trace, and
 reading it as one would overstate it.
 
-The evidence for dynamic execution is the coverage report, which measures what actually ran:
+The evidence for dynamic execution is the coverage report, which measures what actually ran. **The report
+and the command that produced it are one artefact**, and a report offered without its command is not
+evidence of anything: the same file name means different things depending on which suites ran.
 
 ```bash
 cd carddemo-java
-./mvnw -B clean verify                      # or: -Pscoped-tests -Dtest=TheCoveringTest
-open target/site/jacoco/index.html          # per-class, per-method coverage
+./mvnw -B clean verify                      # the full gate: unit, then integration, then the merge
+open target/site/jacoco-merged/index.html   # gate evidence - unit and integration combined
+open target/site/jacoco/index.html          # the unit tier alone
+open target/site/jacoco-it/index.html       # the integration tier alone
 ```
 
-Two properties of that report are what make it load-bearing rather than informational. Line coverage is
-enforced at **80% as a build-failing check**, and a second rule holds the number of **wholly untested
+Two properties of the merged report are what make it load-bearing rather than informational. Line coverage
+is enforced at **80% as a build-failing check**, and a second rule holds the number of **wholly untested
 classes at zero** — so no target class named on this page can be entirely unexercised without failing the
-build. To settle a single row, run its covering test on its own and read that method's counters in the
-report; if they are zero, the row's reachability claim is wrong and belongs in a bug rather than in a
-document.
+build.
+
+To settle a single row, run its covering test on its own and read that method's counters; if they are zero,
+the row's reachability claim is wrong and belongs in a bug rather than in a document. Selecting a subset
+means selecting a tier: `-Dtest=` selects unit classes and `-Dit.test=` selects integration classes, and a
+run that names one leaves the other's counters absent rather than zero.
+
+```bash
+cd carddemo-java
+./mvnw -B -Pscoped-tests test -Dtest=AccountViewServiceTest
+open target/scoped-site/jacoco/index.html        # the unit tier of that scoped run
+
+./mvnw -B -Pscoped-tests verify -Dit.test=CombineTransactionsJobConfigIT
+open target/scoped-site/jacoco-it/index.html     # the integration tier of that scoped run
+```
+
+Both write beneath `target/scoped-site/`, never over the gate evidence.
+
+**A scoped report is never full-gate evidence, and cannot be mistaken for it.** The `scoped-tests` profile
+exists to make a single class runnable — it relaxes the coverage thresholds, because a subset of the suite
+cannot reach a whole-module floor — and it therefore writes its execution data and its report under
+`target/scoped-*` paths of their own. The canonical `target/jacoco*.exec` files and the
+`target/site/jacoco*` reports are reserved for an unscoped `./mvnw -B clean verify`, so a diagnostic run
+can no longer leave a relaxed report sitting at the path the gate evidence is read from; the reasoning is
+[decision-log.md](decision-log.md) entry `DL-284`. Any coverage
+figure quoted as gate evidence must therefore be recorded together with its provenance: the exact command,
+the date it was run, which suites it ran, and which report directory it was read from. A figure without
+those four is a number, not evidence — `docs/gate-evidence.md` is where they are recorded.
 
 ### Marker legend
 
 | Marker | Meaning |
 | :-: | :--- |
-| *(blank)* | An ordinary translation. 516 of the 544 rows. |
+| *(blank)* | An ordinary translation. 506 of the 544 rows. |
 | `†` | **Documented non-implementation.** The paragraph is invoked and implements nothing; the Java method exists, is called, and does nothing. 1 row. |
 | `‡` | **Source anomaly.** A duplicated label or a misspelled label, preserved as found rather than corrected. 3 rows. |
 | `§` | **Unwired member.** The program is complete but no job stream invokes it; its job is defined and exercised by tests, and excluded from the default pipeline. 18 rows. |
-| `¶` | **Deliberately unwired paragraph.** The paragraph is translated and its method exists, but no delivered call site reaches it — by decision, recorded on the method itself. The row's covering test therefore exercises the method **directly**, by name, through package access rather than through the driver. 6 rows. |
+| `¶` | **Deliberately unwired paragraph.** The paragraph is translated and its method exists, but no delivered call site reaches it — by decision, recorded on the method itself. The row's covering test therefore exercises the method **directly**, by name, through package access rather than through the driver. 16 rows. |
 
-1 + 3 + 18 + 6 + 516 = 544. Each marked row is cross-referenced to its entry in the source anomaly
+1 + 3 + 18 + 16 + 506 = 544. Each marked row is cross-referenced to its entry in the source anomaly
 register of [decision-log.md](decision-log.md), which is the authority for the reasoning; this page
 links rather than restates it.
 
 ### Why the unwired-paragraph marker exists, and what it obliges
 
 A covering test that cannot reach the method it is named against is a false entry, and a row-count check
-cannot see one. All six `¶` rows belong to `COACTUPC`: the three edits whose paragraphs the delivered
-driver never routes to — `1230-EDIT-ALPHANUM-REQD`, `1235-EDIT-ALPHA-OPT` and `1240-EDIT-ALPHANUM-OPT`
-— and the three paired exit paragraphs, which are reachable only from those heads. Two of the three
-heads have no call site in the legacy member either; the third does, at source lines 1568 to 1574 for
-the middle name, and the migration directive forbids attaching a constraint to that field, so the
-delivered driver must not route to it. That decision is recorded in
-[decision-log.md](decision-log.md) and is not revisited here.
+cannot see one. Sixteen rows are in that position, across four members. The population is a decision
+rather than a measurement, so it is enumerated here in full:
 
-The obligation the marker carries is specific and mechanically checked. The named test declares the
-methods by name and calls each head directly — `AccountUpdateServiceTest.DeliberatelyUnwiredEdits`,
-reaching them through ordinary package access rather than reflectively, because the production tree is
-held to a reflection count of zero. Calling a head executes its paired exit on every arm, which is why
-the three exits need no call of their own. `e2e.GateVerificationTest` asserts both halves: that every
-row in this page resolves to a class that exists and declares the named method, and that every `¶` row's
-covering test names that method — the check a row count cannot make.
+| Member | Rows | The paragraphs, and why no delivered call site reaches them |
+| :--- | :-: | :--- |
+| `COACTUPC` | 6 | The three edits the delivered driver never routes to — `1230-EDIT-ALPHANUM-REQD`, `1235-EDIT-ALPHA-OPT` and `1240-EDIT-ALPHANUM-OPT` — and their three paired exits. Two of the three heads have no call site in the legacy member either; the third does, at source lines 1568 to 1574 for the middle name, and the migration directive forbids attaching a constraint to that field, so the delivered driver must not route to it. |
+| `COACTVWC` | 2 | `SEND-LONG-TEXT` at 896 and its exit at 907. All three statements that would have performed it — at 768, 818 and 867 — are commented out in the member, as is the statement that would have filled the field it transmits. Its plain-text sibling at 877 *is* performed and is therefore an ordinary row. |
+| `COCRDLIC` | 4 | `SEND-PLAIN-TEXT` at 1422 and `SEND-LONG-TEXT` at 1441, with their exits at 1433 and 1452. The member's own comments at 1420 and at 1438 to 1439 say both are diagnostic and not for production use, and no performed or jumped-to label reaches either. |
+| `COCRDSLC` | 4 | `9150-GETCARD-BYACCT` at 779 and its exit at 810 — the account-keyed read over the non-unique alternate index, which the read driver at 726 does not perform — and `SEND-LONG-TEXT` at 820 with its exit at 831. As in the account-view member, the plain-text sender at 838 is performed and is an ordinary row. |
+
+Every one of those decisions is recorded on the Java method itself, which is the authority; this page
+records the marker and the count, and [decision-log.md](decision-log.md) entry `DL-283` records why the
+population is sixteen across four members rather than six in one.
+
+The obligation the marker carries is specific and mechanically checked. Each row's covering test declares
+the method by name, and calls each head directly — `AccountUpdateServiceTest.DeliberatelyUnwiredEdits`,
+`AccountViewServiceTest`, `CardListServiceTest.DiagnosticSenders` and
+`CardDetailServiceTest.AccountKeyedRead` — reaching them through ordinary package access rather than
+reflectively, because the production tree is held to a reflection count of zero. Calling a head executes
+its paired exit on every arm, which is why no exit carries a call of its own: an invocation of an empty
+terminator would be fabricated coverage, so the obligation on an exit row is that its covering test names
+it. `e2e.GateVerificationTest` asserts every half: that each row resolves to a class that exists and
+declares the named method, that each `¶` row's covering test names that method, that each head is
+actually invoked by it, and that the sixteen rows fall in exactly the per-member distribution above —
+the checks a row count cannot make.
 
 ### Rows that share a target method
 
@@ -639,6 +678,14 @@ as rows, marked `‡`, and both point at the one collapsed method, so the count 
 than quietly losing a unit. Recorded as row 2 of the source anomaly register in
 [decision-log.md](decision-log.md).
 
+Two of the 35 rows below carry the `¶` marker: `SEND-LONG-TEXT` at line 896 and its exit at 907. All
+three statements that would have performed the paragraph — at 768, 818 and 867 — are commented out in the
+member, as is the statement that would have filled the 500-character field it transmits, so no delivered
+call site reaches it. Its plain-text sibling at 877 **is** performed, from the invalid-key arm, and is
+therefore an ordinary row. `service.AccountViewServiceTest` calls `sendLongText` by name and names
+`sendLongTextExit`, which that method calls on its only arm. See
+[why the marker exists and what it obliges](#why-the-unwired-paragraph-marker-exists-and-what-it-obliges).
+
 | Source member | Paragraph | Line | Target class | Target method | Covering test | Notes |
 | :--- | :--- | ---: | :--- | :--- | :--- | :-: |
 | app/cbl/COACTVWC.cbl | `0000-MAIN` | 262 | `service.AccountViewService` | `viewAccount` | `service.AccountViewServiceTest` |  |
@@ -673,8 +720,8 @@ than quietly losing a unit. Recorded as row 2 of the source anomaly register in
 | app/cbl/COACTVWC.cbl | `9400-GETCUSTDATA-BYCUST-EXIT` | 870 | `service.AccountViewService` | `getCustDataByCustExit` | `service.AccountViewServiceTest` |  |
 | app/cbl/COACTVWC.cbl | `SEND-PLAIN-TEXT` | 877 | `service.AccountViewService` | `sendPlainText` | `service.AccountViewServiceTest` |  |
 | app/cbl/COACTVWC.cbl | `SEND-PLAIN-TEXT-EXIT` | 888 | `service.AccountViewService` | `sendPlainTextExit` | `service.AccountViewServiceTest` |  |
-| app/cbl/COACTVWC.cbl | `SEND-LONG-TEXT` | 896 | `service.AccountViewService` | `sendLongText` | `service.AccountViewServiceTest` |  |
-| app/cbl/COACTVWC.cbl | `SEND-LONG-TEXT-EXIT` | 907 | `service.AccountViewService` | `sendLongTextExit` | `service.AccountViewServiceTest` |  |
+| app/cbl/COACTVWC.cbl | `SEND-LONG-TEXT` | 896 | `service.AccountViewService` | `sendLongText` | `service.AccountViewServiceTest` | ¶ |
+| app/cbl/COACTVWC.cbl | `SEND-LONG-TEXT-EXIT` | 907 | `service.AccountViewService` | `sendLongTextExit` | `service.AccountViewServiceTest` | ¶ |
 | app/cbl/COACTVWC.cbl | `ABEND-ROUTINE` | 916 | `service.AccountViewService` | `abendRoutine` | `service.AccountViewServiceTest` |  |
 
 ## COADM01C
@@ -729,6 +776,13 @@ list.
 Primary target class `service.CardListService`, primary covering test `service.CardListServiceTest`.
 Also exercised by: `api.CardControllerIT`.
 
+Four of the 39 rows below carry the `¶` marker: `SEND-PLAIN-TEXT` at line 1422 and `SEND-LONG-TEXT` at
+1441, with their exits at 1433 and 1452. The member's own comments — at 1420 for the first and at 1438 to
+1439 for the second — state that both are diagnostic and not for production use, and no performed or
+jumped-to label in the member reaches either. `service.CardListServiceTest` calls both heads by name in its
+`DiagnosticSenders` group and names both exits, each of which its head calls on its only arm. See
+[why the marker exists and what it obliges](#why-the-unwired-paragraph-marker-exists-and-what-it-obliges).
+
 | Source member | Paragraph | Line | Target class | Target method | Covering test | Notes |
 | :--- | :--- | ---: | :--- | :--- | :--- | :-: |
 | app/cbl/COCRDLIC.cbl | `0000-MAIN` | 298 | `service.CardListService` | `mainPara` | `service.CardListServiceTest` |  |
@@ -766,10 +820,10 @@ Also exercised by: `api.CardControllerIT`.
 | app/cbl/COCRDLIC.cbl | `9100-READ-BACKWARDS-EXIT` | 1374 | `service.CardListService` | `readBackwardsExit` | `service.CardListServiceTest` |  |
 | app/cbl/COCRDLIC.cbl | `9500-FILTER-RECORDS` | 1382 | `service.CardListService` | `filterRecords` | `service.CardListServiceTest` |  |
 | app/cbl/COCRDLIC.cbl | `9500-FILTER-RECORDS-EXIT` | 1409 | `service.CardListService` | `filterRecordsExit` | `service.CardListServiceTest` |  |
-| app/cbl/COCRDLIC.cbl | `SEND-PLAIN-TEXT` | 1422 | `service.CardListService` | `sendPlainText` | `service.CardListServiceTest` |  |
-| app/cbl/COCRDLIC.cbl | `SEND-PLAIN-TEXT-EXIT` | 1433 | `service.CardListService` | `sendPlainTextExit` | `service.CardListServiceTest` |  |
-| app/cbl/COCRDLIC.cbl | `SEND-LONG-TEXT` | 1441 | `service.CardListService` | `sendLongText` | `service.CardListServiceTest` |  |
-| app/cbl/COCRDLIC.cbl | `SEND-LONG-TEXT-EXIT` | 1452 | `service.CardListService` | `sendLongTextExit` | `service.CardListServiceTest` |  |
+| app/cbl/COCRDLIC.cbl | `SEND-PLAIN-TEXT` | 1422 | `service.CardListService` | `sendPlainText` | `service.CardListServiceTest` | ¶ |
+| app/cbl/COCRDLIC.cbl | `SEND-PLAIN-TEXT-EXIT` | 1433 | `service.CardListService` | `sendPlainTextExit` | `service.CardListServiceTest` | ¶ |
+| app/cbl/COCRDLIC.cbl | `SEND-LONG-TEXT` | 1441 | `service.CardListService` | `sendLongText` | `service.CardListServiceTest` | ¶ |
+| app/cbl/COCRDLIC.cbl | `SEND-LONG-TEXT-EXIT` | 1452 | `service.CardListService` | `sendLongTextExit` | `service.CardListServiceTest` | ¶ |
 
 ## COCRDSLC
 
@@ -777,6 +831,15 @@ Also exercised by: `api.CardControllerIT`.
 
 Primary target class `service.CardDetailService`, primary covering test
 `service.CardDetailServiceTest`. Also exercised by: `api.CardControllerIT`.
+
+Four of the 34 rows below carry the `¶` marker. `9150-GETCARD-BYACCT` at line 779 and its exit at 810 are
+the account-keyed read over the non-unique alternate index: a census of every `PERFORM` in the member finds
+the paragraph name only in its own two labels, and the read driver at 726 performs the card-number read
+alone, so wiring it would add a flow the legacy does not have. `SEND-LONG-TEXT` at 820 and its exit at 831
+are unreached for the same reason as their counterparts in the card-list member; the plain-text sender at
+838 is performed and is an ordinary row. `service.CardDetailServiceTest` calls both heads by name in its
+`AccountKeyedRead` group and names both exits — the read's exit is executed on all three of its arms. See
+[why the marker exists and what it obliges](#why-the-unwired-paragraph-marker-exists-and-what-it-obliges).
 
 | Source member | Paragraph | Line | Target class | Target method | Covering test | Notes |
 | :--- | :--- | ---: | :--- | :--- | :--- | :-: |
@@ -807,10 +870,10 @@ Primary target class `service.CardDetailService`, primary covering test
 | app/cbl/COCRDSLC.cbl | `9000-READ-DATA-EXIT` | 732 | `service.CardDetailService` | `readDataExit` | `service.CardDetailServiceTest` |  |
 | app/cbl/COCRDSLC.cbl | `9100-GETCARD-BYACCTCARD` | 736 | `service.CardDetailService` | `getCardByAcctCard` | `service.CardDetailServiceTest` |  |
 | app/cbl/COCRDSLC.cbl | `9100-GETCARD-BYACCTCARD-EXIT` | 775 | `service.CardDetailService` | `getCardByAcctCardExit` | `service.CardDetailServiceTest` |  |
-| app/cbl/COCRDSLC.cbl | `9150-GETCARD-BYACCT` | 779 | `service.CardDetailService` | `getCardByAcct` | `service.CardDetailServiceTest` |  |
-| app/cbl/COCRDSLC.cbl | `9150-GETCARD-BYACCT-EXIT` | 810 | `service.CardDetailService` | `getCardByAcctExit` | `service.CardDetailServiceTest` |  |
-| app/cbl/COCRDSLC.cbl | `SEND-LONG-TEXT` | 820 | `service.CardDetailService` | `sendLongText` | `service.CardDetailServiceTest` |  |
-| app/cbl/COCRDSLC.cbl | `SEND-LONG-TEXT-EXIT` | 831 | `service.CardDetailService` | `sendLongTextExit` | `service.CardDetailServiceTest` |  |
+| app/cbl/COCRDSLC.cbl | `9150-GETCARD-BYACCT` | 779 | `service.CardDetailService` | `getCardByAcct` | `service.CardDetailServiceTest` | ¶ |
+| app/cbl/COCRDSLC.cbl | `9150-GETCARD-BYACCT-EXIT` | 810 | `service.CardDetailService` | `getCardByAcctExit` | `service.CardDetailServiceTest` | ¶ |
+| app/cbl/COCRDSLC.cbl | `SEND-LONG-TEXT` | 820 | `service.CardDetailService` | `sendLongText` | `service.CardDetailServiceTest` | ¶ |
+| app/cbl/COCRDSLC.cbl | `SEND-LONG-TEXT-EXIT` | 831 | `service.CardDetailService` | `sendLongTextExit` | `service.CardDetailServiceTest` | ¶ |
 | app/cbl/COCRDSLC.cbl | `SEND-PLAIN-TEXT` | 838 | `service.CardDetailService` | `sendPlainText` | `service.CardDetailServiceTest` |  |
 | app/cbl/COCRDSLC.cbl | `SEND-PLAIN-TEXT-EXIT` | 849 | `service.CardDetailService` | `sendPlainTextExit` | `service.CardDetailServiceTest` |  |
 | app/cbl/COCRDSLC.cbl | `ABEND-ROUTINE` | 857 | `service.CardDetailService` | `abendRoutine` | `service.CardDetailServiceTest` |  |

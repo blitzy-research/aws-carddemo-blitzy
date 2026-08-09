@@ -204,13 +204,25 @@ public class DailyTransaction {
      * anywhere in this class: decimal precision must be identical to the legacy representation, with
      * no floating-point substitution.
      *
-     * <p><strong>The entity performs no arithmetic and applies no scaling.</strong> It neither
-     * rescales, rounds, negates nor takes the magnitude of a value; it is a passive carrier. A census
-     * of the entire legacy estate found no rounding clause on any arithmetic statement, which means
-     * every store into a two-decimal field truncates toward zero, so all scaling is funnelled
-     * through {@link com.carddemo.util.ZonedDecimalCodec}, which applies that truncating policy
-     * uniformly. Letting an entity scale independently is exactly how an inconsistent rounding policy
-     * creeps in.
+     * <p><strong>The entity performs no arithmetic, and its accessors apply no scaling.</strong> The
+     * setter neither rescales, rounds, negates nor takes the magnitude of a value, and the getter returns
+     * exactly what was set: in memory this field is a passive carrier, and a value handed to it survives
+     * unchanged for as long as it is not written. A census of the entire legacy estate found no rounding
+     * clause on any arithmetic statement, which means every store into a two-decimal field truncates
+     * toward zero, so all scaling is funnelled through the two places that own that policy &mdash;
+     * {@link com.carddemo.util.ZonedDecimalCodec} for a fixed-width image and
+     * {@link StoredValueRules} for a stored row. Letting an entity scale
+     * independently, in a setter, is exactly how an inconsistent rounding policy creeps in.
+     *
+     * <p><strong>Writing the row is the one exception, and it is deliberate.</strong> Immediately before
+     * an insert or an update, {@link #normalizeAndValidateBeforeWrite()} normalises this amount to scale
+     * two, truncating toward zero, under the same policy. That is a persistence-time act rather than an
+     * accessor-time one, and the distinction is the whole point: a value computed in a service, parsed
+     * from a request or left over from a division carries whatever scale the arithmetic produced, and an
+     * entity that stored it verbatim would let a repository write bypass the truncation policy the whole
+     * estate depends on. So the invariant to hold in mind is narrower than "the entity never scales": the
+     * entity never scales <em>on the way in or out</em>, and always scales <em>on the way to the
+     * database</em>. The persist-time hook documents its own reasoning.
      *
      * <p>The same discipline applies to expression order downstream. This amount is the final operand
      * of the overlimit check, which the posting program evaluates strictly left to right as the

@@ -88,10 +88,10 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  * together make it impossible for the flag to have been derived from the message.
  *
  * <p><strong>Structural claims are made behaviourally, with no run-time metadata inspection.</strong>
- * That the contract publishes exactly sixteen components, and therefore carries no merchant, no
+ * That the contract publishes exactly seventeen components, and therefore carries no merchant, no
  * description and no second balance, is asserted by serialising a fully populated instance and
- * pinning the resulting key set exactly &mdash; a key set of exactly sixteen known names admits no
- * seventeenth serialisable component. That each text component is bounded, and bounded at the width
+ * pinning the resulting key set exactly &mdash; a key set of exactly seventeen known names admits no
+ * eighteenth serialisable component. That each text component is bounded, and bounded at the width
  * the legacy field declares, is asserted by driving a validator at the bound and one character past
  * it. Both are stronger than reading an annotation, because they check the behaviour a client
  * actually meets.
@@ -241,7 +241,7 @@ class BillPaymentResponseTest {
     /** The fixed stand-in the contract's own rendering emits for each withheld component. */
     private static final String REDACTED = "***REDACTED***";
 
-    /** The sixteen component names the screen contract publishes, in declaration order. */
+    /** The seventeen component names the screen contract publishes, in declaration order. */
     private static final List<String> WIRE_KEYS_IN_DECLARATION_ORDER = List.of(
             "accountId", "currentBalance", "confirm", "newTransactionId", "transactionName",
             "title01", "currentDate", "programName", "title02", "currentTime", "errorMessage",
@@ -317,7 +317,7 @@ class BillPaymentResponseTest {
     }
 
     /**
-     * A response with all sixteen components populated, used wherever the wire shape or the
+     * A response with all seventeen components populated, used wherever the wire shape or the
      * rendering is under test.
      *
      * <p>The message is the confirmation prompt and both flags are off, which is the state the
@@ -419,7 +419,7 @@ class BillPaymentResponseTest {
      * The property names a serialised response actually publishes at its top level.
      *
      * <p>This is how the component inventory is established without inspecting metadata at run time:
-     * a payload whose key set is exactly the sixteen known names cannot have a seventeenth
+     * a payload whose key set is exactly the seventeen known names cannot have an eighteenth
      * serialisable component, so every absence the contract claims is asserted by this one list.
      *
      * @param response the response to serialise

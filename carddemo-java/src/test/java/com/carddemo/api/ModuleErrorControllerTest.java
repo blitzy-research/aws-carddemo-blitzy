@@ -54,6 +54,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link GlobalExceptionHandler#neutralSummaryFor}, which is the same method the controller reads, so
  * these tests assert that the two agree rather than asserting a literal that could drift from both.
  *
+ * <h2>The boundary of this class, stated so it is not read as more than it is</h2>
+ *
+ * <p>Every case here calls the handler method <strong>directly</strong>. That is the right scope for the
+ * three properties above - each is a property of the method's own answer - and it is deliberately
+ * <em>not</em> evidence that a container generates one of the four conditions, records a status,
+ * re-dispatches to this path, gets past the authorization rules and selects this mapping. None of that
+ * can be established by invoking a method, and one of the four conditions was in fact broken while every
+ * case here passed: the mapping declared a producible type, which an unsatisfiable {@code Accept} header
+ * cannot match, so the framework refused the dispatch before the method ran. A registration assertion
+ * that read the annotation would have <em>locked</em> that defect rather than caught it, which is why the
+ * assertion below now requires the absence of a producible type and why the whole chain is exercised over
+ * a bound port by {@code api.ErrorDispatchContractIT}, against a real container that produces the four
+ * conditions itself.
+ *
  * @since 1.0.0
  */
 @DisplayName("ModuleErrorController - the error dispatch answered in the module's own envelope")
@@ -205,7 +219,29 @@ class ModuleErrorControllerTest {
                     .as("every method is mapped deliberately: the dispatch reproduces the original "
                             + "request's method, so a wrong-method refusal arrives as that same method")
                     .isEmpty();
-            assertThat(mapping.produces()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(mapping.produces())
+                    .as("and no producible type is declared, deliberately. An error dispatch reproduces "
+                            + "the original request's Accept header, so a producible type would be "
+                            + "matched against the very header that could not be satisfied and this "
+                            + "mapping would not be selectable on the one condition it exists for. The "
+                            + "representation is chosen after selection, by the response itself")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("sets the JSON content type on the response rather than negotiating it, so the "
+                + "envelope is written even for a request that asked for something else")
+        void forcesTheJsonContentTypeOnTheResponse() {
+            // A preset concrete content type is used as it stands rather than negotiated against the
+            // request, which is what carries the envelope to a caller whose Accept header no
+            // representation of the failed operation satisfied. Asserted on the entity the method
+            // returns, because that is where the decision is made.
+            for (final int recorded : new int[] {406, 415, 405, 404, 500}) {
+                assertThat(controller.handleErrorDispatch(dispatchRecording(recorded))
+                        .getHeaders().getContentType())
+                        .describedAs("a recorded %s must still be answered as JSON", recorded)
+                        .isEqualTo(MediaType.APPLICATION_JSON);
+            }
         }
 
         @Test

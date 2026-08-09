@@ -670,6 +670,17 @@ class DailyTransactionTest {
      * <p>Every amount in this cluster is built from a string literal. No approximate binary value is
      * constructed anywhere in this file, because decimal precision must be identical to the legacy
      * representation with no floating-point substitution.
+     *
+     * <p><strong>The scope of every "no scaling" claim below is the accessors, not the whole entity.</strong>
+     * Each case sets an amount and reads it back, so what it establishes is that the setter and the getter
+     * carry a value through unchanged - in memory, and for as long as it is not written. The entity does
+     * normalise, once, in its {@code @PrePersist} and {@code @PreUpdate} callback: the amount is truncated
+     * to scale two immediately before an insert or an update, so a value computed in a service or parsed
+     * from a request cannot reach a row at whatever scale the arithmetic happened to produce. That
+     * persist-time behaviour is not asserted here and is not contradicted here; it is specified by
+     * {@code domain.PersistenceTimeRulesTest}, which drives the callback directly. The two claims are
+     * complementary, and the distinction is the whole point: the entity never scales on the way in or out,
+     * and always scales on the way to the database.
      */
     @Nested
     @DisplayName("amount fidelity")
@@ -746,11 +757,13 @@ class DailyTransactionTest {
         }
 
         @Test
-        @DisplayName("the entity applies no scaling: a value handed in at scale one comes back at scale "
+        @DisplayName("the accessors apply no scaling: a value handed in at scale one comes back at scale "
                 + "one rather than being widened to the column's scale of two")
-        void theEntityAppliesNoScaling() {
+        void theAccessorsApplyNoScaling() {
             // Widening here would look harmless and would hide a mapper that failed to present the
-            // value at its declared scale. Scale is the codec's responsibility, not the entity's.
+            // value at its declared scale. Scale is the codec's responsibility on the way through a
+            // fixed-width image, and the persist-time callback's on the way to a row; it is never the
+            // setter's, which is what this case pins.
             DailyTransaction record = firstStagedRecord();
 
             record.setDalytranAmt(new BigDecimal("1.5"));
@@ -761,14 +774,17 @@ class DailyTransactionTest {
         }
 
         @Test
-        @DisplayName("the entity applies no rounding and no arithmetic: a value handed in at scale three "
-                + "comes back as 2.999, neither truncated to 2.99 nor rounded to 3.00, because the "
-                + "truncating store belongs to the codec and never to this class")
-        void theEntityAppliesNoRoundingAndNoArithmetic() {
+        @DisplayName("the accessors apply no rounding and no arithmetic: a value handed in at scale three "
+                + "comes back as 2.999, neither truncated to 2.99 nor rounded to 3.00, because a setter is "
+                + "never where a truncating store happens")
+        void theAccessorsApplyNoRoundingAndNoArithmetic() {
             // A census of the estate found no rounding clause on any arithmetic statement, so every
-            // legacy store into a two-decimal field truncates toward zero. That truncation is applied
-            // in exactly one place - the codec - so that no class can introduce a different policy by
-            // accident. This entity is not that place: it stores and returns, and does nothing else.
+            // legacy store into a two-decimal field truncates toward zero. That truncation is applied in
+            // exactly two places - the fixed-width codec, and the persist-time callback that guards a
+            // repository write - so that no class can introduce a different policy by accident. A setter
+            // is neither of them: it stores and returns, and does nothing else. The value asserted here
+            // is therefore what the entity CARRIES, not what it would be written as; writing it would
+            // truncate it to 2.99, and domain.PersistenceTimeRulesTest is where that is asserted.
             DailyTransaction record = firstStagedRecord();
 
             record.setDalytranAmt(new BigDecimal("2.999"));

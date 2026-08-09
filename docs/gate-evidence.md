@@ -401,8 +401,8 @@ neither is a stored secret of this module.
 | --- | --- |
 | **Requirement** | The extended specification tier: multi-subsystem batch processing, file I/O, inter-program calls, JCL orchestration and AWS service integration, with at least 80% line coverage. |
 | **Command** | `./mvnw -B clean verify` |
-| **Evidence artefact** | `target/site/jacoco/index.html`, and the JaCoCo check that fails the build |
-| **Standing result** | The coverage floor is enforced rather than reported: JaCoCo is configured as a failing check at 80% line coverage, so the build cannot succeed below it. Line coverage is the gated metric; branch, method and instruction coverage are reported for information. |
+| **Evidence artefact** | `target/site/jacoco-merged/index.html` — the report over the merged unit and integration data, which is the data the failing check measures. `target/site/jacoco/index.html` and `target/site/jacoco-it/index.html` are the per-tier reports and are informational: either alone understates the figure. A report produced by a scoped run is not this artefact and cannot occupy its path — the `scoped-tests` profile writes under `target/scoped-site/` (DL-284) — so a figure quoted from here always comes from a full unscoped `verify`. |
+| **Standing result** | The coverage floor is enforced rather than reported: JaCoCo is configured as a failing check at 80% line coverage over the merged data, so the build cannot succeed below it. Line coverage is the gated metric; branch, method and instruction coverage are reported for information. |
 
 Coverage dimensions the scope tier requires, and where each is exercised:
 
@@ -448,7 +448,7 @@ for the report job, it must keep exactly this shape.
 | --- | --- |
 | **Requirement** | End-to-end verification, interface contract verification, performance baseline, unsafe-code audit, ≥80% line coverage, an OWASP dependency check with zero critical or high CVEs, and a traceability matrix covering 100% of COBOL paragraphs. |
 | **Command** | `./mvnw -B clean verify` and `./mvnw -B dependency-check:check` |
-| **Evidence artefact** | `target/dependency-check-report.html`, `target/site/jacoco/`, and `traceability-matrix.md` |
+| **Evidence artefact** | `target/dependency-check-report.html`, `target/site/jacoco-merged/`, and `traceability-matrix.md`. The coverage artefact is the merged report for the same reason Gate 7 names it: the failing check measures the merged unit and integration data, and a per-tier report alone understates the figure. |
 
 | Checklist item | Satisfying artefact | Standing result |
 | --- | --- | --- |
@@ -456,7 +456,7 @@ for the report job, it must keep exactly this shape.
 | Interface contract verification | Sign-on messages; the job-submission card image; a real SQS FIFO queue | Gate 5 above |
 | Performance baseline | `support/RunScopedPerformanceRecorder`, figures in this page's Gate 3 measured-runs table | **recorded**: six measured rows, dated and attributed to a named machine, each with its fixture volumes. Re-measure on your own hardware rather than quoting a row here |
 | Unsafe code audit | The scoped grep list | every count zero |
-| Line coverage ≥ 80% | JaCoCo failing check | enforced by the build |
+| Line coverage ≥ 80% | JaCoCo failing check over `target/jacoco-merged.exec` | enforced by the build |
 | Zero critical/high CVEs | `dependency-check-maven` | **re-run before sign-off**; a CVE result ages, so a figure recorded here would be stale by the time it was read |
 | Traceability 100% | `traceability-matrix.md` | one row per paragraph unit, citing the SHA and the release stamp, and every row's named test **executes** the method it cites |
 

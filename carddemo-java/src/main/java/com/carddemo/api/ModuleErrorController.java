@@ -130,15 +130,35 @@ public final class ModuleErrorController implements ErrorController {
      * reason the rest of the boundary is - a client that could not negotiate a representation for the
      * operation still has to be able to read why.
      *
+     * <h4>Why the mapping declares no producible type, and the response sets one instead</h4>
+     *
+     * <p>It declared {@code produces = application/json} and that was a defect on the one condition
+     * this class exists for. An error dispatch <strong>reproduces the original request's headers</strong>,
+     * {@code Accept} included, so a request that asked for a representation the operation could not
+     * produce arrives here still asking for it. A producible type on the mapping is matched against that
+     * same header, so the mapping was <em>not selectable</em> on the unsatisfiable-{@code Accept}
+     * condition: the framework refused it a second time before this method ran, and the caller received a
+     * bare status with no body at all rather than the envelope this class publishes. The three sibling
+     * conditions - unmatched path, unsupported method, unreadable media type - were unaffected, because
+     * none of them turns on {@code Accept}, which is exactly why the defect survived.
+     *
+     * <p>The mapping is therefore selectable whatever the request asked for, and the representation is
+     * decided <em>after</em> selection by setting a concrete content type on the response. A preset
+     * concrete content type is used as it stands rather than negotiated against the request, so the
+     * envelope is written as JSON for a caller that asked for something else - which is the honest
+     * outcome: the alternative is answering a client that cannot read the answer with no answer.
+     *
      * @param request the error dispatch, carrying the status the container recorded
-     * @return the recorded status with the module's neutral summary for it, or {@code 500} with the
-     *         terminal summary when no status was recorded
+     * @return the recorded status with the module's neutral summary for it, as JSON whatever the original
+     *         request would have accepted, or {@code 500} with the terminal summary when no status was
+     *         recorded
      */
-    @RequestMapping(path = ERROR_PATH_EXPRESSION, produces = MediaType.APPLICATION_JSON_VALUE)
+    @RequestMapping(path = ERROR_PATH_EXPRESSION)
     public ResponseEntity<ErrorResponse> handleErrorDispatch(final HttpServletRequest request) {
         final HttpStatusCode status = recordedStatusOf(request);
         LOG.debug("Error dispatch answered in the module envelope: status={}", status.value());
         return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(new ErrorResponse(GlobalExceptionHandler.neutralSummaryFor(status)));
     }
 

@@ -932,12 +932,23 @@ public final class CombineTransactionsJobConfig {
      *
      * <p>No filesystem path is composed and no caller-supplied path is honoured: every rung above
      * resolves from a whitelisted logical base or from an already-validated simple name, which is the
-     * property that makes the refusal below safe. An unnamed input falls back to the dataset the legacy
-     * member itself declares rather than to nothing at all - a default that is faithful precisely
-     * because it is the legacy DSN. A base that holds no generation still refuses: reading one input
-     * instead of two produces a perfectly well-formed result that is missing half its records, and that
-     * outcome is exactly what must not be allowed to look like success. See
-     * {@code docs/decision-log.md} entry DL-214.
+     * property that makes the refusal below safe.
+     *
+     * <p><strong>Where the legacy dataset name comes from, and why a blank location still
+     * refuses.</strong>
+     * A deployment that configures neither input is not left with nothing: each property defaults, at
+     * binding time, to the generation base the legacy member itself declares - see
+     * {@link #DEFAULT_BACKUP_DATASET_BASE} and {@link #DEFAULT_SYNTHESIZED_DATASET_BASE} - so the
+     * dataset name is faithful precisely because it is the legacy DSN. A location therefore never
+     * arrives here unnamed unless a deployment has explicitly blanked it, and an explicitly blanked
+     * location is refused rather than quietly re-defaulted: substituting the legacy name for a value
+     * somebody deliberately emptied would run the job against a dataset nobody configured.
+     *
+     * <p>A base that no rung resolves is likewise never turned into an empty read. It reaches the
+     * resource loader, which yields a resource that does not exist, and the stream fails when it is
+     * opened. That is deliberate: reading one input instead of two produces a perfectly well-formed
+     * result that is missing half its records, and that outcome is exactly what must not be allowed to
+     * look like success. See {@code docs/decision-log.md} entry DL-214.
      *
      * @param  location     the configured location, possibly blank
      * @param  propertyName the property that names it, reported in both the diagnostic and the refusal

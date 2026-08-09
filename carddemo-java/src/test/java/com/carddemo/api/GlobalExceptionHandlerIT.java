@@ -54,8 +54,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -383,6 +385,24 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
     @Autowired
     private MockMvc client;
 
+    /**
+     * The exact {@code Authorization} value each served result's request presented.
+     *
+     * <p><strong>Why the value is retained rather than re-minted.</strong> The sweep used to call
+     * {@link #administrativeSession()} again and search the served surface for <em>that</em> value. A
+     * freshly minted token is not necessarily the byte sequence the request carried - it is minted from
+     * the record's current state and this class's clock, and two mints need not agree - so the search
+     * could be looking for a credential the response never had a chance to echo, and would then pass for
+     * the wrong reason. What must be absent from a response is the credential its own caller presented.
+     *
+     * <p><strong>Why it is keyed by result rather than held as one field.</strong> One group drives all six
+     * mappings first and sweeps them afterwards, so a single field would hold the sixth request's token
+     * while five earlier responses were being checked against it - the same defect in a different place.
+     * Keyed by result identity, every sweep searches for the token that result's own request carried, and a
+     * result assembled some other way has no entry and fails the sweep rather than passing it.
+     */
+    private final Map<MvcResult, String> sessionsPresented = new IdentityHashMap<>();
+
     /** The delivered token provider, used to mint a session without naming a credential. */
     @Autowired
     private JwtTokenProvider tokenProvider;
@@ -474,11 +494,12 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
      * @throws Exception when the dispatch itself cannot be performed
      */
     private MvcResult postJson(final String route, final String body) throws Exception {
-        return this.client.perform(MockMvcRequestBuilders.post(route)
-                        .header(HttpHeaders.AUTHORIZATION, administrativeSession())
+        final String session = administrativeSession();
+        return recordPresentedSession(this.client.perform(MockMvcRequestBuilders.post(route)
+                        .header(HttpHeaders.AUTHORIZATION, session)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andReturn();
+                .andReturn(), session);
     }
 
     /**
@@ -489,9 +510,41 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
      * @throws Exception when the dispatch itself cannot be performed
      */
     private MvcResult get(final String route) throws Exception {
-        return this.client.perform(MockMvcRequestBuilders.get(route)
-                        .header(HttpHeaders.AUTHORIZATION, administrativeSession()))
-                .andReturn();
+        final String session = administrativeSession();
+        return recordPresentedSession(this.client.perform(MockMvcRequestBuilders.get(route)
+                        .header(HttpHeaders.AUTHORIZATION, session))
+                .andReturn(), session);
+    }
+
+    /**
+     * Records which credential one served result's request presented.
+     *
+     * <p>Both request helpers pass through here, and they are the only two places a request is assembled
+     * in this class, so every result the sweep can be handed carries the token its own caller sent.
+     *
+     * @param  result  the completed result
+     * @param  session the exact authorization header value that request carried
+     * @return the same result, for chaining
+     */
+    private MvcResult recordPresentedSession(final MvcResult result, final String session) {
+        this.sessionsPresented.put(result, session);
+        return result;
+    }
+
+    /**
+     * Reads back the credential one served result's request presented.
+     *
+     * @param  result the completed result
+     * @return the exact authorization header value that request carried
+     */
+    private String sessionPresentedBy(final MvcResult result) {
+        final String session = this.sessionsPresented.get(result);
+        assertThat(session)
+                .as("this result's request was assembled outside the two helpers, so the credential it"
+                        + " presented was never recorded and the non-disclosure sweep would have had"
+                        + " nothing to search for")
+                .isNotNull();
+        return session;
     }
 
     /**
@@ -534,6 +587,16 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
      * written here, so a signing secret, a field-encryption key and an operator token can be asserted
      * absent without any of them appearing in this file. Finally the session the request presented is
      * itself a credential, and is asserted absent for the same reason.
+     *
+     * <h4>What the credential half of this sweep used to miss</h4>
+     * It searched for a <em>re-minted</em> token, and it searched the body only. Both halves mattered. A
+     * token minted after the fact need not be the byte sequence the request carried, so the search could
+     * be looking for a value the response never had; and the response headers are as public as its body,
+     * so a credential echoed into a header would have passed. The presented value is now captured at the
+     * point it is presented, both halves of the served surface are searched for it, the presentation prefix
+     * is searched for on its own so that a truncated or re-encoded echo is caught, and an
+     * {@code Authorization} response header is refused outright - this boundary never issues, refreshes or
+     * returns a session.
      *
      * <h4>Why the secret and session assertions are made over a boolean</h4>
      * A fluent {@code doesNotContain} renders <em>both</em> operands when it fails - the served body and
@@ -580,13 +643,36 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
                             + " leaked value: %s", secret.propertyName(), secret.fingerprint())
                     .isFalse();
         }
-        final String session = administrativeSession();
+        final String session = sessionPresentedBy(result);
         assertThat(body.contains(session))
                 .as("the session the request presented was echoed back into the body. The token is not"
                         + " rendered here, because a signed bearer token is a credential for as long as"
                         + " it is valid and a failure message is written to a log. Fingerprint of the"
                         + " echoed token: %s", fingerprintOf(session))
                 .isFalse();
+        assertThat(headers.contains(session))
+                .as("the session the request presented was echoed back into a served HEADER. A header"
+                        + " leak is a leak: it reaches a proxy log and a browser's developer tools"
+                        + " exactly as a body does, and this half of the surface was previously"
+                        + " unchecked. Neither the token nor the header set is rendered here."
+                        + " Fingerprint of the echoed token: %s", fingerprintOf(session))
+                .isFalse();
+        // The presentation prefix on its own, so that a truncated or re-encoded echo is caught too: a
+        // header carrying "Bearer " means a credential was put on the response whatever its payload.
+        // WWW-Authenticate is the one header where that prefix is a challenge rather than a credential,
+        // and no case in this class is refused for want of a session, so it cannot occur here either.
+        for (final String name : result.getResponse().getHeaderNames()) {
+            assertThat(name)
+                    .as("no response of the six mappings may carry an Authorization header: this"
+                            + " boundary never issues, refreshes or echoes a session, and the sign-on"
+                            + " turn is the only operation in the module that sets one")
+                    .isNotEqualToIgnoringCase(HttpHeaders.AUTHORIZATION);
+            assertThat(String.valueOf(result.getResponse().getHeaderValues(name))
+                            .toUpperCase(Locale.ROOT))
+                    .as("header %s carries the bearer presentation prefix, so something put a"
+                            + " credential-shaped value on the response", name)
+                    .doesNotContain(BEARER_PREFIX.toUpperCase(Locale.ROOT));
+        }
         assertThat(body)
                 .as("the boundary serves its own error contract, never a problem-detail document")
                 .doesNotContain(PROBLEM_DETAIL_MEMBERS.toArray(new String[0]));

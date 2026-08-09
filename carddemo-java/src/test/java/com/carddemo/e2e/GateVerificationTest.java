@@ -321,13 +321,32 @@ class GateVerificationTest extends AbstractPostgresIT {
             PROGRAM_PARAGRAPHS + DATE_COPYBOOK_PARAGRAPHS + PFKEY_COPYBOOK_PARAGRAPHS;
 
     /**
-     * Rows whose paragraph no delivered call site reaches: three account-update edits and their exits.
+     * How the rows no delivered call site reaches are distributed across the members that carry them.
      *
-     * <p>A fixed figure rather than a derived one, because the population is a decision. Wiring one of the
-     * three in, or dropping one, must fail here and be re-decided rather than silently change the marker
-     * distribution.
+     * <p>Fixed figures rather than derived ones, because the population is a decision. Wiring one of these
+     * paragraphs in, dropping one, or discovering a new one must fail here and be re-decided rather than
+     * silently change the marker distribution.
+     *
+     * <p>The distribution is asserted per member and not only in total, which is the part a total cannot
+     * do. The marker was previously declared to be six rows all belonging to the account-update member,
+     * and ten further rows across three other members carried the same property and no marker: the
+     * account-view long-text sender and its exit, both card-list diagnostic senders and their exits, and
+     * the card-detail account-keyed read and long-text sender with their exits. A bare total would have
+     * accepted moving a row from one member to another, which is exactly how a marker population drifts.
+     * Recorded as {@code DL-283} in {@code docs/decision-log.md}.
      */
-    private static final int UNWIRED_PARAGRAPH_ROWS = 6;
+    private static final Map<String, Integer> UNWIRED_PARAGRAPHS_BY_MEMBER = Map.of(
+            "app/cbl/COACTUPC.cbl", 6,
+            "app/cbl/COACTVWC.cbl", 2,
+            "app/cbl/COCRDLIC.cbl", 4,
+            "app/cbl/COCRDSLC.cbl", 4);
+
+    /** Rows whose paragraph no delivered call site reaches, summed over the members that carry them. */
+    private static final int UNWIRED_PARAGRAPH_ROWS =
+            UNWIRED_PARAGRAPHS_BY_MEMBER.values().stream().mapToInt(Integer::intValue).sum();
+
+    /** Ordinary translations: the total less every marked row. */
+    private static final int ORDINARY_ROWS = 506;
 
     /** Application tables the schema migration creates, one per verified record layout. */
     private static final int APPLICATION_TABLE_COUNT = 11;
@@ -2114,14 +2133,14 @@ class GateVerificationTest extends AbstractPostgresIT {
          * <p>The sign-off requires the count to include rows that are documented non-implementations rather
          * than translations, and requires them to be visible as such. Four findings are marked, under four
          * markers, and the five populations sum to the total: one invoked paragraph that implements nothing,
-         * three preserved source anomalies, eighteen paragraphs of a member no job stream invokes, six
+         * three preserved source anomalies, eighteen paragraphs of a member no job stream invokes, sixteen
          * paragraphs no delivered call site reaches, and the ordinary translations that make up the rest.
          *
          * @throws IOException if the matrix cannot be read
          */
         @Test
-        @DisplayName("1 non-implementation, 3 source anomalies, 18 unwired-member rows and 6 "
-                + "unwired-paragraph rows are marked, and with 516 ordinary rows they sum to 544")
+        @DisplayName("1 non-implementation, 3 source anomalies, 18 unwired-member rows and 16 "
+                + "unwired-paragraph rows are marked, and with 506 ordinary rows they sum to 544")
         void theMarkedRowsSumWithTheOrdinaryOnesToTheTotal() throws IOException {
             int nonImplementation = 0;
             int sourceAnomaly = 0;
@@ -2158,15 +2177,17 @@ class GateVerificationTest extends AbstractPostgresIT {
                     .as("eighteen paragraphs belong to the member no job stream invokes")
                     .isEqualTo(18);
             assertThat(unwiredParagraph)
-                    .as("six paragraphs are reached by no delivered call site: three edits the driver "
-                            + "deliberately does not route to, and their three paired exits")
+                    .as("sixteen paragraphs are reached by no delivered call site: three account-update "
+                            + "edits the driver deliberately does not route to, four diagnostic senders "
+                            + "and one alternate-index read that no PERFORM in their own members reaches, "
+                            + "and the eight paired exits reachable only from those heads")
                     .isEqualTo(UNWIRED_PARAGRAPH_ROWS);
             assertThat(ordinary)
                     .as("and the rest are ordinary translations")
-                    .isEqualTo(516);
+                    .isEqualTo(ORDINARY_ROWS);
             assertThat(nonImplementation + sourceAnomaly + unwired + unwiredParagraph + ordinary)
-                    .as("1 + 3 + 18 + 6 + 516 = 544, so nothing is marked twice and nothing is "
-                            + "unaccounted for")
+                    .as("1 + 3 + 18 + %d + %d = 544, so nothing is marked twice and nothing is "
+                            + "unaccounted for", UNWIRED_PARAGRAPH_ROWS, ORDINARY_ROWS)
                     .isEqualTo(TOTAL_PROCEDURE_UNITS);
         }
 
@@ -2227,34 +2248,46 @@ class GateVerificationTest extends AbstractPostgresIT {
          *
          * <p><strong>Why this assertion exists, and what it would have caught.</strong> A covering test
          * ordinarily reaches a row's method through the entry point the suite drives, so naming the method
-         * would be an unreasonable demand on 538 of the 544 rows. Six rows are different: no delivered call
-         * site reaches their method at all, so no amount of driving an entry point executes them, and a
+         * would be an unreasonable demand on 528 of the 544 rows. Sixteen rows are different: no delivered
+         * call site reaches their method at all, so no amount of driving an entry point executes them, and a
          * covering test that does not name them cannot be exercising them. That was exactly the defect this
-         * marker was introduced for - six rows claiming a suite that named none of the six - and it survived
-         * a green row-count check, which is why the check is here rather than in a reviewer's notes.
+         * marker was introduced for - rows claiming a suite that named none of them - and it survived a
+         * green row-count check, which is why the check is here rather than in a reviewer's notes.
          *
-         * <p>The three heads carry the stronger form: the test must contain an actual invocation. Their
-         * three paired exits carry the weaker one: they are reachable only from their head, which calls them
+         * <p>The eight heads carry the stronger form: the test must contain an actual invocation. Their
+         * eight paired exits carry the weaker one: they are reachable only from their head, which calls them
          * on every arm, so naming them is what a reader needs and an invocation of their own would be
          * fabricated coverage.
+         *
+         * <p>The per-member distribution is asserted as well as the total, because a total cannot see a row
+         * moving between members. The marker was declared for six account-update rows while ten rows in
+         * three other members carried the same property unmarked, and both halves of that - the six being
+         * treated as the whole population, and the ten being invisible - are what these two assertions now
+         * refuse.
          *
          * @throws IOException if the matrix or a test source cannot be read
          */
         @Test
-        @DisplayName("every deliberately unwired paragraph is named by its covering test, and every "
-                + "unwired head is actually invoked by it")
+        @DisplayName("every deliberately unwired paragraph is named by its covering test, every unwired "
+                + "head is actually invoked by it, and the rows fall in the decided per-member split")
         void everyUnwiredParagraphRowIsNamedByItsCoveringTest() throws IOException {
             final List<List<String>> marked = matrixRowsWhere(MARKER_UNWIRED_PARAGRAPH);
             final Map<String, String> testCache = new TreeMap<>();
 
             assertThat(marked)
-                    .as("the marker exists for six rows; changing that population is a decision that "
-                            + "belongs in the matrix legend and here, not in one of them")
+                    .as("the marker exists for %d rows; changing that population is a decision that "
+                            + "belongs in the matrix legend and here, not in one of them",
+                            UNWIRED_PARAGRAPH_ROWS)
                     .hasSize(UNWIRED_PARAGRAPH_ROWS);
-            assertThat(marked)
-                    .as("all six belong to the account-update member, whose driver is the one that "
-                            + "deliberately routes to none of them")
-                    .allSatisfy(row -> assertThat(row.get(0)).isEqualTo("app/cbl/COACTUPC.cbl"));
+            final Map<String, Integer> observed = new TreeMap<>();
+            for (final List<String> row : marked) {
+                observed.merge(row.get(0), 1, Integer::sum);
+            }
+            assertThat(observed)
+                    .as("each member's share of the population is itself the decision: four members carry "
+                            + "these rows, and a row moving between them is a change of decision that a "
+                            + "total cannot see")
+                    .containsExactlyInAnyOrderEntriesOf(UNWIRED_PARAGRAPHS_BY_MEMBER);
 
             for (final List<String> row : marked) {
                 final String targetMethod = unquoted(row.get(4));
@@ -6177,6 +6210,85 @@ class GateVerificationTest extends AbstractPostgresIT {
                 && !declarations.contains("<vulnerabilityName");
     }
 
+    /** Start-date slot value submitted to the builder here, and expected back out of it. */
+    private static final String EXPECTED_START_DATE = "2022-01-01";
+
+    /** End-date slot value submitted to the builder here, and expected back out of it. */
+    private static final String EXPECTED_END_DATE = "2022-07-06";
+
+    /** Literal text of the transmitted end-of-file sentinel card. */
+    private static final String EXPECTED_EOF_SENTINEL = "/*EOF";
+
+    /** One-based ordinal the sentinel occupies, and the only ordinal it may occupy. */
+    private static final int EXPECTED_SENTINEL_ORDINAL = 17;
+
+    /** One-based ordinal of the start-date sort-symbol card. */
+    private static final int START_DATE_CARD_ORDINAL = 11;
+
+    /** Zero-based offset of the slot on that card, which follows an eighteen-byte leading literal. */
+    private static final int START_DATE_SLOT_OFFSET = 18;
+
+    /** One-based ordinal of the end-date sort-symbol card. */
+    private static final int END_DATE_CARD_ORDINAL = 12;
+
+    /** Zero-based offset of the slot on that card, which follows a sixteen-byte leading literal. */
+    private static final int END_DATE_SLOT_OFFSET = 16;
+
+    /** One-based ordinal of the report date-parameter card, the one card carrying both slots. */
+    private static final int DATE_PARAMETER_CARD_ORDINAL = 15;
+
+    /** Zero-based offset of the first slot there; this card carries no leading literal at all. */
+    private static final int DATE_PARAMETER_START_SLOT_OFFSET = 0;
+
+    /** Zero-based offset of the second slot, after the first slot and its one-byte separator. */
+    private static final int DATE_PARAMETER_END_SLOT_OFFSET = 11;
+
+    /** How many of the seven examined texts are screen messages rather than catalogue messages. */
+    private static final int SCREEN_MESSAGE_COUNT = 5;
+
+    /**
+     * Independent expectation of the whole job-submission image: every card, in order, at its width.
+     *
+     * <p>Each entry is a literal of this class plus the published eighty-column frame. Nothing here is
+     * read from {@link JclCardImageBuilder}, which is the thing being examined, and nothing is imported
+     * from another specification that keeps its own copy: an oracle shared between two specifications is
+     * one oracle, and a drift in the shared copy would be invisible to both (DL-281).
+     */
+    private static final List<String> EXPECTED_CARD_IMAGES = List.of(
+            paddedCardImage("//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,"),   //  1
+            paddedCardImage("// NOTIFY=&SYSUID"),                                  //  2
+            paddedCardImage("//*"),                                                //  3
+            paddedCardImage("//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')"),     //  4
+            paddedCardImage("//*"),                                                //  5
+            paddedCardImage("//STEP10 EXEC PROC=TRANREPT"),                        //  6
+            paddedCardImage("//*"),                                                //  7
+            paddedCardImage("//STEP05R.SYMNAMES DD *"),                            //  8
+            paddedCardImage("TRAN-CARD-NUM,263,16,ZD"),                            //  9
+            paddedCardImage("TRAN-PROC-DT,305,10,CH"),                             // 10
+            paddedCardImage("PARM-START-DATE,C'" + EXPECTED_START_DATE + "'"),     // 11
+            paddedCardImage("PARM-END-DATE,C'" + EXPECTED_END_DATE + "'"),         // 12
+            paddedCardImage("/*"),                                                 // 13
+            paddedCardImage("//STEP10R.DATEPARM DD *"),                            // 14
+            paddedCardImage(EXPECTED_START_DATE + " " + EXPECTED_END_DATE),        // 15
+            paddedCardImage("/*"),                                                 // 16
+            paddedCardImage(EXPECTED_EOF_SENTINEL));                               // 17
+
+    /**
+     * Independent expectation of the seven message texts, in the order they are examined.
+     *
+     * <p>The five screen messages travel in the eighty-byte message field; the two catalogue messages are
+     * padded to their contractual fifty. The wording is restated here as a literal in every case, so a
+     * message whose text drifted fails this row instead of being reported as verified for being non-blank.
+     */
+    private static final List<String> EXPECTED_SIGN_ON_TEXTS = List.of(
+            "Please enter User ID ...",
+            "Please enter Password ...",
+            "Wrong Password. Try again ...",
+            "User not found. Try again ...",
+            "Unable to verify the User ...",
+            paddedCommonMessage("Thank you for using CardDemo application..."),
+            paddedCommonMessage("Invalid key pressed. Please see below..."));
+
     /**
      * What was established about the external interface contracts, and how.
      *
@@ -6184,6 +6296,16 @@ class GateVerificationTest extends AbstractPostgresIT {
      * @param narrative what was examined, for the sign-off row
      */
     private record InterfaceContractEvidence(boolean satisfied, String narrative) { }
+
+    /**
+     * Left justifies a catalogue message into its contractual width, space padded.
+     *
+     * @param  text the message's literal wording
+     * @return the wording at exactly the common-message width
+     */
+    private static String paddedCommonMessage(final String text) {
+        return text + " ".repeat(MessageCatalogService.COMMON_MESSAGE_WIDTH - text.length());
+    }
 
     /**
      * Exercises the two external contracts this class can reach in process, and reports what it found.
@@ -6197,41 +6319,111 @@ class GateVerificationTest extends AbstractPostgresIT {
      * the production constants. A contract that had drifted would fail the row rather than being reported
      * as verified because a test file exists.
      *
+     * <h4>Why the comparison is against literals restated here</h4>
+     * Every expectation below is an <strong>independent oracle</strong>: the seventeen card images and the
+     * seven message texts are spelled out in {@link #EXPECTED_CARD_IMAGES} and
+     * {@link #EXPECTED_SIGN_ON_TEXTS} as literals of this class, and each is compared for
+     * <em>equality</em>. This row previously measured the builder against itself - it asked the shipped
+     * builder for the cards, then checked their count, their width, and that the last one began with the
+     * shipped sentinel constant. Every one of those questions is answered by the production code that
+     * generated the answer, so a card whose literal text had been rewritten, a card order that had been
+     * permuted, a date slot written at the wrong offset, or a message whose wording had drifted all
+     * passed. None of them passes now, because the expected value no longer comes from the thing under
+     * examination. The same reasoning forbids importing the literals from
+     * {@code e2e/OnlineTransactionE2ETest}, which holds its own independent copy: two specifications
+     * sharing one oracle is one oracle, not two (DL-281).
+     *
      * @return the evidence
      */
     private static InterfaceContractEvidence interfaceContractEvidence() {
-        final List<String> cards = JclCardImageBuilder.build("2022-01-01", "2022-07-06");
-        boolean satisfied = cards.size() == JclCardImageBuilder.CARD_COUNT;
-        for (final String card : cards) {
-            satisfied = satisfied && card.getBytes(StandardCharsets.US_ASCII).length
-                    == JclCardImageBuilder.CARD_IMAGE_WIDTH;
+        final List<String> cards = JclCardImageBuilder.build(EXPECTED_START_DATE, EXPECTED_END_DATE);
+        final List<String> expectedCards = EXPECTED_CARD_IMAGES;
+        boolean satisfied = cards.size() == expectedCards.size()
+                && cards.size() == JclCardImageBuilder.CARD_COUNT;
+        for (int ordinal = 0; satisfied && ordinal < expectedCards.size(); ordinal++) {
+            final String card = cards.get(ordinal);
+            satisfied = card.equals(expectedCards.get(ordinal))
+                    && card.getBytes(StandardCharsets.US_ASCII).length
+                            == JclCardImageBuilder.CARD_IMAGE_WIDTH;
         }
+        // The sentinel is examined by position, not by prefix. A sentinel that had migrated to any other
+        // ordinal, or a sequence that carried a second one, satisfied a prefix test on the last card.
         satisfied = satisfied
-                && cards.get(cards.size() - 1).startsWith(JclCardImageBuilder.EOF_SENTINEL_CARD);
+                && cards.indexOf(paddedCardImage(EXPECTED_EOF_SENTINEL))
+                        == EXPECTED_SENTINEL_ORDINAL - 1
+                && cards.lastIndexOf(paddedCardImage(EXPECTED_EOF_SENTINEL))
+                        == EXPECTED_SENTINEL_ORDINAL - 1;
+        // The four date slots, read back out of the assembled cards at the offsets the eighty-column
+        // frame puts them at. A slot written one byte adrift still yields eighty bytes.
+        satisfied = satisfied
+                && slotAt(cards, START_DATE_CARD_ORDINAL, START_DATE_SLOT_OFFSET)
+                        .equals(EXPECTED_START_DATE)
+                && slotAt(cards, END_DATE_CARD_ORDINAL, END_DATE_SLOT_OFFSET)
+                        .equals(EXPECTED_END_DATE)
+                && slotAt(cards, DATE_PARAMETER_CARD_ORDINAL, DATE_PARAMETER_START_SLOT_OFFSET)
+                        .equals(EXPECTED_START_DATE)
+                && slotAt(cards, DATE_PARAMETER_CARD_ORDINAL, DATE_PARAMETER_END_SLOT_OFFSET)
+                        .equals(EXPECTED_END_DATE);
 
         final List<String> signOnTexts = List.of(SignOnResponse.MSG_PROMPT_USERID,
                 SignOnResponse.MSG_PROMPT_PASSWD, SignOnResponse.MSG_WRONG_PASSWD,
-                SignOnResponse.MSG_USER_NOT_FOUND, SignOnResponse.MSG_UNABLE_TO_VERIFY);
-        for (final String text : signOnTexts) {
-            satisfied = satisfied && !text.isBlank()
-                    && text.getBytes(StandardCharsets.US_ASCII).length
-                            <= SignOnResponse.MESSAGE_LENGTH;
-        }
-        final List<String> commonTexts = List.of(MessageCatalogService.CCDA_MSG_THANK_YOU,
+                SignOnResponse.MSG_USER_NOT_FOUND, SignOnResponse.MSG_UNABLE_TO_VERIFY,
+                MessageCatalogService.CCDA_MSG_THANK_YOU,
                 MessageCatalogService.CCDA_MSG_INVALID_KEY);
-        for (final String text : commonTexts) {
-            satisfied = satisfied && !text.isBlank()
-                    && text.getBytes(StandardCharsets.US_ASCII).length
-                            == MessageCatalogService.COMMON_MESSAGE_WIDTH;
+        satisfied = satisfied && signOnTexts.size() == EXPECTED_SIGN_ON_TEXTS.size();
+        for (int index = 0; satisfied && index < EXPECTED_SIGN_ON_TEXTS.size(); index++) {
+            satisfied = signOnTexts.get(index).equals(EXPECTED_SIGN_ON_TEXTS.get(index));
+        }
+        // The width contract is separate from the wording contract: the five screen messages travel in an
+        // eighty-byte field and the two catalogue messages are exactly fifty bytes wide.
+        for (int index = 0; satisfied && index < SCREEN_MESSAGE_COUNT; index++) {
+            satisfied = signOnTexts.get(index).getBytes(StandardCharsets.US_ASCII).length
+                    <= SignOnResponse.MESSAGE_LENGTH;
+        }
+        for (int index = SCREEN_MESSAGE_COUNT; satisfied && index < signOnTexts.size(); index++) {
+            satisfied = signOnTexts.get(index).getBytes(StandardCharsets.US_ASCII).length
+                    == MessageCatalogService.COMMON_MESSAGE_WIDTH;
         }
 
-        return new InterfaceContractEvidence(satisfied, cards.size() + " card images of "
-                + JclCardImageBuilder.CARD_IMAGE_WIDTH + " bytes built here from the shipped builder, "
-                + "terminal sentinel transmitted; " + signOnTexts.size() + " sign-on texts within the "
-                + SignOnResponse.MESSAGE_LENGTH + "-byte message field and "
-                + commonTexts.size() + " common messages at exactly "
-                + MessageCatalogService.COMMON_MESSAGE_WIDTH + " bytes; the queue and the bound port are "
-                + "exercised by the two classes named beside this row");
+        return new InterfaceContractEvidence(satisfied, cards.size()
+                + " card images of " + JclCardImageBuilder.CARD_IMAGE_WIDTH
+                + " bytes built here from the shipped builder and compared for equality, card by card,"
+                + " against " + expectedCards.size() + " images restated independently in this class;"
+                + " terminal sentinel transmitted at ordinal " + EXPECTED_SENTINEL_ORDINAL
+                + " and nowhere else; the four date slots read back at their frame offsets; "
+                + SCREEN_MESSAGE_COUNT + " sign-on texts and "
+                + (signOnTexts.size() - SCREEN_MESSAGE_COUNT)
+                + " common messages compared for equality against independent literals, within the "
+                + SignOnResponse.MESSAGE_LENGTH + "-byte message field and at exactly "
+                + MessageCatalogService.COMMON_MESSAGE_WIDTH
+                + " bytes; the queue and the bound port are exercised by the two classes named beside"
+                + " this row");
+    }
+
+    /**
+     * Left justifies a card's literal text into the eighty-column frame, space padded.
+     *
+     * <p>Used only to build this class's own expectations. The width comes from the published contract
+     * because a frame this class invented would be an expectation about nothing, but the text being
+     * framed is always a literal restated here.
+     *
+     * @param  text the card's literal text
+     * @return the text at exactly the card-image width
+     */
+    private static String paddedCardImage(final String text) {
+        return text + " ".repeat(JclCardImageBuilder.CARD_IMAGE_WIDTH - text.length());
+    }
+
+    /**
+     * Reads a ten-byte date slot back out of an assembled card.
+     *
+     * @param  cards   the assembled card sequence
+     * @param  ordinal the one-based card ordinal the slot sits on
+     * @param  offset  the zero-based offset of the slot within that card
+     * @return the slot's value, exactly ten bytes wide
+     */
+    private static String slotAt(final List<String> cards, final int ordinal, final int offset) {
+        return cards.get(ordinal - 1).substring(offset, offset + JclCardImageBuilder.DATE_SLOT_WIDTH);
     }
 
     /**

@@ -1659,7 +1659,7 @@ unit, each naming the source member, the paragraph, the source line, the target 
 method and the covering test, with both provenance identifiers in its header. The row count is asserted by
 `e2e/GateVerificationTest`, and asserted the only way that means anything: the 544 is checked against the
 paragraph labels the members **actually declare**, member by member, rather than against itself, so a row
-invented for a paragraph that does not exist fails the build. Twenty-eight of the 544 rows are marked
+invented for a paragraph that does not exist fails the build. Thirty-eight of the 544 rows are marked
 rather than plain — documented non-implementations and deliberately unrouted paragraphs rather than
 translations — so that the count stays honest.
 
@@ -1670,14 +1670,18 @@ class exists under `src/main/java`, that it *declares* the named method, and tha
 exists under `src/test/java`. Rows whose method no delivered call site reaches carry a stronger obligation
 still: their covering test must name the method, and for a paragraph head must actually call it.
 
-Marked rows keep the count honest, and the four markers sum to the total — 1 + 3 + 18 + 6 + 516 = 544:
+Marked rows keep the count honest, and the four markers sum to the total — 1 + 3 + 18 + 16 + 506 = 544:
 
 1. `†` the fee-computation paragraph that is genuinely invoked but implements nothing;
 2. `‡` three preserved source anomalies, including the duplicated exit paragraph in the account-view
    program where two identically-named paragraphs collapse to one method;
 3. `§` the eighteen paragraphs of the orphaned extract program, which no job stream invokes;
-4. `¶` six account-update paragraphs the delivered driver deliberately never routes to — three edits and
-   their three paired exits — each exercised directly, by name, by the test its row names.
+4. `¶` sixteen paragraphs that no delivered call site reaches, across four members: three account-update
+   edits the driver deliberately never routes to, the account-view long-text sender, both card-list
+   diagnostic senders, the card-detail alternate-index read and its long-text sender, and the eight paired
+   exits reachable only from those heads. Each head is exercised directly, by name, by the test its row
+   names, and each exit is named there; the gate asserts the per-member split as well as the total, because
+   a total cannot see a row moving between members.
 
 A fourth artifact completes the audit trail without contributing a row: the unreferenced copybook,
 recorded in the decision log as consciously excluded dead code and asserted absent from the matrix,

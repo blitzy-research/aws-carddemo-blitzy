@@ -225,6 +225,14 @@ public final class AuthController {
      * is the only layer that has one. It is not a field of the published contract, does not appear in the
      * schema, and is never echoed, validated, stored or logged.
      *
+     * <p><strong>It must be the connection's address and not a header's, and that is a deployment
+     * requirement as much as a code one.</strong> The value is read from the request rather than from any
+     * forwarding header, but a forwarded-header mechanism that rewrote unconditionally would have replaced
+     * the request's own address with a caller-supplied one before this method ran. Production therefore
+     * selects the container's trusted-proxy-aware strategy, which honours a forwarded address only from a
+     * peer that deployment names; the comment at the call site records the requirement and
+     * {@code docs/decision-log.md} entry DL-282 records the decision.
+     *
      * @param request the operator's entry and the attention key they pressed
      * @param httpRequest the servlet request, read only for the caller address, possibly {@code null}
      *                    when this handler is driven without a servlet container
@@ -253,11 +261,20 @@ public final class AuthController {
         }
         // The caller address is attributed here because this is the only layer that has one, and it is
         // handed on as the governor's second subject rather than as a screen field: it is never echoed,
-        // never validated, never stored and never logged. Read from the connection rather than from any
-        // forwarding header, because a header is caller-supplied and an abuse counter keyed on a value
-        // the abuser chooses is no counter at all. A deployment behind a proxy that needs the original
-        // address supplies it through the framework's own forwarded-header handling, which rewrites the
-        // request's remote address before this point.
+        // never validated, never stored and never logged.
+        //
+        // WHAT THIS VALUE MUST BE, AND WHAT ENFORCES IT. An abuse counter keyed on a value the abuser
+        // chooses is no counter at all, so this must be the address the connection came from and never a
+        // value read out of a request header. This layer cannot enforce that on its own: a forwarded-header
+        // mechanism configured to rewrite unconditionally would already have replaced the peer address
+        // with a caller-supplied one before this method runs, and nothing here could tell the two apart.
+        // The enforcement is therefore a deployment setting and is stated as a requirement of this call
+        // site: production selects the container's TRUSTED-PROXY-AWARE strategy, which honours a forwarded
+        // address only from a peer the deployment has named and otherwise leaves the connection's own
+        // address in place. A deployment that instead rewrites from any caller's headers reopens the
+        // cross-identity sweep this subject exists to catch. See docs/decision-log.md DL-282, and
+        // api.SignOnSourceAttributionUntrustedProxyIT, which drives two forwarded addresses at a real
+        // untrusted peer and requires them to share one allowance.
         final String sourceKey = httpRequest == null ? null : httpRequest.getRemoteAddr();
         return serveTurn(() -> this.authenticationService.handle(
                 request.keyAction(), request.userId(), request.password(), sourceKey));

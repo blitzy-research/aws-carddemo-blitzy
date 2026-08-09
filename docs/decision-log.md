@@ -11152,6 +11152,235 @@ declaration order, passing together.
 
 ---
 
+### DL-282 — A forwarded header may set the caller address only from a proxy the deployment names, because the abuse governor counts by it
+
+The sign-on governor keeps two allowances. One is per identity and catches a run of secrets driven at a
+single identifier. The other is per **caller address**, and it is the only one that can catch an
+enumeration sweep: a sweep never repeats an identifier, so the per-identity allowance never accumulates.
+The caller address is therefore a security-relevant input, and the boundary reads it from the servlet
+request rather than from any header for exactly that reason.
+
+**That was not sufficient, and the reason is a setting rather than a line of code.** The production
+profile selected `server.forward-headers-strategy: framework`, which registers a filter that rewrites the
+request's own address from `X-Forwarded-For` or `Forwarded` **unconditionally** — the value the caller
+sends becomes the value `getRemoteAddr()` returns. Transport security terminates in this process, so a
+client can reach it directly, and a direct client that rotates one header value per attempt presents every
+attempt as a new source. Combined with one fresh identifier per attempt, *neither* allowance ever
+accumulates: the sweep runs unbounded while both protections read as configured. The controller cannot
+detect this, because by the time it runs there is nothing left to distinguish a rewritten address from a
+real one.
+
+**The resolution: the trusted-proxy-aware form of the same feature.** Production now selects
+`server.forward-headers-strategy: native`, which uses the container's own remote-address valve. That valve
+consults the **immediate peer** before it believes anything: a peer matching the configured allow-list may
+speak for a client, and a peer that does not is treated as the client itself and its headers are ignored
+for address attribution. Behind a named balancer, per-client attribution and generated URLs work exactly as
+they did; reached directly, a forwarded header is inert.
+
+Three properties of the resolution are load-bearing.
+
+- *Withdrawing forwarded-header support was rejected.* It would have satisfied the security requirement and
+  introduced an availability defect: behind a balancer every request arrives from the balancer's address, so
+  ignoring its headers collapses every client into one source subject and one abusive client spends the
+  allowance for everyone behind it. The trusted-peer specification exists to fail if this is ever done.
+- *The allow-list defaults to loopback only, and that default is fail-closed rather than convenient.* The
+  framework's own default is a broad private-range pattern, which would trust a forwarded header from
+  anything inside a private network — including, in a deployment behind NAT or a service mesh, from ordinary
+  clients. The narrower default means a deployment that terminates TLS at a balancer **must** name that
+  balancer's range in `CARDDEMO_TRUSTED_PROXIES`. Until it does, every request is attributed to the
+  balancer: sign-on stays correct and stays protected, but the source allowance is shared by everyone behind
+  it. That trade-off is stated in the profile's own commentary rather than left to be discovered, and it is
+  the safe direction of the two — a shared allowance degrades availability for one *misconfigured*
+  deployment, whereas a caller-chosen key removes the protection for *every* deployment.
+- *The allow-list carries a default while every secret in that profile still carries none.* A proxy range is
+  not a credential; defaulting it does not put a usable secret in the repository, and the guard that refuses
+  to start on an unsupplied secret is unaffected because it watches bare references only. This is a
+  deliberate, narrow exception to the no-fallback rule and is the reason it is written down here.
+
+**Why the proof needed a bound port.** The difference between the two strategies is invisible to a unit
+test, to the controller and to a mock servlet environment: all three see whatever address they are handed.
+It is observable only over a real connection to a real container, and only through a value that varies with
+the address. Both specifications therefore drive the published sign-on screen and read the message it
+answers with, because the governor's whole observable effect on a caller is that a further attempt is
+refused *without a credential read*: an unknown identifier answers the not-found text while its allowance
+holds and the cannot-verify text once the allowance is spent. Every attempt uses a different unknown
+identifier, so each identity allowance stays at one failure and the source allowance is the only thing that
+can change the answer.
+
+*Verified by:* `api.SignOnSourceAttributionUntrustedProxyIT`, in which three attempts from the peer — each
+claiming a different forwarded client and each naming a different unknown identifier — spend the allowance,
+and a fourth attempt claiming a fourth forwarded client, plus a fifth sending no forwarded header at all,
+are both refused; `api.SignOnSourceAttributionTrustedProxyIT`, in which the peer *is* named and two
+different forwarded clients are counted separately while the exhausted one stays refused; and
+`config.ConfigurationProfileBaselineTest`, which holds the shipped production document to both halves of the
+mechanism — the strategy and the allow-list — so the document and the runtime proof cannot drift apart.
+
+*Embodied in:* `src/main/resources/application-prod.yml` and the source-attribution comment in
+`src/main/java/com/carddemo/api/AuthController.java`.
+
+---
+
+### DL-283 — The unwired-paragraph marker covers sixteen rows across four members, not six in one, and the split is asserted per member
+
+The traceability matrix marks a row `¶` when the paragraph is translated, its Java method exists, and **no
+delivered call site reaches it**. The marker exists because a covering test cannot reach such a method by
+driving an entry point, so the row carries an extra obligation: its test must name the method, and for a
+paragraph head must actually call it.
+
+**The marker was declared for six rows and the property held for sixteen.** The six were the account-update
+member's three character-class edits and their exits. Ten further rows had exactly the same property and no
+marker, and a census of every `PERFORM` and every Java call site in their own classes is what found them:
+
+| Member | Rows | Paragraphs |
+| --- | :-: | --- |
+| `COACTVWC` | 2 | `SEND-LONG-TEXT` at 896 and its exit at 907. Its three would-be call sites, at 768, 818 and 867, are commented out in the member, as is the statement that would have filled the field it transmits. |
+| `COCRDLIC` | 4 | `SEND-PLAIN-TEXT` at 1422 and `SEND-LONG-TEXT` at 1441 with their exits. The member's own comments at 1420 and at 1438 to 1439 mark both as diagnostic and not for production use. |
+| `COCRDSLC` | 4 | `9150-GETCARD-BYACCT` at 779 and its exit at 810 — the account-keyed read over the non-unique alternate index, which the read driver at 726 does not perform — and `SEND-LONG-TEXT` at 820 with its exit at 831. |
+
+Each of those decisions was already recorded on the Java method itself, in the words of the member that
+declares the paragraph. What was missing was the marker, and therefore the obligation: the ten rows named
+covering tests that **called their heads but named none of their exits**, so a reader following an exit row
+arrived at a suite that never mentioned it. Marking them is what turns the decision into a checked claim.
+
+**Two rows in each pair remain deliberately different, and this is the part that is easy to get wrong.** A
+head must be *invoked* by its covering test; an exit must only be *named* by it. An exit paragraph is the
+`EXIT.` statement of its range and is reachable only from the head above it, which calls it on every arm, so
+proving the arms proves the exit. Adding an invocation of an empty terminator would be the suite calling a
+method it had chosen to expose rather than evidence about the delivered code — fabricated coverage, which is
+the opposite of what the marker is for.
+
+**Why the per-member split is asserted and not just the total.** A total of sixteen is satisfied by any
+distribution of sixteen rows. The defect being closed here was precisely a distribution error — the marker
+believed to belong to one member while three others carried it — so the gate holds the population to the
+exact per-member figures above. Wiring one of these paragraphs in, dropping one, or discovering a further
+one fails the gate and is re-decided here, rather than silently changing the marker distribution. The three
+sibling rows that are *not* marked make the same point from the other side: the plain-text senders in the
+account-view and card-detail members **are** performed, and marking them would be as wrong as leaving their
+long-text siblings unmarked.
+
+*Verified by:* `e2e.GateVerificationTest`, which asserts the marker total, the per-member split, that every
+`¶` row's covering test names its method, and that every head is actually invoked; and the four covering
+tests themselves — `service.AccountUpdateServiceTest`, `service.AccountViewServiceTest`,
+`service.CardListServiceTest` and `service.CardDetailServiceTest`.
+
+*Embodied in:* `docs/traceability-matrix.md` — the sixteen marked rows, the legend, the arithmetic
+`1 + 3 + 18 + 16 + 506 = 544`, the per-member table in *Why the unwired-paragraph marker exists*, and the
+per-member notes in the four member sections — and `carddemo-java/README.md`, whose Gate 8 narrative states
+the same arithmetic.
+
+---
+
+### DL-284 — A scoped test run writes its coverage evidence somewhere else, so the canonical report always means a full run
+
+The `scoped-tests` profile exists so that one test class can be run without the whole-module coverage floor
+failing for a reason unrelated to it. It relaxes the line-coverage minimum to zero and lifts the
+wholly-untested-classes limit, which is correct: a subset of the suite cannot reach a floor defined over the
+module.
+
+**The relaxation was safe; where it wrote was not.** The coverage agent's unit destination was already
+overridable, for the locale determinism gate, but the integration destination, the merged destination and all
+three report directories were literals. A scoped run reaches `verify`, so it produced its own
+`jacoco-it.exec`, its own `jacoco-merged.exec` and all three reports **over the canonical paths**. What it
+left at `target/site/jacoco-merged` was then a report of a fraction of the suite, produced under relaxed
+thresholds, sitting at exactly the path gate evidence is read from — and nothing about the artefact said
+which run produced it. A reviewer, or an evidence page, quoting that report would have quoted a scoped
+figure as the gate figure with no way to notice.
+
+**The fix routes every destination through two roots.** `jacoco.exec.dir` and `jacoco.report.root` default to
+the build directory and the reporting directory, so an ordinary build is byte-for-byte unchanged; the profile
+redirects both to `target/scoped` and `target/scoped-site`, and all five artefacts follow. The canonical exec
+files and the canonical `target/site/jacoco*` reports are consequently reserved for an unscoped
+`./mvnw -B clean verify`, and no other invocation can occupy them.
+
+**Two properties of the fix are load-bearing.** The merge step still includes the two fixed file *names*
+within whichever directory the root resolves to, unchanged, because the locale determinism gate overrides the
+unit destination to a *different name in the same directory* specifically so its execution stays out of the
+coverage figure. And the alternative of switching the agent off for scoped runs with `-Djacoco.skip` was
+rejected for the same reason it was rejected for the locale gate: a flag that disables a gate mechanism is
+indistinguishable, in a log, from a gate that was never wired.
+
+**What this obliges of anyone quoting a coverage figure.** The report and the command that produced it are
+one artefact. A figure offered as gate evidence carries its provenance — the exact command, the date, which
+suites ran, and which report directory it was read from — because the same file name means different things
+depending on which suites ran. Selecting a subset means selecting a tier: `-Dtest=` selects unit classes and
+`-Dit.test=` selects integration classes, and a run that names one leaves the other's counters absent rather
+than zero.
+
+*Verified by:* property resolution on the shipped manifest — the default build resolves
+`target/site/jacoco-merged` and `target/jacoco-it.exec`, and `-Pscoped-tests` resolves
+`target/scoped-site/jacoco-merged` and `target/scoped/jacoco-it.exec` — and by the continuous integration
+workflow, which uploads the canonical paths and never activates the profile.
+
+*Embodied in:* `carddemo-java/pom.xml`, the coverage-evidence section of `docs/traceability-matrix.md`, and
+the Gate 7 evidence artefact in `docs/gate-evidence.md`.
+
+---
+
+### DL-285 — The customer rewrite is a compare-and-set over the whole before-image, because the record carries no version and the legacy compared the record itself
+
+`Account` and `Card` carry a provider-managed `@Version`; `Customer` carries none, and that is the plan's
+assignment rather than an omission — the legacy customer record has no such field, and inventing one would
+add a column the layout does not have. `DL-075` records that division for the sealed token; this entry
+records what the customer *write* does about it, which the token does not cover.
+
+**The window the version column would have covered, and what covers it here.** The account-update program
+holds both records for update, compares each freshly held record against the image it carried, and only then
+rewrites them — `9700-CHECK-CHANGE-IN-REC` at legacy lines 4109 to 4192, immediately before the two rewrites
+in `9600-WRITE-PROCESSING` at 3888 to 4103. Two different windows are involved and neither check replaces the
+other. The token, minted when the screen was presented and verified on confirmation, covers *screen to
+confirm*. The provider's version check covers *hold to flush*, and the account rewrite gets it for free.
+The customer rewrite gets nothing for free, because there is no version attribute to check: a repository
+`save` merges by identifier and would silently overwrite a customer-only change committed after the token was
+verified — inside the very interval the legacy comparison exists to catch.
+
+**So the predicate is the record.** `CustomerRepository.compareAndSet(before, after)` issues one JPQL update
+whose `WHERE` clause names the key and **every one of the seventeen compared columns** at its held value, and
+returns the affected-row count. One means the row still matched and was rewritten; zero means it moved, and
+`AccountUpdateService` turns that zero into `CustomerRecordChangedException`, which rolls the already-flushed
+account rewrite back inside the same transaction and returns the legacy data-changed message. That is the
+faithful reading: the legacy compares the record, so the target compares the record. A synthetic version
+column would have been the idiomatic answer and the wrong one.
+
+**Four properties of the implementation are load-bearing.**
+
+- **The key may not change.** The default method refuses a replacement carrying a different identifier before
+  any statement is issued, because the source rewrites the record addressed by the key it read and never
+  moves a new key into it.
+- **One column is nullable, and its predicate says so.** The national identifier is the only nullable column
+  in the comparison, so its arm is written `(customer.custSsn = :oldCustSsn OR (customer.custSsn IS NULL AND
+  :oldCustSsn IS NULL))`. Plain equality would have made every held-null image match nothing and turned an
+  unchanged row into a phantom conflict. Every other compared column is not-null in the shipped schema and
+  uses ordinary equality.
+- **The write flushes before and clears after.** `flushAutomatically = true` guarantees the account work
+  already done in this transaction reaches the provider before this statement executes;
+  `clearAutomatically = true` prevents the managed customer read earlier in the turn from being auto-flushed
+  over the compare-and-set result. Without the clear, the stale managed copy would win and the whole check
+  would be decorative.
+- **Nothing is assembled or reflected.** The public method is a readable façade over a fully parameterised
+  query. There is no string concatenation, no expression-language property access, no native SQL and no
+  reflection, so the module-wide audit counts stay at zero and the thirty-five parameters are the price of
+  that — deliberately paid rather than avoided with a dynamic predicate.
+
+**Why this is not the improvement `DL-012` describes.** That entry records read-committed isolation plus a
+version check as strictly stronger than the legacy's uncommitted-read, no-recovery baseline. This mechanism is
+the *same* strength as the legacy's, deliberately: a whole-record before-image comparison is what the program
+does, and the target reproduces it rather than substituting something stronger that would reject interleavings
+the legacy accepted.
+
+*Verified by:* `repository.CustomerRepositoryIT.TheCompareAndSet`, which goes through the real repository
+proxy against the migrated schema — a matching row is rewritten exactly once with the absent national
+identifier participating in the comparison, a row that moved is left alone and reports zero, and a
+replacement carrying a different key is refused before any statement is issued; and
+`service.AccountUpdateServiceTest`, which pins the service's use of it — the customer rewrite is ordered after
+the account rewrite, a zero return rolls the account rewrite back and shows the detail again with the legacy
+data-changed message rather than reporting a failure, and the rewrite is not attempted at all on the arms that
+leave the write range earlier.
+
+*Embodied in:* `src/main/java/com/carddemo/repository/CustomerRepository.java` and the write range of
+`src/main/java/com/carddemo/service/AccountUpdateService.java`.
+
+---
+
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
 drift between the files that depend on it.*

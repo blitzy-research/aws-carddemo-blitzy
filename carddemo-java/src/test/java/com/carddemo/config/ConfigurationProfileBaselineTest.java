@@ -252,6 +252,26 @@ final class ConfigurationProfileBaselineTest {
     /** The transport requirement. */
     private static final String KEY_REQUIRE_HTTPS = "carddemo.security.require-https";
 
+    /** How, and whether, a forwarded address is allowed to replace the connection's own. */
+    private static final String KEY_FORWARD_HEADERS_STRATEGY = "server.forward-headers-strategy";
+
+    /** The peers a forwarded address is believed from. */
+    private static final String KEY_TRUSTED_PROXIES = "server.tomcat.remoteip.internal-proxies";
+
+    /**
+     * The only strategy that consults the peer before believing a forwarded address.
+     *
+     * <p>The alternative rewrites unconditionally, which is what let a caller choose the address the
+     * sign-on abuse governor counts it by.
+     */
+    private static final String TRUSTED_PROXY_AWARE_STRATEGY = "native";
+
+    /** The variable through which a deployment names its own proxies. */
+    private static final String TRUSTED_PROXIES_VARIABLE = "CARDDEMO_TRUSTED_PROXIES";
+
+    /** The fail-closed default: the loopback address, escaped as the pattern it is matched as. */
+    private static final String LOOPBACK_ADDRESS_PATTERN = "127\\.0\\.0\\.1";
+
     /** Whether the metrics scrape endpoint answers a collector that presents no credential. */
     private static final String KEY_ANONYMOUS_SCRAPE = "carddemo.security.anonymous-metrics-scrape";
 
@@ -939,6 +959,53 @@ final class ConfigurationProfileBaselineTest {
             assertThat(text(PRODUCTION, "server.error.include-message")).isEqualTo("never");
             assertThat(text(PRODUCTION, "server.error.include-binding-errors")).isEqualTo("never");
             assertThat(text(PRODUCTION, "server.error.include-stacktrace")).isEqualTo("never");
+        }
+
+        /**
+         * Forwarded headers are honoured only from a peer this deployment names.
+         *
+         * <p><strong>Why this is a security assertion and not a configuration detail.</strong> The
+         * sign-on abuse governor's second subject is the caller address, and it is the only subject that
+         * catches an enumeration sweep - a sweep never repeats an identifier, so the per-identity
+         * allowance never accumulates. This profile previously selected the framework strategy, which
+         * rewrites the request's address from a caller-supplied header <em>whatever the peer</em>.
+         * Because transport security terminates in this process, a client can reach it directly, rotate
+         * that header and present every attempt as a new source. The native strategy is the
+         * trusted-proxy-aware form: the container honours the header only from a peer matching the
+         * allow-list, and otherwise leaves the connection's own address in place.
+         *
+         * <p>Both halves are asserted, because either alone is satisfiable by the wrong configuration.
+         * A strategy with no allow-list would trust the framework's broad private-range default; an
+         * allow-list under a strategy that rewrites unconditionally would be inert. The runtime
+         * behaviour is proved separately over a bound port by
+         * {@code api.SignOnSourceAttributionUntrustedProxyIT} and its trusted-peer companion; this
+         * assertion is what ties the shipped document to the mechanism those two exercise. Recorded as
+         * DL-282.
+         */
+        @Test
+        @DisplayName("honours forwarded headers only from a named proxy, so a caller cannot choose the "
+                + "address the sign-on abuse governor counts it by")
+        void honoursForwardedHeadersOnlyFromANamedProxy() {
+            assertThat(text(PRODUCTION, KEY_FORWARD_HEADERS_STRATEGY))
+                    .as("the framework strategy rewrites the request's address from a caller-supplied"
+                            + " header whatever the peer, which hands the abuse governor's source"
+                            + " subject to the abuser. Only the container's trusted-proxy-aware"
+                            + " strategy consults the peer first")
+                    .isEqualTo(TRUSTED_PROXY_AWARE_STRATEGY);
+
+            String allowList = text(PRODUCTION, KEY_TRUSTED_PROXIES);
+            assertThat(allowList)
+                    .as("the strategy is only as good as its allow-list, and an absent one would leave"
+                            + " the framework's own broad private-range default in force")
+                    .isNotNull()
+                    .contains(TRUSTED_PROXIES_VARIABLE);
+            assertThat(allowList)
+                    .as("the allow-list is not a secret, so it carries a default - but a fail-closed"
+                            + " one. Loopback alone means that until a deployment names its balancer,"
+                            + " a forwarded header is ignored rather than believed. The trade-off - a"
+                            + " shared allowance behind an unnamed balancer - is recorded in the"
+                            + " document and in DL-282")
+                    .contains(LOOPBACK_ADDRESS_PATTERN);
         }
     }
 

@@ -519,6 +519,33 @@ spring:
 # client actually used, and would attribute every request to the balancer's address rather than to the
 # caller. With it, generated URLs and client-address resolution both follow the forwarded headers.
 #
+# FORWARDED HEADERS ARE HONOURED ONLY FROM A PROXY THIS DEPLOYMENT NAMES, AND THAT IS A SECURITY
+# REQUIREMENT RATHER THAN A REFINEMENT. This profile previously selected the framework strategy, which
+# rewrites the request from X-Forwarded-* and Forwarded UNCONDITIONALLY - the caller's own headers
+# decide what the application believes the caller's address to be. That is harmless for building a URL
+# and is not harmless for anything that COUNTS by address: the sign-on abuse governor's second subject
+# is the caller address, and a counter keyed on a value the abuser chooses is no counter at all. A
+# client reaching this process directly - which it can, because TLS terminates HERE - could rotate one
+# header and present every attempt as a new source, defeating the cross-identity enumeration sweep
+# while the per-identity allowance carried on unnoticed.
+#
+# The native strategy is the trusted-proxy-aware form of the same feature: the container honours the
+# forwarded headers only when the IMMEDIATE PEER matches the allow-list below, and otherwise leaves the
+# peer address exactly as the connection reports it. Behind a named balancer, per-client attribution and
+# URL generation both work as before; reached directly, a forwarded header is ignored. See
+# docs/decision-log.md DL-282.
+#
+# THE ALLOW-LIST DEFAULTS TO LOOPBACK ONLY, WHICH IS A DELIBERATE FAIL-CLOSED DEFAULT AND A DEPLOYMENT
+# CONTRACT. A deployment that terminates TLS at a balancer MUST set CARDDEMO_TRUSTED_PROXIES to that
+# balancer's address range, as a Java regular expression matching the peer address. Until it does, every
+# request is attributed to the balancer rather than to the client: sign-on stays correct and stays
+# protected, but the source-namespace allowance is then shared by everyone behind that balancer, so one
+# abusive client can exhaust it for all of them. That is the safe failure of the two - a shared
+# allowance degrades availability for a MISCONFIGURED deployment, whereas a caller-chosen key removes
+# the protection for EVERY deployment - and it is stated here so the choice is not discovered in
+# production. It is not a secret and therefore does carry a default; every SECRET in this file still
+# carries none.
+#
 # THE BOUNDARY OF THIS FILE'S AUTHORITY, STATED EXPLICITLY. What is configured here is the
 # APPLICATION-SIDE SURFACE and nothing beyond it. No certificate is issued, requested or bundled, no
 # key store is generated, no ingress or listener is defined, and no infrastructure resource of any
@@ -550,7 +577,14 @@ server:
     key-store-password: ${CARDDEMO_TLS_KEYSTORE_PASSWORD}
     key-store-type: ${CARDDEMO_TLS_KEYSTORE_TYPE}
     key-alias: ${CARDDEMO_TLS_KEY_ALIAS}
-  forward-headers-strategy: framework
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      # A Java regular expression matched against the IMMEDIATE PEER address. A peer that matches may
+      # supply the client address and protocol through the forwarded headers; a peer that does not is
+      # itself the client, and its headers are ignored rather than trusted. Loopback only by default,
+      # for the reason set out above; name the balancer's range here through the environment.
+      internal-proxies: ${CARDDEMO_TRUSTED_PROXIES:127\.0\.0\.1|0:0:0:0:0:0:0:1|::1}
   servlet:
     session:
       cookie:

@@ -1044,6 +1044,20 @@ class CardDetailServiceTest {
     // seam; driving it through a turn is impossible by design.
     // ==============================================================================================
 
+    /**
+     * The account-keyed read and its terminator, neither of which any delivered call site reaches.
+     *
+     * <p>Two matrix rows are discharged here: {@code 9150-GETCARD-BYACCT} at source line 779, through the
+     * named calls to {@code getCardByAcct} below, and {@code 9150-GETCARD-BYACCT-EXIT} at 810, through
+     * {@code getCardByAcctExit}, which the head calls on every one of its arms - the found arm, the
+     * not-found arm and the catch-all. Proving the arms therefore proves the terminator with them, which
+     * is why it carries no call of its own: it is the {@code EXIT.} statement of the range and is
+     * reachable only from the head above it.
+     *
+     * <p>The seam is ordinary package access, never reflection: the production tree is held to a
+     * reflection count of zero, and a reflective call would prove nothing about a call the delivered
+     * driver could make.
+     */
     @Nested
     @DisplayName("the account-keyed read - alternate index CARDAIX, unreachable from any PERFORM")
     class AccountKeyedRead {
@@ -1132,6 +1146,11 @@ class CardDetailServiceTest {
         @DisplayName("SEND-LONG-TEXT 820: the plain send carries no transaction identifier, so it "
                 + "re-arms nothing")
         void theLongTextSendReArmsNothing() {
+            // Two further matrix rows are discharged by this call: SEND-LONG-TEXT at 820 through
+            // sendLongText, and SEND-LONG-TEXT-EXIT at 831 through sendLongTextExit, which this method
+            // calls on its only arm. Like every other terminator in this member the exit carries no call
+            // of its own, because it is the EXIT. statement of the range and is reachable only from the
+            // head above it.
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
 
             service.sendLongText(state, MSG_UNEXPECTED_DATA_SCENARIO);

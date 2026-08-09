@@ -41,6 +41,7 @@ import com.carddemo.service.PostingRecordTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.IsolatedStagingRoot;
+import com.carddemo.util.ExternalStringSorter;
 
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.sns.core.SnsOperations;
@@ -227,6 +228,17 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
 
     /** Identifier deliberately shared by both origins in the stability scenario. */
     private static final String SHARED_TRANSACTION_ID = "9880000000000002";
+
+    /**
+     * Prefix of every synthetic identifier minted for the spill-scale and generation-resolution cases.
+     *
+     * <p>Distinct from the two reserved identifiers above, so a synthetic record can never collide with
+     * the posted fixture or with the two-record equal-key fixture.
+     */
+    private static final String SYNTHETIC_IDENTIFIER_PREFIX = "9884";
+
+    /** First key ordinal the synthetic streams use, leaving the lower ordinals unassigned. */
+    private static final long SYNTHETIC_KEY_ORIGIN = 1000L;
 
     /** Seeded card whose account is open and unexpired at the fixed business date. */
     private static final String SEEDED_CARD_NUMBER = "0500024453765740";
@@ -630,6 +642,253 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
                         "protected static final Comparator<Transaction> TRAN_ID_ASCENDING",
                         "Long.parseLong",
                         "BigInteger");
+    }
+
+    @Test
+    @Order(5)
+    @DisplayName("a configured name with no exact staged file resolves to the highest local generation "
+            + "of that base, through the real generation store and the real trust check")
+    void aConfiguredBaseResolvesToItsHighestLocalGeneration() throws Exception {
+        restoreSeededState();
+        clearStagingDirectory();
+        final String supersededImage = render(syntheticRecord(
+                syntheticIdentifier(1L), "SUPERSEDED GENERATION", new BigDecimal("11.11")));
+        final String currentFirstImage = render(syntheticRecord(
+                syntheticIdentifier(2L), "CURRENT GENERATION FIRST", new BigDecimal("22.22")));
+        final String currentSecondImage = render(syntheticRecord(
+                syntheticIdentifier(3L), "CURRENT GENERATION SECOND", new BigDecimal("33.33")));
+        final String synthesizedImage = render(syntheticRecord(
+                syntheticIdentifier(4L), "EXACT STAGED NAME", new BigDecimal("44.44")));
+
+        // No file is written under the configured name itself, so the exact-name rung has nothing to
+        // find and resolution has to reach the generation scan. Two generations are staged so that
+        // "current" is a choice rather than the only candidate.
+        writeLocalGeneration(BACKUP_DATASET, 2L, List.of(supersededImage));
+        writeLocalGeneration(BACKUP_DATASET, 5L, List.of(currentFirstImage, currentSecondImage));
+        writeFixedUnblockedDataset(SYNTHESIZED_DATASET, List.of(synthesizedImage));
+        assertThat(stagingPath(BACKUP_DATASET))
+                .as("the exact configured name must be absent, or the generation scan is never reached")
+                .doesNotExist();
+
+        this.transactionRepository.deleteAllInBatch();
+        final JobExecution execution = launchByName(
+                CombineTransactionsJobConfig.JOB_NAME, new JobParameters());
+
+        assertCompletedCombineExecution(execution, 3L);
+        final List<String> loaded = this.transactionRepository
+                .findAll(Sort.by(Sort.Direction.ASC, "tranId")).stream()
+                .map(RecordValues::from)
+                .map(CombineTransactionsJobConfigIT::render)
+                .toList();
+        assertThat(loaded)
+                .as("the current generation of the base is read, the superseded one is not, and the"
+                        + " second input still resolves by its exact staged name")
+                .containsExactly(currentFirstImage, currentSecondImage, synthesizedImage);
+        assertThat(loaded)
+                .as("a generation the store has superseded contributes no record")
+                .doesNotContain(supersededImage);
+
+        final Path combinedGeneration = StagedGenerationStore.generationPath(stagingDirectory(),
+                CombineTransactionsJobConfig.COMBINED_DATASET_BASE, execution.getId());
+        assertThat(combinedRecordImages(
+                Files.readString(combinedGeneration, StandardCharsets.US_ASCII), 3))
+                .as("the sealed generation carries the same three records in ascending identifier order")
+                .containsExactly(currentFirstImage, currentSecondImage, synthesizedImage);
+    }
+
+    @Test
+    @Order(6)
+    @DisplayName("equal identifiers keep backup-first order when the ordering pass spills into several "
+            + "runs and merges them, not only when both records fit inside one run")
+    void equalIdentifiersRetainConcatenationOrderAcrossSpilledRuns() throws Exception {
+        restoreSeededState();
+        clearStagingDirectory();
+        final int runSize = ExternalStringSorter.DEFAULT_RECORDS_PER_RUN;
+        // Sized so that the concatenation spills into three runs and one merge draws from all three:
+        // the backup stream alone exceeds one run, and the synthesized stream both completes the second
+        // run and opens the third.
+        final int backupRecords = runSize + 88;
+        final int synthesizedRecords = runSize - 12;
+        final int totalRecords = backupRecords + synthesizedRecords;
+        assertThat((totalRecords + runSize - 1) / runSize)
+                .as("the ordering pass must spill into three runs for this case to mean anything")
+                .isEqualTo(3);
+
+        // The shared identifier is low in the key range but late in the second stream, which is the
+        // combination that puts the two equal records in the first and the third run. A merge that
+        // ignored which run a head came from could therefore serve them in either order.
+        final int backupPositionOfSharedKey = 5;
+        final int synthesizedPositionOfSharedKey = synthesizedRecords - 50;
+        assertThat(backupRecords + synthesizedPositionOfSharedKey)
+                .as("the second copy of the shared identifier must be added after the second run closes")
+                .isGreaterThanOrEqualTo(2 * runSize);
+        final String sharedIdentifier =
+                syntheticIdentifier(backupKeyOrdinal(backupPositionOfSharedKey));
+
+        final List<String> backupImages = new ArrayList<>(backupRecords);
+        for (int position = 0; position < backupRecords; position++) {
+            backupImages.add(render(syntheticRecord(
+                    syntheticIdentifier(backupKeyOrdinal(position)),
+                    "BACKUP ORIGIN " + position, new BigDecimal("12.34"))));
+        }
+        final List<String> synthesizedImages = new ArrayList<>(synthesizedRecords);
+        for (int position = 0; position < synthesizedRecords; position++) {
+            final String identifier = position == synthesizedPositionOfSharedKey
+                    ? sharedIdentifier
+                    : syntheticIdentifier(synthesizedKeyOrdinal(position));
+            synthesizedImages.add(render(syntheticRecord(
+                    identifier, "SYNTHESIZED ORIGIN " + position, new BigDecimal("-5.67"))));
+        }
+        final String backupCopyOfSharedKey = backupImages.get(backupPositionOfSharedKey);
+        final String synthesizedCopyOfSharedKey =
+                synthesizedImages.get(synthesizedPositionOfSharedKey);
+        assertThat(slice(backupCopyOfSharedKey, IDENTIFIER)).isEqualTo(sharedIdentifier);
+        assertThat(slice(synthesizedCopyOfSharedKey, IDENTIFIER)).isEqualTo(sharedIdentifier);
+        assertThat(synthesizedCopyOfSharedKey)
+                .as("the two equal-key records must be distinguishable by content")
+                .isNotEqualTo(backupCopyOfSharedKey);
+
+        writeFixedUnblockedDataset(BACKUP_DATASET, backupImages);
+        writeFixedUnblockedDataset(SYNTHESIZED_DATASET, synthesizedImages);
+        assertFixedUnblockedDataset(stagingPath(BACKUP_DATASET), backupRecords);
+        assertFixedUnblockedDataset(stagingPath(SYNTHESIZED_DATASET), synthesizedRecords);
+        this.transactionRepository.deleteAllInBatch();
+
+        final JobExecution execution = launchByName(
+                CombineTransactionsJobConfig.JOB_NAME, new JobParameters());
+
+        assertThat(execution.getStatus())
+                .as("the ordering pass completes over every run; the second insert of one business key"
+                        + " is what fails")
+                .isEqualTo(BatchStatus.FAILED);
+        assertThat(execution.getStepExecutions())
+                .extracting(StepExecution::getStepName, StepExecution::getStatus)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                CombineTransactionsJobConfig.ORDER_STEP_NAME,
+                                BatchStatus.COMPLETED),
+                        org.assertj.core.groups.Tuple.tuple(
+                                CombineTransactionsJobConfig.LOAD_STEP_NAME,
+                                BatchStatus.FAILED));
+
+        // Every identifier below the shared one, then the shared one once: the count is what the
+        // ordering established, because record-at-a-time loading commits in generation order and stops
+        // at the first refusal.
+        final long lowerIdentifiers = backupPositionOfSharedKey + synthesizedRecordsBelow(
+                sharedIdentifier, synthesizedImages, synthesizedPositionOfSharedKey);
+        assertThat(this.transactionRepository.count())
+                .as("the committed prefix is every lower identifier followed by the shared one, which"
+                        + " pins where the ordering placed the equal-key group")
+                .isEqualTo(lowerIdentifiers + 1L);
+
+        final Transaction retained = this.transactionRepository.findById(sharedIdentifier)
+                .orElseThrow(() -> new AssertionError(
+                        "no record was retained under the shared identifier " + sharedIdentifier));
+        assertThat(render(RecordValues.from(retained)))
+                .as("the backup copy is the survivor, so the record added in the first run still"
+                        + " precedes the equal-key record added in the third")
+                .isEqualTo(backupCopyOfSharedKey);
+        assertThat(render(RecordValues.from(retained)))
+                .isNotEqualTo(synthesizedCopyOfSharedKey);
+        assertStoredAmountContract(retained.getTranAmt());
+
+        assertThat(StagedGenerationStore.generationPath(stagingDirectory(),
+                CombineTransactionsJobConfig.COMBINED_DATASET_BASE, execution.getId()))
+                .as("a failed submission leaves no local generation behind (DL-211)")
+                .doesNotExist();
+    }
+
+    /**
+     * Counts the records of the second stream whose identifier sorts below the shared one.
+     *
+     * @param  sharedIdentifier   the identifier both streams carry
+     * @param  synthesizedImages  the second stream, in stream order
+     * @param  sharedPosition     the position the shared identifier occupies in that stream
+     * @return the number of second-stream records the ordering places before the shared group
+     */
+    private static long synthesizedRecordsBelow(final String sharedIdentifier,
+            final List<String> synthesizedImages, final int sharedPosition) {
+        long below = 0L;
+        for (int position = 0; position < synthesizedImages.size(); position++) {
+            if (position != sharedPosition
+                    && slice(synthesizedImages.get(position), IDENTIFIER)
+                            .compareTo(sharedIdentifier) < 0) {
+                below++;
+            }
+        }
+        return below;
+    }
+
+    /** The key ordinal of one first-stream position: the even ordinals, so the streams interleave. */
+    private static long backupKeyOrdinal(final int position) {
+        return SYNTHETIC_KEY_ORIGIN + 2L * position;
+    }
+
+    /** The key ordinal of one second-stream position: the odd ordinals. */
+    private static long synthesizedKeyOrdinal(final int position) {
+        return SYNTHETIC_KEY_ORIGIN + 2L * position + 1L;
+    }
+
+    /**
+     * Renders a synthetic transaction identifier at the layout's sixteen digits.
+     *
+     * <p>The prefix keeps every synthetic identifier clear of the two reserved ones this specification
+     * already uses, so a synthetic record can never collide with the posted or the equal-key fixture.
+     *
+     * @param  ordinal the identifier's ordinal within the synthetic range
+     * @return the identifier, sixteen digits
+     */
+    private static String syntheticIdentifier(final long ordinal) {
+        return String.format(Locale.ROOT, "%s%012d", SYNTHETIC_IDENTIFIER_PREFIX, ordinal);
+    }
+
+    /**
+     * Returns a complete synthetic record, distinguished only by identifier and description.
+     *
+     * @param  identifier  the sixteen-digit identifier
+     * @param  description the origin marker carried in the description field
+     * @param  amount      the signed amount, exercising the independent overpunch encoder
+     * @return complete record values, ready to render
+     */
+    private static RecordValues syntheticRecord(final String identifier, final String description,
+            final BigDecimal amount) {
+        return new RecordValues(
+                identifier,
+                "01",
+                "0001",
+                "POS TERM  ",
+                description,
+                amount,
+                "000123456",
+                "SPILL SCALE MERCHANT",
+                "SEATTLE",
+                "98101-0001",
+                SEEDED_CARD_NUMBER,
+                "2022-06-10 19:27:53.000000",
+                "2022-06-10-19.27.53.000000");
+    }
+
+    /**
+     * Writes one local generation of a logical base, named by the store rather than by this class.
+     *
+     * <p>The name is composed through {@link StagedGenerationStore#generationPath} so that a case cannot
+     * pass by agreeing with a spelling this specification invented: if the store's naming changed, this
+     * fixture would follow it and the resolution it exercises would still be the production one.
+     *
+     * @param  base       the logical generation base, which is also the configured location
+     * @param  generation the generation number
+     * @param  images     the record images the generation holds, in dataset order
+     * @throws IOException if the generation cannot be written
+     */
+    private static void writeLocalGeneration(final String base, final long generation,
+            final List<String> images) throws IOException {
+        Files.createDirectories(stagingDirectory());
+        final Path generationPath =
+                StagedGenerationStore.generationPath(stagingDirectory(), base, generation);
+        final Path generationName = Objects.requireNonNull(generationPath.getFileName(),
+                "a staged generation is always named");
+        writeFixedUnblockedDataset(generationName.toString(), images);
+        assertFixedUnblockedDataset(generationPath, images.size());
     }
 
     /**

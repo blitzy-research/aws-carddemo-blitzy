@@ -36,15 +36,25 @@ import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.DateValidationService;
+import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.TransactionRecordMapper;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
@@ -77,7 +87,11 @@ import org.springframework.batch.item.ItemStreamException;
 import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.file.FlatFileItemReader;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -253,6 +267,42 @@ class CombineTransactionsJobConfigTest {
         return record.getTranDesc().strip();
     }
 
+    /**
+     * Builds a stream-origin marker carrying its position within that stream.
+     *
+     * <p>The ordinal is fixed width so that the marker sorts and reads in ordinal order, which makes a
+     * failure diagnostic legible. It is a test device in the description field, exactly as the plain
+     * marker is: the layout has no origin field and no sequence field.
+     *
+     * @param  stream  the stream marker
+     * @param  ordinal the record's position within that stream
+     * @return the marker, at most the description field's width
+     */
+    private static String ordinalMarker(final String stream, final int ordinal) {
+        return stream + String.format(Locale.ROOT, "-%06d", ordinal);
+    }
+
+    /**
+     * Reports the first index at which two sequences differ, or {@code -1} when they are identical.
+     *
+     * <p>Used instead of an element-by-element assertion on a sixteen-thousand-element sequence, whose
+     * failure message would render both sequences in full and be unreadable. The index alone identifies
+     * where the order broke, which is what a reader needs.
+     *
+     * @param  expected the sequence expected
+     * @param  actual   the sequence produced
+     * @return the first differing index, or {@code -1}
+     */
+    private static int firstDifference(final List<String> expected, final List<String> actual) {
+        final int shared = Math.min(expected.size(), actual.size());
+        for (int index = 0; index < shared; index++) {
+            if (!expected.get(index).equals(actual.get(index))) {
+                return index;
+            }
+        }
+        return expected.size() == actual.size() ? -1 : shared;
+    }
+
     /** Drains a reader to exhaustion, so that a null terminator is proved rather than assumed. */
     private static List<Transaction> drain(final ItemStreamReader<Transaction> reader)
             throws Exception {
@@ -277,6 +327,153 @@ class CombineTransactionsJobConfigTest {
         return new CombineTransactionsJobConfig(readerFactory, resourceLoader, stagingArea,
                 generationStore, transactionRepository, STAGING_DIRECTORY, backup, synthesized)
                 .combineTransactionsOrderedReader();
+    }
+
+    /**
+     * Builds a configuration whose local staging root is the supplied directory rather than the shared
+     * temporary one.
+     *
+     * <p>Every case that exercises a local rung of the resolution ladder needs a root of its own, for
+     * two reasons that are both load-bearing. A local staged artefact is only accepted when it is a
+     * regular file this process owns inside a root nothing outside its owner can write to, and the
+     * shared temporary directory is world-writable on every host this suite runs on, so a case staged
+     * there would be refused for a reason the case is not about. And the current local generation of a
+     * base is whichever generation of it the root holds, so two cases sharing a root would see each
+     * other's generations.
+     *
+     * @param  stagingRoot  the local staging root this configuration resolves logical names against
+     * @param  backup       the first configured location
+     * @param  synthesized  the second configured location
+     * @return the ordered reader over the two resolved inputs
+     */
+    private ItemStreamReader<Transaction> orderedReaderStagedIn(final Path stagingRoot,
+            final String backup, final String synthesized) {
+        return new CombineTransactionsJobConfig(readerFactory, resourceLoader, stagingArea,
+                generationStore, transactionRepository, stagingRoot.toString(), backup, synthesized)
+                .combineTransactionsOrderedReader();
+    }
+
+    /**
+     * Renders records into a resource served from memory, standing for a durable staged object.
+     *
+     * <p>The durable rungs of the ladder hand back whatever the staging area returns for an object key,
+     * and what makes a case about the durable store rather than about a filesystem is that the resource
+     * it yields is not a file at all. Framing is identical to a staged object's: fixed-width images
+     * concatenated with no separator, exactly as {@link #dataset} writes them.
+     *
+     * @param  records the records the object holds, in object order
+     * @return the object's content as a readable resource
+     */
+    private static Resource durableObject(final List<Transaction> records) {
+        final StringBuilder images = new StringBuilder();
+        for (final Transaction record : records) {
+            final byte[] image = TransactionRecordMapper.toRecordBytes(record);
+            assertThat(image).as("every rendered record is exactly the layout's encoded width")
+                    .hasSize(RECORD_WIDTH);
+            images.append(new String(image, StandardCharsets.US_ASCII));
+        }
+        return new ByteArrayResource(images.toString().getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * Writes an empty dataset and returns its location, for the input a case is not examining.
+     *
+     * <p>Both inputs are resolved when the reader is built and both are read when it is opened, so a
+     * case about one input still has to give the other something that resolves and opens. An empty
+     * dataset contributes no record and therefore cannot be mistaken for the input under examination.
+     *
+     * @param  directory the directory to write into
+     * @return the neutral input's location, as a file URI
+     * @throws IOException if the dataset cannot be written
+     */
+    private static String neutralInput(final Path directory) throws IOException {
+        return dataset(directory, "neutral.txt", List.of());
+    }
+
+    /**
+     * Stages one record under a plain name in a root this process owns exclusively.
+     *
+     * @param  root   the staging root, which is left owner-only
+     * @param  name   the plain dataset name, which is also the configured location
+     * @param  record the single record the dataset holds
+     * @return the name, unchanged, for use as the configured location
+     * @throws IOException if the dataset cannot be written
+     */
+    private static String stagedUnder(final Path root, final String name, final Transaction record)
+            throws IOException {
+        dataset(root, name, List.of(record));
+        makeOwnerOnly(root);
+        makeOwnerOnly(root.resolve(name));
+        return name;
+    }
+
+    /**
+     * Stages one record as a named generation of a base, using the store's own naming.
+     *
+     * <p>The name is composed by {@link StagedGenerationStore#generationPath} rather than spelled here,
+     * so a case cannot pass by agreeing with a spelling this suite invented.
+     *
+     * @param  root       the staging root, which is left owner-only
+     * @param  base       the logical generation base
+     * @param  generation the generation number
+     * @param  record     the single record the generation holds
+     * @return the staged generation's path
+     * @throws IOException if the generation cannot be written
+     */
+    private static Path stagedGeneration(final Path root, final String base, final long generation,
+            final Transaction record) throws IOException {
+        final Path staged = StagedGenerationStore.generationPath(root, base, generation);
+        final Path name = staged.getFileName();
+        assertThat(name).as("a staged generation is always named").isNotNull();
+        dataset(root, name.toString(), List.of(record));
+        makeOwnerOnly(root);
+        makeOwnerOnly(staged);
+        return staged;
+    }
+
+    /**
+     * Withdraws every permission outside the owner's, which is what makes a staged artefact trustable.
+     *
+     * <p>Applied explicitly rather than relied upon: the permissions a newly created file carries are
+     * the process umask's, and a host whose umask grants the group write access would make every local
+     * rung of the ladder decline for a reason unrelated to the case. On a filesystem that carries no
+     * such permission set the trust check does not consult one either, so there is nothing to withdraw
+     * and nothing to fail.
+     *
+     * @param  path the file or directory to restrict
+     * @throws IOException if the permissions cannot be written
+     */
+    private static void makeOwnerOnly(final Path path) throws IOException {
+        try {
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(
+                    Files.isDirectory(path) ? "rwx------" : "rw-------"));
+        } catch (final UnsupportedOperationException noPosixPermissions) {
+            assertThat(noPosixPermissions).as("a filesystem without POSIX permissions is not asserted"
+                    + " against, because the trust check does not consult them there either")
+                    .isNotNull();
+        }
+    }
+
+    /** Reads this suite's origin markers out of a served sequence, in served order. */
+    private static List<String> markersOf(final List<Transaction> records) {
+        return records.stream().map(CombineTransactionsJobConfigTest::markerOf).toList();
+    }
+
+    /**
+     * Opens a reader, drains it to exhaustion and closes it, whatever the drain does.
+     *
+     * @param  reader the reader to exercise
+     * @return the markers of the records served, in served order
+     * @throws Exception if the reader fails to open or read
+     */
+    private static List<String> markersServedBy(final ItemStreamReader<Transaction> reader)
+            throws Exception {
+        reader.open(new ExecutionContext());
+        try {
+            return markersOf(drain(reader));
+        } finally {
+            reader.close();
+        }
     }
 
     /** A step execution detached from any repository, sufficient to drive a listener. */
@@ -535,6 +732,86 @@ class CombineTransactionsJobConfigTest {
             assertThat(markerOf(ordered.get(1))).isEqualTo(SYNTHESIZED_MARKER);
         }
 
+        /**
+         * The equal-key contract where it is actually decided: across spilled runs and merge levels.
+         *
+         * <p><strong>Why the small case above is not enough, stated precisely.</strong> Backup-before-
+         * synthesized order among equal identifiers is declared a byte-level contract, and it rests on two
+         * mechanisms: a stable in-memory sort within one run, and the run index as the tie-break when
+         * several runs are merged. A two-record or three-record case never spills, so it exercises the
+         * first mechanism and not the second - removing or reversing the run-index tie-break leaves every
+         * such case green while making the delivered order depend on the merge heap's internal
+         * arrangement, which is the definition of a byte-different output on identical input.
+         *
+         * <p>This case crosses both thresholds through the reader the job's ordering step actually uses.
+         * The record count exceeds the production run size, so runs are spilled; it exceeds the run size
+         * multiplied by the merge fan-in, so the runs cannot be merged in one pass and a second merge level
+         * is genuinely reached. <strong>Every record shares one identifier</strong>, so the comparator can
+         * distinguish none of them and the emitted order is entirely the tie-break's work. Each record
+         * carries its stream and its ordinal in the description field, so the emitted order is readable
+         * without inspecting anything the layout does not have.
+         *
+         * <p>The expectation is the whole concatenation in order: every backup record in the order the
+         * backup dataset holds them, then every synthesized record in the order the synthesized dataset
+         * holds them. The comparison reports the first position that differs rather than rendering two
+         * sixteen-thousand-element lists, because a diagnostic nobody can read is not a diagnostic.
+         *
+         * @param  directory the staging directory the two datasets are written into
+         * @throws Exception if a dataset cannot be written or the reader cannot be drained
+         */
+        @Test
+        @DisplayName("equal identifiers keep the concatenation order across the spill threshold AND the "
+                + "merge fan-in, which is where the tie-break rather than the sort decides it")
+        void equalIdentifiersKeepTheConcatenationOrderAcrossSpillAndFanIn(
+                @TempDir final Path directory) throws Exception {
+            // One more than the fan-in's worth of runs, so a single merge pass cannot serve it.
+            final int runsRequired = ExternalStringSorter.MAX_MERGE_FAN_IN + 1;
+            final int totalRecords = runsRequired * ExternalStringSorter.DEFAULT_RECORDS_PER_RUN;
+            final int perStream = totalRecords / 2;
+            final String shared = "0000000000000007";
+
+            final List<Transaction> backupRecords = new ArrayList<>(perStream);
+            final List<Transaction> synthesizedRecords = new ArrayList<>(perStream);
+            final List<String> expectedMarkers = new ArrayList<>(totalRecords);
+            for (int ordinal = 0; ordinal < perStream; ordinal++) {
+                backupRecords.add(record(shared, ordinalMarker(BACKUP_MARKER, ordinal)));
+                expectedMarkers.add(ordinalMarker(BACKUP_MARKER, ordinal));
+            }
+            for (int ordinal = 0; ordinal < perStream; ordinal++) {
+                synthesizedRecords.add(record(shared, ordinalMarker(SYNTHESIZED_MARKER, ordinal)));
+            }
+            for (int ordinal = 0; ordinal < perStream; ordinal++) {
+                expectedMarkers.add(ordinalMarker(SYNTHESIZED_MARKER, ordinal));
+            }
+
+            final String backup = dataset(directory, "backup-equal-keys.txt", backupRecords);
+            final String synthesized =
+                    dataset(directory, "synthesized-equal-keys.txt", synthesizedRecords);
+
+            final ItemStreamReader<Transaction> reader = orderedReaderOver(backup, synthesized);
+            reader.open(new ExecutionContext());
+            final List<Transaction> ordered = drain(reader);
+            reader.close();
+
+            final List<String> actualMarkers = ordered.stream().map(
+                    CombineTransactionsJobConfigTest::markerOf).collect(Collectors.toList());
+            assertThat(actualMarkers)
+                    .as("nothing is deduplicated, summed or dropped at any volume: %d records in, %d out",
+                            totalRecords, actualMarkers.size())
+                    .hasSize(totalRecords);
+            assertThat(firstDifference(expectedMarkers, actualMarkers))
+                    .as("the emitted order must be the concatenation order. The first differing "
+                            + "position is reported rather than both %d-element sequences; a difference "
+                            + "here means equal-key order is decided by the merge heap's internal "
+                            + "arrangement rather than by the run index, and the combined stream is "
+                            + "byte-different from one run to the next on identical input", totalRecords)
+                    .isEqualTo(-1);
+            assertThat(ordered)
+                    .as("and every record still carries the one shared identifier, so the comparator "
+                            + "genuinely decided none of the order above")
+                    .allSatisfy(served -> assertThat(served.getTranId()).isEqualTo(shared));
+        }
+
         @Test
         @DisplayName("nothing is deduplicated, summed or dropped: every record of both inputs reaches "
                 + "the output, because the legacy specification names no equal-key option")
@@ -681,6 +958,316 @@ class CombineTransactionsJobConfigTest {
 
             assertThatThrownBy(() -> reader.open(new ExecutionContext()))
                     .isInstanceOf(ItemStreamException.class);
+        }
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // The staged-input resolution ladder
+    // ----------------------------------------------------------------------------------------
+
+    /** The base both inputs default to is a legacy dataset name, so the cases below use one. */
+    private static final String LOGICAL_BASE = CombineTransactionsJobConfig.DEFAULT_BACKUP_DATASET_BASE;
+
+    /** Marker of a record served from an exact durable object key. */
+    private static final String DURABLE_EXACT = "DURABLE-EXACT";
+
+    /** Marker of a record served from the durable current generation of a base. */
+    private static final String DURABLE_CURRENT = "DURABLE-CURRENT";
+
+    /** Marker of a record served from a local staged dataset named exactly as configured. */
+    private static final String LOCAL_EXACT = "LOCAL-EXACT";
+
+    /** Marker of a record served from the current local generation of a base. */
+    private static final String LOCAL_CURRENT = "LOCAL-CURRENT";
+
+    /** Marker of a record served from an explicit resource location through the loader. */
+    private static final String EXPLICIT_LOCATION = "EXPLICIT-LOCATION";
+
+    @Nested
+    @DisplayName("a configured location is resolved down a fixed ladder, one rung at a time")
+    final class TheStagedInputResolutionLadder {
+
+        @Test
+        @DisplayName("a trailing current-generation suffix is stripped before any rung is tried, so the "
+                + "spelling the legacy job stream itself uses is accepted verbatim")
+        void aTrailingCurrentGenerationSuffixIsStrippedFirst(@TempDir final Path directory)
+                throws Exception {
+            final String asTheJobStreamWritesIt =
+                    LOGICAL_BASE + CombineTransactionsJobConfig.CURRENT_GENERATION_SUFFIX;
+            when(stagingArea.holds(LOGICAL_BASE)).thenReturn(true);
+            when(stagingArea.stagedInput(LOGICAL_BASE)).thenReturn(
+                    durableObject(List.of(record("0000000000000001", DURABLE_EXACT))));
+
+            final List<String> served = markersServedBy(orderedReaderStagedIn(directory,
+                    asTheJobStreamWritesIt, neutralInput(directory)));
+
+            assertThat(served).as("the stripped base is what the store was asked for")
+                    .containsExactly(DURABLE_EXACT);
+            verify(stagingArea, never()).holds(asTheJobStreamWritesIt);
+        }
+
+        @Test
+        @DisplayName("any other parenthesised suffix is left exactly as configured and refused by name "
+                + "validation, rather than being silently reinterpreted as the current generation")
+        void anyOtherRelativeGenerationIsNotReinterpreted(@TempDir final Path directory)
+                throws IOException {
+            final String otherGeneration = LOGICAL_BASE + "(1)";
+            final String neutral = neutralInput(directory);
+
+            assertThatThrownBy(() -> orderedReaderStagedIn(directory, otherGeneration, neutral))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("outside letters, digits, dots, hyphens and underscores");
+
+            verify(stagingArea).holds(otherGeneration);
+            verify(stagingArea, never()).holds(LOGICAL_BASE);
+        }
+
+        @Test
+        @DisplayName("an exact durable object key is served from the store, and no generation of it is "
+                + "resolved because none needs to be")
+        void anExactDurableKeyIsServedWithoutResolvingAGeneration(@TempDir final Path directory)
+                throws Exception {
+            final String exactKey = LOGICAL_BASE + "/G0000000004V00";
+            when(stagingArea.holds(exactKey)).thenReturn(true);
+            when(stagingArea.stagedInput(exactKey)).thenReturn(
+                    durableObject(List.of(record("0000000000000002", DURABLE_EXACT))));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(directory, exactKey, neutralInput(directory)));
+
+            assertThat(served).containsExactly(DURABLE_EXACT);
+            verify(generationStore, never()).currentGenerationKey(anyString());
+        }
+
+        @Test
+        @DisplayName("a base the store holds no exact object for resolves to the durable current "
+                + "generation the catalog would have resolved the relative generation to")
+        void aBaseResolvesToItsDurableCurrentGeneration(@TempDir final Path directory)
+                throws Exception {
+            final String currentGeneration = LOGICAL_BASE + "/G0000000007V00";
+            when(stagingArea.holds(LOGICAL_BASE)).thenReturn(false);
+            when(generationStore.currentGenerationKey(LOGICAL_BASE))
+                    .thenReturn(Optional.of(currentGeneration));
+            when(stagingArea.stagedInput(currentGeneration)).thenReturn(
+                    durableObject(List.of(record("0000000000000003", DURABLE_CURRENT))));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(directory, LOGICAL_BASE, neutralInput(directory)));
+
+            assertThat(served).containsExactly(DURABLE_CURRENT);
+            verify(stagingArea).stagedInput(currentGeneration);
+        }
+
+        @Test
+        @DisplayName("a trusted local dataset named exactly as configured is accepted when the durable "
+                + "store holds nothing, which is the deployment whose predecessor staged locally")
+        void aTrustedLocalDatasetIsAcceptedWhenNothingIsDurable(@TempDir final Path directory)
+                throws Exception {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            final String staged = stagedUnder(root, LOGICAL_BASE,
+                    record("0000000000000004", LOCAL_EXACT));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(root, staged, neutralInput(directory)));
+
+            assertThat(served).containsExactly(LOCAL_EXACT);
+            verify(stagingArea).holds(LOGICAL_BASE);
+            verify(generationStore).currentGenerationKey(LOGICAL_BASE);
+        }
+
+        @Test
+        @DisplayName("a local entry that is not a regular file this process owns is refused with a "
+                + "diagnostic and the scan continues to the next rung, rather than being repaired")
+        void anUntrustedLocalEntryIsRefusedAndTheScanContinues(@TempDir final Path directory)
+                throws Exception {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            // Named exactly as configured and therefore a candidate, but a directory rather than a
+            // regular file - which is one of the several ways a local actor can satisfy the name
+            // without being this deployment's staged output.
+            Files.createDirectory(root.resolve(LOGICAL_BASE));
+            stagedGeneration(root, LOGICAL_BASE, 3L, record("0000000000000005", LOCAL_CURRENT));
+            final Logger resolution =
+                    (Logger) LoggerFactory.getLogger(CombineTransactionsJobConfig.class);
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.setContext(resolution.getLoggerContext());
+            recorder.start();
+            resolution.addAppender(recorder);
+
+            final List<String> served;
+            try {
+                served = markersServedBy(
+                        orderedReaderStagedIn(root, LOGICAL_BASE, neutralInput(directory)));
+            } finally {
+                resolution.detachAppender(recorder);
+                recorder.stop();
+            }
+
+            assertThat(served).as("the refusal falls through to the next rung rather than failing")
+                    .containsExactly(LOCAL_CURRENT);
+            assertThat(recorder.list).anySatisfy(record -> {
+                assertThat(record.getLevel()).isEqualTo(Level.WARN);
+                assertThat(record.getFormattedMessage())
+                        .contains(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY)
+                        .contains(LOGICAL_BASE)
+                        .contains("not a regular file this process owns");
+            });
+        }
+
+        @Test
+        @DisplayName("the current local generation of a base is the highest generation the root holds, "
+                + "which is the state the chain is in while it runs")
+        void theCurrentLocalGenerationIsTheHighestOneHeld(@TempDir final Path directory)
+                throws Exception {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            stagedGeneration(root, LOGICAL_BASE, 2L, record("0000000000000006", "SUPERSEDED"));
+            stagedGeneration(root, LOGICAL_BASE, 5L, record("0000000000000007", LOCAL_CURRENT));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(root, LOGICAL_BASE, neutralInput(directory)));
+
+            assertThat(served).containsExactly(LOCAL_CURRENT);
+        }
+
+        @Test
+        @DisplayName("an explicit resource location goes to the application resource loader and skips "
+                + "every staging rung, because it names one resource and not a base")
+        void anExplicitResourceLocationSkipsEveryStagingRung(@TempDir final Path directory)
+                throws Exception {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            // Staged under the root as well, so that a rung which ran anyway would be visible: it would
+            // serve this marker instead of the explicitly located one.
+            stagedUnder(root, LOGICAL_BASE, record("0000000000000008", LOCAL_EXACT));
+            final String explicit = dataset(directory, "explicit.txt",
+                    List.of(record("0000000000000009", EXPLICIT_LOCATION)));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(root, explicit, neutralInput(directory)));
+
+            assertThat(served).containsExactly(EXPLICIT_LOCATION);
+            verify(generationStore, never()).currentGenerationKey(anyString());
+        }
+
+        @Test
+        @DisplayName("an unconfigured deployment resolves the legacy dataset names, because each "
+                + "input's binding default is the base the legacy job stream itself declares")
+        void anUnconfiguredDeploymentResolvesTheLegacyDatasetNames() {
+            assertThat(CombineTransactionsJobConfig.DEFAULT_BACKUP_DATASET_BASE)
+                    .as("the measured job stream declares this base on its first input's DD statement")
+                    .isEqualTo("AWS.M2.CARDDEMO.TRANSACT.BKUP");
+            assertThat(CombineTransactionsJobConfig.DEFAULT_SYNTHESIZED_DATASET_BASE)
+                    .as("and this base on its second, which the interest job mints a generation of")
+                    .isEqualTo("AWS.M2.CARDDEMO.SYSTRAN");
+
+            final List<String> boundExpressions =
+                    Arrays.stream(CombineTransactionsJobConfig.class.getDeclaredConstructors())
+                            .flatMap(constructor -> Arrays.stream(constructor.getParameters()))
+                            .map(parameter -> parameter.getAnnotation(Value.class))
+                            .filter(Objects::nonNull)
+                            .map(Value::value)
+                            .toList();
+
+            assertThat(boundExpressions)
+                    .as("an unset property binds to the legacy base rather than to nothing, which is"
+                            + " what makes the blank refusal a deployment fault and not the ordinary"
+                            + " case; a location therefore only arrives blank when somebody emptied it")
+                    .contains("${" + CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY + ":"
+                                    + CombineTransactionsJobConfig.DEFAULT_BACKUP_DATASET_BASE + "}",
+                            "${" + CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY + ":"
+                                    + CombineTransactionsJobConfig.DEFAULT_SYNTHESIZED_DATASET_BASE
+                                    + "}");
+        }
+
+        @Test
+        @DisplayName("a base no rung can resolve fails on open rather than yielding an apparently "
+                + "successful empty run, and every rung is consulted before it does")
+        void aBaseNoRungResolvesFailsOnOpen(@TempDir final Path directory) throws IOException {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            final String neutral = neutralInput(directory);
+
+            final ItemStreamReader<Transaction> reader =
+                    orderedReaderStagedIn(root, LOGICAL_BASE, neutral);
+
+            assertThatThrownBy(() -> reader.open(new ExecutionContext()))
+                    .isInstanceOf(ItemStreamException.class)
+                    .hasMessageContaining("could not be read in full");
+            verify(stagingArea).holds(LOGICAL_BASE);
+            verify(generationStore).currentGenerationKey(LOGICAL_BASE);
+            verify(stagingArea, never()).stagedInput(anyString());
+        }
+    }
+
+    @Nested
+    @DisplayName("where two rungs could both answer, the higher one does")
+    final class TheLadderRungsTakePrecedenceInOrder {
+
+        @Test
+        @DisplayName("an exact durable object outranks the durable current generation of the same base")
+        void anExactDurableObjectOutranksTheDurableCurrentGeneration(@TempDir final Path directory)
+                throws Exception {
+            when(stagingArea.holds(LOGICAL_BASE)).thenReturn(true);
+            when(stagingArea.stagedInput(LOGICAL_BASE)).thenReturn(
+                    durableObject(List.of(record("0000000000000010", DURABLE_EXACT))));
+            when(generationStore.currentGenerationKey(LOGICAL_BASE))
+                    .thenReturn(Optional.of(LOGICAL_BASE + "/G0000000009V00"));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(directory, LOGICAL_BASE, neutralInput(directory)));
+
+            assertThat(served).containsExactly(DURABLE_EXACT);
+            verify(generationStore, never()).currentGenerationKey(anyString());
+        }
+
+        @Test
+        @DisplayName("the durable current generation outranks a trusted local dataset of the same name")
+        void theDurableCurrentGenerationOutranksATrustedLocalDataset(@TempDir final Path directory)
+                throws Exception {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            stagedUnder(root, LOGICAL_BASE, record("0000000000000011", LOCAL_EXACT));
+            final String currentGeneration = LOGICAL_BASE + "/G0000000012V00";
+            when(generationStore.currentGenerationKey(LOGICAL_BASE))
+                    .thenReturn(Optional.of(currentGeneration));
+            when(stagingArea.stagedInput(currentGeneration)).thenReturn(
+                    durableObject(List.of(record("0000000000000012", DURABLE_CURRENT))));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(root, LOGICAL_BASE, neutralInput(directory)));
+
+            assertThat(served).containsExactly(DURABLE_CURRENT);
+        }
+
+        @Test
+        @DisplayName("a trusted local dataset named exactly as configured outranks the current local "
+                + "generation of the same base")
+        void aTrustedLocalDatasetOutranksTheCurrentLocalGeneration(@TempDir final Path directory)
+                throws Exception {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            stagedUnder(root, LOGICAL_BASE, record("0000000000000013", LOCAL_EXACT));
+            stagedGeneration(root, LOGICAL_BASE, 9L, record("0000000000000014", LOCAL_CURRENT));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(root, LOGICAL_BASE, neutralInput(directory)));
+
+            assertThat(served).containsExactly(LOCAL_EXACT);
+        }
+
+        @Test
+        @DisplayName("the two inputs are resolved independently, so one may come from the durable store "
+                + "while the other comes from the local root, and the concatenation order still holds")
+        void eachInputIsResolvedIndependentlyOfTheOther(@TempDir final Path directory)
+                throws Exception {
+            final Path root = Files.createDirectory(directory.resolve("staging"));
+            final String synthesizedBase =
+                    CombineTransactionsJobConfig.DEFAULT_SYNTHESIZED_DATASET_BASE;
+            when(stagingArea.holds(LOGICAL_BASE)).thenReturn(true);
+            when(stagingArea.stagedInput(LOGICAL_BASE)).thenReturn(
+                    durableObject(List.of(record("0000000000000015", DURABLE_EXACT))));
+            stagedUnder(root, synthesizedBase, record("0000000000000015", LOCAL_EXACT));
+
+            final List<String> served = markersServedBy(
+                    orderedReaderStagedIn(root, LOGICAL_BASE, synthesizedBase));
+
+            assertThat(served).as("equal identifiers keep the concatenation order across two rungs")
+                    .containsExactly(DURABLE_EXACT, LOCAL_EXACT);
         }
     }
 

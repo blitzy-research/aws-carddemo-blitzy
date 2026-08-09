@@ -1700,7 +1700,11 @@ final class AccountViewServiceTest {
         void theLongTextExitResolvesNoRoute() {
             // Defined and unwired: all three statements that would perform this paragraph are commented
             // out in the member, so it is exercised here rather than by a live path - the same treatment
-            // the plan gives the batch program that no job stream invokes.
+            // the plan gives the batch program that no job stream invokes. Two matrix rows are discharged
+            // by this one call: SEND-LONG-TEXT through the named call to sendLongText below, and
+            // SEND-LONG-TEXT-EXIT through sendLongTextExit, which that method calls on its only arm. The
+            // exit needs no call of its own; naming it here is what a reader following the row needs, and
+            // an invocation of an empty terminator would be fabricated coverage.
             final AccountViewService.AccountViewResult result =
                     service.sendLongText(new AccountViewService.WorkingStorage());
 

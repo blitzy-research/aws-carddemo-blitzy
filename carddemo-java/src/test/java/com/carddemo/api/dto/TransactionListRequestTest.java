@@ -1056,7 +1056,7 @@ class TransactionListRequestTest {
 
         @Test
         @DisplayName("the wire form carries exactly the five declared components")
-        void theWireFormCarriesExactlySixComponents() throws JsonProcessingException {
+        void theWireFormCarriesExactlyFiveComponents() throws JsonProcessingException {
             ObjectMapper mapper = moduleEquivalentMapper();
 
             JsonNode tree = mapper.readTree(mapper.writeValueAsString(populated()));
