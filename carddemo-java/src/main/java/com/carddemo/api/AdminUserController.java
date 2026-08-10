@@ -146,8 +146,10 @@ import org.springframework.web.bind.annotation.RestController;
  * <h2>What the instrumentation is allowed to record</h2>
  *
  * <p>Each operation has its own timer, so the four transactions are separable without a per-request
- * label, and each carries one tag drawn from a fixed set of three outcomes. The outcome is derived from
- * the response's two boolean indicators and never from its message text. That restriction is
+ * label, and each carries one tag drawn from a fixed set of four outcomes: the three a composed screen
+ * reduces to, and the seeded one a turn that raised before composing anything leaves in place. The three
+ * screen outcomes are derived from the response's two boolean indicators and from whether it carries
+ * field-level errors, never from its message text. That restriction is
  * deliberate and load-bearing: three of these screens' success texts embed the eight-character
  * identifier of the affected record, so tagging by message would publish personal data into the metric
  * store and give the label unbounded cardinality at the same time. No identifier, name, credential,
@@ -251,11 +253,12 @@ public class AdminUserController {
     private static final String METRIC_DELETE_TURN = "carddemo.online.userdelete.turn";
 
     /**
-     * Tag naming which of three bounded outcomes a turn reached.
+     * Tag naming which of four bounded outcomes a turn reached.
      *
-     * <p>Three values and no more, all declared below as constants. The tag is never derived from a
-     * message, an identifier or any other value a caller can influence, so it cannot grow cardinality
-     * and cannot carry personal data into the metric store.
+     * <p>Four values and no more, all declared below as constants: three that a composed screen reduces
+     * to and one that a turn which raised carries. The tag is never derived from a message, an
+     * identifier or any other value a caller can influence, so it cannot grow cardinality and cannot
+     * carry personal data into the metric store.
      */
     private static final String TAG_OUTCOME = "outcome";
 
@@ -575,23 +578,23 @@ public class AdminUserController {
     }
 
     /**
-     * Records one completed turn and answers it.
+     * Records the elapsed time of one turn under its own timer name.
      *
      * <p>Shared by all four operations because the closing sequence is identical for each: stop the
-     * timer under the operation's own name, tag it with the bounded outcome, note the pair in a debug
-     * record, and answer {@code 200}. Four copies of that would be four opportunities for one of them
-     * to start tagging something it should not.
+     * timer under the operation's own name and tag it with the bounded outcome. Four copies of that
+     * would be four opportunities for one of them to start tagging something it should not. Composing
+     * the response is the caller's, and so is the debug record, which each operation writes for itself
+     * on the path that produced a screen.
      *
-     * <p>The timer is stopped only on the path where a screen was composed. A turn that raises instead
-     * leaves its sample unstopped and is measured by the framework's own request metric, which already
-     * separates outcomes by status - so nothing is lost, and no failed turn is silently folded into a
-     * success timing.
+     * <p>Every turn is recorded, including one that raised. Each caller invokes this from its {@code
+     * finally} arm, so an exception propagating out of the boundary still stops the sample, carrying the
+     * failed label the caller seeded before the attempt. No raising turn is therefore folded into a
+     * success timing, and none is silently omitted either.
      *
      * @param sample the timing sample started at the head of the turn
      * @param metricName the timer name for this operation
      * @param transactionId the legacy transaction identifier this operation serves
-     * @param body the screen the turn produced
-     * @return the screen, as a {@code 200} response
+     * @param outcome the bounded outcome label, one of the four this class declares
      */
     private void recordTurn(final Timer.Sample sample, final String metricName,
             final String transactionId, final String outcome) {

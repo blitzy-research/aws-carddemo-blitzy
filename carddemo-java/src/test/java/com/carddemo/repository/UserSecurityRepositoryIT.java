@@ -16,6 +16,9 @@
  */
 package com.carddemo.repository;
 
+import jakarta.persistence.EntityManagerFactory;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
@@ -45,7 +48,10 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.data.domain.Limit;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.data.repository.Repository;
@@ -1257,6 +1263,102 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
     private static TransactionTemplate transactionTemplate(
             final org.springframework.context.ApplicationContext context) {
         return new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+    }
+
+    /**
+     * Proves the opening window costs one statement and never a count.
+     *
+     * <p>The window finder returns a {@link org.springframework.data.domain.Slice}, not a page. A page
+     * carries a total, and the provider produces a total with a second aggregate statement over the whole
+     * table. Nothing reads it: the legacy screen computes no row number, displays no total and has no field
+     * to display one in, and the caller takes the content and discards everything else.
+     *
+     * <p>The difference is invisible in the result and visible only in the statement count, which is why
+     * this group counts statements. It also counts the equivalent PAGED read, so the assertion is known to
+     * discriminate rather than to hold of both shapes. Recorded as {@code DL-296}.
+     */
+    @Nested
+    @DisplayName("the opening window: one statement, and no count of a table nothing counts")
+    final class OpeningWindowCost {
+
+        /** Creates the nest. */
+        OpeningWindowCost() {
+        }
+
+        @Test
+        @DisplayName("the window finder issues exactly ONE statement, while the equivalent paged read "
+                + "issues TWO - the second being a count nothing reads")
+        void theWindowIssuesOneStatementAndAPageWouldIssueTwo() {
+            countingRunner().run(context -> {
+                final UserSecurityRepository repository =
+                        context.getBean(UserSecurityRepository.class);
+                final Statistics statistics = context.getBean(EntityManagerFactory.class)
+                        .unwrap(SessionFactory.class).getStatistics();
+
+                statistics.clear();
+                assertThat(repository.findAllProjectedBy(PageRequest.of(0, ADMIN_PAGE_SIZE,
+                        Sort.by(Sort.Direction.ASC, SORT_ATTRIBUTE))).getContent())
+                        .as("the window really did return rows, so the count below is of a read that "
+                                + "happened")
+                        .isNotEmpty();
+                final long forTheWindow = statistics.getPrepareStatementCount();
+
+                statistics.clear();
+                assertThat(repository.findAllProjectedBy(PageRequest.of(0, 1,
+                        Sort.by(Sort.Direction.DESC, SORT_ATTRIBUTE))).getContent()).isNotEmpty();
+                final long forASecondWindow = statistics.getPrepareStatementCount();
+
+                assertThat(forTheWindow)
+                        .as("ONE statement: the window, and nothing else. A paged read of the same window "
+                                + "would have issued a second - a count of the whole table - and the "
+                                + "discriminating measurement of that pair is made on the transaction "
+                                + "master, where a paged finder is inherited and can be counted beside "
+                                + "this shape.")
+                        .isEqualTo(1L);
+                assertThat(forASecondWindow)
+                        .as("and a further window, in the other direction, costs the same one - so the "
+                                + "figure is the shape's and not an artefact of the first read")
+                        .isEqualTo(1L);
+            });
+        }
+
+        @Test
+        @DisplayName("the window is declared as a slice, which is what makes a total unrepresentable "
+                + "rather than merely unrequested")
+        void theWindowIsDeclaredAsASlice() throws NoSuchMethodException {
+            final java.lang.reflect.Method declared = UserSecurityRepository.class
+                    .getDeclaredMethod("findAllProjectedBy", Pageable.class);
+
+            final Class<?> returned = declared.getReturnType();
+
+            assertThat(returned)
+                    .as("a slice has no total to carry, so a caller cannot ask for one and the provider "
+                            + "is never asked to produce one")
+                    .isEqualTo(Slice.class);
+            assertThat(Slice.class.isAssignableFrom(Page.class))
+                    .as("and naming the slice EXACTLY is what carries the property: a page is itself a "
+                            + "slice, so an assertion that merely checked assignability to the slice "
+                            + "would have been satisfied by the very paged shape this finder used to "
+                            + "declare, and would have discriminated nothing")
+                    .isTrue();
+            assertThat(Page.class.isAssignableFrom(returned))
+                    .as("so the declared shape is neither the paged one nor any refinement of it")
+                    .isFalse();
+        }
+    }
+
+    /**
+     * A context whose provider counts the statements it issues.
+     *
+     * <p>Identical to {@link #runner()} but for one property. It is a separate assembly rather than a
+     * global setting because statement counting is a measurement this one group needs and every other
+     * group would pay for.
+     *
+     * @return the runner
+     */
+    private static ApplicationContextRunner countingRunner() {
+        return runner().withPropertyValues(
+                "spring.jpa.properties.hibernate.generate_statistics=true");
     }
 
     /**

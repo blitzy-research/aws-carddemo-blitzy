@@ -17,10 +17,12 @@
 package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.joran.JoranConfigurator;
+import com.carddemo.support.SensitiveValues;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -267,9 +269,15 @@ class ProductionLogAppenderConfidentialityTest {
 
             final String rendered = renderOneEvent(directory.resolve("event.json"), "an event", null);
 
-            assertThat(rendered)
-                    .as("the value written under %s must not appear in the production record", key)
-                    .doesNotContain(TOKEN_CANARY);
+            // Asserted as a PREDICATE, not as doesNotContain. A failing doesNotContain prints both
+            // operands: the canary itself and the whole record - which, on the failure being guarded
+            // against, is the record that carries it. The disclosure would happen twice over, in a
+            // build log, at exactly the moment the leak was detected. The predicate prints only
+            // true/false, and the description identifies the value by fingerprint.
+            assertThat(SensitiveValues.absentFrom(rendered, TOKEN_CANARY))
+                    .as("the value written under %s must not appear in the production record; looked for "
+                            + "%s", key, SensitiveValues.describe(TOKEN_CANARY))
+                    .isTrue();
             assertThat(rendered)
                     .as("and neither must the key, which would itself disclose that the value exists")
                     .doesNotContain("\"" + key + "\"");
@@ -287,10 +295,10 @@ class ProductionLogAppenderConfidentialityTest {
             final String rendered =
                     renderOneEvent(directory.resolve("event.json"), "the authored message", null);
 
-            assertThat(rendered)
-                    .as("the planted value must not reach the record under %s or any other name",
-                            reservedFieldName)
-                    .doesNotContain(TOKEN_CANARY);
+            assertThat(SensitiveValues.absentFrom(rendered, TOKEN_CANARY))
+                    .as("the planted value must not reach the record under %s or any other name; looked "
+                            + "for %s", reservedFieldName, SensitiveValues.describe(TOKEN_CANARY))
+                    .isTrue();
             assertThat(rendered)
                     .as("and the record must still carry what this module authored")
                     .contains("\"message\":\"the authored message\"");
@@ -322,8 +330,19 @@ class ProductionLogAppenderConfidentialityTest {
 
             ALLOWED_CONTEXT_KEYS.forEach(key ->
                     assertThat(rendered).contains("\"" + key + "\":\"kept-" + key + "\""));
-            assertThat(rendered).doesNotContain(TOKEN_CANARY, NATIONAL_ID_CANARY, "nationalId",
-                    "authorization");
+            assertAll(
+                    () -> assertThat(SensitiveValues.absentFrom(rendered, TOKEN_CANARY))
+                            .as("the bearer credential is dropped; looked for %s",
+                                    SensitiveValues.describe(TOKEN_CANARY))
+                            .isTrue(),
+                    () -> assertThat(SensitiveValues.absentFrom(rendered, NATIONAL_ID_CANARY))
+                            .as("and so is the national identifier; looked for %s",
+                                    SensitiveValues.describe(NATIONAL_ID_CANARY))
+                            .isTrue(),
+                    () -> assertThat(rendered)
+                            .as("and both keys are dropped too, which the key names may state because a "
+                                    + "key name is not a value")
+                            .doesNotContain("nationalId", "authorization"));
         }
     }
 
@@ -403,9 +422,30 @@ class ProductionLogAppenderConfidentialityTest {
             final String rendered =
                     Files.readString(directory.resolve("event.json"), StandardCharsets.UTF_8);
 
-            assertThat(rendered)
-                    .doesNotContain(JDBC_CANARY, TOKEN_CANARY, NATIONAL_ID_CANARY, PAN_CANARY)
-                    .doesNotContain("password", "s3cr3t");
+            // Four canaries, four predicates. The chain deliberately nests a connection string, a
+            // bearer token, a national identifier and a card number, so a doesNotContain failure here
+            // would have printed all four together with the record that held them.
+            assertAll(
+                    () -> assertThat(SensitiveValues.absentFrom(rendered, JDBC_CANARY))
+                            .as("the connection string, credential and all, is absent; looked for %s",
+                                    SensitiveValues.describe(JDBC_CANARY))
+                            .isTrue(),
+                    () -> assertThat(SensitiveValues.absentFrom(rendered, TOKEN_CANARY))
+                            .as("the bearer credential is absent; looked for %s",
+                                    SensitiveValues.describe(TOKEN_CANARY))
+                            .isTrue(),
+                    () -> assertThat(SensitiveValues.absentFrom(rendered, NATIONAL_ID_CANARY))
+                            .as("the national identifier is absent; looked for %s",
+                                    SensitiveValues.describe(NATIONAL_ID_CANARY))
+                            .isTrue(),
+                    () -> assertThat(SensitiveValues.absentFrom(rendered, PAN_CANARY))
+                            .as("the primary account number is absent; looked for %s",
+                                    SensitiveValues.describe(PAN_CANARY))
+                            .isTrue(),
+                    () -> assertThat(rendered)
+                            .as("and neither the word nor the credential fragment survives; both are "
+                                    + "printable because neither is a value this suite must protect")
+                            .doesNotContain("password", "s3cr3t"));
             assertThat(rendered)
                     .as("and the diagnostic is still useful: the shape of the chain is published")
                     .contains("IllegalStateException<-IllegalArgumentException"

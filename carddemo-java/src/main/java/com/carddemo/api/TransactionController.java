@@ -35,9 +35,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.PositiveOrZero;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import org.slf4j.Logger;
@@ -206,13 +204,13 @@ public final class TransactionController {
     private static final String ROUTE_ABSENT = "none";
 
     /**
-     * The first screen slot, one-based, as the legacy row loop counts them.
+     * The page counter a submission that carried no paging state is answered with: zero.
      *
-     * <p>Named rather than written as a literal because it is the lower bound of the same slot range the
-     * selection loop at {@code app/cbl/COTRN00C.cbl} lines 148 to 182 walks, and an off-by-one here would
-     * shift every identifier in the continuation by one row.
+     * <p>Not a default invented here. Zero is the value the legacy communication-area counter holds
+     * before any page has been walked, and both paging paragraphs raise it to one themselves, so a
+     * first entry and a submission that echoed nothing are answered identically.
      */
-    private static final int FIRST_SCREEN_ROW = 1;
+    private static final int NO_RETAINED_PAGE_NUMBER = 0;
 
     /**
      * Width of the list screen's date column: eight characters.
@@ -382,66 +380,52 @@ public final class TransactionController {
     /**
      * Serves one turn of the transaction-list screen, legacy transaction {@code CT00}.
      *
-     * <p>The body carries the operator's entry: the identifier filter, the ten positional row
-     * selectors, the attention key and the echoed navigation record, together with the two browse
-     * cursors and the direction. The three parameters carry the cross-turn state the legacy held in its
-     * communication area and that the request contract deliberately does not accept in its body, each
-     * of them a value the previous response published so the client is echoing rather than asserting:
+     * <p>One body carries the whole submission: the identifier filter, the ten positional row
+     * selectors, the attention key, the echoed navigation record and the browse state the legacy held
+     * in its communication area - the two boundary cursors, the direction, the retained page counter
+     * and the retained next-page indicator. There is no query parameter and no second carrier; a
+     * submission that named part of its state in the URL and part in the body would have two spellings
+     * of one screen and no rule for which of them a turn is answered from.
      *
-     * <ul>
-     *   <li>the ten identifiers the previous page displayed, which the legacy reads back from its map
-     *       when it resolves which row was marked - without them a marked row names no transaction and
-     *       neither the hand-off to the view screen nor its rejection message could occur;</li>
-     *   <li>the page counter the browse settled on, which the legacy keeps in its own state and never
-     *       reads from the terminal, and which the backward guard tests to decide whether a preceding
-     *       page exists;</li>
-     *   <li>the next-page indicator the previous turn discovered by attempting one further read, which
-     *       the forward guard tests. The service's own contract records that losing it would make the
-     *       eighth program function key report the bottom of the browse on every page.</li>
-     * </ul>
+     * <p><strong>The page counter and the next-page indicator are read out of the echoed paging state,
+     * not recomputed here.</strong> Both are communication-area fields in the legacy: the backward
+     * guard tests the counter to decide whether a preceding page exists, and the forward guard tests
+     * the indicator, which the previous turn could only discover by attempting one further read.
+     * Supplying a constant for either would put every turn back on page one, or make the eighth
+     * program function key report the bottom of the browse on every page.
      *
-     * <p>None of the three is interpreted here. The selectors are not scanned, the cursors are not
-     * followed, the counter is not incremented and the indicator is not recomputed; all of that is the
-     * service's, which reproduces the legacy ordering.
+     * <p><strong>The submitted page indicator is not read at all.</strong> It mirrors the protected map
+     * item the legacy program writes and never reads back, so it is echoed in the response for the
+     * layout's sake and takes part in no decision; the figure a turn actually uses is the retained one
+     * inside the echoed paging state, which is what the communication-area field corresponds to.
      *
-     * <p>No width bound is declared on the echoed identifiers, deliberately. The service's own checks
-     * are message-bearing and ordered, and a declarative bound here would answer with a generic
-     * rejection where the legacy answers with one specific text.
+     * <p><strong>No displayed-row identifier crosses this boundary.</strong> The legacy resolves a row
+     * selection by pairing the selector with the identifier the map echoed beside it; over HTTP that
+     * would let a submission name any identifier as the one supposedly displayed on the row it marked.
+     * The service re-establishes the identifier from the browse cursor instead, so there is nothing
+     * here to accept, to bound or to forward - see the request contract and decision log entry DL-299.
      *
-     * @param request the submitted screen: filter, selectors, attention key, navigation record and
-     *     browse cursors
-     * @param displayedTransactionIds the identifiers of the rows the previous page displayed, in row
-     *     order with blank slots preserved, or {@code null} on a first entry that displayed none
-     * @param currentPageNumber the page counter the previous turn settled on; zero on a first entry,
-     *     and never negative because the legacy counter is an unsigned field
-     * @param nextPageAvailable whether the previous turn found a page beyond the one it displayed
+     * <p>Nothing in the submission is interpreted here. The selectors are not scanned, the cursors are
+     * not followed, the counter is not incremented and the indicator is not recomputed; all of that is
+     * the service's, which reproduces the legacy ordering.
+     *
+     * @param request the submitted screen: filter, page indicator, selectors, attention key,
+     *     navigation record and echoed browse state
+     * @param authentication the identity the filter chain established, from which the navigation
+     *     record's two identity members are taken rather than from the submission
      * @return the screen the turn produces, carrying the rows in presentation order, the paging
      *     metadata, the resolved route and the navigation record to echo next
      */
     @PostMapping(path = LIST_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "List and select transactions",
-            description = "One turn of legacy transaction CT00 using one bounded continuation body.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200",
-                description = "The turn completed and returns the displayed transaction page.")})
-    public TransactionListResponse listTransactions(
-            @Valid @RequestBody final TransactionListRequest request,
-            final Authentication authentication) {
-        final TransactionListRequest.ScreenContinuation continuation =
-                request.continuation() == null
-                        ? TransactionListRequest.ScreenContinuation.empty()
-                        : request.continuation();
-        return listTransactions(request, continuation.displayedTransactionIds(),
-                continuation.currentPageNumber(), continuation.nextPageAvailable(), authentication);
-    }
-
     @Operation(summary = "List or search transactions",
             description = "One turn of legacy transaction CT00. The screen presents ten rows; paging "
                     + "is cursor-based in both directions and a backward page arrives in the order "
-                    + "the legacy screen displayed it. Answers 200 for every outcome the legacy "
-                    + "screen could compose, including a rejected filter, an unaccepted row selector "
-                    + "and either end-of-browse report: the outcome is read from the body.")
+                    + "the legacy screen displayed it. The identifier a row selection resolves to is "
+                    + "re-read server-side from the browse cursor, so no displayed identifier is "
+                    + "accepted from the submission. Answers 200 for every outcome the legacy screen "
+                    + "could compose, including a rejected filter, an unaccepted row selector and "
+                    + "either end-of-browse report: the outcome is read from the body.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The turn completed. The body carries the page, the paging metadata, "
@@ -449,19 +433,13 @@ public final class TransactionController {
                         + "client should call next."),
         @ApiResponse(responseCode = "400",
                 description = "The submission exceeded a width the transaction-list map declares, "
-                        + "carried more selectors than the screen has rows, or supplied a negative "
-                        + "page counter."),
+                        + "carried more selectors than the screen has rows, or carried a page "
+                        + "indicator that is not one run of digits."),
         @ApiResponse(responseCode = "401", description = "No valid session was presented."),
         @ApiResponse(responseCode = "403",
                 description = "The authenticated principal is not an approved online-data operator.")})
     public TransactionListResponse listTransactions(
             @Valid @RequestBody final TransactionListRequest request,
-            @RequestParam(name = "displayedTransactionIds", required = false)
-                    final List<String> displayedTransactionIds,
-            @RequestParam(name = "currentPageNumber", required = false, defaultValue = "0")
-                    @PositiveOrZero final int currentPageNumber,
-            @RequestParam(name = "nextPageAvailable", required = false, defaultValue = "false")
-                    final boolean nextPageAvailable,
             final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
@@ -475,10 +453,9 @@ public final class TransactionController {
                                             request.navigationContext(), authentication),
                                     request.transactionIdFilter(),
                                     request.rowSelectors(),
-                                    displayedTransactionIds,
                                     this.screenStateAdapter.toCursorRequest(request.pageMetadata()),
-                                    nextPageAvailable,
-                                    currentPageNumber));
+                                    retainedNextPageFlag(request.pageMetadata()),
+                                    retainedPageNumber(request.pageMetadata())));
 
             final String nextRoute =
                     (result.route() == null) ? null : result.route().getRouteValue();
@@ -495,6 +472,38 @@ public final class TransactionController {
                     "Elapsed time of one CardDemo transaction-list turn, transaction CT00",
                     outcome, route);
         }
+    }
+
+    /**
+     * Reads the retained page counter out of the paging state the caller echoed.
+     *
+     * <p>Read rather than reset, and read from the paging state rather than from the submitted page
+     * indicator. The counter is a communication-area field the legacy program increments on a forward
+     * page and decrements on a backward one rather than recomputing, and the backward guard tests it to
+     * decide whether a preceding page exists, so a boundary that supplied a constant here would put
+     * every turn back on page one.
+     *
+     * @param carried the paging state the caller echoed, which is {@code null} on a first entry
+     * @return the retained page counter, or zero when the caller carried none - which is the value the
+     *     legacy field holds on a first entry
+     */
+    private static int retainedPageNumber(final PageMetadata.PageCursorRequest carried) {
+        return (carried == null) ? NO_RETAINED_PAGE_NUMBER : carried.retainedPageNumber();
+    }
+
+    /**
+     * Reads the retained next-page indicator out of the paging state the caller echoed.
+     *
+     * <p>Read for the same reason: the indicator is a communication-area field, the previous turn
+     * established it by attempting one further read, and the forward-paging guard tests it
+     * <em>before</em> the browse recomputes it. A boundary that supplied a cleared flag would make the
+     * forward key refuse to advance on the one turn the operator pressed it.
+     *
+     * @param carried the paging state the caller echoed, which is {@code null} on a first entry
+     * @return the retained indicator, or {@code false} when the caller carried none
+     */
+    private static boolean retainedNextPageFlag(final PageMetadata.PageCursorRequest carried) {
+        return carried != null && carried.nextPageIndicated();
     }
 
     /**
@@ -745,7 +754,6 @@ public final class TransactionController {
         return new TransactionListResponse(
                 rows,
                 pageMetadata,
-                toContinuation(result, pageMetadata, displayedPageNumber),
                 this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication),
                 nextRoute,
                 result.transactionIdFilterEcho(),
@@ -762,45 +770,6 @@ public final class TransactionController {
                 result.currentTime(),
                 result.transactionName(),
                 result.programName());
-    }
-
-    /**
-     * Builds the continuation the client echoes on its next turn.
-     *
-     * <p><strong>The identifier list is positional and has a fixed length.</strong> The next turn resolves
-     * a row selection by indexing this list with the slot the selector sits on - the loop at
-     * {@code app/cbl/COTRN00C.cbl} lines 148 to 182 walks slots one to ten and takes the identifier at
-     * that slot - so the list has to be ten entries long with a blank in every slot the browse did not
-     * fill. A list compacted to the populated rows would be shorter, every entry would sit at the wrong
-     * index whenever the page does not start at slot one, and a backward page - which the legacy fills
-     * downward from slot ten at line 349 - would resolve a selection to a different transaction than the
-     * one the operator marked. That is the difference between a client selecting what it saw and a client
-     * selecting something else.
-     *
-     * @param result the settled turn, whose rows carry their own slots
-     * @param pageMetadata the published paging state, or {@code null} when the turn produced none
-     * @param displayedPageNumber the page indicator the screen shows, or {@code null}
-     * @return the continuation, never {@code null}
-     */
-    private static TransactionListRequest.ScreenContinuation toContinuation(
-            final TransactionListService.TransactionListResult result,
-            final PageMetadata pageMetadata,
-            final String displayedPageNumber) {
-        final List<String> displayedIdentifiers =
-                new ArrayList<>(Collections.nCopies(PageMetadata.TRANSACTION_LIST_PAGE_SIZE, ""));
-        for (final TransactionListService.TransactionListRow row : result.rows()) {
-            final int slot = row.screenRow();
-            if (slot >= FIRST_SCREEN_ROW && slot <= PageMetadata.TRANSACTION_LIST_PAGE_SIZE) {
-                displayedIdentifiers.set(slot - 1, (row.tranId() == null) ? "" : row.tranId());
-            }
-        }
-        return new TransactionListRequest.ScreenContinuation(
-                (pageMetadata == null) ? null : pageMetadata.previousCursorKey(),
-                (pageMetadata == null) ? null : pageMetadata.nextCursorKey(),
-                (pageMetadata == null) ? null : pageMetadata.direction(),
-                displayedPageNumber,
-                pageMetadata != null && pageMetadata.hasMorePages(),
-                Collections.unmodifiableList(displayedIdentifiers));
     }
 
     /**

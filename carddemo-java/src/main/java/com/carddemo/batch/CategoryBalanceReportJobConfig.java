@@ -237,15 +237,22 @@ import com.carddemo.util.ZonedDecimalCodec;
  * <p><strong>The edit mask.</strong> The balance is rendered from a {@link BigDecimal} scaled by
  * {@link ZonedDecimalCodec#toMonetaryScale(BigDecimal)}; no floating-point type appears anywhere, and
  * the truncating rounding rule the estate implies - the rounding keyword occurs nowhere in it - lives
- * exclusively in that codec, so no scaling call is made here. The mask's digit selectors suppress
- * leading zeros, and the specification requests no sign characters, so the magnitude is rendered and
- * a negative balance is indistinguishable from its positive counterpart in this report. That is a
- * property of the specification rather than a translation choice and is raised for the decision log.
- * A value of exactly zero blanks the whole field, which is the convention the module's existing
- * amount masks already follow. Every balance in the measured fixture and in the seeded reference data
- * is exactly zero, so every measured record renders identically under either reading of the leading
- * zero-suppression selector; the only case the two readings could separate is a non-zero magnitude
- * below one, and that case is resolved toward the module's existing convention and recorded.
+ * exclusively in that codec, so no scaling call is made here.
+ *
+ * <p><strong>Every declared digit position carries a digit, and a balance of exactly zero renders as
+ * {@code 000000000.00}.</strong> The specification is written entirely from the always-printed digit
+ * selector and uses the zero-suppressing selector nowhere, so nothing is blanked and nothing is
+ * suppressed: all nine integer positions and both fractional positions are printed for every value,
+ * including a leading zero. This is deliberately <em>not</em> the convention the module's other amount
+ * masks follow - theirs suppress, because their own specifications ask them to - and the difference is up
+ * to nine bytes per line of a fixed-width external dataset, which is exactly the class of difference only
+ * a byte comparison detects. Every balance in the measured fixture and in the seeded reference data is
+ * exactly zero, so every measured record of a seeded run reads {@code 000000000.00} and the golden fixture
+ * carries it that way. The reasoning is recorded in {@code docs/decision-log.md} entry DL-243.
+ *
+ * <p>The specification requests no sign character, so the magnitude is rendered and a negative balance is
+ * indistinguishable from its positive counterpart in this report. That is a property of the specification
+ * rather than a translation choice and is raised for the decision log.
  *
  * <h2>The legacy comment contradicts the legacy code</h2>
  *
@@ -314,7 +321,7 @@ public final class CategoryBalanceReportJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = BatchJobCatalog.CATEGORY_BALANCE_REPORT_JOB_NAME;
+    public static final String JOB_NAME = BatchJobCatalog.CATEGORY_BALANCE_REPORT_JOB;
 
     /** Name of the step standing in for the legacy {@code DELDEF} step, and of its bean. */
     public static final String CLEAR_PRIOR_REPORT_STEP_NAME =
@@ -445,9 +452,6 @@ public final class CategoryBalanceReportJobConfig {
 
     /** Data definition the legacy first step names for the report output it deletes. */
     private static final String DD_REPORT_ALLOCATION = "THEFILE";
-
-    /** Data definition the copy wrapper names for its input, the category-balance cluster. */
-    private static final String DD_COPY_INPUT = "FILEIN";
 
     /** Data definition the copy wrapper names for its output, the new backup generation. */
     private static final String DD_COPY_OUTPUT = "FILEOUT";

@@ -1496,6 +1496,21 @@ class NavigationServiceRuleComplianceTest {
         /** The logger's level before this test pinned it, restored afterwards. */
         private Level originalLevel;
 
+        /**
+         * The text that identifies the unresolvable-nomination record.
+         *
+         * <p>It is the abend's reason literal rather than a sentence this class composed, because the
+         * record now comes from the centralised online abend diagnostic and the reason is the field that
+         * distinguishes one abend from another. See docs/decision-log.md entry DL-312.
+         */
+        private static final String ABEND_MARKER = "XCTL TO UNRESOLVABLE PROGRAM NAME";
+
+        /** The centralised abend category, which now carries the unresolvable-nomination record. */
+        private Logger abendLogger;
+
+        /** That category's level before this test pinned it. */
+        private Level originalAbendLevel;
+
         @BeforeEach
         void attachLogRecorder() {
             // The honoured, empty and suppressed paths all log at debug, so capture must not depend on
@@ -1508,10 +1523,20 @@ class NavigationServiceRuleComplianceTest {
             this.logRecorder.start();
             this.subjectLogger.addAppender(this.logRecorder);
             this.subjectLogger.setLevel(Level.TRACE);
+            // The unresolvable-nomination abend now records through the centralised online abend
+            // diagnostic, which writes under the abend category. The same appender is attached there so
+            // this group keeps asserting what a reader of the log sees rather than which class wrote it.
+            // See docs/decision-log.md entry DL-312.
+            this.abendLogger = (Logger) LoggerFactory.getLogger(AbendService.class);
+            this.originalAbendLevel = this.abendLogger.getLevel();
+            this.abendLogger.addAppender(this.logRecorder);
+            this.abendLogger.setLevel(Level.TRACE);
         }
 
         @AfterEach
         void detachLogRecorder() {
+            this.abendLogger.detachAppender(this.logRecorder);
+            this.abendLogger.setLevel(this.originalAbendLevel);
             this.subjectLogger.detachAppender(this.logRecorder);
             this.logRecorder.stop();
             this.subjectLogger.setLevel(this.originalLevel);
@@ -1564,12 +1589,14 @@ class NavigationServiceRuleComplianceTest {
                             contextFromProgram(fromProgram), Route.USER_MENU))
                     .withMessageContaining("RULE back-navigation");
 
-            final String record = theRecordContaining("Nominated program names no reachable destination");
+            final String record = theRecordContaining(ABEND_MARKER);
             assertDegradedAt(record, position, codePoint);
             assertThat(record)
                     .as("the raw value must not survive into the log record")
                     .doesNotContain(fromProgram);
-            assertThat(record).contains("rule=back-navigation");
+            assertThat(record)
+                    .as("the rule travels as the abend record's operation field")
+                    .contains("operation=XCTL RULE back-navigation");
             assertEveryLogRecordIsSafe("back navigation");
         }
 
@@ -1585,10 +1612,12 @@ class NavigationServiceRuleComplianceTest {
                             contextToProgram(toProgram), Route.CARD_LIST))
                     .withMessageContaining("RULE nominated-destination");
 
-            final String record = theRecordContaining("Nominated program names no reachable destination");
+            final String record = theRecordContaining(ABEND_MARKER);
             assertDegradedAt(record, position, codePoint);
             assertThat(record).doesNotContain(toProgram);
-            assertThat(record).contains("rule=nominated-destination");
+            assertThat(record)
+                    .as("the rule travels as the abend record's operation field")
+                    .contains("operation=XCTL RULE nominated-destination");
             assertEveryLogRecordIsSafe("nominated destination");
         }
 
@@ -1714,7 +1743,7 @@ class NavigationServiceRuleComplianceTest {
                     NavigationServiceRuleComplianceTest.this.service.resolveBackNavigation(
                             contextFromProgram(UNREGISTERED_PROGRAM), Route.USER_MENU));
 
-            final String record = theRecordContaining("Nominated program names no reachable destination");
+            final String record = theRecordContaining(ABEND_MARKER);
             assertThat(record)
                     .contains("<unrecognised, length " + UNREGISTERED_PROGRAM.length() + ">")
                     .doesNotContain(UNREGISTERED_PROGRAM)
@@ -1799,10 +1828,10 @@ class NavigationServiceRuleComplianceTest {
 
             final List<String> rules = new ArrayList<>();
             for (final ILoggingEvent event : this.logRecorder.list) {
-                if (event.getFormattedMessage().contains("rule=back-navigation")) {
+                if (event.getFormattedMessage().contains("XCTL RULE back-navigation")) {
                     rules.add("back-navigation");
                 }
-                if (event.getFormattedMessage().contains("rule=nominated-destination")) {
+                if (event.getFormattedMessage().contains("XCTL RULE nominated-destination")) {
                     rules.add("nominated-destination");
                 }
             }

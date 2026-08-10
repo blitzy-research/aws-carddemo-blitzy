@@ -84,8 +84,7 @@
 # Deviations from upstream, stated exhaustively so the diff is never a surprise.
 # Presentation-only: the licence header, these comment blocks, the three extra
 # MVNW_* variables documented above and the wrapperVersion line in the properties
-# parser. Behavioural, confined to making the JDK-only prerequisite literally true
-# and each annotated inline where it appears:
+# parser. Behavioural, each annotated inline where it appears:
 #   1. The URL is never rewritten to the -bin.tar.gz variant when unzip is missing;
 #      upstream fetches that archive while still validating it against the .zip
 #      digest pinned in the properties file, which cannot succeed.
@@ -94,8 +93,32 @@
 #      mismatch still fails closed, and only an absent JDK now stops the build.
 #   3. Extraction falls back to the JDK's zip filesystem provider when unzip is
 #      missing, replacing an untar branch that is no longer reachable.
-# Resolution, caching, HTTP authentication, argument forwarding and the exec
-# handover are untouched, and the cache directory computed for a given
+#   4. distributionSha256Sum is MANDATORY, not optional. Upstream verifies only
+#      when the key happens to be set and otherwise downloads and executes an
+#      unverified archive after a one-line note; here an absent or malformed digest
+#      is a hard failure, checked before anything is fetched. "Verified, not
+#      trusted" is not a property a launcher can hold if the verification is
+#      switchable from the file it reads.
+#   5. The transport is policed. Both the configured URL and the MVNW_REPOURL
+#      rewrite of it must be https and must not embed credentials; curl and wget
+#      are told to refuse a redirect that leaves https; the JDK downloader follows
+#      redirects itself, one hop at a time, refusing any that is not https and
+#      offering credentials only to the host the properties file names. Every
+#      diagnostic that prints a URL prints it redacted.
+#   6. The cache is validated rather than assumed, and installed under a lock.
+#      Upstream trusts any directory at MAVEN_HOME, installs it with a move that
+#      crosses filesystems when the staging directory is on another mount, and
+#      treats a failed move as success whenever the destination merely exists - so
+#      one interrupted or concurrent cold start can publish a partial distribution
+#      that every later invocation reuses. Here a cache counts as installed only
+#      when bin/<mvn>, lib/ and a mvnw.url marker naming this exact distribution
+#      are all present; installation is serialised per distribution through an
+#      atomically created lock directory; staging happens inside the cache parent
+#      so publication is a same-filesystem rename; an incomplete cache is set
+#      aside and rebuilt; and the published result is re-validated before Maven is
+#      executed from it.
+# Resolution, HTTP authentication, argument forwarding and the exec handover are
+# otherwise untouched, and the cache directory computed for a given
 # distributionUrl is unchanged, so an existing ~/.m2/wrapper/dists entry is reused.
 #
 # The only-script distribution type declared in .mvn/wrapper/maven-wrapper.properties
@@ -186,6 +209,53 @@ trim() {
   printf "%s" "${1}" | tr -d '[:space:]'
 }
 
+# CardDemo addition :: transport policy (deviation 5). Three primitives, kept
+# separate so each is obvious on its own. url_authority returns the authority
+# component - everything between the scheme separator and the first following
+# slash - which is the only part of a URL that may carry userinfo; matching the
+# whole URL for '@' would false-positive on a path segment that contains one.
+url_authority() {
+  _mvnw_url_rest="${1#*://}"
+  printf %s\\n "${_mvnw_url_rest%%/*}"
+}
+
+url_has_userinfo() {
+  case "$(url_authority "${1-}")" in
+  *@*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+# Replaces any userinfo with fixed text, so a URL can be printed in a diagnostic
+# or a verbose line without printing a credential that was embedded in it. The
+# URL is rejected outright further down, but the rejection message itself has to
+# quote the URL to be useful, and that message must not be the leak.
+redact_url() {
+  if url_has_userinfo "${1-}"; then
+    _mvnw_url_scheme="${1%%://*}"
+    _mvnw_url_rest="${1#*://}"
+    _mvnw_url_authority="${_mvnw_url_rest%%/*}"
+    printf %s\\n "$_mvnw_url_scheme://***:***@${_mvnw_url_authority#*@}${_mvnw_url_rest#"$_mvnw_url_authority"}"
+  else
+    printf %s\\n "${1-}"
+  fi
+}
+
+# The transport contract, asserted rather than assumed. $2 names where the URL came
+# from, so a failure says which of the two inputs - the properties file or the
+# MVNW_REPOURL override - has to be corrected.
+assert_secure_url() {
+  case "${1-}" in
+  https://?*) ;;
+  *)
+    die "$2 must be an https URL, so the distribution cannot be fetched over a channel that permits substitution or credential capture; found '$(redact_url "${1-}")'"
+    ;;
+  esac
+  if url_has_userinfo "${1-}"; then
+    die "$2 must not embed credentials in the URL; set MVNW_USERNAME and MVNW_PASSWORD instead, which are sent only to the host named by the URL. Found '$(redact_url "${1-}")'"
+  fi
+}
+
 scriptDir="$(dirname "$0")"
 scriptName="$(basename "$0")"
 
@@ -205,65 +275,233 @@ while IFS="=" read -r key value; do
 done <"$scriptDir/.mvn/wrapper/maven-wrapper.properties"
 [ -n "${distributionUrl-}" ] || die "cannot read distributionUrl property in $scriptDir/.mvn/wrapper/maven-wrapper.properties"
 verbose "Apache Maven Wrapper ${wrapperVersion:-unknown}, configured by $scriptDir/.mvn/wrapper/maven-wrapper.properties"
-verbose "configured distributionUrl: $distributionUrl"
-verbose "distributionSha256Sum: ${distributionSha256Sum:-(absent, the downloaded distribution will NOT be verified)}"
+verbose "configured distributionUrl: $(redact_url "$distributionUrl")"
 
-case "${distributionUrl##*/}" in
-maven-mvnd-*bin.*)
-  MVN_CMD=mvnd.sh _MVNW_REPO_PATTERN=/maven/mvnd/
-  case "${PROCESSOR_ARCHITECTURE-}${PROCESSOR_ARCHITEW6432-}:$(uname -a)" in
-  *AMD64:CYGWIN* | *AMD64:MINGW*) distributionPlatform=windows-amd64 ;;
-  :Darwin*x86_64) distributionPlatform=darwin-amd64 ;;
-  :Darwin*arm64) distributionPlatform=darwin-aarch64 ;;
-  :Linux*x86_64*) distributionPlatform=linux-amd64 ;;
-  *)
-    echo "Cannot detect native platform for mvnd on $(uname)-$(uname -m), use pure java version" >&2
-    distributionPlatform=linux-amd64
-    ;;
-  esac
-  distributionUrl="${distributionUrl%-bin.*}-$distributionPlatform.zip"
+# CardDemo modification :: deviations 4 and 5. Everything the properties file says
+# about the distribution is checked HERE, before the cache is consulted and long
+# before anything is fetched. Ordering is the point: a launcher that validates
+# after a cache hit leaves a machine that already holds a distribution running
+# whatever it holds, and a launcher that validates after a download has already
+# spent the network on an archive it was never going to be allowed to use.
+assert_secure_url "$distributionUrl" "distributionUrl in $scriptDir/.mvn/wrapper/maven-wrapper.properties"
+
+# The digest is mandatory. Upstream treats it as optional and silently downgrades
+# to an unverified install when the key is absent or blank, which makes "verified,
+# not trusted" a property of the configuration rather than of the launcher. Both
+# the presence and the shape are checked, because a truncated or upper-case value
+# would otherwise fail later as a mismatch and read as a compromised archive
+# rather than as a mis-edited properties file.
+case "${distributionSha256Sum-}" in
+'')
+  die "distributionSha256Sum is not set in $scriptDir/.mvn/wrapper/maven-wrapper.properties. This launcher refuses to install a Maven distribution it cannot verify; add the SHA-256 of the pinned archive rather than removing the check."
   ;;
-maven-mvnd-*) MVN_CMD=mvnd.sh _MVNW_REPO_PATTERN=/maven/mvnd/ ;;
-*) MVN_CMD="mvn${scriptName#mvnw}" _MVNW_REPO_PATTERN=/org/apache/maven/ ;;
 esac
+if [ ${#distributionSha256Sum} -ne 64 ] || [ -n "$(printf %s "$distributionSha256Sum" | tr -d '0-9a-f')" ]; then
+  die "distributionSha256Sum in $scriptDir/.mvn/wrapper/maven-wrapper.properties must be exactly 64 lowercase hexadecimal characters, and it is not. A malformed digest cannot verify anything, so the build stops here rather than at a mismatch that would look like a tampered archive."
+fi
+verbose "distributionSha256Sum: present and well formed; verification of the downloaded archive is mandatory"
+
+# The archive shape, likewise checked up front, and against exactly the pattern
+# the properties file documents as a guarantee: an apache-maven -bin.zip and
+# nothing else. Upstream reaches its own shape test only after the cache lookup,
+# so a distributionUrl naming an archive the launcher cannot handle is diagnosed
+# on a cold machine and silently tolerated on a warm one - the same configuration
+# behaving differently depending on cache state. Upstream also accepts a
+# maven-mvnd archive, which this launcher cannot: mvnd publishes no digest it
+# could be held to, the digest is not optional here, and upstream's remedy for
+# that collision is to remove distributionSha256Sum - the one remedy this module
+# does not accept. mvnd is therefore refused at the point of configuration rather
+# than part way through an install, and it is refused with its own message so the
+# reason is not mistaken for a typo in the URL.
+case "${distributionUrl##*/}" in
+maven-mvnd-*)
+  die "maven-mvnd is not supported by this launcher: distributionSha256Sum is mandatory here and an mvnd distribution cannot be verified against it. Pin an apache-maven -bin.zip in $scriptDir/.mvn/wrapper/maven-wrapper.properties."
+  ;;
+esac
+case "${distributionUrl-}" in
+*?-bin.zip) ;;
+*) die "distributionUrl is not valid, must name an apache-maven *-bin.zip archive, but found '$(redact_url "${distributionUrl-}")'" ;;
+esac
+MVN_CMD="mvn${scriptName#mvnw}" _MVNW_REPO_PATTERN=/org/apache/maven/
 
 # apply MVNW_REPOURL and calculate MAVEN_HOME
-# maven home pattern: ~/.m2/wrapper/dists/{apache-maven-<version>,maven-mvnd-<version>-<platform>}/<hash>
-[ -z "${MVNW_REPOURL-}" ] || distributionUrl="$MVNW_REPOURL$_MVNW_REPO_PATTERN${distributionUrl#*"$_MVNW_REPO_PATTERN"}"
+# maven home pattern: ~/.m2/wrapper/dists/apache-maven-<version>/<hash>
+if [ -n "${MVNW_REPOURL-}" ]; then
+  distributionUrl="$MVNW_REPOURL$_MVNW_REPO_PATTERN${distributionUrl#*"$_MVNW_REPO_PATTERN"}"
+  # CardDemo modification :: deviation 5. The override is held to the same
+  # transport contract as the configured URL. Upstream applies it unchecked, so a
+  # mirror base of http:// or one carrying userinfo silently downgrades a
+  # verified-over-TLS fetch - and it is the override, not the pinned URL, that an
+  # environment can set without editing a committed file.
+  assert_secure_url "$distributionUrl" "the distribution URL produced by MVNW_REPOURL"
+  verbose "resolved distributionUrl: $(redact_url "$distributionUrl")"
+fi
 distributionUrlName="${distributionUrl##*/}"
 distributionUrlNameMain="${distributionUrlName%.*}"
 distributionUrlNameMain="${distributionUrlNameMain%-bin}"
 MAVEN_USER_HOME="${MAVEN_USER_HOME:-${HOME}/.m2}"
 MAVEN_HOME="${MAVEN_USER_HOME}/wrapper/dists/${distributionUrlNameMain-}/$(hash_string "$distributionUrl")"
 
+# CardDemo addition :: deviation 6. The three facts that make a cache trustworthy,
+# and the two that make installing one safe under concurrency.
+#
+# _MVNW_URL_MARKER is the file this launcher writes into a distribution directory
+# immediately before publishing it. Its presence is what distinguishes a directory
+# this launcher finished installing from one that some other process left behind
+# part way through, and its content is what proves the directory holds the
+# distribution the hash in its path claims - the hash is a 32-bit Java string hash
+# of the URL, so it is a cache key and not a collision-free identity.
+_MVNW_URL_MARKER=mvnw.url
+_MVNW_LOCK_DIR="$MAVEN_HOME.lock"
+_MVNW_LOCK_OWNED=false
+
+# A cache counts as installed only when the launcher it will be executed from is
+# actually there, the library directory it needs is actually there, and the marker
+# names this exact distribution. Upstream trusts the existence of the directory
+# alone, so a partial install - an interrupted extraction, a copy that ran out of
+# space, a cross-filesystem move that failed half way - is executed rather than
+# repaired, and executed by every later invocation as well.
+maven_home_is_valid() {
+  [ -d "$MAVEN_HOME" ] || return 1
+  [ -f "$MAVEN_HOME/bin/$MVN_CMD" ] || return 1
+  [ -d "$MAVEN_HOME/lib" ] || return 1
+  [ -f "$MAVEN_HOME/$_MVNW_URL_MARKER" ] || return 1
+  [ "$(trim "$(cat "$MAVEN_HOME/$_MVNW_URL_MARKER" 2>/dev/null)")" = "$distributionUrl" ] || return 1
+}
+
+release_lock() {
+  [ "$_MVNW_LOCK_OWNED" = true ] || return 0
+  _MVNW_LOCK_OWNED=false
+  rm -rf -- "$_MVNW_LOCK_DIR" 2>/dev/null || :
+}
+
+clean() {
+  [ -z "${TMP_DOWNLOAD_DIR-}" ] || rm -rf -- "$TMP_DOWNLOAD_DIR" 2>/dev/null || :
+  release_lock
+}
+
+# A lock is only useful if it cannot outlive its owner. The owner records its pid
+# inside the lock directory; a waiter reclaims the lock only once that pid is
+# provably gone, and only after five seconds, so the window between creating the
+# directory and writing the pid file can never be mistaken for an abandoned lock.
+reclaim_stale_lock() {
+  [ "$_mvnw_waited" -ge 5 ] || return 0
+  [ -f "$_MVNW_LOCK_DIR/pid" ] || return 0
+  _mvnw_lock_pid="$(cat "$_MVNW_LOCK_DIR/pid" 2>/dev/null)" || return 0
+  case "$_mvnw_lock_pid" in
+  '' | *[!0-9]*) return 0 ;;
+  esac
+  ! kill -0 "$_mvnw_lock_pid" 2>/dev/null || return 0
+  verbose "reclaiming the install lock at $_MVNW_LOCK_DIR left behind by process $_mvnw_lock_pid"
+  rm -rf -- "$_MVNW_LOCK_DIR" 2>/dev/null || :
+}
+
+# mkdir is the portable atomic test-and-set: exactly one of several concurrent
+# invocations creates the directory and the rest fail, with no helper utility and
+# no filesystem-specific locking primitive involved. Returns 0 when this process
+# holds the lock and 1 when the wait ended because another invocation published a
+# valid cache, which is a success for the caller rather than a failure.
+acquire_lock() {
+  _mvnw_waited=0
+  _mvnw_lock_timeout="${MVNW_LOCK_TIMEOUT_SECONDS:-300}"
+  until mkdir -- "$_MVNW_LOCK_DIR" 2>/dev/null; do
+    if maven_home_is_valid; then
+      verbose "another invocation finished installing $MAVEN_HOME while this one waited"
+      return 1
+    fi
+    if [ "$_mvnw_waited" -ge "$_mvnw_lock_timeout" ]; then
+      die "waited ${_mvnw_lock_timeout}s for the Maven distribution install lock at $_MVNW_LOCK_DIR and it is still held. If no other build is running, remove that directory and retry; set MVNW_LOCK_TIMEOUT_SECONDS to wait longer."
+    fi
+    reclaim_stale_lock
+    sleep 1
+    _mvnw_waited=$((_mvnw_waited + 1))
+  done
+  _MVNW_LOCK_OWNED=true
+  printf %s\\n "$$" >"$_MVNW_LOCK_DIR/pid" 2>/dev/null || :
+  return 0
+}
+
+# A staging directory is named after the cache entry it is being built for, so any
+# left behind by an invocation that was killed outright - SIGKILL runs no trap -
+# belongs to this distribution alone and can be removed here, under the lock,
+# rather than accumulating in the user's Maven home indefinitely. Globbing is
+# disabled for the script as a whole, so it is enabled for exactly this loop and
+# the literal-pattern case is handled by the existence test.
+discard_stale_staging_dirs() {
+  set +f
+  for _mvnw_stale in "$MAVEN_HOME".install.*; do
+    if [ -e "$_mvnw_stale" ]; then
+      verbose "removing a staging directory left behind at $_mvnw_stale"
+      rm -rf -- "$_mvnw_stale" 2>/dev/null || :
+    fi
+  done
+  set -f
+}
+
+# Held under the lock, so nothing is installing into the directory being discarded.
+# Renaming before deleting means a reader that opened the old path keeps reading a
+# consistent tree, and the rebuild below cannot race the delete.
+quarantine_invalid_maven_home() {
+  [ -e "$MAVEN_HOME" ] || return 0
+  _mvnw_quarantine="$MAVEN_HOME.invalid.$$"
+  printf %s\\n "Discarding an incomplete Maven distribution at $MAVEN_HOME and installing it again." >&2
+  rm -rf -- "$_mvnw_quarantine" 2>/dev/null || :
+  mv -- "$MAVEN_HOME" "$_mvnw_quarantine" || die "cannot set aside the incomplete Maven distribution at $MAVEN_HOME"
+  rm -rf -- "$_mvnw_quarantine" 2>/dev/null || :
+}
+
 exec_maven() {
+  # The lock and the staging directory are released here rather than in the EXIT
+  # trap, because exec replaces this process and no trap of ours will run again.
+  clean
   unset MVNW_VERBOSE MVNW_USERNAME MVNW_PASSWORD MVNW_REPOURL || :
   exec "$MAVEN_HOME/bin/$MVN_CMD" "$@" || die "cannot exec $MAVEN_HOME/bin/$MVN_CMD"
 }
 
-if [ -d "$MAVEN_HOME" ]; then
-  verbose "found existing MAVEN_HOME at $MAVEN_HOME"
+if maven_home_is_valid; then
+  verbose "found a complete MAVEN_HOME at $MAVEN_HOME"
   exec_maven "$@"
 fi
 
-case "${distributionUrl-}" in
-*?-bin.zip | *?maven-mvnd-?*-?*.zip) ;;
-*) die "distributionUrl is not valid, must match *-bin.zip or maven-mvnd-*.zip, but found '${distributionUrl-}'" ;;
-esac
+# The cache parent has to exist before either the lock directory or the staging
+# directory can be created inside it, and both are created inside it deliberately:
+# the lock is per distribution, and staging beside the destination is what makes
+# publication a rename on one filesystem rather than a copy across two.
+mkdir -p -- "${MAVEN_HOME%/*}" || die "cannot create the wrapper cache directory ${MAVEN_HOME%/*}"
 
-# prepare tmp dir
-if TMP_DOWNLOAD_DIR="$(mktemp -d)" && [ -d "$TMP_DOWNLOAD_DIR" ]; then
-  clean() { rm -rf -- "$TMP_DOWNLOAD_DIR"; }
-  trap clean HUP INT TERM EXIT
+# Installed before the lock is taken, so an interrupt during the wait still
+# releases it.
+trap clean HUP INT TERM EXIT
+
+if acquire_lock; then
+  # Re-checked under the lock: between the fast path above and the lock being
+  # granted, another invocation may have installed the distribution in full.
+  if maven_home_is_valid; then
+    verbose "found a complete MAVEN_HOME at $MAVEN_HOME"
+    exec_maven "$@"
+  fi
+  quarantine_invalid_maven_home
+  discard_stale_staging_dirs
 else
-  die "cannot create temp dir"
+  exec_maven "$@"
 fi
 
-mkdir -p -- "${MAVEN_HOME%/*}"
+# prepare tmp dir
+# CardDemo modification :: deviation 6. Staged beside the destination inside the
+# cache parent instead of in the system temporary directory, and named after the
+# cache entry it is being built for. Upstream stages in /tmp and installs with a
+# move, which on the common layout where /tmp is a separate mount is not a rename
+# but a recursive copy - interruptible half way, and published under the final name
+# while still incomplete.
+if TMP_DOWNLOAD_DIR="$(mktemp -d "$MAVEN_HOME.install.XXXXXX")" && [ -d "$TMP_DOWNLOAD_DIR" ]; then
+  :
+else
+  die "cannot create a staging directory beside $MAVEN_HOME"
+fi
 
 # Download and Install Apache Maven
 verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
-verbose "Downloading from: $distributionUrl"
+verbose "Downloading from: $(redact_url "$distributionUrl")"
 verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
 
 # CardDemo modification. The archive is ALWAYS the .zip named in
@@ -284,62 +522,144 @@ case "${MVNW_PASSWORD:+has-password}" in
 has-password) [ -n "${MVNW_USERNAME-}" ] || MVNW_USERNAME='' MVNW_PASSWORD='' ;;
 esac
 
+# CardDemo modification :: deviation 5. Each downloader is told, in its own terms,
+# that a redirect may not leave https and may not loop. The digest below would
+# catch substituted CONTENT either way; what a digest cannot catch is the request
+# itself being replayed in clear text, or an authenticated retry offering its
+# credentials to whichever host a redirect chain ends at. wget's flags are probed
+# rather than assumed, because they are GNU extensions and the BusyBox wget found
+# on minimal images rejects an unknown option outright - the fetch has to keep
+# working there, and the URL is already required to be https.
+__MVNW_WGET_TRANSPORT=''
+if [ -z "${MVNW_USERNAME-}" ] && command -v wget >/dev/null; then
+  if wget --help 2>&1 | grep -q -- '--https-only'; then
+    __MVNW_WGET_TRANSPORT=true
+  else
+    verbose "this wget has no --https-only; the https-only distributionUrl and the mandatory digest still hold"
+  fi
+fi
+
 if [ -z "${MVNW_USERNAME-}" ] && command -v wget >/dev/null; then
   verbose "Found wget ... using wget"
-  wget ${__MVNW_QUIET_WGET:+"$__MVNW_QUIET_WGET"} "$distributionUrl" -O "$TMP_DOWNLOAD_DIR/$distributionUrlName" || die "wget: Failed to fetch $distributionUrl"
+  if [ "$__MVNW_WGET_TRANSPORT" = true ]; then
+    wget ${__MVNW_QUIET_WGET:+"$__MVNW_QUIET_WGET"} --https-only --max-redirect=5 "$distributionUrl" -O "$TMP_DOWNLOAD_DIR/$distributionUrlName" || die "wget: Failed to fetch $(redact_url "$distributionUrl")"
+  else
+    wget ${__MVNW_QUIET_WGET:+"$__MVNW_QUIET_WGET"} "$distributionUrl" -O "$TMP_DOWNLOAD_DIR/$distributionUrlName" || die "wget: Failed to fetch $(redact_url "$distributionUrl")"
+  fi
 elif [ -z "${MVNW_USERNAME-}" ] && command -v curl >/dev/null; then
   verbose "Found curl ... using curl"
-  curl ${__MVNW_QUIET_CURL:+"$__MVNW_QUIET_CURL"} -f -L -o "$TMP_DOWNLOAD_DIR/$distributionUrlName" "$distributionUrl" || die "curl: Failed to fetch $distributionUrl"
+  curl ${__MVNW_QUIET_CURL:+"$__MVNW_QUIET_CURL"} --proto '=https' --proto-redir '=https' --max-redirs 5 -f -L -o "$TMP_DOWNLOAD_DIR/$distributionUrlName" "$distributionUrl" || die "curl: Failed to fetch $(redact_url "$distributionUrl")"
 elif set_java_home; then
   verbose "Falling back to use Java to download"
   javaSource="$TMP_DOWNLOAD_DIR/Downloader.java"
   targetZip="$TMP_DOWNLOAD_DIR/$distributionUrlName"
-  cat >"$javaSource" <<-END
-	public class Downloader extends java.net.Authenticator
-	{
-	  protected java.net.PasswordAuthentication getPasswordAuthentication()
-	  {
-	    return new java.net.PasswordAuthentication( System.getenv( "MVNW_USERNAME" ), System.getenv( "MVNW_PASSWORD" ).toCharArray() );
-	  }
-	  public static void main( String[] args ) throws Exception
-	  {
-	    setDefault( new Downloader() );
-	    java.nio.file.Files.copy( java.net.URI.create( args[0] ).toURL().openStream(), java.nio.file.Paths.get( args[1] ).toAbsolutePath().normalize() );
-	  }
-	}
-	END
+  # CardDemo modification :: deviation 5. This is the branch that carries
+  # credentials - the wget and curl branches above run only when MVNW_USERNAME is
+  # empty - so it is the branch where a redirect matters most. Upstream opens the
+  # URL as a stream and lets HttpURLConnection follow redirects with a global
+  # Authenticator installed, which answers a challenge from whatever host the chain
+  # reaches. Here the redirects are followed one hop at a time, every hop has to be
+  # https and free of embedded userinfo, the chain is bounded, and the credentials
+  # are offered only to the host the properties file named.
+  cat >"$javaSource" <<'END_WRAPPER_DOWNLOADER'
+public class Downloader extends java.net.Authenticator {
+  private static final int MAX_HOPS = 5;
+  private static String allowedHost;
+
+  @Override
+  protected java.net.PasswordAuthentication getPasswordAuthentication() {
+    if (allowedHost == null || !allowedHost.equalsIgnoreCase(getRequestingHost())) {
+      return null;
+    }
+    String user = System.getenv("MVNW_USERNAME");
+    String password = System.getenv("MVNW_PASSWORD");
+    if (user == null || user.isEmpty() || password == null) {
+      return null;
+    }
+    return new java.net.PasswordAuthentication(user, password.toCharArray());
+  }
+
+  private static void requireSecure(java.net.URI uri) throws java.io.IOException {
+    if (!"https".equalsIgnoreCase(uri.getScheme())) {
+      throw new java.io.IOException("Refusing a distribution URL whose scheme is not https: " + uri.getScheme());
+    }
+    if (uri.getRawUserInfo() != null) {
+      throw new java.io.IOException("Refusing a distribution URL that embeds credentials");
+    }
+  }
+
+  public static void main(String[] args) throws Exception {
+    java.net.URI uri = java.net.URI.create(args[0]);
+    requireSecure(uri);
+    allowedHost = uri.getHost();
+    setDefault(new Downloader());
+    java.nio.file.Path target = java.nio.file.Paths.get(args[1]).toAbsolutePath().normalize();
+    for (int hop = 0; hop <= MAX_HOPS; hop++) {
+      requireSecure(uri);
+      java.net.HttpURLConnection connection = (java.net.HttpURLConnection) uri.toURL().openConnection();
+      connection.setInstanceFollowRedirects(false);
+      connection.setConnectTimeout(30000);
+      connection.setReadTimeout(600000);
+      int status = connection.getResponseCode();
+      if (status == java.net.HttpURLConnection.HTTP_MOVED_PERM
+          || status == java.net.HttpURLConnection.HTTP_MOVED_TEMP
+          || status == java.net.HttpURLConnection.HTTP_SEE_OTHER
+          || status == 307
+          || status == 308) {
+        String location = connection.getHeaderField("Location");
+        connection.disconnect();
+        if (location == null || location.isEmpty()) {
+          throw new java.io.IOException("Redirect carried no Location header");
+        }
+        uri = uri.resolve(location);
+        continue;
+      }
+      if (status != java.net.HttpURLConnection.HTTP_OK) {
+        connection.disconnect();
+        throw new java.io.IOException("Unexpected HTTP status " + status + " fetching the Maven distribution");
+      }
+      try (java.io.InputStream input = connection.getInputStream()) {
+        java.nio.file.Files.copy(input, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+      }
+      return;
+    }
+    throw new java.io.IOException("Refusing to follow more than " + MAX_HOPS + " redirects");
+  }
+}
+END_WRAPPER_DOWNLOADER
   # For Cygwin/MinGW, switch paths to Windows format before running javac and java
   verbose " - Compiling Downloader.java ..."
   "$(native_path "$JAVACCMD")" "$(native_path "$javaSource")" || die "Failed to compile Downloader.java"
   verbose " - Running Downloader.java ..."
-  "$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" Downloader "$distributionUrl" "$(native_path "$targetZip")"
+  "$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" Downloader "$distributionUrl" "$(native_path "$targetZip")" || die "Failed to fetch $(redact_url "$distributionUrl") with the JDK"
 fi
 
-# If specified, validate the SHA-256 sum of the Maven distribution zip file
-if [ -n "${distributionSha256Sum-}" ]; then
-  distributionSha256Result=false
-  if [ "$MVN_CMD" = mvnd.sh ]; then
-    echo "Checksum validation is not supported for maven-mvnd." >&2
-    echo "Please disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties." >&2
-    exit 1
-  elif command -v sha256sum >/dev/null; then
-    if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | sha256sum -c - >/dev/null 2>&1; then
-      distributionSha256Result=true
-    fi
-  elif command -v shasum >/dev/null; then
-    if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | shasum -a 256 -c >/dev/null 2>&1; then
-      distributionSha256Result=true
-    fi
-  elif set_java_home; then
-    # CardDemo addition: digest the archive with the JDK when no digest utility is on
-    # PATH. Neither sha256sum nor shasum is specified by POSIX, and upstream's response
-    # to their absence is to exit 1, which turns a missing convenience utility into a
-    # build that cannot run. java.security computes the same digest and keeps
-    # verification mandatory: the digest is still compared, and a mismatch still fails
-    # closed below.
-    verbose " - No digest utility found; digesting with the JDK ..."
-    javaDigestSource="$TMP_DOWNLOAD_DIR/WrapperSha256.java"
-    cat >"$javaDigestSource" <<'END_WRAPPER_SHA256'
+# Validate the SHA-256 sum of the Maven distribution zip file.
+# CardDemo modification :: deviation 4. Unconditional, because distributionSha256Sum
+# was required to be present and well formed before anything was fetched. Upstream
+# wraps this whole block in a test for the property being non-empty, which is the
+# switch that turns verification off; there is no such switch here. The mvnd branch
+# upstream carries at the head of this block is gone with it - mvnd is refused at
+# configuration time, so a branch here could never run.
+distributionSha256Result=false
+if command -v sha256sum >/dev/null; then
+  if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | sha256sum -c - >/dev/null 2>&1; then
+    distributionSha256Result=true
+  fi
+elif command -v shasum >/dev/null; then
+  if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | shasum -a 256 -c >/dev/null 2>&1; then
+    distributionSha256Result=true
+  fi
+elif set_java_home; then
+  # CardDemo addition: digest the archive with the JDK when no digest utility is on
+  # PATH. Neither sha256sum nor shasum is specified by POSIX, and upstream's response
+  # to their absence is to exit 1, which turns a missing convenience utility into a
+  # build that cannot run. java.security computes the same digest and keeps
+  # verification mandatory: the digest is still compared, and a mismatch still fails
+  # closed below.
+  verbose " - No digest utility found; digesting with the JDK ..."
+  javaDigestSource="$TMP_DOWNLOAD_DIR/WrapperSha256.java"
+  cat >"$javaDigestSource" <<'END_WRAPPER_SHA256'
 public class WrapperSha256 {
   public static void main(String[] args) throws Exception {
     java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
@@ -359,24 +679,23 @@ public class WrapperSha256 {
   }
 }
 END_WRAPPER_SHA256
-    "$(native_path "$JAVACCMD")" "$(native_path "$javaDigestSource")" || die "Failed to compile WrapperSha256.java"
-    computedSha256Sum="$("$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" WrapperSha256 "$(native_path "$TMP_DOWNLOAD_DIR/$distributionUrlName")")" || die "Failed to compute the distribution SHA-256 with the JDK"
-    # The configured value is lowercase hex by contract and the digest above is
-    # emitted lowercase, so a plain string comparison is exact; trim only removes
-    # the line terminator the JVM printed.
-    if [ "$(trim "$computedSha256Sum")" = "$distributionSha256Sum" ]; then
-      distributionSha256Result=true
-    fi
-  else
-    echo "Checksum validation was requested but no 'sha256sum' or 'shasum' is available and no JDK could be located." >&2
-    echo "Set JAVA_HOME to a JDK, or put java and javac on PATH, so the digest can be computed without either command." >&2
-    exit 1
+  "$(native_path "$JAVACCMD")" "$(native_path "$javaDigestSource")" || die "Failed to compile WrapperSha256.java"
+  computedSha256Sum="$("$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" WrapperSha256 "$(native_path "$TMP_DOWNLOAD_DIR/$distributionUrlName")")" || die "Failed to compute the distribution SHA-256 with the JDK"
+  # The configured value is lowercase hex by contract and the digest above is
+  # emitted lowercase, so a plain string comparison is exact; trim only removes
+  # the line terminator the JVM printed.
+  if [ "$(trim "$computedSha256Sum")" = "$distributionSha256Sum" ]; then
+    distributionSha256Result=true
   fi
-  if [ $distributionSha256Result = false ]; then
-    echo "Error: Failed to validate Maven distribution SHA-256, your Maven distribution might be compromised." >&2
-    echo "If you updated your Maven version, you need to update the specified distributionSha256Sum property." >&2
-    exit 1
-  fi
+else
+  echo "The Maven distribution has to be verified and no 'sha256sum' or 'shasum' is available and no JDK could be located." >&2
+  echo "Set JAVA_HOME to a JDK, or put java and javac on PATH, so the digest can be computed without either command." >&2
+  exit 1
+fi
+if [ $distributionSha256Result = false ]; then
+  echo "Error: Failed to validate Maven distribution SHA-256, your Maven distribution might be compromised." >&2
+  echo "If you updated your Maven version, you need to update the specified distributionSha256Sum property." >&2
+  exit 1
 fi
 
 # unzip and move
@@ -477,8 +796,24 @@ if [ -z "$actualDistributionDir" ]; then
 fi
 
 verbose "Found extracted Maven distribution directory: $actualDistributionDir"
-printf %s\\n "$distributionUrl" >"$TMP_DOWNLOAD_DIR/$actualDistributionDir/mvnw.url"
-mv -- "$TMP_DOWNLOAD_DIR/$actualDistributionDir" "$MAVEN_HOME" || [ -d "$MAVEN_HOME" ] || die "fail to move MAVEN_HOME"
 
-clean || :
+# CardDemo modification :: deviation 6. Publication, in the one order that makes a
+# partially installed cache unobservable.
+#
+# The marker is written while the tree is still staged and still under a name no
+# other invocation looks for, so the directory becomes complete before it becomes
+# visible. The rename is then a single atomic operation on one filesystem, because
+# staging happened inside the cache parent - a reader either sees no MAVEN_HOME or
+# sees the finished one, never a half-copied one.
+#
+# The failure is a failure. Upstream writes `|| [ -d "$MAVEN_HOME" ] ||`, which
+# accepts a failed move whenever something already occupies the destination - the
+# very situation a failed move creates when the destination is a partial tree from
+# an earlier interrupted install. Here the rename is required to succeed, and the
+# published result is then validated by the same predicate the fast path uses, so
+# no invocation can execute a distribution this one did not finish installing.
+printf %s\\n "$distributionUrl" >"$TMP_DOWNLOAD_DIR/$actualDistributionDir/$_MVNW_URL_MARKER"
+mv -- "$TMP_DOWNLOAD_DIR/$actualDistributionDir" "$MAVEN_HOME" || die "cannot publish the Maven distribution to $MAVEN_HOME"
+maven_home_is_valid || die "the Maven distribution published to $MAVEN_HOME is not complete; refusing to run a build on it"
+
 exec_maven "$@"

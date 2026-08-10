@@ -68,7 +68,7 @@ class TransactionListResponseSecurityTest {
     private static final String NEXT_CURSOR = "NXT8461372935172994";
 
     /**
-     * The five components the outer renderer withholds, in declaration order.
+     * The four components the outer renderer withholds, in declaration order.
      *
      * <p>The selected identifier joins the echoed search key here because the two are the same kind of
      * value - a sixteen-digit transaction key - differing only in whether the operator typed it or
@@ -76,7 +76,7 @@ class TransactionListResponseSecurityTest {
      * reachable through whichever of the two paths was left open.</p>
      */
     private static final List<String> WITHHELD_OUTER_COMPONENTS =
-            List.of("rows", "pageMetadata", "continuation", "transactionIdFilter",
+            List.of("rows", "pageMetadata", "transactionIdFilter",
                     "selectedTransactionId");
 
     /** The three components the row renderer withholds, in declaration order. */
@@ -114,15 +114,15 @@ class TransactionListResponseSecurityTest {
 
     private static TransactionListResponse populatedWith(NavigationContext navigation) {
         return new TransactionListResponse(
-                List.of(row(), row()), page(), TransactionListRequest.ScreenContinuation.empty(), navigation, "route/next",
+                List.of(row(), row()), page(), navigation, "route/next",
                 TRANSACTION_ID_FILTER, "00000001", "MESSAGE LINE", true, List.of(), null, false, "TRNIDIN",
                 "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C");
     }
 
     private static TransactionListResponse empty() {
         return new TransactionListResponse(
-                null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null, null, null, false, List.of(), null, false, null, null, null, null, null, null,
-                null);
+                null, null, null, null, null, null, null, false, List.of(), null, false, null, null,
+                null, null, null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -181,7 +181,7 @@ class TransactionListResponseSecurityTest {
                 + "place text of their choosing in a log by submitting an invalid one")
         void theFilterIsWithheldWhetherAcceptedOrRejected() {
             TransactionListResponse rejected = new TransactionListResponse(
-                    List.of(), page(), TransactionListRequest.ScreenContinuation.empty(), null, "route/next",
+                    List.of(), page(), null, "route/next",
                     "'; DROP TABLE transaction; --", "00000001",
                     TransactionListResponse.MESSAGE_TRAN_ID_NOT_NUMERIC, true, List.of(), null, false, "TRNIDIN",
                     "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C");
@@ -223,7 +223,7 @@ class TransactionListResponseSecurityTest {
             TransactionRow other = new TransactionRow(1,
                     "U", "1111222233334444", "01/02/23", "SOMEWHERE ELSE", new BigDecimal("1.00"));
             TransactionListResponse differentMovements = new TransactionListResponse(
-                    List.of(other, other), page(), TransactionListRequest.ScreenContinuation.empty(), null, "route/next",
+                    List.of(other, other), page(), null, "route/next",
                     "9999888877776666", "00000001", "MESSAGE LINE", true, List.of(), null, false, "TRNIDIN",
                     "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C");
 

@@ -402,9 +402,6 @@ public final class CardListService {
      */
     private static final int ERROR_MESSAGE_WIDTH = 75;
 
-    /** {@code WS-INFO-MSG}, line 112: the informational message field is 45 characters. */
-    private static final int INFO_MESSAGE_WIDTH = 45;
-
     /** {@code WS-LONG-MSG}, line 111: the long diagnostic field is 500 characters. */
     private static final int LONG_MESSAGE_WIDTH = 500;
 
@@ -416,12 +413,6 @@ public final class CardListService {
 
     /** Stem of the seven 3270 selection field names, {@code CRDSEL1} through {@code CRDSEL7}. */
     private static final String BMS_FIELD_SELECTION_STEM = "CRDSEL";
-
-    /** Property name reported for an account-filter failure. */
-    private static final String PROPERTY_ACCOUNT_FILTER = "accountIdFilter";
-
-    /** Property name reported for a card-filter failure. */
-    private static final String PROPERTY_CARD_FILTER = "cardNumberFilter";
 
     /** Stem of the seven selection property names, {@code selection1} through {@code selection7}. */
     private static final String PROPERTY_SELECTION_STEM = "selection";
@@ -509,7 +500,7 @@ public final class CardListService {
     /** {@code FILLER PIC X(7) VALUE ',RESP2 '}, lines 167 to 168. */
     private static final String FILE_ERROR_RESP2 = ",RESP2 ";
 
-    /** {@code MOVE 'READ' TO ERROR-OPNAME}, lines 1226, 1250, 1312 and 1365. */
+    /** The {@code READ} operation name recorded at lines 1226, 1250, 1312 and 1365. */
     private static final String FILE_ERROR_OPERATION_READ = "READ";
 
     // ==============================================================================================
@@ -760,7 +751,16 @@ public final class CardListService {
         /** Lines 1157, 1208, 1305 and 1333. */
         NORMAL(STATUS_NORMAL),
 
-        /** Lines 1158, 1209, 1306 and 1334. */
+        /**
+         * Lines 1158, 1209, 1306 and 1334.
+         *
+         * <p>The source pairs this arm with {@link #NORMAL} in one shared body at every one of those four
+         * evaluations, which is why every switch over this type labels the two together rather than
+         * asking a predicate whether a record was delivered. A predicate saying exactly that was declared
+         * here by an earlier revision and reached by nothing once the arms became multi-label; it is
+         * removed rather than kept as documentation, because the four paired arms are the documentation.
+         * See {@code docs/decision-log.md} DL-314.
+         */
         DUPLICATE(STATUS_DUPLICATE),
 
         /** Lines 1215 and 1233. */
@@ -791,16 +791,6 @@ public final class CardListService {
          */
         private String getStatus() {
             return this.status;
-        }
-
-        /**
-         * Reports whether a record was delivered, which the source expresses by handling its normal
-         * and duplicate arms with one shared body.
-         *
-         * @return {@code true} for {@link #NORMAL} and {@link #DUPLICATE}
-         */
-        private boolean recordDelivered() {
-            return this == NORMAL || this == DUPLICATE;
         }
     }
 
@@ -1488,7 +1478,7 @@ public final class CardListService {
     /**
      * {@code 0000-MAIN}, lines 298 to 602: the whole turn, in the source's own order.
      *
-     * <p>The main evaluation at line 418 is an {@code EVALUATE TRUE}, which is a cascade of unrelated
+     * <p>The main evaluation at line 418 is a multi-way selection, which is a cascade of unrelated
      * compound conditions rather than a selection on one value, so it is rendered as an ordered chain
      * whose last arm is the source's trailing arm. That is the construct that preserves the contract:
      * the source stops at the first arm that holds, several of its arms overlap, and a Java
@@ -1805,15 +1795,15 @@ public final class CardListService {
      * @param state the turn's working storage
      */
     private void screenInit(final TurnState state) {
-        // MOVE CCDA-TITLE01 and CCDA-TITLE02 at lines 647 to 648, at their catalogue widths.
+        // Lines 647 to 648 carry CCDA-TITLE01 and CCDA-TITLE02, at their catalogue widths.
         state.title01 = this.messageCatalogService.screenTitle01();
         state.title02 = this.messageCatalogService.screenTitle02();
 
-        // MOVE LIT-THISTRANID and LIT-THISPGM at lines 649 to 650.
+        // Lines 649 to 650 carry LIT-THISTRANID and LIT-THISPGM.
         state.transactionName = headerField(LIT_THISTRANID, TRANSACTION_NAME_WIDTH);
         state.programName = headerField(LIT_THISPGM, PROGRAM_NAME_WIDTH);
 
-        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 652.
+        // Line 652 carries the current date into WS-CURDATE-DATA.
         final LocalDateTime now = LocalDateTime.now(this.clock);
         final String fullYear = headerNumber(now.getYear(), HEADER_FULL_YEAR_WIDTH);
 
@@ -2017,7 +2007,7 @@ public final class CardListService {
      *
      * <p>The two echo evaluations at lines 844 to 854 and 856 to 867 decide <em>what text</em> each
      * filter field shows and with which attribute, which is presentation state owned by the response
-     * mapper. Both are {@code EVALUATE TRUE} cascades whose first two arms share one body: a filter
+     * mapper. Both are multi-way cascades whose first two arms share one body: a filter
      * that is either valid or not-OK is echoed as the operator typed it, an absent identifier clears
      * the field, and anything else echoes the identifier the navigation state carries. Neither
      * evaluation affects the turn's outcome, so neither is reproduced here beyond this note.
@@ -2072,7 +2062,7 @@ public final class CardListService {
     /**
      * {@code 1400-SETUP-MESSAGE}, lines 895 to 930: settles which message the screen carries.
      *
-     * <p>An {@code EVALUATE TRUE} cascade, so an ordered chain, and the order is the contract because
+     * <p>A multi-way cascade, so an ordered chain, and the order is the contract because
      * several arms overlap. Written in the source's order, arm by arm:
      *
      * <ol>

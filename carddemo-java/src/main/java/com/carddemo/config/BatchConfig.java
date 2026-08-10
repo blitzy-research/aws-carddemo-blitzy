@@ -16,7 +16,13 @@
  */
 package com.carddemo.config;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+
 import java.nio.file.Path;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -138,6 +144,16 @@ import com.carddemo.service.JobCompletionEventPublisher;
  * what is already wired. {@code batch/step/AbstractCobolStep} additionally times each translated program
  * on its own timer.
  *
+ * <p><strong>Publishing a measurement is not registering a registry, and this class does publish one.</strong>
+ * Both registries are <em>injected</em> and remain owned elsewhere; what is added is a single counter and a
+ * single observation, both at the job-boundary listener and both for one reason. The framework stops its
+ * job timer and its job span <em>before</em> the terminal listener callbacks, and this module's required
+ * durable boundary runs inside one of them and can turn a COMPLETED status into a persisted FAILED one. No
+ * amount of framework telemetry can reflect that, because it was all recorded a moment earlier. So the
+ * listener counts the persisted verdict alongside the observed one, and observes the object-store work that
+ * would otherwise appear in no trace at all. Neither replaces a framework measurement; both exist because a
+ * framework measurement cannot answer the question.
+ *
  * <p><strong>No logger configuration.</strong> {@code logback-spring.xml} owns appender selection and the
  * correlation fields, and the shared configuration document and its overlays own every verbosity level,
  * including the two batch categories and the migration-tool category whose output the Compose validation
@@ -145,7 +161,7 @@ import com.carddemo.service.JobCompletionEventPublisher;
  *
  * <p><strong>No schema work.</strong> The framework provisions its own metadata tables under the prefix
  * the shared configuration declares; those tables are additional to, never instead of, the eleven
- * application tables that {@code db/migration/V1__create_schema.sql} creates, and a table census
+ * application tables that {@code db/migration/schema/V1__create_schema.sql} creates, and a table census
  * must exclude that prefix. {@code config/FlywayConfig} owns migration behaviour, the delivered migration
  * inventory stays at exactly four scripts, and none of them may define a metadata table.
  *
@@ -254,6 +270,89 @@ public final class BatchConfig {
     }
 
     /**
+     * The counter that carries the job verdict a reader can trust, published after publication.
+     *
+     * <h2>Why the framework's own job telemetry cannot carry it</h2>
+     *
+     * <p>The framework stops its job observation and its job timer <em>before</em> it calls the terminal
+     * listener callbacks. This module's required durable boundary runs inside one of those callbacks, and
+     * it can change a status of COMPLETED into a persisted status of FAILED. The framework's timer and
+     * span have already been recorded by then, so they report the status the job had a moment earlier and
+     * nothing in either of them ever changes. The ordering belongs to the framework and is not
+     * configurable, so the only remedy available to this module is to publish its own measurement after
+     * the verdict is final - which is what this counter is.
+     *
+     * <p>It is deliberately a counter rather than a second timer. Elapsed time is already measured, once,
+     * correctly, by the framework; duplicating it would invite two answers to one question. What is
+     * missing is not a duration but a <em>verdict</em>, so what is published is one count per terminal
+     * job carrying the verdict that was persisted.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-305.
+     */
+    static final String TERMINAL_VERDICT_METER_NAME = "carddemo.batch.job.terminal";
+
+    /** Description of {@link #TERMINAL_VERDICT_METER_NAME}, stated once. */
+    private static final String TERMINAL_VERDICT_METER_DESCRIPTION =
+            "Terminal outcomes of migrated CardDemo batch jobs, counted after the durable artifact"
+                    + " boundary has been completed and the verdict is final";
+
+    /** Tag naming the job a terminal count belongs to. */
+    static final String TAG_JOB = "job";
+
+    /**
+     * Tag carrying the status that was <em>persisted</em>, which is the authoritative one.
+     */
+    static final String TAG_PERSISTED_STATUS = "status";
+
+    /**
+     * Tag carrying the status the framework's own telemetry recorded, so a disagreement is queryable.
+     *
+     * <p>Its whole purpose is that the two values can differ. A series where this reads COMPLETED while
+     * {@link #TAG_PERSISTED_STATUS} reads FAILED is exactly the case the framework's timer reports as a
+     * success and the repository records as a failure, and having both on one meter makes that case a
+     * query rather than an investigation. Both values come from a small closed enumeration, so the pair
+     * adds no meaningful cardinality.</p>
+     */
+    static final String TAG_OBSERVED_STATUS = "observedStatus";
+
+    /** Tag naming what the durable boundary did, so a verdict can be attributed to it or exonerated. */
+    static final String TAG_PUBLICATION = "publication";
+
+    /** Publication tag value for a job that registered no durable artifact. */
+    static final String PUBLICATION_NOT_REQUIRED = "NOT_REQUIRED";
+
+    /** Publication tag value for a job whose registered artifacts were all published. */
+    static final String PUBLICATION_PUBLISHED = "PUBLISHED";
+
+    /** Publication tag value for a job whose registered artifacts could not be published. */
+    static final String PUBLICATION_FAILED = "FAILED";
+
+    /** Publication tag value for a job that did not complete, so publication was skipped. */
+    static final String PUBLICATION_SKIPPED = "SKIPPED";
+
+    /**
+     * Observation name covering the durable artifact boundary that runs after the job's own span closed.
+     *
+     * <p>The object-store work this callback performs was previously untraced in both directions: the
+     * framework's job span was already closed, and nothing here opened one of its own, so uploads, alias
+     * advances and retention deletions appeared in no trace at all. This observation makes that work
+     * visible and gives the store's own per-operation observations a parent.
+     *
+     * <p><strong>It cannot be a child of the job's span, and that is a framework ordering rather than an
+     * omission.</strong> The job observation is stopped before this callback is entered, so there is no
+     * open span to descend from. What is carried instead is identity: the job name as a low-cardinality
+     * tag and the execution identifier as a high-cardinality one, which is what lets a reader join this
+     * work to the job execution it belongs to.
+     */
+    static final String PUBLICATION_OBSERVATION_NAME = "carddemo.batch.job.publication";
+
+    /** Tag carrying the execution a publication belongs to, so it can be joined to the job's own record. */
+    static final String TAG_JOB_EXECUTION_ID = "jobExecutionId";
+
+    /** Tag carrying how many registered artifacts the publication covered. */
+    static final String TAG_ARTIFACT_COUNT = "artifacts";
+
+    /**
      * The one job-boundary diagnostic every job configuration attaches, announcing a job's start and its
      * terminal outcome.
      *
@@ -295,8 +394,17 @@ public final class BatchConfig {
      * only, which is the abnormal disposition of the legacy allocation and keeps a failed run from leaving
      * a dead artefact in the staging root. See {@code docs/decision-log.md} entry DL-211.
      *
+     * <p><strong>It publishes one measurement of its own, and only one.</strong> The framework's job timer
+     * and job span are stopped before this callback runs, so neither can carry a verdict this callback is
+     * still able to change. {@link #TERMINAL_VERDICT_METER_NAME} therefore records the verdict that was
+     * persisted, alongside the one the framework recorded, so the two can be compared rather than
+     * confused. That is not a second registry and not a second timer: the meter registry is injected, the
+     * observation registry is injected, and both remain owned by {@code config/ObservabilityConfig}.
+     *
      * @param generationStores optional durable generation store
      * @param completionPublishers optional terminal application-event publisher
+     * @param meterRegistries optional meter registry the terminal verdict is counted on
+     * @param observationRegistries optional observation registry the durable boundary is observed into
      * @param stagingDirectory the shared local staging root swept after a job that did not complete
      * @return the shared job-boundary listener, never {@code null}
      */
@@ -304,14 +412,20 @@ public final class BatchConfig {
     public JobExecutionListener batchJobBoundaryListener(
             final ObjectProvider<StagedGenerationStore> generationStores,
             final ObjectProvider<JobCompletionEventPublisher> completionPublishers,
+            final ObjectProvider<MeterRegistry> meterRegistries,
+            final ObjectProvider<ObservationRegistry> observationRegistries,
             @Value("${" + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
                     + ":${java.io.tmpdir}}") final String stagingDirectory) {
         Objects.requireNonNull(generationStores, "generationStores");
         Objects.requireNonNull(completionPublishers, "completionPublishers");
+        Objects.requireNonNull(meterRegistries, "meterRegistries");
+        Objects.requireNonNull(observationRegistries, "observationRegistries");
         Objects.requireNonNull(stagingDirectory,
                 StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY);
         return new JobBoundaryListener(generationStores.getIfAvailable(),
-                completionPublishers.getIfAvailable(), Path.of(stagingDirectory));
+                completionPublishers.getIfAvailable(), meterRegistries.getIfAvailable(),
+                observationRegistries.getIfAvailable(ObservationRegistry::create),
+                Path.of(stagingDirectory));
     }
 
     /**
@@ -543,6 +657,80 @@ public final class BatchConfig {
         }
 
         /**
+         * One placement of this gate in one flow, distinct from every other placement.
+         *
+         * <p><strong>Why a flow that gates more than one step needs this.</strong> The framework's flow
+         * builder keeps the decision states it creates in a map keyed by the object handed to it, and it
+         * creates a state only when that key is absent. A constant of this enumeration is a singleton, so
+         * placing it at three points of one flow finds the key present twice and yields <em>one</em>
+         * decision state carrying all three pairs of outgoing transitions. Every gate in that flow then
+         * routes wherever the first registered pair pointed, which sends the flow back to the step it had
+         * just run instead of onward to the next one - a loop that runs a step twice and abends the second
+         * time, having already consumed the input the first pass staged. A flow that places a gate exactly
+         * once, as the backup job's does, is unaffected and may use the constant directly.
+         *
+         * <p>Each call answers a new placement that evaluates this constant's rule and nothing else, so
+         * every gate of a flow asks the identical question - the highest return code so far against this
+         * constant's ceiling - while occupying its own state. Two placements are never equal, which is the
+         * property the keying depends on: a value-equal placement would collapse back into one key and
+         * restore the defect.
+         *
+         * @return a decider that answers exactly as this constant does, never {@code null} and never equal
+         *         to another placement
+         */
+        public JobExecutionDecider atOnePlacement() {
+            return new GatePlacement(this);
+        }
+
+        /**
+         * One placement of a condition-code gate at one point of one flow.
+         *
+         * <p>Deliberately a class rather than a record, and deliberately without an equality of its own.
+         * The flow builder keys its states by this object, so identity equality is the whole purpose:
+         * component-wise equality - which a record would generate - would make two placements of the same
+         * gate equal, collapse them into a single key and reinstate the shared-state defect that
+         * {@link #atOnePlacement()} exists to prevent.
+         *
+         * <p>It holds no state beyond the rule it delegates to and reads nothing else, so every placement
+         * of one gate reaches the identical verdict on the identical execution.
+         */
+        private static final class GatePlacement implements JobExecutionDecider {
+
+            /** The gate whose rule this placement evaluates; never {@code null}. */
+            private final ConditionCodeGate rule;
+
+            /**
+             * @param rule the gate this placement stands in for
+             */
+            GatePlacement(final ConditionCodeGate rule) {
+                this.rule = Objects.requireNonNull(rule, "rule");
+            }
+
+            /**
+             * Evaluates the gate's rule, which is the only thing this placement does.
+             *
+             * @param jobExecution the job whose accumulated step outcomes are gated on
+             * @param stepExecution the step whose completion reached this placement, possibly {@code null}
+             * @return the gate's verdict, never {@code null}
+             */
+            @Override
+            public FlowExecutionStatus decide(final JobExecution jobExecution,
+                    final StepExecution stepExecution) {
+                return this.rule.decide(jobExecution, stepExecution);
+            }
+
+            /**
+             * Names the rule rather than this object, so a flow diagnostic reads as the gate it is.
+             *
+             * @return the gate's constant name followed by the word placement
+             */
+            @Override
+            public String toString() {
+                return this.rule.name() + " placement";
+            }
+        }
+
+        /**
          * The highest return code any step of this job has produced.
          *
          * @param jobExecution the job to scan
@@ -704,15 +892,35 @@ public final class BatchConfig {
         private final Path stagingDirectory;
 
         /**
+         * The registry the authoritative terminal verdict is counted on, or {@code null}.
+         *
+         * <p>Optional for the same reason the two AWS collaborators are: a focused unit context that
+         * exercises only condition-code infrastructure registers no metrics wiring, and a diagnostic
+         * listener must not be the reason such a context cannot start. When it is absent the verdict is
+         * still logged; what is lost is only the series.
+         */
+        private final MeterRegistry meterRegistry;
+
+        /** The registry the durable boundary is observed into; never {@code null}, no-op when unwired. */
+        private final ObservationRegistry observationRegistry;
+
+        /**
          * @param generationStore durable artifact publisher, or {@code null}
          * @param completionPublisher terminal event publisher, or {@code null}
+         * @param meterRegistry registry for the terminal verdict count, or {@code null}
+         * @param observationRegistry registry the durable boundary is observed into, never {@code null}
          * @param stagingDirectory local staging root, never {@code null}
          */
         private JobBoundaryListener(final StagedGenerationStore generationStore,
                 final JobCompletionEventPublisher completionPublisher,
+                final MeterRegistry meterRegistry,
+                final ObservationRegistry observationRegistry,
                 final Path stagingDirectory) {
             this.generationStore = generationStore;
             this.completionPublisher = completionPublisher;
+            this.meterRegistry = meterRegistry;
+            this.observationRegistry =
+                    Objects.requireNonNull(observationRegistry, "observationRegistry");
             this.stagingDirectory = Objects.requireNonNull(stagingDirectory, "stagingDirectory");
         }
 
@@ -746,7 +954,13 @@ public final class BatchConfig {
         public void afterJob(final JobExecution jobExecution) {
             Objects.requireNonNull(jobExecution, "jobExecution");
 
-            publishDurableArtifacts(jobExecution);
+            // Read BEFORE the durable boundary runs, because this is the status the framework's own job
+            // timer and job span have already recorded: both are stopped before this callback is entered.
+            // Publication can still change it, and the point of keeping both values is that the change
+            // is then visible on one meter instead of being a disagreement between two systems.
+            final BatchStatus observedStatus = jobExecution.getStatus();
+
+            final String publicationOutcome = publishDurableArtifacts(jobExecution);
 
             final String jobName = jobNameOf(jobExecution);
             final BatchStatus status = jobExecution.getStatus();
@@ -771,7 +985,59 @@ public final class BatchConfig {
                         jobName, jobExecution.getJobId(), jobExecution.getId(), status, exitCode,
                         stepsExecuted);
             }
+            countTerminalVerdict(jobName, observedStatus, status, publicationOutcome);
             publishTerminalEvent(jobExecution, jobName, status, exitCode, stepsExecuted);
+        }
+
+        /**
+         * Counts one terminal job outcome, carrying the verdict that was persisted.
+         *
+         * <p>This is the module's answer to a framework ordering it cannot change: the job timer and the
+         * job span are stopped before this callback runs, and the durable boundary inside it can turn a
+         * status of COMPLETED into a persisted status of FAILED. Standard batch telemetry therefore
+         * reports the earlier value forever. Publishing the later one here, next to the earlier one, makes
+         * the two comparable - a series carrying an observed COMPLETED and a persisted FAILED is precisely
+         * the case that used to be invisible, and it is now a query.
+         *
+         * <p>Non-fatal by construction. The verdict is already persisted and already logged; a metrics
+         * registry that refuses a meter must not be able to change a job's outcome, so a failure here is
+         * reported at debug level and the verdict stands. When no registry is wired at all - the focused
+         * unit context - nothing is published and nothing is lost but the series.
+         *
+         * @param jobName          the job that ended
+         * @param observedStatus   the status the framework's own telemetry recorded, possibly {@code null}
+         * @param persistedStatus  the status that was persisted after publication, possibly {@code null}
+         * @param publicationOutcome what the durable boundary did
+         */
+        private void countTerminalVerdict(final String jobName, final BatchStatus observedStatus,
+                final BatchStatus persistedStatus, final String publicationOutcome) {
+            if (this.meterRegistry == null) {
+                return;
+            }
+            try {
+                Counter.builder(TERMINAL_VERDICT_METER_NAME)
+                        .description(TERMINAL_VERDICT_METER_DESCRIPTION)
+                        .tag(TAG_JOB, jobName)
+                        .tag(TAG_PERSISTED_STATUS, nameOf(persistedStatus))
+                        .tag(TAG_OBSERVED_STATUS, nameOf(observedStatus))
+                        .tag(TAG_PUBLICATION, publicationOutcome)
+                        .register(this.meterRegistry)
+                        .increment();
+            } catch (final RuntimeException meterFailure) {
+                LOGGER.debug("Could not publish the terminal verdict count for job {};"
+                                + " failureType={}", jobName,
+                        meterFailure.getClass().getSimpleName());
+            }
+        }
+
+        /**
+         * Names a status for a tag value, without ever producing a null tag.
+         *
+         * @param  status the status, possibly {@code null}
+         * @return its name, or the framework's own unknown constant when there is none
+         */
+        private static String nameOf(final BatchStatus status) {
+            return status == null ? BatchStatus.UNKNOWN.name() : status.name();
         }
 
         /**
@@ -805,9 +1071,11 @@ public final class BatchConfig {
          * the next successful publication of that base corrects; it is not a reason to fail a job whose
          * artifacts are durable and visible.</p>
          *
-         * @param jobExecution terminal job execution
+         * @param  jobExecution terminal job execution
+         * @return what the boundary did, as one of the four publication tag values, so the terminal
+         *         verdict count can attribute a failed job to this boundary or exonerate it
          */
-        private void publishDurableArtifacts(final JobExecution jobExecution) {
+        private String publishDurableArtifacts(final JobExecution jobExecution) {
             if (jobExecution.getStatus() != BatchStatus.COMPLETED) {
                 // Nothing was published, so nothing local names anything durable. Discard this
                 // execution's own allocations rather than leaving one dead artefact per failed run.
@@ -819,23 +1087,43 @@ public final class BatchConfig {
                 // predictable substring, so a file that merely contained this execution's token was
                 // removed whether or not the store had ever allocated it.
                 StagedGenerationStore.discardLocalArtifactsOf(jobExecution, this.stagingDirectory);
-                return;
+                return PUBLICATION_SKIPPED;
             }
             final int artifactCount =
                     StagedGenerationStore.registeredArtifactCount(jobExecution);
             if (artifactCount == 0) {
-                return;
+                return PUBLICATION_NOT_REQUIRED;
             }
             if (this.generationStore == null) {
                 failPublicationAndDiscardLocalArtifacts(jobExecution, new IllegalStateException(
                         "a completed job registered durable artifacts but no generation store is"
                                 + " available"));
-                return;
+                return PUBLICATION_FAILED;
             }
+            // Observed, because until it was the object-store work here appeared in no trace at all: the
+            // framework's job span is stopped before this callback is entered, and nothing opened one of
+            // its own. This observation cannot be a CHILD of that span - it is already closed, which is a
+            // framework ordering rather than an omission - so it carries the job's identity instead, which
+            // is what lets a reader join it to the execution it belongs to. The store's own per-operation
+            // observations descend from this one.
+            final Observation publication =
+                    Observation.createNotStarted(PUBLICATION_OBSERVATION_NAME, this.observationRegistry)
+                            .lowCardinalityKeyValue(TAG_JOB, jobNameOf(jobExecution))
+                            .highCardinalityKeyValue(TAG_JOB_EXECUTION_ID,
+                                    String.valueOf(jobExecution.getId()))
+                            .lowCardinalityKeyValue(TAG_ARTIFACT_COUNT,
+                                    String.valueOf(artifactCount));
+            // observe() opens the scope, records a failure on the span and stops the observation, which is
+            // the same shape every other outbound call in this module is observed with. The failure is then
+            // converted into the job's verdict below exactly as before; it is never rethrown from this
+            // callback, so a trace shows the boundary that failed AND the job still ends with a verdict.
+            final Runnable publish = () -> this.generationStore.publishRegistered(jobExecution);
             try {
-                this.generationStore.publishRegistered(jobExecution);
+                publication.observe(publish);
+                return PUBLICATION_PUBLISHED;
             } catch (final RuntimeException failure) {
                 failPublicationAndDiscardLocalArtifacts(jobExecution, failure);
+                return PUBLICATION_FAILED;
             }
         }
 
@@ -948,7 +1236,13 @@ public final class BatchConfig {
                 return;
             }
 
-            final JobCompletionEvent event = new JobCompletionEvent(
+            // The framework's two boundaries are wall-clock readings taken with LocalDateTime.now(),
+            // so they carry no offset and mean nothing on their own. The zone that produced them is this
+            // JVM's default, and the factory below is where it is attached, once. It is emphatically NOT
+            // the module's Clock bean, which is pinned to UTC so that emitted timestamp images stay
+            // stable - using that zone would silently shift every notification wherever a deployment is
+            // not itself running in UTC. See docs/decision-log.md entry DL-306.
+            final JobCompletionEvent event = JobCompletionEvent.ofFrameworkExecution(
                     jobName,
                     jobExecution.getJobId(),
                     jobExecution.getId(),
@@ -956,7 +1250,8 @@ public final class BatchConfig {
                     exitCode,
                     stepsExecuted,
                     jobExecution.getStartTime(),
-                    jobExecution.getEndTime());
+                    jobExecution.getEndTime(),
+                    ZoneId.systemDefault());
             try {
                 this.completionPublisher.publishCompletion(event);
                 LOGGER.info("Published terminal completion event for job {} execution {} with status {}",

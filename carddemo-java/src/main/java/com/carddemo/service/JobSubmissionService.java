@@ -17,7 +17,6 @@
 package com.carddemo.service;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -113,9 +112,22 @@ import com.carddemo.util.SqsNamingRules;
  * ordinal - the ordinal keeps one submission's seventeen cards distinct, and the identity is what
  * makes two submissions distinguishable. The HTTP caller supplies an identity derived from the date
  * range and a stable logical-request token: a retry repeats that token, while a deliberate new
- * submission receives another. The date-only convenience overload remains a documented compatibility
- * form for retries and must not be used to express a second run of the same period. Recorded as a parity
+ * submission receives another. The date-only convenience overload mints its own nonce, so each call
+ * to it is a <em>distinct</em> submission and not a retry of the previous one - which is what the
+ * appending legacy queue did with a repeated request - and a retry is expressed by repeating the
+ * identity the previous outcome reported, through the caller-identity overload. Recorded as a parity
  * exception in {@code docs/decision-log.md} DL-043.
+ *
+ * <p><strong>Which of these methods a running deployment actually calls.</strong> One:
+ * {@link #submitCanonicalJobImage(String, List)}, which the report-request service reaches with a
+ * complete card image and its own submission identity. The other five publishing methods are the
+ * layers that one is composed of - a caller identity over a built card image, a built card image
+ * under an identity minted here, a canonical image with a minted identity, an unchecked stream, and a
+ * single card - and each is reachable, documented and exercised. They are kept because each states a
+ * distinct precondition and a caller that means the weaker one should not have to defeat the
+ * stronger one; they are not production traffic, and a maintainer reading them should know which of
+ * the six carries it. Anything in this class reachable from none of the six is dead rather than
+ * general, and is deleted rather than documented - see {@code docs/decision-log.md} DL-314.
  */
 @Service
 public final class JobSubmissionService {
@@ -161,11 +173,10 @@ public final class JobSubmissionService {
      * Message attribute naming the submission every card belongs to.
      *
      * <p>Published on every message, and the key of the reassembly envelope described on
-     * {@link #submissionLock}. It is what lets a consumer group a submission's cards back together
-     * without depending on the order they arrived in, which is the only remedy available to a
-     * deployment running more than one instance: the module introduces no coordination service, so the
-     * cards of two concurrent submissions <em>can</em> interleave in the one message group, and the
-     * envelope is what makes that interleaving recoverable rather than fatal.
+     * {@link #submissionCoordinator}. It is what lets a consumer group a submission's cards back
+     * together without depending on the order they arrived in - a second remedy behind the coordinator,
+     * carried so that a consumer can reconstruct a stream even if it ever were to receive one
+     * interleaved.
      */
     public static final String SUBMISSION_ID_HEADER = "carddemo-submission-id";
 
@@ -212,18 +223,24 @@ public final class JobSubmissionService {
      * beneath it, are documented on the two derivations further down, which is where they belong.
      */
 
+    /** The messaging template every card is published through. */
+    private final SqsOperations sqsOperations;
+
+    private final String queueName;
+
+    private final String messageGroupId;
+
     /**
-     * Serialises one whole submission's publishes against every other submission's.
+     * Serialises one whole submission's publishes against every other submission's, deployment-wide.
      *
      * <h2>Why the whole submission is the unit of exclusion</h2>
      *
-     * <p>A submission is not one message. It is
-     * {@code JclCardImageBuilder.CARD_COUNT} messages that are only meaningful as a contiguous, ordered
-     * run: the batch tier reads them back as one eighty-column job stream, so a job card followed by
-     * another submission's library card is not a degraded stream, it is an unparseable one. This is a
-     * singleton service and every card of every submission carries the <em>same</em> message group,
+     * <p>A submission is not one message. It is {@code JclCardImageBuilder.CARD_COUNT} messages that are
+     * only meaningful as a contiguous, ordered run: the batch tier reads them back as one eighty-column
+     * job stream, so a job card followed by another submission's library card is not a degraded stream,
+     * it is an unparseable one. Every card of every submission carries the <em>same</em> message group,
      * which is what preserves append order - and it means the queue faithfully preserves whatever order
-     * the sends arrived in. Two request threads publishing concurrently would arrive interleaved, and a
+     * the sends arrived in. Two publishers running concurrently would arrive interleaved, and a
      * first-in-first-out queue would then guarantee the interleaving rather than repairing it.
      *
      * <p>Deduplication identifiers do not close that. They make a <em>retry</em> of one submission
@@ -236,42 +253,28 @@ public final class JobSubmissionService {
      * require every consumer to reassemble groups. Excluding one whole submission at a time is what
      * reproduces the legacy transaction, which wrote its card stream inside a single task.
      *
-     * <h2>What the lock does and does not guarantee</h2>
+     * <h2>The exclusion is deployment-wide, not process-local</h2>
      *
-     * <p>It is held for the duration of one stream and released before the outcome is composed, so a
-     * caller never holds it across anything of its own. It guarantees non-interleaving <em>within this
-     * process</em>, which is the whole of the unit that publishes: nothing outside this service writes
-     * to the queue. Fairness is requested so that a stream waiting behind another is admitted in arrival
-     * order rather than starved.
+     * <p>{@link JobSubmissionCoordinator#serialize(java.util.function.Supplier)} runs one whole stream as
+     * the only such stream in the deployment, and the shipped implementation coordinates through the
+     * database every replica already shares - a transaction-scoped PostgreSQL advisory lock, which the
+     * server releases on commit and on rollback alike, so no replica can leave the guard held by dying.
+     * The boundary is held from the first card through the transmitted end-of-stream card and released
+     * before the outcome is composed, so a caller never holds it across anything of its own.
      *
-     * <h2>Across instances the lock does nothing, so the envelope does it instead</h2>
+     * <p>The work is passed <em>in</em> rather than the guard being handed out: the interface exposes no
+     * acquire and no release, so a caller cannot return, throw or forget its way past the release.
      *
-     * <p>The lock is a monitor in one heap. A deployment running several instances would need the same
-     * exclusion between them, and the module introduces no coordination service to provide it: a
-     * distributed or fenced lock is a new piece of infrastructure, and a single-active-publisher election
-     * is another, both beyond this migration's scope. Leaving it there would leave a real defect, because
-     * two instances publishing concurrently interleave their cards in the one message group and a
-     * first-in-first-out queue then preserves the interleaving faithfully.
+     * <h2>The envelope is a second remedy, not a substitute for the first</h2>
      *
-     * <p>The remedy carried instead is the third of the three the review named: an
-     * <strong>atomic, reassemblable envelope keyed by submission</strong>. Every published message carries
-     * {@link #SUBMISSION_ID_HEADER} and {@link #CARD_ORDINAL_HEADER}, and every message of a stream whose
-     * total this service knows also carries {@link #CARD_COUNT_HEADER}. A consumer therefore groups by
-     * submission and orders by ordinal, so it reconstructs each eighty-column job stream exactly whatever
-     * order the messages arrived in, and it knows a stream is whole either by counting to the declared
-     * total or by reaching the transmitted end-of-stream sentinel. Interleaving becomes a property of the
-     * transport that the consumer undoes, rather than a corruption it inherits - and that holds for two
-     * instances just as it holds for two threads, which is what makes it the remedy that does not need a
-     * coordination service. The lock is kept because within one process it prevents the interleaving in
-     * the first place, which is cheaper than undoing it.
+     * <p>Every published message also carries {@link #SUBMISSION_ID_HEADER} and
+     * {@link #CARD_ORDINAL_HEADER}, and every message of a stream whose total this service knows also
+     * carries {@link #CARD_COUNT_HEADER}. A consumer can therefore group by submission and order by
+     * ordinal, reconstructing each eighty-column job stream whatever order the messages arrived in, and
+     * can tell a stream is whole either by counting to the declared total or by reaching the transmitted
+     * end-of-stream sentinel. The coordinator prevents interleaving; the envelope means a consumer is
+     * not defenceless if anything ever produced it anyway.
      */
-    private final SqsOperations sqsOperations;
-
-    private final String queueName;
-
-    private final String messageGroupId;
-
-    /** Deployment-wide guard held for a whole card stream. */
     private final JobSubmissionCoordinator submissionCoordinator;
 
     /** Registry for the explicit outbound publish observation. */
@@ -313,13 +316,16 @@ public final class JobSubmissionService {
     }
 
     /**
-     * Submits the transaction-report job for one date range under a deterministic compatibility identity.
+     * Submits the transaction-report job for one date range as a new submission each time it is called.
      *
-     * <p>Repeated calls to this convenience form for the same range intentionally reuse one identity and
-     * therefore describe retries. A deliberate new submission of that same range must call
-     * {@link #submitTransactionReportJob(String, String, String)} with a distinct logical-request token.
-     * The HTTP report-request path accepts or mints that token and returns it to the caller, so it can tell
-     * retries from genuinely new work without deriving the distinction from the dates alone.
+     * <p>Every call mints its own identity, so <strong>repeated calls to this form for the same range are
+     * distinct submissions and not retries</strong>: they share no deduplication identifier and the batch
+     * tier runs the report once per call. That is the appending legacy queue's own behaviour for a
+     * repeated request, and suppressing it would be the parity break rather than permitting it. A
+     * <em>retry</em> is the other thing entirely, and is expressed by repeating a known identity through
+     * {@link #submitTransactionReportJob(String, String, String)}. The HTTP report-request path accepts or
+     * mints the logical-request token that identity is derived from and returns it to the caller, so it
+     * can tell retries from genuinely new work without deriving the distinction from the dates alone.
      *
      * <p><strong>The minted identity is reported on the returned outcome</strong>, so a caller that did
      * not mint it can still retry: the nonce makes the identity unrecomputable from the request, and
@@ -423,6 +429,14 @@ public final class JobSubmissionService {
             result = this.submissionCoordinator.serialize(
                     () -> publishOwnCardsOnce(submission, cards, terminalOrdinal));
         } catch (final JobSubmissionCoordinator.CoordinationFailure coordinationFailure) {
+            // Zero cards published is asserted here, and the coordinator's contract is what makes that
+            // assertion true rather than convenient: this failure is raised only while nothing has
+            // reached the queue - a guard that could not be acquired within its bounded wait, or one
+            // that failed before the stream produced an outcome. A guard that could not be RELEASED
+            // after the stream published is reported by the coordinator as an operational alert and
+            // returns the real outcome, so it never arrives here. Were that not so, this arm would
+            // report nothing submitted for a job stream that is queued and about to run, and the
+            // operator's natural response would run the job twice.
             LOGGER.error("{} submission={} queue={} messageGroup={} failureChain={}",
                     JobSubmissionException.DEFAULT_MESSAGE, submission, this.queueName,
                     this.messageGroupId, FailureDiagnostics.failureChainOf(coordinationFailure));
@@ -626,14 +640,6 @@ public final class JobSubmissionService {
         }
     }
 
-    private static List<String> deduplicationIds(final String submissionId, final int cardCount) {
-        final List<String> identifiers = new ArrayList<>(cardCount);
-        for (int cardOrdinal = FIRST_CARD_ORDINAL; cardOrdinal <= cardCount; cardOrdinal++) {
-            identifiers.add(deduplicationId(submissionId, cardOrdinal));
-        }
-        return List.copyOf(identifiers);
-    }
-
     private static void validateDeduplicationIdentifiers(
             final String submissionId, final int cardCount) {
         for (int cardOrdinal = FIRST_CARD_ORDINAL; cardOrdinal <= cardCount; cardOrdinal++) {
@@ -728,30 +734,6 @@ public final class JobSubmissionService {
     }
 
     /**
-     * Derives the compatibility identity for the date-only convenience overload.
-     *
-     * <p>This form is intentionally stable for a repeated date range and therefore models a retry. A
-     * deliberate new submission of the same period must use the caller-identity overload with a distinct
-     * logical-request token. The HTTP report-request surface does exactly that; this compatibility helper
-     * neither claims nor manufactures a nonce.
-     *
-     * @param startDate the submitted start-date slot
-     * @param endDate the submitted end-date slot
-     * @return a printable, whitespace-free identity stable for this date range
-     */
-    private static String newSubmissionId(final String startDate, final String endDate) {
-        Objects.requireNonNull(startDate, "startDate must not be null");
-        Objects.requireNonNull(endDate, "endDate must not be null");
-        final String identity = withoutWhitespace(startDate) + SUBMISSION_ID_PART_SEPARATOR
-                + withoutWhitespace(endDate);
-        requireSubmissionId(identity);
-        // Composed here rather than at the first publish so that an identity too long to carry a card
-        // ordinal is refused when it is minted, not seventeen cards later.
-        deduplicationId(identity, JclCardImageBuilder.CARD_COUNT);
-        return identity;
-    }
-
-    /**
      * Mints the identity of a new logical submission.
      *
      * @return a printable identity that can be supplied again only for a true retry
@@ -763,6 +745,12 @@ public final class JobSubmissionService {
     /**
      * Mints a new submission identity while retaining the reporting period as a readable prefix.
      *
+     * <p>The nonce is what makes it new. Two calls for one period therefore produce two identities and
+     * two submissions; a deterministic period-only form was declared here by an earlier revision so that
+     * a repeated request would deduplicate onto the first, and it is withdrawn - the appending legacy
+     * queue ran the job again, and no caller ever reached the deterministic form. See
+     * {@code docs/decision-log.md} DL-314.
+     *
      * @param startDate the fixed-width start-date slot
      * @param endDate the fixed-width end-date slot
      * @return a unique printable identity suitable for FIFO deduplication
@@ -773,6 +761,8 @@ public final class JobSubmissionService {
         final String identity = withoutWhitespace(startDate) + SUBMISSION_ID_PART_SEPARATOR
                 + withoutWhitespace(endDate) + SUBMISSION_NONCE_SEPARATOR + newNonce();
         requireSubmissionId(identity);
+        // Composed here rather than at the first publish so that an identity too long to carry a card
+        // ordinal is refused when it is minted, not seventeen cards later.
         deduplicationId(identity, JclCardImageBuilder.CARD_COUNT);
         return identity;
     }

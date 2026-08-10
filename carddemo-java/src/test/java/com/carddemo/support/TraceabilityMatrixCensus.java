@@ -160,9 +160,16 @@ public final class TraceabilityMatrixCensus {
         if (section < 0) {
             throw new IllegalStateException("the traceability matrix has no section for " + member);
         }
+        // Sliced to the member's OWN section before matching. Searching from the heading to the end of the
+        // document would let a member whose section had lost its count silently borrow the next member's,
+        // reporting agreement between two figures that describe different members - which is the one
+        // failure a census of this kind must not be able to miss.
+        final int nextSection = matrix.indexOf("\n## ", section + heading.length());
+        final String ownSection =
+                nextSection < 0 ? matrix.substring(section) : matrix.substring(section, nextSection);
         final Matcher declared =
-                Pattern.compile("\\*\\*(\\d+) paragraph units?\\.\\*\\*").matcher(matrix);
-        if (!declared.find(section)) {
+                Pattern.compile("\\*\\*(\\d+) paragraph units?\\.\\*\\*").matcher(ownSection);
+        if (!declared.find()) {
             throw new IllegalStateException("the section for " + member + " declares no unit count");
         }
         return Integer.parseInt(declared.group(1));

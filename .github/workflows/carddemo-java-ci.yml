@@ -549,6 +549,50 @@ jobs:
           echo '  parses under bash and lints clean under shellcheck'
           echo '::endgroup::'
 
+          # The three files an interpreter reads by its first line, and the one input this
+          # repository cannot see: the core.autocrlf setting of the machine that clones it. The
+          # check above proves this runner's checkout is free of carriage returns, which is a
+          # weaker statement than it looks - this runner checks out with autocrlf off, so it would
+          # pass whether or not anything protected the file. The interesting checkout is the one
+          # this runner never performs.
+          #
+          # So the filter is run rather than assumed. `checkout-index` applies exactly the smudge
+          # conversion a checkout applies, so writing the index out with core.autocrlf=true
+          # reproduces a Windows clone byte for byte, and the assertions below are made against
+          # those bytes. Without the eol attributes this fails in three places at once: mvnw
+          # arrives with a "#!/bin/sh\r" shebang, which the Docker builder stage - which copies
+          # that file into a Linux image and runs it - rejects as a bad interpreter; the LocalStack
+          # hook arrives with "#!/usr/bin/env bash\r" and "set -eu\r" and is bind-mounted into a
+          # Linux container in that state, so the emulator's startup breaks on a host that changed
+          # nothing; and mvnw.cmd's CRLF form, which cmd.exe needs to resolve its labels, is left
+          # to chance in the other direction.
+          #
+          # checkout-index writes paths relative to the repository root even when it is run from a
+          # subdirectory, so the module prefix is asked for rather than assumed.
+          echo '::group::line-ending contract under a normalising checkout'
+          assert_equals 'declared eol for mvnw' \
+            "$(git check-attr eol -- mvnw | sed 's/.*: //')" 'lf'
+          assert_equals 'declared eol for mvnw.cmd' \
+            "$(git check-attr eol -- mvnw.cmd | sed 's/.*: //')" 'crlf'
+          assert_equals 'declared eol for the bootstrap hook' \
+            "$(git check-attr eol -- "${hook}" | sed 's/.*: //')" 'lf'
+
+          simulated="$(mktemp -d)"
+          git -c core.autocrlf=true checkout-index -f --prefix="${simulated}/" \
+            -- mvnw mvnw.cmd "${hook}"
+          simulated_module="${simulated}/$(git rev-parse --show-prefix)"
+          assert_equals 'carriage returns in mvnw after a normalising checkout' \
+            "$(tr -cd '\r' < "${simulated_module}mvnw" | wc -c | tr -d ' ')" '0'
+          assert_equals 'shebang of mvnw after a normalising checkout' \
+            "$(head -1 "${simulated_module}mvnw")" '#!/bin/sh'
+          assert_equals 'carriage returns in the bootstrap hook after a normalising checkout' \
+            "$(tr -cd '\r' < "${simulated_module}${hook}" | wc -c | tr -d ' ')" '0'
+          assert_equals 'lines of mvnw.cmd that end CRLF after a normalising checkout' \
+            "$(tr -cd '\r' < "${simulated_module}mvnw.cmd" | wc -c | tr -d ' ')" \
+            "$(tr -cd '\n' < "${simulated_module}mvnw.cmd" | wc -c | tr -d ' ')"
+          rm -rf "${simulated}"
+          echo '::endgroup::'
+
           # Every attribute is read back and compared. Declared once and called after each
           # execution, so the second run is held to exactly the same standard as the first.
           verify_resources() {
@@ -645,12 +689,67 @@ jobs:
           echo 'Bootstrap contract holds: linted, executed, read back, and idempotent.'
 
       # ---- evidence bundle ------------------------------------------------------------------
-      # THESE THREE UPLOADS ARE THE ONLY PLACE if: always() IS PERMITTED IN THIS FILE, and they
-      # carry it so that the gate reports survive a failed gate. It masks nothing: the job's
-      # conclusion is already set by whichever gate step failed, and uploading that gate's own report
-      # is precisely what a reviewer needs in order to see why. A report that is absent is reported as
-      # a warning rather than swallowed, because an unexpectedly missing gate report is itself a
-      # finding.
+      # THE REQUIRED REPORTS ARE ASSERTED BEFORE THEY ARE UPLOADED, because an upload cannot tell the
+      # difference between "this gate never ran" and "this gate ran and published nothing".
+      #
+      # The three uploads below carry if: always() so that a gate's own report survives that gate's
+      # failure, which is exactly what a reviewer needs in order to see why it failed. That is right,
+      # and on its own it left a hole: every upload also carried if-no-files-found: warn, so a run in
+      # which every gate PASSED and yet produced no coverage report, no vulnerability report and no test
+      # reports finished green with an annotation nobody reads. Coverage, the CVE scan and the test
+      # tiers are gate evidence for Gate 7, Gate 8 and Gates 1/4/5 respectively; a green run that
+      # publishes none of them cannot be signed off, and the run must say so rather than warn about it.
+      #
+      # So the assertion is made where it can be unambiguous - after the producing gates, under
+      # if: success(), so it only judges a run in which those gates actually completed - and the uploads
+      # then resolve their own missing-file policy from the job status: error on a run that is still
+      # green, warn on a run that has already failed and is publishing diagnostics. Both halves are
+      # needed: without the assertion an upload of a partial path set still succeeds because SOME file
+      # matched; without the conditional policy a genuinely absent bundle is reported as a warning.
+      - name: Assert the required gate evidence exists
+        if: success()
+        run: |
+          set -euo pipefail
+
+          # One required artefact per line, as PATH<TAB>WHAT-IT-EVIDENCES. A directory is required to
+          # contain at least one file; a file is required to be non-empty. Every path is relative to
+          # this module, which is this job's working directory.
+          missing=0
+          require() {
+            local path="$1" purpose="$2"
+            if [ -d "${path}" ]; then
+              if [ -z "$(find "${path}" -type f -print -quit)" ]; then
+                printf '::error::%s is empty; it must carry %s\n' "${path}" "${purpose}"
+                missing=$((missing + 1))
+              else
+                printf 'present: %-56s %s\n' "${path}" "${purpose}"
+              fi
+            elif [ -s "${path}" ]; then
+              printf 'present: %-56s %s\n' "${path}" "${purpose}"
+            else
+              printf '::error::%s is missing or empty; it must carry %s\n' "${path}" "${purpose}"
+              missing=$((missing + 1))
+            fi
+          }
+
+          require target/site/jacoco-merged/index.html 'the merged coverage report Gate 7 is read from'
+          require target/jacoco-merged.exec 'the merged coverage execution data'
+          require target/jacoco.exec 'the unit tier execution data'
+          require target/jacoco-it.exec 'the integration tier execution data'
+          require target/dependency-check-report.html "Gate 8's human-readable CVE report"
+          require target/dependency-check-report.json "Gate 8's machine-readable CVE report"
+          require target/dependency-check-report.xml "Gate 8's archival CVE report"
+          require target/surefire-reports 'the unit tier result XML the published counts derive from'
+          require target/failsafe-reports 'the integration tier result XML the published counts derive from'
+          require target/gate-evidence 'the per-gate evidence files the gates write'
+
+          if [ "${missing}" -ne 0 ]; then
+            printf '%d required gate artefact(s) are absent from a run whose gates all passed.\n' \
+              "${missing}" >&2
+            printf 'A green run that publishes no evidence cannot be signed off: see docs/gate-evidence.md.\n' >&2
+            exit 1
+          fi
+          printf 'All required gate artefacts are present and non-empty.\n'
       #
       # These uploads are also what makes the linear gate model above affordable. A failing gate now
       # stops the job, so the gates after it never run and produce nothing - but everything produced
@@ -683,7 +782,7 @@ jobs:
             carddemo-java/target/jacoco-merged.exec
             carddemo-java/target/site/jacoco-locale-*/**
             carddemo-java/target/jacoco-locale-*.exec
-          if-no-files-found: warn
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
 
       - name: Upload vulnerability scan reports
@@ -695,7 +794,7 @@ jobs:
             carddemo-java/target/dependency-check-report.html
             carddemo-java/target/dependency-check-report.json
             carddemo-java/target/dependency-check-report.xml
-          if-no-files-found: warn
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
 
       - name: Upload unit and integration test reports
@@ -707,14 +806,172 @@ jobs:
             carddemo-java/target/surefire-reports/**
             carddemo-java/target/failsafe-reports/**
             carddemo-java/target/surefire-reports-locale-*/**
-          if-no-files-found: warn
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
+
+      # THE GATE EVIDENCE IS THE ONE ARTEFACT SET THE RUN ITSELF AUTHORS, and it was the one set the
+      # run threw away. Three gates emit a run-scoped file into target/gate-evidence: gate 1's
+      # byte-equivalence comparison, gate 3's measured baselines and gate 8's sign-off checklist. No
+      # step uploaded them, and the reproducibility gate below runs a clean, so every recorded run
+      # destroyed its own evidence and docs/gate-evidence.md quoted figures whose producing artefact
+      # no longer existed anywhere. Uploaded here, before the clean, for the same reason the three
+      # uploads above are placed before it.
+      #
+      # THIS STEP CARRIES NO if: CONDITION, AND if-no-files-found IS error RATHER THAN warn. Both are
+      # deliberate and they work together. Reaching this step means every gate above passed, which
+      # means the integration tier ran, which means the three files exist - so their absence is a
+      # defect in the tier that writes them and must fail rather than upload nothing quietly. The
+      # three uploads above are the opposite case on purpose: they carry if: always() so that a FAILED
+      # run still publishes its coverage, scan and test reports, and warn because a run that failed
+      # early legitimately has none. Adding always() here would turn a failed run's empty directory
+      # into a second, misleading failure on top of the real one.
+      #
+      # The bundle is verified by name before it is uploaded, because the upload action's own
+      # no-files-found error names a glob rather than a file. A missing gate-3 baseline and a missing
+      # gate-8 sign-off are different defects with different owners, and the log line has to say which.
+      # EVERY EXPECTED FILE IS NAMED INDIVIDUALLY, including both gate-3 baselines, rather than one of
+      # them standing in for the pair behind a glob: a run that wrote the pipeline baseline and not the
+      # interest baseline satisfied `gate3-*.md` and published half a gate's evidence as if it were
+      # whole. The list is held honest from the other side by BuildAndCiContractTest, which reads the
+      # evidence file names out of the suite that writes them and requires this step to name each one,
+      # so a renamed or newly added report fails the build instead of quietly going unverified.
+      # Reasoned in docs/decision-log.md DL-315.
+      - name: Verify the gate evidence bundle
+        run: |
+          set -euo pipefail
+          missing=''
+          for required in \
+            target/gate-evidence/gate1-byte-equivalence.md \
+            target/gate-evidence/gate3-pipeline-baseline.md \
+            target/gate-evidence/gate3-interest-calculation.md \
+            target/gate-evidence/gate8-sign-off.md
+          do
+            test -s "${required}" || missing="${missing} ${required}"
+          done
+          if [ -n "${missing}" ]; then
+            echo "The gate evidence bundle is incomplete. Absent:${missing}" >&2
+            echo 'Every gate above passed, so the tier that writes these files ran. An absent file is' >&2
+            echo 'a defect in that tier, not a skippable condition.' >&2
+            exit 1
+          fi
+
+          # Every generated file names the build and the run that produced it, so a downloaded bundle
+          # can be attributed to code. The stamp is written by the producers rather than added here,
+          # which is what makes a developer-machine bundle attributable too; this only checks it.
+          for evidence in target/gate-evidence/*.md; do
+            grep -q '^Build provenance: revision ' "${evidence}" || {
+              echo "${evidence} carries no build provenance line." >&2
+              exit 1
+            }
+            grep -q "^Build provenance: revision ${SOURCE_REVISION}," "${evidence}" || {
+              echo "${evidence} does not name this run's revision ${SOURCE_REVISION}." >&2
+              exit 1
+            }
+          done
+          echo 'The gate evidence bundle is complete and every file names this run.'
+          ls -l target/gate-evidence
+
+      - name: Upload gate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gate-evidence
+          path: carddemo-java/target/gate-evidence/**
+          if-no-files-found: error
+          retention-days: 30
+
+      # THE PUBLISHED TEST TOTALS ARE RECONCILED HERE BECAUSE THIS IS THE ONLY POINT AT WHICH BOTH REPORT
+      # DIRECTORIES ARE COMPLETE. The unit row is also reconciled inside the build, by GateVerificationTest,
+      # which can read a finished target/surefire-reports/ while the integration tier runs. The integration
+      # row cannot be reconciled there for a structural reason rather than a practical one: that test is
+      # itself one of the classes in the tier, so its own report does not exist while it executes and neither
+      # do those of the classes after it. After verify, both are written, and this step derives all four
+      # figures from the XML and FAILS on any mismatch - which is what makes the evidence page's per-tier
+      # table a derived figure rather than a transcription that was true once.
+      #
+      # if: success() rather than always(). A run whose earlier gate failed has partial report directories by
+      # definition, and comparing a partial count against the published total would replace the real
+      # diagnosis with a spurious mismatch. The job is already failing in that case; this step has nothing to
+      # add to it.
+      - name: Reconcile the published test totals with the report XML
+        if: success()
+        run: |
+          # Same reasoning as the step above: errexit off, because a find over a directory that is being
+          # written or a grep that matches nothing must produce a zero here rather than end the step. The
+          # verdict is the explicit exit at the bottom.
+          set +e
+          set -uo pipefail
+          evidence='../docs/gate-evidence.md'
+          status=0
+
+          # Elements, not the <testsuite tests="..."> attribute. The attribute counts DISTINCT testcase
+          # names, so it undercounts by 146 across this suite - two nests may each declare a method of the
+          # same name. The element count is what the runners' own console totals report and what the evidence
+          # page publishes. grep -o counts every opening tag; the character class after the name keeps
+          # <failure> from matching <flakyFailure>.
+          derive() {
+            { find "$1" -maxdepth 1 -name 'TEST-*.xml' -exec grep -hoE "<$2[[:space:]/>]" {} + \
+              2>/dev/null || true; } | wc -l | tr -d ' '
+          }
+          classes_in() {
+            { find "$1" -maxdepth 1 -name 'TEST-*.xml' 2>/dev/null || true; } | wc -l | tr -d ' '
+          }
+          published() {
+            # The row is keyed on its report directory; the requested cell is stripped of emphasis and
+            # thousands separators. A row that is absent yields the empty string and fails the compare below.
+            awk -v key="$1" -v col="$2" -F'|' '
+              /^\|/ && index($3, key) > 0 {
+                cell = $(col + 3); gsub(/[*, ]/, "", cell);
+                if (cell ~ /^[0-9]+$/) { print cell; exit }
+              }' "${evidence}"
+          }
+
+          reconcile() {
+            local label="$1" dir="$2"
+            local measured_classes measured_tests measured_failures measured_errors measured_skips
+            measured_classes="$(classes_in "${dir}")"
+            measured_tests="$(derive "${dir}" testcase)"
+            measured_failures="$(derive "${dir}" failure)"
+            measured_errors="$(derive "${dir}" error)"
+            measured_skips="$(derive "${dir}" skipped)"
+            echo "${label}: measured classes=${measured_classes} tests=${measured_tests} failures=${measured_failures} errors=${measured_errors} skips=${measured_skips}"
+            if [ "${measured_classes}" -eq 0 ]; then
+              echo "::error title=No reports::${dir} holds no report XML, so the published ${label} row cannot be reconciled"
+              status=1
+              return
+            fi
+            local index=1
+            for measured in "${measured_classes}" "${measured_tests}" "${measured_failures}" \
+                            "${measured_errors}" "${measured_skips}"; do
+              local expected
+              expected="$(published "${dir}" "${index}")"
+              if [ -z "${expected}" ]; then
+                echo "::error title=Published figure missing::${evidence} carries no column ${index} for the ${label} row"
+                status=1
+              elif [ "${expected}" != "${measured}" ]; then
+                echo "::error title=Published total is wrong::${label} column ${index}: the page publishes ${expected}, this run measured ${measured}"
+                status=1
+              fi
+              index=$((index + 1))
+            done
+          }
+
+          reconcile 'unit' 'target/surefire-reports'
+          reconcile 'integration and end-to-end' 'target/failsafe-reports'
+
+          if [ "${status}" -eq 0 ]; then
+            echo 'Every published per-tier figure equals what this run executed.'
+          else
+            echo 'The published per-tier table does not match this run. Update the table in docs/gate-evidence.md from the figures above.'
+          fi
+          exit "${status}"
 
       # ---- gate 4 of 6: reproducibility ------------------------------------------------------
       # Save the verified jar, rebuild from a clean target with the same revision and source epoch,
       # and compare bytes. The reports from the verified run have already been uploaded above, so the
-      # clean cannot erase evidence. A timestamp or archive-order regression fails here even when both
-      # jars would run.
+      # clean cannot erase evidence - and that sentence is only true because the gate-evidence bundle
+      # is now among the uploads above it. The `clean` below removes target/gate-evidence/ along with
+      # everything else, so any evidence artifact not published before this point is published nowhere.
+      # A timestamp or archive-order regression fails here even when both jars would run.
       - name: Reproducible artifact gate
         id: reproducibility_gate
         run: |
@@ -1117,13 +1374,20 @@ jobs:
 
           echo 'Container, Compose and monitoring validation passed.'
 
+      # The container gate above writes one report per scanned image into target/container-scan-reports,
+      # so on a run that reached this point green the directory cannot legitimately be empty - and the
+      # missing-file policy says exactly that. It stays a warning on a run that has already failed,
+      # because a gate that stopped before its first scan has nothing to publish and must not be given a
+      # second, misleading failure. Same reasoning, and same expression, as the three evidence uploads
+      # further up; the assertion step there deliberately does not cover this path, because these files
+      # are produced hundreds of lines later than it runs.
       - name: Upload container vulnerability scan reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: container-vulnerability-scan-reports
           path: carddemo-java/target/container-scan-reports/**
-          if-no-files-found: warn
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
 
       # The executable jar is build output rather than gate evidence, so it is uploaded only when

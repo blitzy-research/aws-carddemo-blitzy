@@ -147,16 +147,16 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  * the codec handle every sign. Second, those 22 filler bytes are <strong>ASCII zero, not
  * space</strong>.
  *
- * <p><strong>One of the twenty sign characters does not round-trip, by design.</strong> The entity
- * carries the balance as a plain {@link BigDecimal}, and {@link BigDecimal} has no negative zero,
- * so this mapper uses the codec's unsigned-bit entry points: an image whose every digit is zero and
- * whose final byte is the negative-zero overpunch <code>&#125;</code> decodes to zero and re-encodes
- * as the positive-zero <code>&#123;</code>. The arithmetic value is identical either way, and there is
- * no column in which a negative-zero bit could be persisted, so nothing is lost (decision D-04). The
- * collapse is confined to the all-zeros case: an ordinary negative amount whose cent digit happens to
- * be zero, such as {@code -1.00}, ends in <code>&#125;</code> and re-encodes to <code>&#125;</code>
- * unchanged. A byte-parity assertion over this field must therefore expect positive zero for an
- * all-zero image, which is what every one of the 50 fixture rows already carries.
+ * <p><strong>All twenty sign characters round-trip, the negative zero included.</strong> The entity
+ * carries the balance as a {@link BigDecimal}, which has no negative zero, so this mapper reads and
+ * writes through the codec's <em>signed</em> entry points and carries the missing bit on the entity's
+ * transient negative-zero marker: an image whose every digit is zero and whose final byte is the
+ * negative-zero overpunch <code>&#125;</code> re-encodes as <code>&#125;</code> rather than as the
+ * positive-zero <code>&#123;</code>. No column holds that bit and none needs to, because it is a
+ * property of an image rather than of a value; what matters is that the read-and-write-back path this
+ * mapper exists to serve preserves it, so a byte-parity assertion over this field compares the byte the
+ * record actually carried. An ordinary negative amount whose cent digit happens to be zero, such as
+ * {@code -1.00}, was never affected: it ends in <code>&#125;</code> from its own sign.
  *
  * <h2>Filler, and the exact comparison bound {@code [0, 28)}</h2>
  *
@@ -613,9 +613,16 @@ public final class TranCatBalRecordMapper {
         // and no arithmetic is performed on the result.
         String balanceImage =
                 record.field(FIELD_TRAN_CAT_BAL, TRAN_CAT_BAL_OFFSET, TRAN_CAT_BAL_LENGTH);
-        BigDecimal tranCatBal = ZonedDecimalCodec.decodeMonetary(
-                balanceImage, TRAN_CAT_BAL_LENGTH, FIELD_TRAN_CAT_BAL);
-        return new TransactionCategoryBalance(trancatAcctId, trancatTypeCd, trancatCd, tranCatBal);
+        // The SIGNED entry point: a negatively-signed all-zero image differs from a positive one only in
+        // its final byte, and the plain one discards that difference, so a round trip would re-emit
+        // '{' where the record held '}'. The bit travels on the entity's transient marker.
+        ZonedDecimalCodec.ZonedValue balance = ZonedDecimalCodec.decodeSigned(
+                balanceImage, TRAN_CAT_BAL_LENGTH, ZonedDecimalCodec.MONETARY_SCALE,
+                FIELD_TRAN_CAT_BAL);
+        TransactionCategoryBalance mapped = new TransactionCategoryBalance(trancatAcctId,
+                trancatTypeCd, trancatCd, balance.value());
+        mapped.setTranCatBalNegativeZero(balance.negativeZero());
+        return mapped;
     }
 
     /**
@@ -649,7 +656,11 @@ public final class TranCatBalRecordMapper {
                 // The codec returns exactly the declared width, so this placement is positional only;
                 // it is right-justified so the overpunched sign byte stays in the final position.
                 .putNumeric(FIELD_TRAN_CAT_BAL, TRAN_CAT_BAL_OFFSET, TRAN_CAT_BAL_LENGTH,
-                        ZonedDecimalCodec.encodeMonetary(tranCatBal, TRAN_CAT_BAL_LENGTH,
+                        ZonedDecimalCodec.encodeSigned(
+                                new ZonedDecimalCodec.ZonedValue(tranCatBal,
+                                        balance.isTranCatBalNegativeZero()
+                                                && tranCatBal.signum() == 0),
+                                TRAN_CAT_BAL_LENGTH, ZonedDecimalCodec.MONETARY_SCALE,
                                 FIELD_TRAN_CAT_BAL))
                 // Stated explicitly rather than inherited from the buffer's default, so the deliberate
                 // choice of space over the fixture's ASCII zero is visible right here.

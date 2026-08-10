@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * procedural copybook {@code app/cpy/CSSTRPFY.cpy}, which holds two paragraphs:
  * {@code YYYY-STORE-PFKEY} at line 17 and {@code YYYY-STORE-PFKEY-EXIT} at line 80, the latter being
  * a bare {@code EXIT} and therefore a no-op. The first paragraph is a single
- * {@code EVALUATE TRUE} construct with exactly <b>28</b> {@code WHEN} clauses, running from line 22
+ * multi-way selection with exactly <b>28</b> arms, running from line 22
  * to line 77, that compares the CICS attention-key field against 28 named identifiers and sets one
  * of 16 condition names on the work-area action field. Five programs copy it with the quoted form
  * and each performs the range once: {@code app/cbl/COACTUPC.cbl} line 898,

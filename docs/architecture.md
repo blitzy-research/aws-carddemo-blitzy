@@ -7,14 +7,23 @@ and the observability and security posture. It is the vocabulary the other migra
 [gate-evidence.md](gate-evidence.md) evidences the instrumentation it describes,
 [decision-log.md](decision-log.md) carries the reasoning behind every divergence it names, and
 [traceability-matrix.md](traceability-matrix.md) maps each legacy paragraph to the classes it inventories.
-An onboarding guide is a planned sibling page that **has not been delivered**; it is named here without a
-link, because a link to a page that does not exist reads as evidence and supplies none. Until it lands,
-the module's own `carddemo-java/README.md` carries the first-run walkthrough.
+[onboarding-guide.md](onboarding-guide.md) is the delivered first-run walkthrough — clone to green build to
+running stack — and the module's own `carddemo-java/README.md` carries the operator detail beneath it.
 
-Of the pages named above, this one and `traceability-matrix.md` are **not yet registered in the
-documentation site's navigation**; `mkdocs.yml` lists the decision log and the gate evidence. They are
-reachable in the repository and by direct path, and registering them is outstanding work rather than a
-property of this page.
+**Every page named above is delivered and registered.** `mkdocs.yml` carries an explicit `nav`, and it lists
+all eight pages under `docs/`: the landing page, this one, the onboarding guide, the traceability matrix, the
+decision log, the gate evidence, and the two prior-delivery references. A page the nav does not name exists
+in the repository and never appears on the published site, which is the quieter of the two ways a
+documentation deliverable fails — so both are checked by
+`carddemo-java/src/test/java/com/carddemo/config/BuildAndCiContractTest`, which requires each of the eight to
+be a regular file *and* to appear in the nav, and requires the landing page to link every one of them. The
+migration deck at [`presentation/index.html`](presentation/index.html) is deliberately not a nav entry: it is
+a self-contained HTML deck served as a static asset and reached from the landing page.
+
+*Labelled as history rather than dropped:* earlier revisions of this section recorded the onboarding guide as
+undelivered, and this page and the traceability matrix as unregistered. Both statements were true when they
+were written, and the tree they described no longer exists — the guide is published and the nav names all
+eight pages.
 
 Where a claim here is a count or a width, it was measured against the analysed checkout rather than
 quoted. Where the mechanism in the code differs from what the plan anticipated, this page describes the
@@ -62,10 +71,22 @@ The estate under `app/` is **read-only**. Nothing in this migration modifies, mo
 reformats it, and it remains byte-identical to the analysed checkout — which is precisely what makes the
 traceability matrix verifiable against it.
 
-No COBOL, JCL, BMS, copybook or CICS resource-definition **source text** is copied into the module, and
-none is copied into this documentation. Traceability is by citation: member names, paragraph names, line
-numbers, record widths, byte offsets, key lengths and offsets, and picture-clause shapes are metadata and
-appear here freely; source lines do not appear at all.
+**No legacy source text is reproduced in the module or in this documentation for traceability purposes** —
+not a program, not a paragraph, not a statement, and not in a comment. Traceability is by citation: member
+names, paragraph names, line numbers, record widths, byte offsets, key lengths and offsets, and
+picture-clause shapes are interface metadata and appear here freely; source lines do not appear at all. The
+claim is mechanically checkable rather than asserted — a grep over `carddemo-java/src/**/*.java` comments
+for a COBOL or CICS verb carrying one of the legacy program's own identifiers, literals or argument lists
+returns nothing.
+
+**One category of legacy text does appear in the module, and naming it is the point of a certification.**
+Where a preservation requirement obliges the module to *emit* legacy text byte for byte, that text is
+present as **contract data** rather than as a transcription: the seventeen fixed 80-column job-submission
+card images and their `/*EOF` sentinel in `util/JclCardImageBuilder`, the 80- and 100-byte statement
+template literals, and the seven sign-on message texts. Reproducing those is what *"external system
+interfaces MUST maintain identical contracts"* requires — Gate 5 verifies the card images by draining them
+back out of a real queue — and it is a different thing from carrying a paragraph's source across, which
+nothing here does.
 
 ### The estate being reproduced
 
@@ -175,7 +196,9 @@ grep -rc 'import org.springframework' domain/ | grep -v ':0'
 # the transport contracts reach only the domain enums
 grep -rhoE 'import com\.carddemo\.[a-z.]+' api/dto/ | sort -u
 
-# no javax.* import and no wildcard import anywhere — both print nothing
+# no javax.* import and no wildcard import in the PRODUCTION tree — both print nothing.
+# Run these from src/main/java/com/carddemo, not from the module root: the test tree
+# legitimately imports two JDK javax packages, and the reason is given below.
 grep -rc 'import javax\.' . | grep -v ':0'
 grep -rcE 'import [a-z].*\*;' . | grep -v ':0'
 ```
@@ -197,10 +220,23 @@ knowledge of the legacy record image, not of the business rules. All twelve reco
 offset arithmetic, and no service applies its own scaling — which is what prevents an inconsistent
 rounding policy from creeping in through a single careless call site.
 
-**Persistence and validation annotations are `jakarta.*` exclusively.** No `javax.*` import appears
-anywhere in the module, which is mandatory on this framework generation. Every import is explicit, with
-no wildcard imports at all, so an auditor can establish what a file actually depends on by reading it
-rather than by resolving it.
+**Persistence and validation annotations are `jakarta.*` exclusively.** Every annotation that the Jakarta
+rename moved — persistence, validation, servlet, transaction — is imported from `jakarta.*`, and the
+**production tree carries no `javax.*` import line at all**, which is mandatory on this framework
+generation.
+
+**The scope of that claim is stated precisely, because "no `javax.*` anywhere" would be false and a false
+absolute is worse than a qualified truth.** It is a claim about *Jakarta-migrated APIs in production code*,
+not about the token `javax.` in the repository. Two categories sit outside it and both are Java SE platform
+packages that were never in scope for the rename, so neither is a migration leak:
+
+| Where | What | Why it is not a `jakarta.*` violation |
+| --- | --- | --- |
+| production, `util/SensitiveFieldCodec` | **nine** fully-qualified uses of `javax.crypto` — no import line, so the grep above stays silent | `javax.crypto` is the JDK's own cryptography API. It has no `jakarta` counterpart and never will |
+| test tree | `javax.sql.DataSource` (7 imports) and four `javax.xml` imports — `XMLConstants`, `DocumentBuilder`, `DocumentBuilderFactory`, `ParserConfigurationException` | Both are JDK packages. The XML ones parse the build file and the suppression file in the contract tests; the datasource one is the JDK interface every pool implements |
+
+Every import is explicit, with **no wildcard imports at all** in either tree, so an auditor can establish
+what a file actually depends on by reading it rather than by resolving it.
 
 ### Injection and immutability, without code generation
 
@@ -225,37 +261,50 @@ are of the source files actually present in the module.
 
 | Package | Files | Responsibility | Legacy antecedent |
 | :------ | ----: | :------------- | :---------------- |
-| `config` | 16 | Wiring: security, JWT, batch, AWS clients, observability, JPA auditing, schema migration, the menu catalog, the published interface description | the CICS resource definition's transaction and program tables; the sign-on program's role split |
-| `api` | 22 | REST controllers, the global error surface, and the contract adapters that map service turn results onto the transport contract | the 17 3270 screen transactions |
+| `config` | 18 | Wiring: security, JWT, batch, AWS clients, observability, JPA auditing, schema migration, the menu catalog, the published interface description | the CICS resource definition's transaction and program tables; the sign-on program's role split |
+| `api` | 21 | REST controllers, the global error surface, and the contract adapters that map service turn results onto the transport contract | the 17 3270 screen transactions |
 | `api.dto` | 32 | Request and response contracts, navigation context, page metadata, the field-error contract | the 17 generated symbolic maps |
 | `domain` | 12 | The 11 JPA entities, plus the shared natural-key and stored-amount shape rules | the 11 verified record layouts |
 | `domain.id` | 3 | The three composite primary keys | the three multi-field cluster keys |
 | `domain.enums` | 9 | Typed state: account and card status, user type, transaction source, key action, file status, reject reason, date format, report period | the 508 level-88 condition names |
 | `repository` | 18 | 11 entity-facing Spring Data interfaces, plus 4 batch scan projections and the insert and write seams | the 10 VSAM base clusters plus the daily-transaction sequential input |
-| `service` | 71 | 36 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 10 focused support services — and 35 further files holding their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
-| `batch` | 15 | 9 job configurations, the shared parameter contract, the launch coordinator, staging and completion notification | the 9 application job steps |
+| `service` | 64 | 37 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 11 focused support services — and 27 further files holding their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
+| `batch` | 13 | 9 job configurations, the shared parameter contract, the launch coordinator, staging and completion notification | the 9 application job steps |
 | `batch.step` | 11 | The step template, the item processors, the reject writer, the reader factory and the publication locks | the batch programs' read-process-write skeletons |
-| `util` | 35 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters | the record layouts, the string verbs, the function-key copybook |
+| `util` | 37 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters | the record layouts, the string verbs, the function-key copybook |
 | `exception` | 6 | Abend, file status, record-not-found, validation, optimistic-lock conflict, job submission | the abend paths and the file-status error branches |
 
 The `service` row is the one whose two figures are easiest to confuse, so both are stated and both are
 countable. The **26** translation-bearing services are the ones a paragraph maps to, and every row of
 [`traceability-matrix.md`](traceability-matrix.md) that names a service names one of them. The other
-**10** carry no COBOL paragraph and exist because a translated service needed a collaborator it should
+**11** carry no COBOL paragraph and exist because a translated service needed a collaborator it should
 not itself be: `AccountConcurrencyTokenService` and `CardConcurrencyTokenService`,
 `FieldErrorTranslationService`,
-`SignOnStateService`, `UserListPageTokenService`, `CredentialDigestService`,
+`SignOnStateService`, `UserListPageTokenService`, `ReportRetryTokenService`, `CredentialDigestService`,
 `SensitiveFieldEncryptionService`, `BatchJobLaunchService`, `BatchStagingService` and
 `JobCompletionNotificationService`. The first two are described under
 [Optimistic locking](#optimistic-locking-in-two-mechanisms-because-the-legacy-check-spans-two-windows).
-26 + 10 = 36, which is every concrete `*Service.java` in the
-package; the balance of the 71 files are the service-owned records, enums and interfaces those classes
+`BatchStagingService` is named here because the file is present, and one thing about it has to be said
+plainly rather than left for a reader to discover: **no configuration reaches it**. The durable staging
+contract moved to `batch.BatchStagingArea` and `batch.step.StagedGenerationStore`, which are what the nine
+job configurations inject, and the correction notes on decision-log entries DL-146 and DL-147 record that
+move and the observation gap it left behind. The class is retained rather than removed because removing it
+would also decide DL-147's traced-boundary question, which belongs to a human.
+26 + 11 = 37, which is every concrete `*Service.java` in the
+package; the balance of the 64 files are the service-owned records, enums and interfaces those classes
 exchange, and they are not services. Counted directly:
 
 ```bash
-ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 36
-ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 71
+ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 37
+ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 64
 ```
+
+Every figure in the table above and in this paragraph is now **asserted against the directory it describes**
+rather than transcribed. The counts in the first revision of this page were correct when it was written and
+had drifted by four packages a checkpoint later, which is the failure mode a transcribed count has and a
+measured one does not. `config/DocumentedSourceCountsTest` reads the table, counts the files and fails on a
+disagreement, so a package that gains a class either updates this page or breaks the build. Recorded in
+[decision-log.md](decision-log.md) DL-316.
 
 ### `config`
 
@@ -314,11 +363,49 @@ direction is part of the contract rather than a presentation detail.
 
 ### `service`
 
-Twenty-six service classes carry the business logic. The mapping unit is the paragraph: each of the 528
-program paragraphs and 16 procedural-copybook paragraphs becomes a named method, which is what makes a
-544-row traceability matrix possible in the first place. The remaining files in the package are the service
-tier's own command, outcome, browse-window and turn-result types — the types the `api` adapters map from,
-and the reason `service` never imports `api`.
+The mapping unit is the paragraph: each of the 528 program paragraphs and 16 procedural-copybook paragraphs
+becomes a named method, which is what makes a 544-row traceability matrix possible in the first place.
+
+**Where those 544 methods actually live, counted from the matrix rather than assumed.** The package holds
+**36** concrete `*Service.java` classes, of which **26** are the translation-bearing services — one per
+legacy program or program family. But the 544 rows resolve to **22 distinct owning classes**, not 26:
+**21 services plus one utility class**, `util.PfKeyTranslator`, which owns the two paragraphs of the
+attention-key copybook and is a utility precisely because five online programs include that copybook rather
+than one owning it. Read the census yourself out of
+[traceability-matrix.md](traceability-matrix.md) — the target-class column is the authority:
+
+| Owning class | Rows | Owning class | Rows |
+| :--- | ---: | :--- | ---: |
+| `service.AccountUpdateService` | 85 | `service.DailyTransactionReadService` | 18 |
+| `service.UserManagementService` | 47 | `service.TransactionAddService` | 18 |
+| `service.CardUpdateService` | 45 | `service.BillPaymentService` | 16 |
+| `service.CardListService` | 39 | `service.DateValidationService` | 16 |
+| `service.AccountViewService` | 35 | `service.TransactionListService` | 16 |
+| `service.CardDetailService` | 34 | `service.MenuService` | 14 |
+| `service.TransactionPostingService` | 26 | `service.StatementDataAccessService` | 14 |
+| `service.TransactionReportService` | 26 | `service.ReportRequestService` | 10 |
+| `service.StatementGenerationService` | 25 | `service.TransactionViewService` | 9 |
+| `service.InterestCalculationService` | 22 | `service.AuthenticationService` | 6 |
+| `service.FileMaintenanceService` | 21 | `util.PfKeyTranslator` | 2 |
+| | | **Total** | **544** |
+
+**Five of the 26 translation-bearing services own no paragraph at all, and that is correct rather than a
+gap.** `ValidationLookupService`, `NavigationService`, `MessageCatalogService`, `AbendService` and
+`JobSubmissionService` derive from copybooks and cross-cutting constructs rather than from procedure
+divisions: a lookup table, a dispatch graph, a message catalogue, an abend structure and a queue write are
+each *data or a mechanism* the paragraphs use, not paragraphs themselves. A matrix row exists for a
+paragraph; these five have none to claim. Saying "26 services own all 544 units" would therefore be wrong
+in two directions at once — it would credit five classes with rows they do not have, and it would hide the
+one utility class that does own rows.
+
+The remaining **10** of the 36 are focused support services with no legacy antecedent — account and card
+concurrency tokens, credential digesting, sensitive-field encryption, sign-on state, user-list page tokens,
+batch launch and staging, job-completion notification and field-error translation. So the arithmetic closes
+twice over: **26 + 10 = 36** service classes, and **21 + 1 = 22** owning classes covering **544** rows.
+
+The package holds **72** files in all: those 36 services plus **36** service-owned command, outcome,
+browse-window and turn-result types — the types the `api` adapters map from, and the reason `service` never
+imports `api`.
 
 ### The file-status model needs two levels, not one enum
 
@@ -477,6 +564,15 @@ four, so **the literal is recorded rather than implemented** — entry DL-145 in
 would run a guarded step the plan holds to zero, which is a behavioural change no test written afterwards
 could detect.
 
+**One rule, but one *placement* of it per gated step.** Spring Batch's flow builder keys the decision state
+it creates by the object handed to it, so a flow that hands it the same enumeration singleton at three points
+gets one shared state holding three pairs of transitions — and every gate then routes wherever the first pair
+pointed, back into the step just run. The statement job therefore wires
+`ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.atOnePlacement()` once per gated step: three placements of one rule,
+each its own state, all reaching the identical verdict. The backup job places the gate once and uses the
+constant directly. Any future job with more than one gate must do the same; DL-145's integrated-state note
+records the defect this prevents.
+
 The two jobs differ in what a refusal *does*, and that distinction is real: the statement job's three gates
 **propagate** the failure, so the job ends `FAILED`, while the backup job's single gate ends its flow. Two
 further condition tokens appear in the estate — in the reporting job and its procedure — but those are
@@ -523,7 +619,8 @@ five steps, and the duplication is documented rather than reproduced as two comp
 
 Four fixed output widths are the ones usually named — the 430-byte reject record, the 80-byte statement
 line, the 100-byte HTML statement line and the 133-byte report line. The category-balance listing
-contributes a **fifth: 40 bytes, fixed and blocked**.
+contributes a **fifth: 40 bytes, fixed and blocked**, and it now carries a committed golden of its own on
+the same terms as the other four.
 
 Its geometry had to be resolved rather than transcribed, because the reprojection and the record length
 disagree. Summed as declared — an 11-byte account identifier, a blank, a 2-byte type code, a blank, a
@@ -556,9 +653,15 @@ rather than a formatting choice:
 | **133** | transaction report line, fixed-length blocked | the transaction report job |
 | **430** | daily-transaction reject record — the 350-byte source image, a 4-digit reason code, then a 76-character description | the posting job's reject writer |
 
-Four of the five are compared against committed golden files byte for byte; the 40-byte line is asserted at
-its emitting job. Which evidence stands behind each is recorded in [gate-evidence.md](gate-evidence.md) and
-in the module's README rather than here.
+**All five are compared against committed golden files byte for byte.** Four of the goldens are compared
+from a single seeded pipeline pass in `e2e/BatchPipelineE2ETest`; the fifth,
+`fixtures/expected/category-balance-report.txt`, is compared from a dedicated run of the category-balance
+job in `batch/CategoryBalanceReportJobConfigIT`, because that job is the one emitter the primary pipeline
+does not drive. Its test fixes the reported population completely — the fifty delivered category-balance
+rows plus three it adds and one it rewrites in place, 53 records of 40 bytes — and compares what the job
+wrote to a real local dataset, after reading a real server, against the committed file. Which evidence
+stands behind each is recorded in [gate-evidence.md](gate-evidence.md) and in the module's README rather
+than here.
 
 ### The statement generator is a state machine, not a loop
 
@@ -726,16 +829,24 @@ base cluster.
 
 | Legacy alternate index | Base cluster | Key (length, offset) | Target |
 | :--------------------- | :----------- | :------------------- | :----- |
-| `CARDAIX` | card master | `CARD-ACCT-ID` — `KEYS(11 16)` | `CardRepository.findByCardAcctId` |
-| `CXACAIX` | card cross-reference | `XREF-ACCT-ID` — `KEYS(11 25)` | `CardCrossReferenceRepository.findByXrefAcctId` |
-| transaction timestamp index | transaction master | `TRAN-PROC-TS` — `KEYS(26 304)` | a date-range query for the reporting job |
+| `CARDAIX` | card master | `CARD-ACCT-ID` — `KEYS(11 16)` | `CardRepository.findByCardAcctIdOrderByCardNumAsc(String, Limit)` |
+| `CXACAIX` | card cross-reference | `XREF-ACCT-ID` — `KEYS(11 25)` | `CardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)` |
+| transaction timestamp index | transaction master | `TRAN-PROC-TS` — `KEYS(26 304)` | `TransactionRepository.findByProcessingTimestampWindow(String, String, Limit)` |
+
+Each of the three finders **requires an explicit bound and states a deterministic ordering**, so no caller
+can obtain an unordered or unbounded result from any of them. None of the three has a production caller:
+the card-list screen pages through `Pageable`, every online path resolves a single cross-reference by its
+own key, and the reporting job filters the unloaded sequential generation rather than the live table. They
+are kept because they are the declared translation of a named legacy artefact, and
+[gate-evidence.md](gate-evidence.md) states the call-path position for each one exactly.
 
 **All three also become B-tree indexes in `V2__create_indexes.sql`** — `idx_card_card_acct_id`,
-`idx_card_cross_reference_xref_acct_id` and `idx_transaction_tran_proc_ts`. The third is included even
-though **no online endpoint depends on it**, because the reporting job's date-range record selection would
-otherwise scan the whole transaction table. That asymmetry is visible in the estate itself: only the two
-card-related indexes are registered to CICS as file paths and therefore back online access, while the
-timestamp index exists for batch alone.
+`idx_card_cross_reference_xref_acct_id` and `idx_transaction_tran_proc_ts` — and each is measured, in its
+repository integration test, being reached by an index scan. The third is created even though **no endpoint
+and no job depends on it**: it is the index the date-range finder needs, and keeping the index and the
+finder together is what makes the shipped predicate's plan verifiable rather than hypothetical. That
+asymmetry is visible in the estate itself: only the two card-related indexes are registered to CICS as file
+paths and therefore back online access, while the timestamp index exists for batch alone.
 
 The key offset of 304 also corroborates the transaction layout independently — the processing timestamp
 sits at offset 304 and the origin timestamp at 278, which is exactly what the sort specifications address.
@@ -743,30 +854,38 @@ sits at offset 304 and the origin timestamp at 278, which is exactly what the so
 ## Schema evolution
 
 Schema evolution is **versioned and forward-only**, in four migrations under
-`carddemo-java/src/main/resources/db/migration/`:
+`carddemo-java/src/main/resources/db/migration/`, split across two sibling locations:
 
-| Migration | Contents |
-| :-------- | :------- |
-| `V1__create_schema.sql` | the 11 tables, one per verified record layout |
-| `V2__create_indexes.sql` | the three alternate-index equivalents, plus primary and foreign keys |
-| `V3__seed_reference_data.sql` | the nine reference and sample datasets |
-| `V4__seed_user_security.sql` | the ten known sign-on identities, credentials hashed |
+| Migration | Location | Contents |
+| :-------- | :------- | :------- |
+| `V1__create_schema.sql` | `db/migration/schema/` | the 11 tables, one per verified record layout |
+| `V2__create_indexes.sql` | `db/migration/schema/` | the three alternate-index equivalents, plus primary and foreign keys |
+| `V3__seed_reference_data.sql` | `db/migration/seed/` | the nine reference and sample datasets |
+| `V4__seed_user_security.sql` | `db/migration/seed/` | the ten known sign-on identities, credentials hashed |
 
 ### The two seeds can never reach production
 
-The seeds are excluded from production by a **per-profile migration version ceiling**, not by a separate
-migration directory. There is one migration location, `classpath:db/migration`, and every profile resolves
-exactly that location — there is no `local/`, `test/` or `prod/` child directory to get wrong. What differs
-per profile is the **target version**: production migrates to version 2 and stops, so it receives the
-schema and the indexes and never applies a seed, while only the local and test overlays lift the ceiling to
-the latest version and apply `V3` and `V4`.
+The seeds are excluded from production by the **profile-scoped migration location list**, not by a version
+ceiling. Production resolves `classpath:db/migration/schema` and nothing else, so the two seed scripts are
+not applied, not pending and **not resolved at all** — they appear in no migration state. Only the local
+and test overlays add `classpath:db/migration/seed`, which is the single setting that makes `V3` and `V4`
+executable. Every profile, production included, declares `spring.flyway.target: latest`; **no profile
+declares a version and production refuses one**.
 
-Two properties make that robust rather than merely configured. The production ceiling is declared both in
+Their shared parent `classpath:db/migration` holds no script at all and is **refused as a location under
+every profile**. A Flyway location is scanned recursively, so the parent reaches both children — and it
+records each script under a name relative to itself, which would break the migration names the Compose
+bring-up check reads out of the history table.
+
+Three properties make that robust rather than merely configured. The schema-only list is declared both in
 the shared baseline and again in the production overlay, so a profile silent about migrations inherits the
-production posture rather than the permissive one — the safe value is the default. And a startup callback
-independently **refuses a production start** against a database whose migration history records a seed or
-whose tables still hold seeded rows, so a production instance cannot be pointed at a seeded database even
-by mistake.
+production posture rather than the permissive one — the safe value is the default. A location a profile
+never lists is not a value an operator can widen, and it constrains no future version: a `V5` schema
+migration placed in the schema location is applied by production, which a version ceiling made impossible.
+And a startup callback independently **refuses a production start** against a database whose migration
+history records a seed or whose tables still hold seeded rows, so a production instance cannot be pointed
+at a seeded database even by mistake. The reasoning and the arrangement it replaced are recorded in
+`docs/decision-log.md` at DL-298.
 
 ### Seed volumes
 
@@ -906,8 +1025,14 @@ capability.
 
 ### This page states no performance figure, deliberately
 
-The timers above are the mechanism from which the performance baseline is read, and the recorded figures
-live in [gate-evidence.md](gate-evidence.md).
+**Be exact about which mechanism produces the quotable figures, because the two are easy to conflate.** The
+recorded elapsed time, peak heap and records-per-second figures are produced by
+`support/RunScopedPerformanceRecorder` in the test estate: it wall-clocks each job launch, reads peak heap
+from the JVM's own memory beans, divides records by elapsed time, and writes `target/gate-evidence/gate3-*.md`
+for transcription. The Micrometer timers and the Prometheus and Grafana surfaces described above
+**corroborate** those figures — they are the running system's own view of the same work — but they are not
+where the baseline is read from. The recorded figures live in [gate-evidence.md](gate-evidence.md), each
+beside the fixture volumes and the machine it was measured on.
 
 **No latency, throughput, records-per-second, capacity or availability number appears on this page, and no
 service level is asserted anywhere in this migration.** The reason is documented rather than assumed: no
@@ -1119,7 +1244,7 @@ page describes:
 | Layered separation of concerns | the strict downward dependency direction, verified by import census, and the confinement of fixed-width record knowledge to `util` |
 | Constructor injection and immutability without code generation | constructor injection throughout, records and final classes for transport types, and no code-generating annotation processor in the build |
 | No **production** secret in source, and none defaulted | the production profile's **thirteen** no-fallback values, the startup validator that enforces them, hashed seeded credentials, and no production secret value printed on this page. The intentional non-production values are inventoried under [Secrets](#secrets) rather than glossed over, because the unqualified version of this standard would be false |
-| Versioned, forward-only schema evolution | four Flyway migrations with a per-profile version ceiling and a startup callback that refuses a seeded production database |
+| Versioned, forward-only schema evolution | four Flyway migrations across two profile-scoped locations, an open target that leaves the schema sequence free to grow, and a startup callback that refuses a seeded production database |
 | Observability as a first-class concern | Actuator, Micrometer timers on every endpoint and step, Prometheus and Grafana provisioning, OTLP tracing, and structured JSON logging |
 
 Two further bodies of mandatory content govern this migration and are **not** rules, so they are named

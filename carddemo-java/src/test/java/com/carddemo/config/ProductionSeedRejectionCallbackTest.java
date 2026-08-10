@@ -285,6 +285,11 @@ final class ProductionSeedRejectionCallbackTest {
                             + "disclosure groups of seventeen, eighteen categories, seven types and "
                             + "three hundred unposted daily transactions")
                     .containsExactly(50L, 51L, 18L, 7L, 300L);
+            assertThat(ProductionSeedRejectionCallback.SEEDED_VOLUMES)
+                    .as("each entry carries the statement that counts its own table, so a reordering "
+                            + "cannot pair one table's name with another table's count or query")
+                    .allSatisfy(volume -> assertThat(volume.countStatement())
+                            .isEqualTo("SELECT count(*) FROM " + volume.table()));
         }
 
         @Test
@@ -294,7 +299,7 @@ final class ProductionSeedRejectionCallbackTest {
             assertThat(ProductionSeedRejectionCallback.FIRST_SEED_VERSION)
                     .as("the configuration ceiling is %s, so the first excluded version is the one "
                             + "above it; a different boundary here would leave one control refusing "
-                            + "what another allowed", FlywayConfig.SCHEMA_ONLY_TARGET)
+                            + "what another allowed", FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
                     .isEqualTo("3");
         }
     }

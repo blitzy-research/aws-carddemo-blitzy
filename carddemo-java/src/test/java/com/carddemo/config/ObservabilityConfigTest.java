@@ -1004,9 +1004,9 @@ final class ObservabilityConfigTest {
     final class WhatTheWiringRefusesToOwn {
 
         @Test
-        @DisplayName("contributes no span exporter and no sampler, which is what leaves the export decision "
-                + "with the framework condition that reads the profile's own switch")
-        void contributesNoSpanExporterAndNoSampler() {
+        @DisplayName("contributes no span exporter, which is what leaves the export decision with the "
+                + "framework condition that reads the profile's own switch")
+        void contributesNoSpanExporter() {
             isolated.run(context -> {
                 assertThat(context).hasNotFailed();
                 assertThat(contributedBeanNames(context, SpanExporter.class))
@@ -1015,10 +1015,27 @@ final class ObservabilityConfigTest {
                                 + "into this class, where the next profile to switch export off would go "
                                 + "unhonoured and a run with no collector would emit transport noise")
                         .isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("contributes exactly one sampler, because the profile owns the ratio and only code "
+                + "can own what happens to a trace context that arrived from outside")
+        void contributesOneSampler() {
+            // THIS ASSERTION IS THE REVERSE OF THE ONE IT REPLACES, and the reversal is the finding. The
+            // previous form required no sampler at all, on the reasoning that sampling is settled per
+            // profile as a property - which is true of the RATIO and not true of the policy. The framework's
+            // own sampler leaves its remote-parent-sampled arm at always-on, so any caller presenting a
+            // traceparent with the sampled flag set had every span of its request recorded whatever the
+            // ratio said, and no property in the framework expresses that arm. A profile therefore cannot
+            // settle it and only a bean can. The ratio is still read from the property, so the document
+            // keeps the figure and this class keeps only what the document cannot say.
+            isolated.run(context -> {
+                assertThat(context).hasNotFailed();
                 assertThat(contributedBeanNames(context, Sampler.class))
-                        .as("sampling is settled per profile as a property; a sampler declared here would "
-                                + "take that decision away from the document that states it")
-                        .isEmpty();
+                        .as("one sampler, named so a reader can find it; the framework's own is "
+                                + "@ConditionalOnMissingBean and therefore stands aside for it")
+                        .containsExactly("traceSampler");
             });
         }
 

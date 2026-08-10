@@ -56,6 +56,7 @@ import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.support.TraceabilityMatrixCensus;
 
+import org.springframework.data.domain.Limit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -198,6 +199,15 @@ import static org.mockito.Mockito.when;
 @DisplayName("TransactionReportService: the 133-byte transaction detail report, its pagination "
         + "arithmetic, its accumulation chain and its three reproduced legacy defects")
 class TransactionReportServiceTest {
+
+    /**
+     * The bound the two alternate-key finders now require, generous enough that these specifications
+     * measure the finder's shape rather than its bound.
+     *
+     * <p>The bound itself is measured against a real server in the repository specifications, where a
+     * fixture can hold two rows under one account identifier; a mock cannot establish it.
+     */
+    private static final Limit ALTERNATE_KEY_ROWS = Limit.of(100);
 
     // =============================================================================================
     // Contract literals. Every one of these is a legacy formatting or layout contract value read
@@ -1906,10 +1916,10 @@ class TransactionReportServiceTest {
         @DisplayName("the alternate-index cross-reference finder returns a list, so an empty list is "
                 + "the not-found path and no element access escapes")
         void anEmptyCrossReferenceListIsTheNotFoundPath() {
-            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_A)).thenReturn(List.of());
+            when(cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_A, ALTERNATE_KEY_ROWS)).thenReturn(List.of());
 
             final List<CardCrossReference> found =
-                    cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_A);
+                    cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_A, ALTERNATE_KEY_ROWS);
 
             assertAll(
                     () -> assertThat(found)
@@ -1926,11 +1936,11 @@ class TransactionReportServiceTest {
         void aMultiElementCrossReferenceListUsesItsFirstElementAsSupplied() {
             final CardCrossReference second = new CardCrossReference(CARD_B, CUSTOMER_B, ACCOUNT_A);
             final CardCrossReference first = new CardCrossReference(CARD_A, CUSTOMER_A, ACCOUNT_A);
-            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_A))
+            when(cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_A, ALTERNATE_KEY_ROWS))
                     .thenReturn(List.of(second, first));
 
             final List<CardCrossReference> found =
-                    cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_A);
+                    cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_A, ALTERNATE_KEY_ROWS);
 
             assertAll(
                     () -> assertThat(found).hasSize(2),

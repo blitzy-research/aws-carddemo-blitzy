@@ -56,7 +56,6 @@ import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.scope.context.StepContext;
-import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.core.step.tasklet.TaskletStep;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,7 +63,6 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.SmartLifecycle;
-import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.PlatformTransactionManager;
 
@@ -289,6 +287,10 @@ class FileProbeJobConfigTest {
                     .isEqualTo(50);
         }
 
+        /** The four business keys the four probed clusters are ordered on, ascending, by their finders. */
+        private static final java.util.List<String> FILE_PROBE_KEY_PROPERTIES =
+                java.util.List.of("acctId", "cardNum", "custId", "xrefCardNum");
+
         @Test
         @DisplayName("each mode orders its scan ascending on its own business key, because sequential "
                 + "access over an indexed file returns ascending primary-key order")
@@ -301,14 +303,15 @@ class FileProbeJobConfigTest {
 
         @ParameterizedTest
         @EnumSource(ProbeMode.class)
-        @DisplayName("the order is a single ascending term on that key and nothing else")
-        void theOrderIsASingleAscendingTerm(final ProbeMode mode) {
-            assertThat(mode.keyOrder())
-                    .containsExactly(Sort.Order.asc(mode.businessKeyProperty()));
-            assertThat(mode.keyOrder().getOrderFor(mode.businessKeyProperty()))
-                    .isNotNull()
-                    .extracting(Sort.Order::getDirection)
-                    .isEqualTo(Sort.Direction.ASC);
+        @DisplayName("every mode names a key for its pass to be ordered on, and the ordering itself "
+                + "belongs to the service that issues the pass")
+        void everyModeNamesAKeyForItsPassToBeOrderedOn(final ProbeMode mode) {
+            // The name is all a mode carries. The ordering is issued by FileMaintenanceService's derived
+            // key-ordered finders, one per cluster, each naming its own key ascending in the finder's own
+            // name - so a second representation of the same ordering carried here, alongside the one
+            // actually issued, would be the thing that could come to disagree with it.
+            assertThat(mode.businessKeyProperty()).isNotBlank();
+            assertThat(FILE_PROBE_KEY_PROPERTIES).contains(mode.businessKeyProperty());
         }
 
         @ParameterizedTest

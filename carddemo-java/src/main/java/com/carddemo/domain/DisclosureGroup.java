@@ -26,6 +26,7 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 
 import com.carddemo.domain.id.DisclosureGroupId;
 
@@ -122,6 +123,33 @@ public class DisclosureGroup {
     static final int DIS_INT_RATE_PRECISION = 6;
 
     /**
+     * Width of the group identifier: 10, from {@code DIS-ACCT-GROUP-ID PIC X(10)}.
+     *
+     * <p><strong>This is the width the whole rate lookup turns on.</strong> Two of the three seeded
+     * groups are seven characters followed by three spaces, so the padding is part of the key rather
+     * than decoration of it, and a shorter value here does not fail - it matches no row and sends the
+     * lookup to its default-group fallback. Named so that the column declaration, the persistence-time
+     * rule and the check constraint in {@code V1__create_schema.sql} read the one figure. Recorded as
+     * {@code DL-297} in {@code docs/decision-log.md}.
+     */
+    static final int DIS_ACCT_GROUP_ID_WIDTH = 10;
+
+    /** Width of the type code: 2, from {@code DIS-TRAN-TYPE-CD PIC X(02)}. */
+    static final int DIS_TRAN_TYPE_CD_WIDTH = 2;
+
+    /**
+     * Width of the category code: 4, from {@code DIS-TRAN-CAT-CD PIC 9(04)}.
+     *
+     * <p><strong>Width only, with no digit class, even though the picture clause is numeric.</strong> The
+     * interest run composes this key from the category-balance row's own {@code TRANCAT-CD}, which
+     * {@code app/jcl/PRTCATBL.jcl} declares as {@code ZD} - zoned decimal, whose sign occupies the final
+     * byte, so a legitimately signed value ends in a brace or a letter. Refusing that here would not make
+     * such a row invalid; it would make it permanently <em>unmatchable</em>, which sends the rate lookup
+     * to its default-group fallback and is the same class of silent defect this entry exists to close.
+     */
+    static final int DIS_TRAN_CAT_CD_WIDTH = 4;
+
+    /**
      * Account group identifier - key part 1, 10 bytes at offset 0 of the record image, from
      * {@code DIS-ACCT-GROUP-ID}.
      *
@@ -138,7 +166,7 @@ public class DisclosureGroup {
      * hidden by implicit padding semantics.
      */
     @Id
-    @Column(name = "dis_acct_group_id", length = 10, nullable = false)
+    @Column(name = "dis_acct_group_id", length = DIS_ACCT_GROUP_ID_WIDTH, nullable = false)
     private String disAcctGroupId;
 
     /**
@@ -150,7 +178,7 @@ public class DisclosureGroup {
      * constraint, and the value's role here is as a key component of this composite key.
      */
     @Id
-    @Column(name = "dis_tran_type_cd", length = 2, nullable = false)
+    @Column(name = "dis_tran_type_cd", length = DIS_TRAN_TYPE_CD_WIDTH, nullable = false)
     private String disTranTypeCd;
 
     /**
@@ -165,7 +193,7 @@ public class DisclosureGroup {
      * transaction-category reference table.
      */
     @Id
-    @Column(name = "dis_tran_cat_cd", length = 4, nullable = false)
+    @Column(name = "dis_tran_cat_cd", length = DIS_TRAN_CAT_CD_WIDTH, nullable = false)
     private String disTranCatCd;
 
     /**
@@ -198,6 +226,28 @@ public class DisclosureGroup {
      */
     @Column(name = "dis_int_rate", precision = DIS_INT_RATE_PRECISION, scale = 2, nullable = false)
     private BigDecimal disIntRate;
+
+    /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code DIS-INT-RATE}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean disIntRateNegativeZero;
 
     /**
      * Creates an empty instance. This constructor exists for the persistence provider, which
@@ -321,6 +371,27 @@ public class DisclosureGroup {
     }
 
     /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code DIS-INT-RATE}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isDisIntRateNegativeZero() {
+        return disIntRateNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code DIS-INT-RATE}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param disIntRateNegativeZero the negative-zero bit the image carried
+     */
+    public void setDisIntRateNegativeZero(boolean disIntRateNegativeZero) {
+        this.disIntRateNegativeZero = disIntRateNegativeZero;
+    }
+
+    /**
      * Returns this row's composite key as a single addressable value, built from the three key
      * components in their contractual order.
      *
@@ -356,6 +427,9 @@ public class DisclosureGroup {
     @PrePersist
     @PreUpdate
     void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidth(disAcctGroupId, DIS_ACCT_GROUP_ID_WIDTH, "disAcctGroupId");
+        StoredValueRules.requireFixedWidth(disTranTypeCd, DIS_TRAN_TYPE_CD_WIDTH, "disTranTypeCd");
+        StoredValueRules.requireFixedWidth(disTranCatCd, DIS_TRAN_CAT_CD_WIDTH, "disTranCatCd");
         this.disIntRate =
                 StoredValueRules.normalizedAmount(disIntRate, DIS_INT_RATE_PRECISION, "disIntRate");
     }

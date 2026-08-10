@@ -16,6 +16,7 @@
  */
 package com.carddemo.service;
 
+import com.carddemo.support.SensitiveValues;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -72,7 +73,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * The credential used here is an obviously synthetic phrase. The eight-character literal carried
  * in-stream by {@code app/jcl/DUSRSECJ.jcl} appears nowhere in this file.
  *
- * <p>{@code src/main/resources/db/migration/V4__seed_user_security.sql} applies under this profile, so
+ * <p>{@code src/main/resources/db/migration/seed/V4__seed_user_security.sql} applies under this profile, so
  * the table already holds the ten legacy sign-on identities when a test method begins. Every row this
  * test writes is therefore keyed inside a reserved range the seed never occupies, and the cleanup and
  * the emptiness assertions are both scoped to that range: nothing here deletes or counts a seeded row.
@@ -207,17 +208,25 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
 
         final List<String> credentials = readAllCredentials();
         for (final String credential : credentials) {
-            assertThat(credential)
+            // The LENGTH is asserted, not the digest. hasSize prints its whole subject on failure, and
+            // a BCrypt digest published in a build log is an offline-attack target: the salt and the
+            // cost are in it, so an attacker needs nothing else to start guessing.
+            assertThat(credential.length())
                     .as("a seeded credential must be a digest of the declared width; the legacy record "
                             + "carried an eight-character cleartext password, and reproducing that "
-                            + "would have satisfied parity and violated the credential constraint")
-                    .hasSize(CredentialDigestService.DIGEST_LENGTH);
-            assertThat(service.isDigest(credential)).isTrue();
+                            + "would have satisfied parity and violated the credential constraint. "
+                            + "Stored %s", SensitiveValues.describe(credential))
+                    .isEqualTo(CredentialDigestService.DIGEST_LENGTH);
+            assertThat(service.isDigest(credential))
+                    .as("and it must be recognisable as a digest; asserted as a predicate so a failure "
+                            + "reports false rather than the value that was not one")
+                    .isTrue();
         }
 
-        assertThat(credentials)
+        assertThat(SensitiveValues.fingerprints(credentials))
                 .as("independent salts, so no two seeded identities share a stored value even where "
                         + "the source credential was identical")
+                .hasSize(credentials.size())
                 .doesNotHaveDuplicates();
     }
 
@@ -230,10 +239,19 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
                 "A");
 
         final String stored = readCredential(TEST_ID);
-        assertThat(stored).hasSize(CredentialDigestService.DIGEST_LENGTH);
-        assertThat(stored).isEqualTo(digest);
-        assertThat(service.isDigest(stored)).isTrue();
-        assertThat(service.matches(CREDENTIAL, stored)).isTrue();
+        assertThat(stored.length())
+                .as("the column must keep every character; a truncating column would store a prefix that "
+                        + "still looks like a digest. Stored %s", SensitiveValues.describe(stored))
+                .isEqualTo(CredentialDigestService.DIGEST_LENGTH);
+        assertThat(SensitiveValues.fingerprint(stored))
+                .as("and it must be the digest that went in, compared by fingerprint because an "
+                        + "isEqualTo failure would print both digests")
+                .isEqualTo(SensitiveValues.fingerprint(digest));
+        assertThat(service.isDigest(stored)).as("and it is still recognisable as a digest").isTrue();
+        assertThat(service.matches(CREDENTIAL, stored))
+                .as("and it still verifies the credential it was made from, which is the property the "
+                        + "round trip exists to prove")
+                .isTrue();
     }
 
     @Test
@@ -243,7 +261,15 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
 
         final String row = readWholeRow(TEST_ID);
         for (int length = 4; length <= CREDENTIAL.length(); length++) {
-            assertThat(row).doesNotContain(CREDENTIAL.substring(0, length));
+            final String fragment = CREDENTIAL.substring(0, length);
+            // A predicate, because a failing doesNotContain prints the fragment AND the row that
+            // carries it - so the one assertion guarding against a credential fragment reaching
+            // storage would have published the fragment itself, and progressively longer ones as the
+            // loop went on.
+            assertThat(SensitiveValues.absentFrom(row, fragment))
+                    .as("no prefix of the credential may appear anywhere in the stored row; looked for a "
+                            + "%d-character prefix, %s", length, SensitiveValues.describe(fragment))
+                    .isTrue();
         }
     }
 
@@ -252,8 +278,13 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     void theColumnAloneIsNotTheProtection() throws SQLException {
         insertUser(TEST_ID, CREDENTIAL, "A");
 
-        assertThat(readCredential(TEST_ID)).isEqualTo(CREDENTIAL);
-        assertThat(service.isDigest(readCredential(TEST_ID))).isFalse();
+        assertThat(SensitiveValues.fingerprint(readCredential(TEST_ID)))
+                .as("the column accepts a cleartext value unaltered, which is precisely why the guard "
+                        + "exists; compared by fingerprint so neither operand is the cleartext itself")
+                .isEqualTo(SensitiveValues.fingerprint(CREDENTIAL));
+        assertThat(service.isDigest(readCredential(TEST_ID)))
+                .as("and the column's own acceptance says nothing about the value being a digest")
+                .isFalse();
     }
 
     @Test

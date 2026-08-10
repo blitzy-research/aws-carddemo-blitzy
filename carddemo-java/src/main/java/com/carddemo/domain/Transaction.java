@@ -22,6 +22,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 
 import java.math.BigDecimal;
 import java.util.Objects;
@@ -305,6 +306,28 @@ public class Transaction {
     private BigDecimal tranAmt;
 
     /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code TRAN-AMT}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean tranAmtNegativeZero;
+
+    /**
      * Merchant identifier - 9 characters at offset 143.
      *
      * <p><strong>Column {@code merchant_id}, with no prefix.</strong> This attribute and the three
@@ -540,6 +563,27 @@ public class Transaction {
      */
     public void setTranAmt(BigDecimal tranAmt) {
         this.tranAmt = tranAmt;
+    }
+
+    /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code TRAN-AMT}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isTranAmtNegativeZero() {
+        return tranAmtNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code TRAN-AMT}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param tranAmtNegativeZero the negative-zero bit the image carried
+     */
+    public void setTranAmtNegativeZero(boolean tranAmtNegativeZero) {
+        this.tranAmtNegativeZero = tranAmtNegativeZero;
     }
 
     /**

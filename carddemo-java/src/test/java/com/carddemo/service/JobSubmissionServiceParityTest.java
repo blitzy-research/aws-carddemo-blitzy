@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Unit tests for the online-to-batch job-submission bridge.
  *
  * <h2>What is under test and why it matters</h2>
- * The class under test is the migrated form of the single {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} site in
+ * The class under test is the migrated form of the single transient-data queue write to JOBS in
  * the whole estate, at {@code app/cbl/CORPT00C.cbl} line 515, together with the emitting loop above it at
  * lines 496 to 509. That one paragraph is the entire mechanism by which the online tier asks the batch tier
  * to do work, so its behaviour is an external interface contract rather than an implementation detail.

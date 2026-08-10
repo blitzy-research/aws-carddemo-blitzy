@@ -20,6 +20,7 @@ import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.util.ApiRoutePaths;
 import com.carddemo.util.RefusalBodyRenderer;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -30,12 +31,16 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -490,15 +495,6 @@ public class SecurityConfig {
             ApiRoutePaths.BATCH_JOBS_PATH + ApiRoutePaths.ANY_DESCENDANT;
 
     /**
-     * The one pattern the chain installs for the batch-control surface: the prefix and everything
-     * beneath it.
-     *
-     * <p>Assembled from the published prefix rather than written out, so the rule cannot name a different
-     * address from the constant a controller binds against.</p>
-     */
-    private static final String BATCH_CONTROL_PATTERN = BATCH_CONTROL_PATH_PREFIX + ANY_DESCENDANT;
-
-    /**
      * The one pattern the chain installs for the ordinary business surface: the API root and everything
      * beneath it.
      *
@@ -558,8 +554,126 @@ public class SecurityConfig {
      */
     public static final String MANAGEMENT_AUTHORITY = "ROLE_MONITORING";
 
-    /** Setting the machine credential for the management surface is supplied through. */
+    /**
+     * Setting the machine credential for the management surface is supplied through.
+     *
+     * <h2>What this credential has to withstand, and therefore what it has to be</h2>
+     *
+     * <p>It is presented as a bearer token on any request beneath the management base path, and
+     * {@code ManagementTokenAuthenticationFilter} below establishes {@link #MANAGEMENT_AUTHORITY} for a
+     * request that carries the right bytes. There is no sign-on behind it, no account, no lockout, no
+     * attempt counter and no second factor - by design, because a collector is not a user - so
+     * <strong>the only thing protecting it is that it cannot be guessed</strong>. The constant-time
+     * comparison in that filter stops a timing side channel from revealing the value one character at a
+     * time; it does nothing at all about a value that is short enough to enumerate outright.
+     *
+     * <p>So production requires a minimum length. {@link ProductionConfigurationValidator} refuses to
+     * start the production profile when this setting resolves to fewer than
+     * {@value ProductionConfigurationValidator#MINIMUM_MANAGEMENT_TOKEN_LENGTH} characters after
+     * stripping, alongside its refusal of an absent, unresolved or blank one. Before that rule, a
+     * one-character token satisfied every check this module made and then fell to a few hundred
+     * guesses - CWE-521, reachable in production with nothing else misconfigured.
+     *
+     * <p>Generate one, never choose one: {@code openssl rand -hex 16} or
+     * {@code openssl rand -base64 24}, either of which produces a value at the floor. A length rule is a
+     * proxy for unpredictability and not a measure of it - thirty-two repetitions of one letter would
+     * pass - which is why the generator is named here rather than left to be improvised.
+     *
+     * <p>No floor is imposed outside production. The local and test overlays carry a committed
+     * development literal so the profiles work on a fresh clone, and the shared baseline binds this
+     * setting with an EMPTY default, which is the fail-closed state: with nothing configured, no
+     * identity can hold the authority and the surface admits nobody beyond the three anonymous probe
+     * paths.
+     */
     public static final String MANAGEMENT_TOKEN_PROPERTY = "carddemo.security.management.token";
+
+    /**
+     * Shortest machine credential the management surface will start with, in characters.
+     *
+     * <p>Thirty-two, because this credential is the whole of the authentication on a surface that
+     * publishes health, metrics and environment detail, and because it is not rate limited: the
+     * management chain has no attempt allowance of its own - the sign-on governor counts sign-on
+     * attempts and nothing else - so what stands between a caller and this surface is the cost of
+     * guessing the value. Nothing bounded it before: the value need only have been non-blank, so a
+     * single character was accepted and startup reported nothing unusual, leaving a surface that looked
+     * authenticated and was not.
+     *
+     * <p>Thirty-two visible characters is the width of a 128-bit value written in hexadecimal or of a
+     * 192-bit value written in Base64, which puts exhaustive search out of reach without demanding a
+     * particular encoding. Length is what is checked because length is what can be checked: a
+     * configuration value cannot be inspected for randomness, so the requirement is stated as a width
+     * an unguessable value comfortably satisfies and a typed one does not.
+     */
+    public static final int MANAGEMENT_TOKEN_MIN_LENGTH = 32;
+
+    /**
+     * Longest machine credential the management surface will start with, in characters.
+     *
+     * <p>An upper bound exists because the value is compared byte for byte on every request to the
+     * surface a collector scrapes on a schedule, and because a credential of unbounded length is a
+     * configuration mistake rather than a stronger credential - past a few hundred characters the value
+     * is not a secret someone chose but a file, a certificate or a paste that landed in the wrong
+     * setting. Five hundred and twelve is far above any generated token and far below anything that
+     * would make the comparison measurable.
+     */
+    public static final int MANAGEMENT_TOKEN_MAX_LENGTH = 512;
+
+    /**
+     * Fewest distinct characters the machine credential must contain.
+     *
+     * <p>A width requirement alone is satisfied by thirty-two copies of one letter, which has the shape
+     * of a strong credential and none of the substance. Any value drawn at random from a hexadecimal,
+     * Base64 or alphanumeric alphabet carries far more distinct characters than this at thirty-two
+     * characters wide, so the floor refuses the hand-written degenerate cases without constraining a
+     * generated value. It is a screen against an obvious mistake, not a measure of entropy, and it is
+     * documented as such so it is not mistaken for one.
+     */
+    public static final int MANAGEMENT_TOKEN_MIN_DISTINCT_CHARACTERS = 8;
+
+    /** Lowest character code the machine credential may contain: the first visible ASCII character. */
+    private static final char MANAGEMENT_TOKEN_LOWEST_CHARACTER = '!';
+
+    /** Highest character code the machine credential may contain: the last visible ASCII character. */
+    private static final char MANAGEMENT_TOKEN_HIGHEST_CHARACTER = '~';
+
+    /**
+     * How many bytes of generated material a production management credential must carry.
+     *
+     * <p>Stated here, on the class that consumes the credential, because that is where the module already
+     * puts a credential's floor: {@code JwtTokenProvider} holds the signing key's floor beside the
+     * algorithm that requires it. {@code ProductionConfigurationValidator} reads this constant rather than
+     * restating the number, so the rule a deployment is held to and the rule this filter relies on cannot
+     * drift apart.
+     *
+     * <p>The floor is not enforced here. A local or test profile runs with no credential at all - the
+     * fail-closed state - and a floor applied in this constructor would make the empty case a start-up
+     * failure in every profile. Production is where a supplied credential must be strong, and production is
+     * where it is checked. See {@code docs/decision-log.md} entry DL-312.
+     */
+    public static final int MANAGEMENT_TOKEN_MINIMUM_BYTES = 32;
+
+    /** Meter recording what happened to a presented management credential. */
+    static final String MANAGEMENT_AUTHENTICATION_METER = "carddemo.management.authentication";
+
+    /** Tag naming the outcome of a presentation. */
+    static final String MANAGEMENT_OUTCOME_TAG = "outcome";
+
+    /** Outcome tag value for a credential that matched. */
+    static final String MANAGEMENT_OUTCOME_ESTABLISHED = "established";
+
+    /** Outcome tag value for a presented credential that did not match. */
+    static final String MANAGEMENT_OUTCOME_REFUSED = "refused";
+
+    /** Outcome tag value for a presentation made when no operator identity is configured. */
+    static final String MANAGEMENT_OUTCOME_UNCONFIGURED = "unconfigured";
+
+    /**
+     * How many consecutive refusals are absorbed before the sustained-failure warning is raised again.
+     *
+     * <p>A bound on the diagnostic, deliberately not a bound on the authentication; the class comment on
+     * {@code ManagementTokenAuthenticationFilter} explains why that distinction is the right one here.
+     */
+    static final int MANAGEMENT_REFUSAL_REPORT_INTERVAL = 10;
 
     /** Name the management identity is recorded under, which is a role and not a person. */
     private static final String MANAGEMENT_PRINCIPAL = "carddemo-management-collector";
@@ -656,7 +770,11 @@ public class SecurityConfig {
      *                           identity is configured; bound with an EMPTY default rather than no default
      *                           because empty is the fail-closed state - it admits nobody beyond the three
      *                           anonymous probe paths - whereas a shipped literal would be a credential in
-     *                           the repository and a missing setting must never be the permissive case
+     *                           the repository and a missing setting must never be the permissive case. A
+     *                           value that is present but too weak to be the surface's only
+     *                           authentication fails startup; see
+     *                           {@link #requireUsableManagementToken(String)}
+     * @throws IllegalStateException if a machine credential is configured and is too weak
      */
     public SecurityConfig(
             final JwtTokenProvider tokenProvider,
@@ -679,8 +797,63 @@ public class SecurityConfig {
         this.managementBasePath =
                 Objects.requireNonNull(managementBasePath, "managementBasePath must not be null");
         this.servletPath = Objects.requireNonNull(servletPath, "servletPath must not be null");
-        this.managementToken =
-                Objects.requireNonNull(managementToken, "managementToken must not be null").strip();
+        this.managementToken = requireUsableManagementToken(
+                Objects.requireNonNull(managementToken, "managementToken must not be null").strip());
+    }
+
+    /**
+     * Refuses a machine credential that is present but too weak to be the only authentication on the
+     * management surface, failing the context rather than starting with it.
+     *
+     * <p>An empty value is returned unchanged. Empty is the configured fail-closed state: the chain's
+     * catch-all becomes {@code denyAll()}, the filter matches nothing including an empty presented
+     * credential, and only the three anonymous probe paths remain reachable. A deployment that has not
+     * configured an operator identity is therefore not a deployment with a weak one, and refusing to
+     * start would refuse the safe case.
+     *
+     * <p>A present value must be between {@value #MANAGEMENT_TOKEN_MIN_LENGTH} and
+     * {@value #MANAGEMENT_TOKEN_MAX_LENGTH} characters, must be visible ASCII throughout, and must carry
+     * at least {@value #MANAGEMENT_TOKEN_MIN_DISTINCT_CHARACTERS} distinct characters. Anything else
+     * fails startup, which is the only moment at which a weak credential can still be fixed cheaply -
+     * once the context is up, the surface is open and the weakness is only observable to whoever guesses
+     * it first.
+     *
+     * <p><strong>The failure names the rule and never the value.</strong> A context failure is printed to
+     * the console, written to the log and frequently forwarded to a collector, so a message quoting the
+     * offending credential would publish it in three places at once.
+     *
+     * @param  token the stripped configured credential, possibly empty
+     * @return the credential, unchanged, when it is usable
+     * @throws IllegalStateException when a credential is configured and is too weak to rely on
+     */
+    private static String requireUsableManagementToken(final String token) {
+        if (token.isEmpty()) {
+            return token;
+        }
+        if (token.length() < MANAGEMENT_TOKEN_MIN_LENGTH
+                || token.length() > MANAGEMENT_TOKEN_MAX_LENGTH) {
+            throw new IllegalStateException(MANAGEMENT_TOKEN_PROPERTY + " must be between "
+                    + MANAGEMENT_TOKEN_MIN_LENGTH + " and " + MANAGEMENT_TOKEN_MAX_LENGTH
+                    + " characters; it is the only authentication on the management surface and that"
+                    + " surface has no attempt allowance");
+        }
+        final Set<Character> distinct = new HashSet<>();
+        for (int index = 0; index < token.length(); index++) {
+            final char character = token.charAt(index);
+            if (character < MANAGEMENT_TOKEN_LOWEST_CHARACTER
+                    || character > MANAGEMENT_TOKEN_HIGHEST_CHARACTER) {
+                throw new IllegalStateException(MANAGEMENT_TOKEN_PROPERTY + " must be visible ASCII"
+                        + " throughout, with no space and no control character, so that the value"
+                        + " presented in an Authorization header is the value configured");
+            }
+            distinct.add(Character.valueOf(character));
+        }
+        if (distinct.size() < MANAGEMENT_TOKEN_MIN_DISTINCT_CHARACTERS) {
+            throw new IllegalStateException(MANAGEMENT_TOKEN_PROPERTY + " must carry at least "
+                    + MANAGEMENT_TOKEN_MIN_DISTINCT_CHARACTERS + " distinct characters; a value of the"
+                    + " required width made of one repeated character is not an unguessable value");
+        }
+        return token;
     }
 
     /**
@@ -755,12 +928,17 @@ public class SecurityConfig {
      * {@link #MANAGEMENT_AUTHORITY} from {@value #MANAGEMENT_TOKEN_PROPERTY} and from nothing else.</p>
      *
      * @param http the chain builder supplied by the framework
+     * @param meterRegistry where the operator filter counts what happened to a presented credential.
+     *                      Taken as a provider rather than as the registry itself so that a slice which
+     *                      publishes no registry still builds this chain: the outcomes are then simply not
+     *                      counted, and no other behaviour changes
      * @return the configured management chain
      * @throws Exception if the framework rejects the configuration
      */
     @Bean
     @Order(MANAGEMENT_CHAIN_ORDER)
-    public SecurityFilterChain managementSecurityFilterChain(final HttpSecurity http) throws Exception {
+    public SecurityFilterChain managementSecurityFilterChain(final HttpSecurity http,
+            final ObjectProvider<MeterRegistry> meterRegistry) throws Exception {
         final String healthPath = this.managementBasePath + "/health";
         final String prometheusPath = this.managementBasePath + "/prometheus";
         final boolean operatorIdentityConfigured = !this.managementToken.isEmpty();
@@ -818,7 +996,8 @@ public class SecurityConfig {
                 // authority rule above - the right outcome by a confusing route. Installing only the
                 // operator filter makes the surface's vocabulary explicit: on this chain, a sign-on token
                 // is not a credential at all.
-                .addFilterBefore(new ManagementTokenAuthenticationFilter(this.managementToken),
+                .addFilterBefore(new ManagementTokenAuthenticationFilter(this.managementToken,
+                                meterRegistry.getIfAvailable()),
                         UsernamePasswordAuthenticationFilter.class);
 
         if (this.requireHttps) {
@@ -938,9 +1117,20 @@ public class SecurityConfig {
                     // admit any signed-on caller. Both of its operations are covered - the launch and the
                     // execution status - and so is anything added beneath the prefix later. See
                     // BATCH_OPERATIONS_PATH_PREFIX for why this entitlement is stated here rather than read
-                    // out of the resource definitions.
+                    // out of the resource definitions, and note that batch control is not one of the
+                    // eighteen registered transactions and must not be counted as one: it gets a rule of
+                    // its own, not a fabricated table row. Without this rule the catch-all below would
+                    // admit any signed-on caller to a surface that re-runs posting, accrual and statement
+                    // generation over the whole estate.
+                    //
+                    // ONE rule, installed once. The descendant half of it used to be installed a second
+                    // time further down under the name BATCH_CONTROL_PATH_PATTERN, with the identical
+                    // authority. A duplicate that agrees is dead weight; a duplicate that stops agreeing
+                    // is two answers to a question that must have one, and the reader has no way to know
+                    // which one the chain applies. The descendant pattern is now named from the published
+                    // constant so there is one spelling of it as well as one rule.
                     requests.requestMatchers(matcher(BATCH_OPERATIONS_PATH_PREFIX),
-                                    matcher(BATCH_OPERATIONS_PATH_PREFIX + ANY_DESCENDANT))
+                                    matcher(BATCH_CONTROL_PATH_PATTERN))
                             .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
                     // The table's five administrative transactions share one prefix, so they yield one
                     // rule. A sixth classified administrative would be gated by it; one declassified
@@ -950,12 +1140,6 @@ public class SecurityConfig {
                         requests.requestMatchers(matcher(administrative))
                                 .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
                     }
-                    // Batch control carries the same authority by its own rule, because it is not one of
-                    // the eighteen registered transactions and must not be counted as one. Without this
-                    // rule the catch-all below would admit any signed-on caller to a surface that re-runs
-                    // posting, accrual and statement generation over the whole estate.
-                    requests.requestMatchers(matcher(BATCH_CONTROL_PATH_PATTERN))
-                            .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
                     // The business surface, as a named allow-list of the two authorities a sign-on token
                     // can carry, and NOT as the bare authentication check this rule replaced.
                     //
@@ -1215,32 +1399,42 @@ public class SecurityConfig {
         ADMINISTRATIVE(ADMIN_PATH_PREFIX + ANY_DESCENDANT);
 
         /**
-         * Path pattern the chain installs for this entitlement, or the empty string when the entitlement
-         * has no dedicated rule and is answered by the closing catch-all.
+         * Path pattern the chain installs for this entitlement. Never blank.
          *
-         * <p>Both non-empty values are compile-time constants assembled from the published path constants
+         * <p>All three values are compile-time constants assembled from the published path constants
          * above, so an enumeration constant here can never drift from the rule the chain installs.</p>
+         *
+         * <p>This used to be allowed to be the empty string, meaning "no dedicated rule, answered by the
+         * closing catch-all", and the accessor returned an {@link Optional} to express that. No
+         * entitlement has been in that state since the ordinary one was given a rule of its own, so the
+         * option described a state the enumeration could not be in - and an accessor that is always
+         * present teaches a reader to write a branch that can never run. The constructor now refuses a
+         * blank pattern, which makes the absent case impossible rather than merely absent, and the
+         * accessor returns the pattern directly.</p>
          */
         private final String enforcementPattern;
 
         /**
-         * @param enforcementPattern path pattern the chain installs for this entitlement, or the empty
-         *                           string when it has no dedicated rule
+         * @param enforcementPattern path pattern the chain installs for this entitlement; must not be
+         *                           blank, because an entitlement without a rule of its own is enforced
+         *                           by whatever the closing catch-all happens to say
+         * @throws IllegalArgumentException if {@code enforcementPattern} is blank
          */
         Gating(final String enforcementPattern) {
+            if (enforcementPattern == null || enforcementPattern.isBlank()) {
+                throw new IllegalArgumentException(
+                        "every entitlement must name the path pattern that enforces it");
+            }
             this.enforcementPattern = enforcementPattern;
         }
 
         /**
          * The path pattern the chain installs for this entitlement.
          *
-         * @return the pattern, or {@link Optional#empty()} when this entitlement is answered by the
-         *         chain's closing catch-all rather than by a rule of its own
+         * @return the pattern; never {@code null} and never blank
          */
-        public Optional<String> enforcementPattern() {
-            return this.enforcementPattern.isEmpty()
-                    ? Optional.empty()
-                    : Optional.of(this.enforcementPattern);
+        public String enforcementPattern() {
+            return this.enforcementPattern;
         }
     }
 
@@ -1547,17 +1741,18 @@ public class SecurityConfig {
          *
          * @param gating the entitlement whose rules are being installed
          * @return an unmodifiable list of the distinct patterns to install, in the order the entries
-         *         contributing them are defined; empty when the entitlement has no dedicated rule or no
-         *         registered transaction carries it
+         *         contributing them are defined; empty only when no registered transaction carries the
+         *         entitlement, since every entitlement names a pattern
          * @throws NullPointerException if {@code gating} is {@code null}, screened by
          *                              {@link #withGating(Gating)} rather than screened twice
          */
         public static List<String> enforcementPatternsFor(final Gating gating) {
             final List<String> patterns = new ArrayList<>();
             for (final TransactionRoute route : withGating(gating)) {
-                route.gating.enforcementPattern()
-                        .filter(pattern -> !patterns.contains(pattern))
-                        .ifPresent(patterns::add);
+                final String pattern = route.gating.enforcementPattern();
+                if (!patterns.contains(pattern)) {
+                    patterns.add(pattern);
+                }
             }
             return List.copyOf(patterns);
         }
@@ -1718,19 +1913,82 @@ public class SecurityConfig {
      * <p>Nothing about a presented credential is logged, retained on the authentication, or reflected in a
      * response - not on success, and not on failure. A failure simply establishes nothing, and the chain's
      * authorization rule then refuses the request, which is what produces the 401.
+     *
+     * <h2>What a refusal now leaves behind, and what it deliberately does not</h2>
+     *
+     * <p>Until review, a wrong credential left no trace at all: no meter moved and nothing was logged, so a
+     * deployment being probed looked exactly like a deployment nobody was probing. Every presentation now
+     * increments {@value #MANAGEMENT_AUTHENTICATION_METER} under an outcome of established, refused or
+     * unconfigured - three series, no caller-derived tag - and a run of consecutive refusals raises a
+     * warning once per {@value #MANAGEMENT_REFUSAL_REPORT_INTERVAL} so that sustained probing is visible
+     * without a log line per attempt. The warning names the count and nothing else; it names no header, no
+     * presented value, no path and no caller.
+     *
+     * <p><strong>The bound is on the diagnostic and not on the authentication, and that is a decision
+     * rather than an omission.</strong> Locking the surface after a threshold of failures would let any
+     * unauthenticated caller take this deployment's metrics, exposition and management endpoints away from
+     * its collector by presenting wrong credentials - a denial of service with no recovery path, since
+     * there is one shared secret and no second factor to fall back to. Keying a lockout by caller instead
+     * would mean unbounded per-caller state driven by an unauthenticated header, which is the shape this
+     * module has already refused elsewhere. What makes guessing infeasible here is the credential's own
+     * strength, held to a floor of {@value #MANAGEMENT_TOKEN_MINIMUM_BYTES} bytes under the production
+     * profile; what makes an attempt visible is the meter. See {@code docs/decision-log.md} entry DL-312.
      */
     private static final class ManagementTokenAuthenticationFilter extends OncePerRequestFilter {
 
         /** The configured operator credential; empty when no operator identity exists. */
         private final byte[] expected;
 
+        /** Where an outcome is counted, or {@code null} where no registry is published. */
+        private final MeterRegistry meterRegistry;
+
+        /**
+         * Consecutive refusals since the last established presentation.
+         *
+         * <p>One counter for the whole surface rather than one per caller: the credential is a single shared
+         * secret, so a per-caller breakdown would be unbounded state keyed by an unauthenticated header and
+         * would say nothing the total does not.
+         */
+        private final AtomicLong consecutiveRefusals = new AtomicLong();
+
         /**
          * Creates the filter over the configured credential.
          *
          * @param managementToken configured operator credential, possibly empty
+         * @param meterRegistry   where outcomes are counted; absent in a slice that publishes no registry,
+         *                        in which case the outcomes are simply not counted and nothing else changes
          */
-        private ManagementTokenAuthenticationFilter(final String managementToken) {
+        private ManagementTokenAuthenticationFilter(final String managementToken,
+                final MeterRegistry meterRegistry) {
             this.expected = managementToken.getBytes(StandardCharsets.UTF_8);
+            this.meterRegistry = meterRegistry;
+        }
+
+        /**
+         * Counts one outcome, when there is somewhere to count it.
+         *
+         * @param outcome the outcome tag value
+         */
+        private void record(final String outcome) {
+            if (this.meterRegistry != null) {
+                this.meterRegistry.counter(MANAGEMENT_AUTHENTICATION_METER,
+                        MANAGEMENT_OUTCOME_TAG, outcome).increment();
+            }
+        }
+
+        /**
+         * Records a refusal and reports a sustained run of them at a bounded rate.
+         *
+         * @param outcome whether the credential was wrong or no identity is configured at all
+         */
+        private void refuse(final String outcome) {
+            record(outcome);
+            final long consecutive = this.consecutiveRefusals.incrementAndGet();
+            if (consecutive % MANAGEMENT_REFUSAL_REPORT_INTERVAL == 0) {
+                LOG.warn("Management credential refused {} times consecutively; nothing about a presented"
+                        + " credential is recorded, and the surface stays open to the correct one",
+                        Long.valueOf(consecutive));
+            }
         }
 
         /**
@@ -1746,18 +2004,28 @@ public class SecurityConfig {
         protected void doFilterInternal(final HttpServletRequest request,
                 final HttpServletResponse response, final FilterChain filterChain)
                 throws ServletException, IOException {
+            final String header = request.getHeader(HttpHeaders.AUTHORIZATION);
+            final boolean presentedCredential = header != null
+                    && header.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length());
             // An unconfigured credential matches nothing, including an empty presented one. Checked here
             // rather than left to the comparison, because two empty arrays ARE equal and that would turn
             // the fail-closed state into a surface any caller could enter by presenting "Bearer ".
-            if (this.expected.length > 0) {
-                final String header = request.getHeader(HttpHeaders.AUTHORIZATION);
-                if (header != null
-                        && header.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length())) {
-                    final byte[] presented = header.substring(BEARER_PREFIX.length()).trim()
-                            .getBytes(StandardCharsets.UTF_8);
-                    if (MessageDigest.isEqual(this.expected, presented)) {
-                        establishOperator();
-                    }
+            if (this.expected.length == 0) {
+                // Counted only when something was actually presented: a request carrying no credential at
+                // all against a surface with no identity configured is the ordinary probe traffic, and
+                // counting it would bury the presentations that mean something.
+                if (presentedCredential) {
+                    refuse(MANAGEMENT_OUTCOME_UNCONFIGURED);
+                }
+            } else if (presentedCredential) {
+                final byte[] presented = header.substring(BEARER_PREFIX.length()).trim()
+                        .getBytes(StandardCharsets.UTF_8);
+                if (MessageDigest.isEqual(this.expected, presented)) {
+                    establishOperator();
+                    record(MANAGEMENT_OUTCOME_ESTABLISHED);
+                    this.consecutiveRefusals.set(0L);
+                } else {
+                    refuse(MANAGEMENT_OUTCOME_REFUSED);
                 }
             }
             filterChain.doFilter(request, response);

@@ -531,20 +531,26 @@ class AccountRecordMapperCoverageTest {
         }
 
         @Test
-        @DisplayName("a negative zero re-encodes as positive zero, which is the only lossy byte")
-        void aNegativeZeroReEncodesAsPositiveZero() {
+        @DisplayName("a negative zero re-encodes as a negative zero, the sign travelling on the "
+                + "entity's transient marker rather than inside the BigDecimal")
+        void aNegativeZeroRoundTripsAsANegativeZero() {
             String original = image("00000000001", "Y", "00000000000}", "00000000000{",
                     "00000000000{", "2014-11-20", "2025-05-20", "2025-05-20", "00000000000{",
                     "00000000000{", FIXTURE_ZIP, FIXTURE_GROUP_ID);
 
-            String reEncoded = AccountRecordMapper.toRecord(
-                    AccountRecordMapper.fromRecord(original));
+            Account decoded = AccountRecordMapper.fromRecord(original);
+            String reEncoded = AccountRecordMapper.toRecord(decoded);
 
+            assertThat(decoded.getAcctCurrBal()).isEqualByComparingTo("0.00");
+            assertThat(decoded.isAcctCurrBalNegativeZero())
+                    .as("the one bit a BigDecimal cannot hold is carried beside it")
+                    .isTrue();
+            assertThat(decoded.isAcctCreditLimitNegativeZero())
+                    .as("and only for the field whose image actually carried it")
+                    .isFalse();
             assertThat(reEncoded.charAt(EXPECTED_CURR_BAL_OFFSET + EXPECTED_AMOUNT_WIDTH - 1))
-                    .as("the sign of zero cannot survive a BigDecimal, and no fixture record"
-                            + " carries a negative zero, so nothing in the estate depends on it")
-                    .isEqualTo('{');
-            assertThat(reEncoded).isNotEqualTo(original);
+                    .isEqualTo('}');
+            assertThat(reEncoded).isEqualTo(original);
         }
 
         @ParameterizedTest(name = "{0} encodes to \"{1}\"")

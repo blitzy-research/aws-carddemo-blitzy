@@ -21,7 +21,9 @@ import com.carddemo.api.dto.ReportRequest;
 import com.carddemo.api.dto.ReportResponse;
 import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.service.ReportRequestService;
+import com.carddemo.util.ReportRetryTokens;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -128,8 +130,63 @@ public class ReportController {
 
     /**
      * Standard request/response header carrying the stable token of one logical report submission.
+     *
+     * <p>A submitted turn returns the token it used. Presenting that token again retries the same logical
+     * submission, so a stream the queue had partly accepted is completed rather than appended a second time,
+     * and the retry is honoured for {@link ReportRetryTokens#VALIDITY_MINUTES} minutes from the attempt that
+     * minted it. The horizon is the queue service's own: it recognises a repeated deduplication identifier
+     * for that long and then forgets it, after which repeating the token would publish the stream again
+     * while telling the caller it had retried. So the token is minted by this service, carries the instant
+     * it was minted under an authentication code, and a presented value this service did not issue or that
+     * is older than the window is refused rather than honoured. Callers treat the value as opaque and echo
+     * it unchanged; omitting the header is a deliberate new submission. See {@code docs/decision-log.md}
+     * entry DL-310.
      */
     public static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+
+    /**
+     * Longest retry token this boundary accepts, in characters.
+     *
+     * <p>The token is entirely the caller's to choose, so the only question is how much of a
+     * caller-chosen value the module is willing to take in. It is digested, it is retained for the life
+     * of the deduplication window, and it is reflected in the response, so an unbounded value is
+     * unbounded work and unbounded storage on a route a signed-on caller may invoke repeatedly. Nothing
+     * bounded it before this constant: the container's own header ceiling - eight kibibytes across the
+     * whole request line and header block - was the only limit, which is four orders of magnitude wider
+     * than any legitimate token and is a transport limit rather than an application contract.
+     *
+     * <p>One hundred and twenty-eight is chosen against what a token is for rather than against what a
+     * transport permits. A random identifier is thirty-six characters, a hexadecimal digest of a
+     * client-side request is sixty-four, and a caller who needs more than double the longer of those is
+     * not identifying a submission. The service's own account of the deduplication digest already
+     * asserted that a token "is header text the request contract bounds to printable characters" - this
+     * is the bound that assertion depended on.
+     */
+    public static final int IDEMPOTENCY_KEY_MAX_LENGTH = 128;
+
+    /**
+     * Lowest character code this boundary accepts inside a retry token: the first visible ASCII
+     * character. Everything below it is a space or a control byte.
+     */
+    private static final char IDEMPOTENCY_KEY_LOWEST_CHARACTER = '!';
+
+    /**
+     * Highest character code this boundary accepts inside a retry token: the last visible ASCII
+     * character.
+     */
+    private static final char IDEMPOTENCY_KEY_HIGHEST_CHARACTER = '~';
+
+    /**
+     * The rejection the boundary answers a malformed retry token with.
+     *
+     * <p>Deliberately says what was wrong with the header and repeats nothing the caller sent. A message
+     * that echoed the offending value would put an arbitrary caller-chosen string into a response body,
+     * a log line and any diagnostic downstream of either, which is the same reflection the bound exists
+     * to stop.
+     */
+    private static final String IDEMPOTENCY_KEY_REJECTION = "The " + IDEMPOTENCY_KEY_HEADER
+            + " header must be at most " + IDEMPOTENCY_KEY_MAX_LENGTH
+            + " visible ASCII characters with no space or control byte.";
 
     /** Timer name for one report-request turn, following the module's metric naming. */
     private static final String METRIC_REPORT_REQUEST_TURN = "carddemo.online.reportrequest.turn";
@@ -190,7 +247,9 @@ public class ReportController {
      *
      * @param request        the marked report type, the operator-supplied date parts, the confirmation
      *                       character, the attention key that arrived and the echoed navigation state
-     * @param retryToken     token of an earlier attempt, or absent for a deliberate new submission
+     * @param retryToken     the token an earlier attempt returned, or absent for a deliberate new
+     *                       submission; honoured for {@link ReportRetryTokens#VALIDITY_MINUTES} minutes
+     *                       from the attempt that issued it
      * @param authentication the established identity, supplied by the framework from the presented
      *                       credential; the route requires one, so it is absent only where this handler is
      *                       driven without a security chain
@@ -213,9 +272,15 @@ public class ReportController {
                         + "the resolved period, with the effective retry token returned in the "
                         + "Idempotency-Key header; any other outcome carries the screen message, the "
                         + "field the cursor returns to, and the marks and date parts as the turn leaves "
-                        + "them."),
+                        + "them. Echo the returned token to retry the same submission rather than "
+                        + "duplicating it; the token is opaque, is issued by this service, and is "
+                        + "honoured for " + ReportRetryTokens.VALIDITY_MINUTES + " minutes from the "
+                        + "attempt that issued it."),
         @ApiResponse(responseCode = "400",
-                description = "The request exceeded the widths the report-request map declares."),
+                description = "The request exceeded the widths the report-request map declares, or the "
+                        + "Idempotency-Key presented was not issued by this service or is older than the "
+                        + ReportRetryTokens.VALIDITY_MINUTES + " minute retry window. Nothing is "
+                        + "published in either case; omit the header to submit a new request."),
         @ApiResponse(responseCode = "401",
                 description = "No credential was presented, or the one presented did not verify.")})
     public ResponseEntity<ReportResponse> requestReport(
@@ -239,8 +304,8 @@ public class ReportController {
             // the chain established, never the navigation state the client echoed - see the service's own
             // account of why that distinction is the whole of the protection.
             final ReportRequestService.ReportRequestResult result = this.reportRequestService
-                    .processReportRequest(this.reportContractAdapter.toScreenInput(request), retryToken,
-                            authenticatedUserId);
+                    .processReportRequest(this.reportContractAdapter.toScreenInput(request),
+                            canonicalRetryToken(retryToken), authenticatedUserId);
 
             final ReportResponse body = this.reportContractAdapter.toResponse(result, echoedContext,
                     authenticatedUserId, authenticatedUserType);
@@ -279,8 +344,14 @@ public class ReportController {
     /**
      * Records the elapsed time of one turn, tagged by the outcome it reached and the period it resolved.
      *
+     * <p>Every turn is recorded, including one that raised. The caller invokes this from its {@code
+     * finally} arm, so an exception propagating out of the boundary still stops the sample, carrying the
+     * failed outcome and the no-period label it seeded before the attempt. Both tag values are constants
+     * of this class or a resolved period name, never caller-supplied text, so the label set stays bounded.
+     *
      * @param sample the timing sample started at the head of the turn
-     * @param result the turn's outcome
+     * @param outcome the bounded outcome label the turn settled on, one of the five this class declares
+     * @param period the reporting period the ordered evaluation resolved, or the no-period label
      */
     private void recordTurn(final Timer.Sample sample,
             final String outcome, final String period) {
@@ -326,4 +397,49 @@ public class ReportController {
         final ReportPeriod period = result.reportPeriod();
         return (period == null) ? PERIOD_NONE : period.name();
     }
+
+    /**
+     * Bounds and canonicalises a caller-supplied retry token before anything downstream sees it.
+     *
+     * <p>An absent or blank header is passed through as {@code null}, which the service reads as "this
+     * is a new logical request" and answers by minting a token of its own. That is the existing
+     * contract and it is unchanged; blank is normalised to absent here so the service is not handed two
+     * spellings of the same thing.
+     *
+     * <p>A present token is accepted only if it is at most {@link #IDEMPOTENCY_KEY_MAX_LENGTH}
+     * characters and every character is visible ASCII. Surrounding whitespace is stripped first,
+     * because a header value is transported with optional whitespace around it and a token that
+     * differed from an earlier one only by a leading space would be a different deduplication identity
+     * for the same logical submission - which is the one thing a retry token exists to prevent.
+     *
+     * <p>Everything else is refused with a neutral {@code 400}. The refusal is raised here rather than
+     * inside the service because it is a statement about the transport contract and not about the
+     * report screen: the screen has no field for it, no mark to set on it and no message for it, and a
+     * turn that never began cannot report one.
+     *
+     * @param retryToken the header value as received, possibly {@code null}
+     * @return the canonical token, or {@code null} when none was supplied
+     * @throws ValidationException when a token was supplied and is not a bounded visible-ASCII value
+     */
+    private static String canonicalRetryToken(final String retryToken) {
+        if (retryToken == null) {
+            return null;
+        }
+        final String canonical = retryToken.strip();
+        if (canonical.isEmpty()) {
+            return null;
+        }
+        if (canonical.length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
+            throw new ValidationException(IDEMPOTENCY_KEY_REJECTION);
+        }
+        for (int index = 0; index < canonical.length(); index++) {
+            final char character = canonical.charAt(index);
+            if (character < IDEMPOTENCY_KEY_LOWEST_CHARACTER
+                    || character > IDEMPOTENCY_KEY_HIGHEST_CHARACTER) {
+                throw new ValidationException(IDEMPOTENCY_KEY_REJECTION);
+            }
+        }
+        return canonical;
+    }
+
 }

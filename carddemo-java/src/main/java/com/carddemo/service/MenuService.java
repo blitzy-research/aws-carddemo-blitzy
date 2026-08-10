@@ -153,7 +153,7 @@ public final class MenuService {
     /**
      * @param navigationService the single authority for the routes this service returns
      * @param messageCatalogService the source of the common message texts the legacy screens emit
-     * @param menuOptionSource the two legacy option tables
+     * @param menuOptionCatalog the two legacy option tables
      * @param clock the clock the header date and time are read from, injected so tests can fix it
      */
     public MenuService(final NavigationService navigationService,
@@ -498,16 +498,53 @@ public final class MenuService {
         return context.withOrigin(transactionId, programName);
     }
 
+    /**
+     * Builds the abend a selected option with no catalog entry raises, recording it first.
+     *
+     * <p>Routed through {@link AbendService#onlineAbend} rather than constructed here, and that is the
+     * whole change: both of this class's abend paths previously built the exception directly, so a menu
+     * dispatch that abended produced <strong>no log record at all</strong> - not the culprit, not the
+     * reason, nothing. The exception reached the boundary and was rendered to the caller, and the operator
+     * had only the response to work from. The shared method emits the one online abend record, naming the
+     * culprit and the reason from the same vocabulary every other abend site uses.
+     *
+     * <p>The option number travels as the operation rather than inside the terminal message, so it is a
+     * named field of the record instead of text embedded in a sentence. It is a small integer this class
+     * derived from a validated selection, never a caller's raw input.
+     *
+     * <p>Called statically because this method must hand the exception back to an
+     * {@code Optional.orElseThrow} supplier; see the note on {@link AbendService#onlineAbend}. See
+     * {@code docs/decision-log.md} entry DL-312.
+     *
+     * @param  culprit the legacy member name of the menu program
+     * @param  optionNumber the option that had no entry
+     * @return the failure to raise, already recorded
+     */
     private static AbendException optionTableAbend(final String culprit, final int optionNumber) {
-        return new AbendException(AbendException.ONLINE_ABEND_CODE, culprit,
+        return AbendService.onlineAbend(culprit,
                 "MENU OPTION TABLE HOLDS NO SELECTED ENTRY",
-                "MENU OPTION " + optionNumber + " NOT FOUND IN TABLE");
+                "MENU OPTION " + optionNumber + " NOT FOUND IN TABLE",
+                "SELECT OPTION " + optionNumber,
+                null);
     }
 
+    /**
+     * Builds the abend an unresolvable dispatch target raises, recording it first.
+     *
+     * <p>Routed through the shared diagnostic for the reason given on {@link #optionTableAbend}. The
+     * culprit is this class's own program name, which is also the only name available: the target that
+     * could not be resolved came from the catalog this class reads, so naming it as the resource would
+     * repeat the culprit rather than add to it.
+     *
+     * @param  culprit the legacy member name of the menu program
+     * @return the failure to raise, already recorded
+     */
     private static AbendException unresolvableTargetAbend(final String culprit) {
-        return new AbendException(AbendException.ONLINE_ABEND_CODE, culprit,
+        return AbendService.onlineAbend(culprit,
                 "XCTL TO UNRESOLVABLE PROGRAM NAME",
-                "MENU DISPATCH FAILED FOR PROGRAM " + culprit);
+                "MENU DISPATCH FAILED FOR PROGRAM " + culprit,
+                "XCTL",
+                null);
     }
 
     private record ScreenHeader(String currentDate, String currentTime) {

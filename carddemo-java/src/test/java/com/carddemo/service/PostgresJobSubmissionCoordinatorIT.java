@@ -17,6 +17,7 @@
 package com.carddemo.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -26,6 +27,8 @@ import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
 import io.micrometer.observation.ObservationRegistry;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -37,7 +40,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -67,7 +69,7 @@ class PostgresJobSubmissionCoordinatorIT extends AbstractPostgresIT {
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     @DisplayName("serializes complete streams across two coordinator instances sharing only PostgreSQL")
     void serializesAcrossReplicaInstances() throws Exception {
-        final DataSource dataSource = dataSource();
+        final javax.sql.DataSource dataSource = dataSource();
         final JobSubmissionCoordinator firstCoordinator = coordinator(dataSource);
         final JobSubmissionCoordinator secondCoordinator = coordinator(dataSource);
         final RecordingQueue queue = new RecordingQueue();
@@ -108,11 +110,72 @@ class PostgresJobSubmissionCoordinatorIT extends AbstractPostgresIT {
         assertContiguous(arrived, SECOND_SUBMISSION);
     }
 
-    private static DataSource dataSource() {
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    @DisplayName("a statement timeout really does cancel a wait for this lock, which is what bounds it")
+    void aStatementTimeoutCancelsAWaitForTheGuard() throws Exception {
+        // Establishes the one half of the bounded-wait property that no mock can: that the driver and
+        // the server honour a statement timeout for THIS statement, so a wait for an advisory lock
+        // already held is cancelled rather than continued. The other half - that the coordinator applies
+        // the bound to exactly this statement, with its own value - is asserted in
+        // PostgresJobSubmissionCoordinatorTest, because the value it applies is a decision and not a
+        // mechanism. Together they cover it.
+        //
+        // A one-second bound is used rather than the coordinator's own, so this test spends a second
+        // demonstrating a mechanism instead of spending the coordinator's whole allowance demonstrating
+        // the same mechanism.
+        final int oneSecond = 1;
+        try (Connection holder = connect()) {
+            holder.setAutoCommit(false);
+            acquireGuardOn(holder, 0);
+
+            try (Connection waiter = connect()) {
+                waiter.setAutoCommit(false);
+                final long startedAt = System.nanoTime();
+
+                // An unbounded wait is what lets one stuck holder pin a request thread and a pooled
+                // connection for as long as it chooses to exist.
+                assertThatExceptionOfType(SQLException.class)
+                        .isThrownBy(() -> acquireGuardOn(waiter, oneSecond))
+                        .satisfies(cancelled -> assertThat(cancelled.getSQLState())
+                                .as("57014 is query_canceled: the wait was cut short, rather than "
+                                        + "refused for some unrelated reason that would let this test "
+                                        + "pass by accident")
+                                .isEqualTo("57014"));
+
+                final long waitedMillis = (System.nanoTime() - startedAt) / 1_000_000L;
+                assertThat(waitedMillis)
+                        .as("the wait ended near its own bound rather than near the holder's lifetime")
+                        .isLessThan(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+                waiter.rollback();
+            }
+            holder.rollback();
+        }
+    }
+
+    /**
+     * Acquires the coordinator's own two-part guard on one connection, optionally bounded.
+     *
+     * @param connection    the connection to acquire on, inside its own transaction
+     * @param timeoutSeconds the bound to apply, or zero for the driver's unbounded default
+     * @throws SQLException if the statement fails or its wait is cancelled
+     */
+    private static void acquireGuardOn(final Connection connection, final int timeoutSeconds)
+            throws SQLException {
+        try (java.sql.PreparedStatement acquisition = connection.prepareStatement(
+                PostgresJobSubmissionCoordinator.ACQUIRE_LOCK_SQL)) {
+            acquisition.setQueryTimeout(timeoutSeconds);
+            acquisition.setInt(1, PostgresJobSubmissionCoordinator.LOCK_NAMESPACE);
+            acquisition.setInt(2, PostgresJobSubmissionCoordinator.LOCK_RESOURCE);
+            acquisition.execute();
+        }
+    }
+
+    private static javax.sql.DataSource dataSource() {
         return new DriverManagerDataSource(jdbcUrl(), databaseUser(), databasePassword());
     }
 
-    private static JobSubmissionCoordinator coordinator(final DataSource dataSource) {
+    private static JobSubmissionCoordinator coordinator(final javax.sql.DataSource dataSource) {
         return new PostgresJobSubmissionCoordinator(new JdbcTemplate(dataSource),
                 new DataSourceTransactionManager(dataSource));
     }

@@ -27,8 +27,6 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 import com.carddemo.domain.CardCrossReference;
@@ -87,7 +85,7 @@ import com.carddemo.util.ZonedDecimalCodec;
  * <h2>The send ends the task, so a turn reports at most one field failure</h2>
  * The send paragraph at lines 516 to 534 issues {@code EXEC CICS SEND MAP} and then
  * {@code EXEC CICS RETURN TRANSID}, which <strong>ends the task</strong>. Every
- * {@code PERFORM SEND-TRNADD-SCREEN} inside the validation cascade is therefore terminal: the
+ * call of SEND-TRNADD-SCREEN inside the validation cascade is therefore terminal: the
  * performing paragraph never resumes, no later check runs, no later field is normalised, and no
  * insert is attempted. The consequence is contractual rather than incidental &mdash; the operator
  * sees the <em>first</em> failure's text at the <em>first</em> failure's cursor position and nothing
@@ -678,15 +676,6 @@ public final class TransactionAddService {
      */
     private static final int IDENTIFIER_ALLOCATION_ATTEMPTS = 2;
 
-    /** The one row a backward read consumes: the browse reads exactly one record. */
-    private static final int SINGLE_RECORD = 1;
-
-    /** The first page of a paged lookup, which is where the highest key of a descending order sits. */
-    private static final int FIRST_PAGE = 0;
-
-    /** The entity attribute the browse orders by, which is the record key. */
-    private static final String TRAN_ID_ATTRIBUTE = "tranId";
-
     /** The record type named in a not-found diagnostic. */
     private static final String CROSS_REFERENCE_RECORD = "CardCrossReference";
 
@@ -1008,7 +997,7 @@ public final class TransactionAddService {
      *
      * <p>This is the procedure division: it establishes the working storage the legacy declares at
      * lines 35 to 93, runs the main paragraph, and then performs the terminal
-     * {@code EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)} at lines 156 to 159 by
+     * the pseudo-conversational return that re-arms this transaction with the carried work area, at lines 156 to 159, by
      * re-arming the transaction. Nothing is retained between calls, so two concurrent turns are wholly
      * independent and no identifier is ever cached.
      *
@@ -1027,7 +1016,7 @@ public final class TransactionAddService {
         final TurnState state = new TurnState();
         mainPara(state, input);
 
-        // EXEC CICS RETURN TRANSID(WS-TRANID) at lines 156 to 159. The main paragraph's transfer path
+        // Lines 156 to 159 re-arm this transaction on return. The main paragraph's transfer path
         // has already ended the turn by transferring control, and re-arming is idempotent, so this
         // reproduces the unconditional return without overriding a transfer.
         returnToCics(state);
@@ -1072,12 +1061,12 @@ public final class TransactionAddService {
      * @param input the transmitted screen and echoed navigation state
      */
     private void mainPara(final TurnState state, final TransactionAddScreenInput input) {
-        // SET ERR-FLG-OFF and USR-MODIFIED-NO at lines 109 and 110, and blank both WS-MESSAGE and
+        // Lines 109 and 110 set ERR-FLG-OFF and USR-MODIFIED-NO, and blank both WS-MESSAGE and
         // ERRMSGO at lines 112 and 113. The state is constructed in exactly that condition. The
         // user-modified flag is set nowhere in the member and read nowhere either, so it is recorded
         // here as observed rather than modelled as a value nothing can change.
         if (isNavigationStateAbsent(input.navigationContext())) {
-            // IF EIBCALEN = 0 at line 115, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 116. The
+            // Line 115 tests the commarea length for zero, then line 116 carries 'COSGN00C' into CDEMO-TO-PROGRAM. The
             // destination is the one the navigation rules hold for a turn carrying no state, so no
             // program name is written here as a literal.
             state.context = withNominatedProgram(ScreenNavigationState.empty(),
@@ -1086,7 +1075,7 @@ public final class TransactionAddService {
             return;
         }
 
-        // MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA at line 119.
+        // Line 119 copies the passed commarea, for its transmitted length, into CARDDEMO-COMMAREA.
         state.context = input.navigationContext();
 
         if (state.context.firstEntry()) {
@@ -1096,7 +1085,7 @@ public final class TransactionAddService {
             state.context = state.context.withReEntry();
             state.focusField = FIELD_ACCOUNT_ID;
 
-            // IF CDEMO-CT02-TRN-SELECTED NOT = SPACES AND LOW-VALUES at lines 124 and 125: the
+            // Lines 124 and 125 test the carried selection for neither blank nor empty: the
             // pre-selected transaction is moved into the card-number field at lines 126 and 127 and the
             // enter key is processed at line 128.
             if (isSupplied(input.selectedTransaction())) {
@@ -1113,7 +1102,7 @@ public final class TransactionAddService {
 
         receiveTrnaddScreen(state, input);
 
-        // EVALUATE EIBAID at lines 133 to 152. Clause order is preserved and the catch-all maps to the
+        // Lines 133 to 152 hold a multi-way selection on EIBAID. Clause order is preserved and the catch-all maps to the
         // default arm. A key that was never decoded reaches the same arm, because an absent key is not
         // one of the four the source names. The key is evaluated directly: this member includes no
         // attention-key copybook, so no translator is involved.
@@ -1160,27 +1149,27 @@ public final class TransactionAddService {
     private void processEnterKey(final TurnState state) {
         LOG.debug("Processing the enter key for the transaction-add screen");
 
-        // PERFORM VALIDATE-INPUT-KEY-FIELDS at line 166.
+        // Line 166 runs VALIDATE-INPUT-KEY-FIELDS.
         validateInputKeyFields(state);
         if (state.screenSent) {
             return;
         }
 
-        // PERFORM VALIDATE-INPUT-DATA-FIELDS at line 167.
+        // Line 167 runs VALIDATE-INPUT-DATA-FIELDS.
         validateInputDataFields(state);
         if (state.screenSent) {
             return;
         }
 
-        // EVALUATE CONFIRMI OF COTRN2AI at lines 169 to 188. The selector is a one-character screen
+        // Lines 169 to 188 hold a multi-way selection on CONFIRMI OF COTRN2AI. The selector is a one-character screen
         // field, so the arms are compared as text and the catch-all is the default.
         final String confirm = state.confirm;
         if (CONFIRM_YES_UPPER.equals(confirm) || CONFIRM_YES_LOWER.equals(confirm)) {
-            // WHEN 'Y' WHEN 'y' at lines 170 to 172.
+            // The upper- and lower-case 'Y' arms at lines 170 to 172.
             addTransaction(state);
         } else if (CONFIRM_NO_UPPER.equals(confirm) || CONFIRM_NO_LOWER.equals(confirm)
                 || isBlankField(confirm)) {
-            // WHEN 'N' WHEN 'n' WHEN SPACES WHEN LOW-VALUES at lines 173 to 181. A declined
+            // The 'N', 'n', blank and empty arms at lines 173 to 181. A declined
             // confirmation and an unanswered one take the same arm and produce the same prompt, which
             // is the source's own conflation and is preserved.
             faultField(state, MSG_CONFIRM_TO_ADD, PROPERTY_CONFIRM, FIELD_CONFIRM,
@@ -1219,15 +1208,15 @@ public final class TransactionAddService {
      */
     private void validateInputKeyFields(final TurnState state) {
         if (isSupplied(state.accountId)) {
-            // WHEN ACTIDINI NOT = SPACES AND LOW-VALUES at line 196.
+            // The arm testing the screen account field for neither blank nor empty, at line 196.
             if (!isAllDigits(state.accountId)) {
                 // Lines 197 to 203.
                 faultField(state, MSG_ACCOUNT_ID_NOT_NUMERIC, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                         ValidationException.FieldState.INVALID);
                 return;
             }
-            // COMPUTE WS-ACCT-ID-N = FUNCTION NUMVAL(ACTIDINI) at lines 204 and 205, then MOVE
-            // WS-ACCT-ID-N TO XREF-ACCT-ID and back over ACTIDINI at lines 206 and 207: a store into
+            // Lines 204 and 205 convert the screen account lexeme to its numeric value, and lines 206
+            // and 207 carry it into XREF-ACCT-ID and back over the screen field: a store into
             // PIC 9(11) zero fills on the left.
             state.accountId = numericField(state.accountId, ACCOUNT_ID_WIDTH);
             state.xrefAccountId = state.accountId;
@@ -1237,21 +1226,21 @@ public final class TransactionAddService {
                 return;
             }
 
-            // MOVE XREF-CARD-NUM TO CARDNINI at line 209.
+            // Line 209 carries XREF-CARD-NUM into CARDNINI.
             state.cardNumber = moveToField(state.xrefCardNumber, CARD_NUMBER_WIDTH);
             return;
         }
 
         if (isSupplied(state.cardNumber)) {
-            // WHEN CARDNINI NOT = SPACES AND LOW-VALUES at line 210.
+            // The arm testing the screen card field for neither blank nor empty, at line 210.
             if (!isAllDigits(state.cardNumber)) {
                 // Lines 211 to 217.
                 faultField(state, MSG_CARD_NUMBER_NOT_NUMERIC, PROPERTY_CARD_NUMBER, FIELD_CARD_NUMBER,
                         ValidationException.FieldState.INVALID);
                 return;
             }
-            // COMPUTE WS-CARD-NUM-N = FUNCTION NUMVAL(CARDNINI) at lines 218 and 219, then MOVE
-            // WS-CARD-NUM-N TO XREF-CARD-NUM and back over CARDNINI at lines 220 and 221.
+            // Lines 218 and 219 convert the screen card lexeme to its numeric value, and lines 220
+            // and 221 carry it into XREF-CARD-NUM and back over the screen field.
             state.cardNumber = numericField(state.cardNumber, CARD_NUMBER_WIDTH);
             state.xrefCardNumber = state.cardNumber;
 
@@ -1260,7 +1249,7 @@ public final class TransactionAddService {
                 return;
             }
 
-            // MOVE XREF-ACCT-ID TO ACTIDINI at line 223.
+            // Line 223 carries XREF-ACCT-ID into ACTIDINI.
             state.accountId = moveToField(state.xrefAccountId, ACCOUNT_ID_WIDTH);
             return;
         }
@@ -1299,7 +1288,7 @@ public final class TransactionAddService {
      * @param state the turn's working storage
      */
     private void validateInputDataFields(final TurnState state) {
-        // IF ERR-FLG-ON blank the eleven data fields, lines 237 to 249. The account and card fields and
+        // Lines 237 to 249 blank the eleven data fields when the error flag is on. The account and card fields and
         // the confirmation field are deliberately left alone: this reset is narrower than the one the
         // reset paragraph performs.
         if (state.errorFlag) {
@@ -1419,7 +1408,7 @@ public final class TransactionAddService {
      * The third evaluation, lines 339 to 351: the amount's four fixed positions.
      *
      * <p>The four conditions are alternatives of one arm, so any of them produces the same single text.
-     * The first is the abbreviated combined relation {@code NOT EQUAL '-' AND '+'}, which expands to "is
+     * The first is the abbreviated combined relation excluding both signs, which expands to "is
      * neither a minus nor a plus" &mdash; so a sign is <strong>mandatory</strong> and an unsigned amount
      * is rejected. The remaining three require eight digits at positions 2 to 9, a decimal point at
      * position 10, and two digits at positions 11 and 12.
@@ -1542,7 +1531,7 @@ public final class TransactionAddService {
      * passes outright. Otherwise a message number that is <em>not</em> the tolerated one is rejected.
      * Otherwise &mdash; a non-zero severity carrying the tolerated message number &mdash; the date is
      * accepted <em>silently</em>, exactly as the legacy accepts it: the source's inner test is
-     * {@code IF ... NOT = '2513'}, so the tolerated number falls straight through the empty else with no
+     * the tolerated number, so it falls straight through the empty else with no
      * message, no flag and no cursor move.
      *
      * <p>Both comparisons are four-character text comparisons. Neither field is parsed into a number,
@@ -1554,11 +1543,11 @@ public final class TransactionAddService {
      * @return {@code true} when the date is accepted by either route
      */
     private static boolean isDateAccepted(final DateValidationService.SubprogramResult result) {
-        // Level one, lines 397 and 417: IF CSUTLDTC-RESULT-SEV-CD = '0000' CONTINUE.
+        // Level one, lines 397 and 417: a severity code of '0000' is accepted and nothing further is done.
         if (ACCEPTED_SEVERITY_CODE.equals(result.severityCode())) {
             return true;
         }
-        // Level two, lines 400 and 420: IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513' report the error.
+        // Level two, lines 400 and 420: a message number other than '2513' is reported as an error.
         if (!TOLERATED_MESSAGE_NUMBER.equals(result.messageNumber())) {
             return false;
         }
@@ -1622,17 +1611,17 @@ public final class TransactionAddService {
      * @return the record to insert, or {@code null} only on the defensive invalid-amount arm
      */
     private Transaction allocateTransactionRecord(final TurnState state) {
-        // MOVE HIGH-VALUES TO TRAN-ID at line 444, then the three browse paragraphs at lines 445 to 447.
+        // Line 444 carries HIGH-VALUES into TRAN-ID, then the three browse paragraphs at lines 445 to 447.
         state.browseCursor = highestTransactionWindow();
         readprevTransactFile(state);
         endbrTransactFile(state);
 
-        // MOVE TRAN-ID TO WS-TRAN-ID-N at line 448 and ADD 1 TO WS-TRAN-ID-N at line 449. The work field
+        // Line 448 carries TRAN-ID into WS-TRAN-ID-N and adds 1 to WS-TRAN-ID-N at line 449. The work field
         // is PIC 9(16), so the store back at line 451 zero fills on the left and, on overflow, keeps the
         // low-order sixteen digits exactly as an unrounded store into a fixed-width numeric field does.
         final long nextIdentifier = state.browsedKeyValue + IDENTIFIER_INCREMENT;
 
-        // INITIALIZE TRAN-RECORD at line 450, then the twelve assignments at lines 451 to 465 in order.
+        // Line 450 clears TRAN-RECORD, then the twelve assignments at lines 451 to 465 in order.
         final String tranId = CobolStringUtils.rightJustifyZeroFill(Long.toString(nextIdentifier),
                 TRAN_ID_WIDTH);
         final String tranTypeCd = moveToField(state.typeCd, TYPE_CD_WIDTH);
@@ -1640,8 +1629,8 @@ public final class TransactionAddService {
         final String tranSource = moveToField(state.source, SOURCE_WIDTH);
         final String tranDesc = moveToField(state.description, TRAN_DESC_WIDTH);
 
-        // COMPUTE WS-TRAN-AMT-N = FUNCTION NUMVAL-C(TRNAMTI) at lines 456 and 457, then MOVE
-        // WS-TRAN-AMT-N TO TRAN-AMT at line 458. The lexeme is the edited form the normalisation wrote
+        // Lines 456 and 457 convert the edited screen amount to its numeric value, and line 458
+        // carries it into TRAN-AMT. The lexeme is the edited form the normalisation wrote
         // back, and it converts because the format test proved its shape.
         final BigDecimal tranAmt = numericLexemeValue(state.amount);
         if (tranAmt == null) {
@@ -1659,7 +1648,7 @@ public final class TransactionAddService {
         final String merchantCity = moveToField(state.merchantCity, TRAN_MERCHANT_CITY_WIDTH);
         final String merchantZip = moveToField(state.merchantZip, MERCHANT_ZIP_WIDTH);
 
-        // MOVE TORIGDTI TO TRAN-ORIG-TS at line 464 and MOVE TPROCDTI TO TRAN-PROC-TS at line 465: two
+        // Line 464 carries TORIGDTI into TRAN-ORIG-TS and carries TPROCDTI into TRAN-PROC-TS at line 465: two
         // distinct ten-character senders, each left justified and space filled into twenty-six positions.
         final String tranOrigTs = moveToField(state.origDate, TIMESTAMP_WIDTH);
         final String tranProcTs = moveToField(state.procDate, TIMESTAMP_WIDTH);
@@ -1707,13 +1696,13 @@ public final class TransactionAddService {
      * @param state the turn's working storage
      */
     private void copyLastTranData(final TurnState state) {
-        // PERFORM VALIDATE-INPUT-KEY-FIELDS at line 473.
+        // Line 473 runs VALIDATE-INPUT-KEY-FIELDS.
         validateInputKeyFields(state);
         if (state.screenSent) {
             return;
         }
 
-        // MOVE HIGH-VALUES TO TRAN-ID at line 475 and the three browse paragraphs at lines 476 to 478.
+        // Line 475 carries HIGH-VALUES into TRAN-ID and the three browse paragraphs at lines 476 to 478.
         startbrTransactFile(state);
         if (state.screenSent) {
             return;
@@ -1727,7 +1716,7 @@ public final class TransactionAddService {
         // IF NOT ERR-FLG-ON at line 480.
         if (!state.errorFlag && state.browsed != null) {
             final Transaction last = state.browsed;
-            // MOVE TRAN-AMT TO WS-TRAN-AMT-E at line 481 and WS-TRAN-AMT-E TO TRNAMTI at line 485.
+            // Line 481 carries TRAN-AMT into WS-TRAN-AMT-E and WS-TRAN-AMT-E TO TRNAMTI at line 485.
             state.amount = editedAmountField(last.getTranAmt());
             state.typeCd = moveToField(last.getTranTypeCd(), TYPE_CD_WIDTH);
             state.categoryCd = moveToField(last.getTranCatCd(), CATEGORY_CD_WIDTH);
@@ -1742,7 +1731,7 @@ public final class TransactionAddService {
             state.merchantZip = moveToField(last.getMerchantZip(), MERCHANT_ZIP_WIDTH);
         }
 
-        // PERFORM PROCESS-ENTER-KEY at line 495.
+        // Line 495 runs PROCESS-ENTER-KEY.
         processEnterKey(state);
     }
 
@@ -1766,13 +1755,13 @@ public final class TransactionAddService {
         final NavigationService.Route destination = navigationService
                 .resolveNominatedDestination(carriedState(state.context), NavigationService.Route.SIGN_ON);
 
-        // Lines 505 to 507: MOVE WS-TRANID TO CDEMO-FROM-TRANID, MOVE WS-PGMNAME TO CDEMO-FROM-PROGRAM,
-        // MOVE ZEROS TO CDEMO-PGM-CONTEXT.
+        // Lines 505 to 507 carry this transaction id into CDEMO-FROM-TRANID, this program name into
+        // CDEMO-FROM-PROGRAM, and zero into CDEMO-PGM-CONTEXT.
         state.context = withOriginatingProgram(
                 withNominatedProgram(state.context, destination.getLegacyProgramName()))
                 .withFirstEntry();
 
-        // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA) at lines 508 to 511.
+        // Lines 508 to 511 transfer control to the nominated program with the carried work area.
         state.route = destination;
         state.transferred = true;
         LOG.debug("Transferring control from the transaction-add screen to route {}",
@@ -1803,7 +1792,7 @@ public final class TransactionAddService {
     private void sendTrnaddScreen(final TurnState state) {
         populateHeaderInfo(state);
 
-        // MOVE WS-MESSAGE TO ERRMSGO OF COTRN2AO at line 520.
+        // Line 520 carries WS-MESSAGE into ERRMSGO OF COTRN2AO.
         state.errorMessageField = moveToField(state.message, ERROR_MESSAGE_WIDTH);
 
         // EXEC CICS RETURN TRANSID at lines 530 to 534: the task ends here, so the turn is over for
@@ -1868,7 +1857,7 @@ public final class TransactionAddService {
      * @param state the turn's working storage
      */
     private void populateHeaderInfo(final TurnState state) {
-        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 554.
+        // Line 554 carries the current date into WS-CURDATE-DATA.
         final LocalDateTime now = LocalDateTime.now(clock);
 
         state.title01 = messageCatalogService.screenTitle01();
@@ -1936,7 +1925,7 @@ public final class TransactionAddService {
                 + numericValueField(reading.getSecond(), HEADER_PART_WIDTH)
                 // FILLER PIC X(01) VALUE '.' at copybook line 54.
                 + TIMESTAMP_FRACTION_SEPARATOR
-                // MOVE ZEROS TO WS-TIMESTAMP-TM-MS6 at COBIL00C line 266. The reading's own nanosecond
+                // COBIL00C line 266 zeroes WS-TIMESTAMP-TM-MS6. The reading's own nanosecond
                 // field is deliberately not consulted.
                 + TIMESTAMP_ZERO_FRACTION;
 
@@ -1991,14 +1980,14 @@ public final class TransactionAddService {
         }
 
         if (located.isEmpty()) {
-            // WHEN DFHRESP(NOTFND) at lines 591 to 596.
+            // The NOTFND-response arm at lines 591 to 596.
             LOG.debug("No {} row carries the requested account identifier", CROSS_REFERENCE_RECORD);
             faultField(state, MSG_ACCOUNT_ID_NOT_FOUND, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
             return;
         }
 
-        // WHEN DFHRESP(NORMAL) CONTINUE at lines 589 and 590: the record area now holds the row.
+        // The NORMAL-response arm at lines 589 and 590, which does nothing: the record area now holds the row.
         final CardCrossReference record = located.get();
         state.xrefCardNumber = record.getXrefCardNum();
         state.xrefAccountId = record.getXrefAcctId();
@@ -2034,14 +2023,14 @@ public final class TransactionAddService {
         }
 
         if (located.isEmpty()) {
-            // WHEN DFHRESP(NOTFND) at lines 624 to 629.
+            // The NOTFND-response arm at lines 624 to 629.
             LOG.debug("No {} row carries the requested card number", CROSS_REFERENCE_RECORD);
             faultField(state, MSG_CARD_NUMBER_NOT_FOUND, PROPERTY_CARD_NUMBER, FIELD_CARD_NUMBER,
                     ValidationException.FieldState.INVALID);
             return;
         }
 
-        // WHEN DFHRESP(NORMAL) CONTINUE at lines 622 and 623.
+        // The NORMAL-response arm at lines 622 and 623, which does nothing.
         final CardCrossReference record = located.get();
         state.xrefCardNumber = record.getXrefCardNum();
         state.xrefAccountId = record.getXrefAcctId();
@@ -2073,7 +2062,7 @@ public final class TransactionAddService {
      * @param state the turn's working storage
      */
     private void startbrTransactFile(final TurnState state) {
-        // MOVE HIGH-VALUES TO TRAN-ID at the call sites, lines 444 and 475: the browse is positioned at
+        // Lines 444 and 475 fill TRAN-ID with high values at the call sites: the browse is positioned at
         // the end of the key sequence, which a descending order expresses directly.
         try {
             state.browseCursor = highestTransactionWindow();
@@ -2095,10 +2084,14 @@ public final class TransactionAddService {
      * transaction rolls back before the outer screen arm maps it.
      */
     private List<Transaction> highestTransactionWindow() {
-        return transactionRepository
-                .findAll(PageRequest.of(FIRST_PAGE, SINGLE_RECORD,
-                        Sort.by(Sort.Direction.DESC, TRAN_ID_ATTRIBUTE)))
-                .getContent();
+        // A single-row descending read, which is what READPREV from HIGH-VALUES is. It replaces a
+        // descending page of size one: a page carries a total, so the server was counting the whole
+        // transaction master on every turn of this screen and nothing ever read the figure. The window
+        // shape is retained because the browse position is legitimately "at most one row" - an empty
+        // window is the end-of-file response that seeds zero. Recorded as DL-296.
+        return transactionRepository.findFirstByOrderByTranIdDesc()
+                .map(List::of)
+                .orElseGet(List::of);
     }
 
     // ==========================================================================================
@@ -2125,17 +2118,17 @@ public final class TransactionAddService {
      */
     private void readprevTransactFile(final TurnState state) {
         if (state.browseCursor.isEmpty()) {
-            // WHEN DFHRESP(ENDFILE) MOVE ZEROS TO TRAN-ID at lines 688 and 689. No error is raised.
+            // The end-of-file arm at lines 688 and 689 zeroes TRAN-ID. No error is raised.
             state.browsed = null;
             state.browsedKeyValue = EMPTY_FILE_SEED;
             LOG.debug("The transaction master holds no rows; seeding the identifier from zero");
             return;
         }
 
-        // WHEN DFHRESP(NORMAL) CONTINUE at lines 686 and 687.
+        // The NORMAL-response arm at lines 686 and 687, which does nothing.
         final Transaction last = state.browseCursor.get(0);
         state.browsed = last;
-        // MOVE TRAN-ID TO WS-TRAN-ID-N at the call site, line 448.
+        // Line 448 carries TRAN-ID into WS-TRAN-ID-N at the call site.
         state.browsedKeyValue = numericKeyValue(last.getTranId());
     }
 
@@ -2222,7 +2215,7 @@ public final class TransactionAddService {
                 return;
             }
             if (isDuplicateKeyFailure(writeFailure)) {
-                // WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC) at lines 735 to 741. No re-mint follows: a
+                // The duplicate-key and duplicate-record arms at lines 735 to 741. No re-mint follows: a
                 // refused flush leaves the surrounding transaction marked for rollback, so a further
                 // attempt inside it could not commit.
                 LOG.warn("The transaction master already holds the minted identifier: file=TRANSACT"
@@ -2239,7 +2232,7 @@ public final class TransactionAddService {
             return;
         }
         if (state.identifierAlreadyTaken) {
-            // WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC) at lines 735 to 741, reached without asking the
+            // The duplicate-key and duplicate-record arms at lines 735 to 741, reached without asking the
             // store to merge a record whose assigned key is already present.
             LOG.warn("The transaction master already holds the minted identifier and the allocation"
                     + " attempts are exhausted: file=TRANSACT");
@@ -2251,13 +2244,13 @@ public final class TransactionAddService {
             return;
         }
 
-        // WHEN DFHRESP(NORMAL) at lines 724 to 734.
+        // The NORMAL-response arm at lines 724 to 734.
         state.written = projectionOf(saved);
 
-        // PERFORM INITIALIZE-ALL-FIELDS at line 725 and MOVE SPACES TO WS-MESSAGE at line 726.
+        // Line 725 runs INITIALIZE-ALL-FIELDS and carries SPACES into WS-MESSAGE at line 726.
         initializeAllFields(state);
 
-        // MOVE DFHGREEN TO ERRMSGC at line 727: the one place the member recolours the message field.
+        // Line 727 carries DFHGREEN into ERRMSGC: the one place the member recolours the message field.
         state.messageHighlighted = true;
 
         // STRING ... INTO WS-MESSAGE at lines 728 to 733.
@@ -2336,7 +2329,7 @@ public final class TransactionAddService {
 
     /**
      * The terminal return of the procedure division at lines 156 to 159 and of the send paragraph at lines
-     * 530 to 534: {@code EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)}.
+     * 530 to 534: the pseudo-conversational return that re-arms this transaction with its carried work area.
      *
      * <p>Re-arming is idempotent and never overrides a transfer, because a transfer has already left the
      * program. The source has no separate return paragraph, so this is not one of the eighteen: it is the
@@ -2396,16 +2389,16 @@ public final class TransactionAddService {
      */
     private static String resolveExitProgramName(final ScreenNavigationState context) {
         if (isBlankField(context.fromProgram())) {
-            // MOVE 'COMEN01C' TO CDEMO-TO-PROGRAM at line 138.
+            // Line 138 carries 'COMEN01C' into CDEMO-TO-PROGRAM.
             return NavigationService.Route.USER_MENU.getLegacyProgramName();
         }
-        // MOVE CDEMO-FROM-PROGRAM TO CDEMO-TO-PROGRAM at lines 140 and 141.
+        // Lines 140 and 141 carry CDEMO-FROM-PROGRAM into CDEMO-TO-PROGRAM.
         return context.fromProgram();
     }
 
     /**
      * Reports whether a field was supplied, reproducing the abbreviated combined relation
-     * {@code NOT = SPACES AND LOW-VALUES} at lines 124, 196 and 210, which expands to "is neither all
+     * the abbreviated combined relation at lines 124, 196 and 210, which expands to "is neither all
      * spaces nor all low values".
      *
      * @param field the field to test, which may be {@code null}
@@ -2575,7 +2568,7 @@ public final class TransactionAddService {
     }
 
     /**
-     * Reproduces {@code MOVE TRAN-ID TO WS-TRAN-ID-N} at line 448: the sixteen-character record key read
+     * Reproduces line 448, where TRAN-ID is carried into WS-TRAN-ID-N: the sixteen-character record key read
      * as the sixteen-digit numeric work field the increment is applied to.
      *
      * <p>Every writer in this module stores the zero-filled numeric form, so a key that is not sixteen
@@ -2629,7 +2622,7 @@ public final class TransactionAddService {
 
     /**
      * Produces a blank field of the given width, which is what {@code INITIALIZE} and
-     * {@code MOVE SPACES} write into an alphanumeric item.
+     * a blanking move write into an alphanumeric item.
      *
      * @param width the field width in character positions
      * @return exactly {@code width} spaces

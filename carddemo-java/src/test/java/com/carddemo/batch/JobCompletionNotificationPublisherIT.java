@@ -27,6 +27,7 @@ import io.awspring.cloud.sns.core.CachingTopicArnResolver;
 import io.awspring.cloud.sns.core.SnsOperations;
 import io.awspring.cloud.sns.core.SnsTemplate;
 import io.awspring.cloud.sns.core.TopicsListingTopicArnResolver;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import java.net.URI;
 import java.util.List;
@@ -123,7 +124,7 @@ final class JobCompletionNotificationPublisherIT extends AbstractLocalStackIT {
         final long topicsBefore = this.snsClient.listTopics().topics().size();
         final JobCompletionNotificationService service =
                 new JobCompletionNotificationService(snsOperations(), topicName,
-                        ObservationRegistry.create());
+                        ObservationRegistry.create(), new SimpleMeterRegistry());
         try (GenericApplicationContext context = new GenericApplicationContext()) {
             context.addApplicationListener(service);
             context.refresh();

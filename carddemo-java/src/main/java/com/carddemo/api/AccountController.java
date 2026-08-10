@@ -426,7 +426,13 @@ public class AccountController {
      * declares is refused before the transaction runs. Two of the forty-three map fields carry no
      * constraint at all and none may ever be added: the source states in place that neither the middle
      * name nor the second address line is edited, so constraining them here would reject input the
-     * legacy accepts.
+     * legacy accepts. Those two are instead truncated to their record widths as the transaction applies
+     * them, so an over-long value is accepted and shortened rather than failing at the persistence
+     * boundary - which would be a rejection arriving by another route. The account group identifier is
+     * normalised in the opposite direction for the opposite reason: it is padded to exactly ten
+     * characters, because it is the leading part of a composite key whose reference data carries
+     * meaningful trailing spaces and a shorter value resolves the wrong interest rate rather than
+     * failing. Decision log entry DL-297 records both.
      *
      * @param request the screen input for this turn: the typed fields, the key pressed, the echoed
      *                communication area and the token from the previous turn

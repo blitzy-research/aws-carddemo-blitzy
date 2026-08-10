@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
@@ -47,13 +49,15 @@ import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.type.LogicalType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
+import org.springframework.boot.autoconfigure.security.SecurityProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.Ordered;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -169,6 +173,83 @@ public final class WebMvcConfig implements WebMvcConfigurer {
     public static final String MAX_REQUEST_BODY_SIZE_PROPERTY =
             "carddemo.web.max-request-body-size";
 
+    /**
+     * Counter of API requests refused for an oversized body, before any handler sees them.
+     *
+     * <p>The framework's own {@code http.server.requests} timer records the refusal too, now that the
+     * filter sits behind the observation filter, but it cannot say <em>why</em> and it cannot name the
+     * route: a request rejected before dispatch never reaches the handler mapping, so the framework's
+     * {@code uri} dimension resolves to its unknown marker. This counter carries the reason the framework
+     * has no way to know, and the two are read together.
+     */
+    public static final String REQUEST_REFUSED_METER_NAME = "carddemo.http.request.refused";
+
+    /** Description of {@link #REQUEST_REFUSED_METER_NAME}, stated once. */
+    private static final String REQUEST_REFUSED_METER_DESCRIPTION =
+            "CardDemo API requests refused before dispatch because the body exceeded its configured"
+                    + " ceiling, by how the excess was detected";
+
+    /** Tag naming how the excess was detected. */
+    public static final String TAG_REASON = "reason";
+
+    /** Tag naming the request method, folded to a closed vocabulary so the series cannot fork. */
+    public static final String TAG_METHOD = "method";
+
+    /** {@link #TAG_REASON} value for a body whose declared {@code Content-Length} exceeded the bound. */
+    public static final String REASON_DECLARED_LENGTH = "DECLARED_LENGTH";
+
+    /** {@link #TAG_REASON} value for a chunked body found to exceed the bound while being read. */
+    public static final String REASON_STREAMED_LENGTH = "STREAMED_LENGTH";
+
+    /**
+     * Where the request-body limit filter is registered in the servlet chain.
+     *
+     * <h2>Why it is not first, which is where it used to be</h2>
+     *
+     * <p>Registered at {@code Ordered.HIGHEST_PRECEDENCE} the filter ran ahead of the entire chain, and
+     * two things followed from that. Spring Boot registers its server observation filter one step behind
+     * highest precedence, so every refusal happened <em>outside</em> any observation: the response carried
+     * status 413 and appeared in no request metric, opened no span, and had no correlation identifiers in
+     * scope for a log line to carry. A caller could drive refusals indefinitely and leave nothing behind
+     * to detect, which is a monitoring gap rather than merely a telemetry one. And it ran ahead of
+     * authentication, so an anonymous request's body was read and buffered before anyone had established
+     * that the caller was entitled to send one at all.
+     *
+     * <p>One step behind the security chain fixes both at once. The refusal is now inside the server
+     * observation, so it is timed, counted and traced like any other response; and an unauthenticated
+     * request to a protected route is answered by the security chain before this filter allocates
+     * anything for it.
+     *
+     * <h2>Why moving behind authentication is safe here, which it would not universally be</h2>
+     *
+     * <p>Placing a body bound after authentication is only sound if nothing between the two can read an
+     * unbounded body first. Three facts establish that for this module, and all three would have to
+     * remain true for the ordering to stay correct.
+     *
+     * <ul>
+     *   <li>No Spring Security filter in either published chain reads the body. Authentication is a bearer
+     *       token in a header, form login is not configured, and CSRF is disabled on both chains - so
+     *       nothing consults a request parameter, which is the only way a security filter would end up
+     *       parsing a body.</li>
+     *   <li>The one filter ahead of this point that <em>can</em> read a body is Boot's form-content
+     *       filter, and it acts only on form-encoded content. Its parse is bounded by the container at
+     *       {@code server.tomcat.max-http-form-post-size}, which this module configures to the same
+     *       figure as this filter's own default ceiling - so that path is bounded to the same size rather
+     *       than being unbounded.</li>
+     *   <li>The container bounds request headers and swallowed bytes independently, so the pre-filter
+     *       surface is finite in every dimension a caller controls.</li>
+     * </ul>
+     *
+     * <p>The value is derived from the framework constant rather than written as a literal, so that a
+     * change to Boot's default security-filter order moves this filter with it instead of silently
+     * reordering the two.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-307.
+     */
+    static final int REQUEST_BODY_LIMIT_FILTER_ORDER = SecurityProperties.DEFAULT_FILTER_ORDER + 1;
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(WebMvcConfig.class);
+
     private static final int MAX_CONFIGURED_ORIGINS = 16;
 
     private static final int MAX_ORIGIN_LENGTH = 2_048;
@@ -237,21 +318,27 @@ public final class WebMvcConfig implements WebMvcConfigurer {
     }
 
     /**
-     * Registers the bounded request-body reader before security and MVC consume a request.
+     * Registers the bounded request-body reader behind observation and behind authentication.
+     *
+     * <p>The slot is {@link #REQUEST_BODY_LIMIT_FILTER_ORDER} and the reasoning for it is developed
+     * there, because the choice of position is the whole substance of this registration.
      *
      * @param configuredMaxRequestBodySize the positive bounded size from configuration
+     * @param meterRegistry                where a refusal is counted; must not be {@code null}
      * @return the ordered and path-scoped filter registration
      */
     @Bean
     public FilterRegistrationBean<RequestBodyLimitFilter> requestBodyLimitFilter(
             @Value("${" + MAX_REQUEST_BODY_SIZE_PROPERTY + ":64KB}")
-            final String configuredMaxRequestBodySize) {
+            final String configuredMaxRequestBodySize,
+            final MeterRegistry meterRegistry) {
         final FilterRegistrationBean<RequestBodyLimitFilter> registration =
                 new FilterRegistrationBean<>();
-        registration.setFilter(new RequestBodyLimitFilter(configuredMaxRequestBodySize));
+        registration.setFilter(
+                new RequestBodyLimitFilter(configuredMaxRequestBodySize, meterRegistry));
         registration.setName("requestBodyLimitFilter");
         registration.addUrlPatterns("/api/*");
-        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        registration.setOrder(REQUEST_BODY_LIMIT_FILTER_ORDER);
         return registration;
     }
 
@@ -641,13 +728,43 @@ public final class WebMvcConfig implements WebMvcConfigurer {
 
     /**
      * Filter that rejects both declared-length and chunked bodies above the same finite limit.
+     *
+     * <p>A refusal is now reported as well as returned. It is counted on
+     * {@link #REQUEST_REFUSED_METER_NAME} and logged once at warning level, and because the filter runs
+     * inside the server observation it also appears in the framework's request timer and carries the
+     * correlation identifiers that were previously out of scope.
+     *
+     * <p><strong>The diagnostic names no unsanitised caller content.</strong> Everything a caller controls
+     * that reaches the log passes through a rule stated at the method that applies it: the method is
+     * folded to a closed vocabulary, and the path is stripped of its context, bounded in length and
+     * reduced to a conservative character set. That is not decoration - the request line is
+     * attacker-controlled text on an unauthenticated path, so an unfiltered copy of it in a log is a
+     * forged-record vector, and an unbounded one is a way to write a great deal of someone else's text
+     * into an operator's log by sending one request.
      */
     static final class RequestBodyLimitFilter extends OncePerRequestFilter {
 
+        /** Longest sanitised request path a refusal diagnostic will carry. */
+        private static final int MAX_LOGGED_PATH_LENGTH = 120;
+
+        /** Method names named as themselves; anything else is folded to one marker. */
+        private static final Set<String> LOGGED_METHODS = Set.of(
+                "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE");
+
+        /** Replacement for a method outside {@link #LOGGED_METHODS}. */
+        private static final String OTHER_METHOD = "OTHER";
+
+        /** Substitute for any path character outside the conservative set. */
+        private static final char PATH_SUBSTITUTE = '_';
+
         private final int maxRequestBodyBytes;
 
-        RequestBodyLimitFilter(final String configuredMaxRequestBodySize) {
+        private final MeterRegistry meterRegistry;
+
+        RequestBodyLimitFilter(final String configuredMaxRequestBodySize,
+                final MeterRegistry meterRegistry) {
             this.maxRequestBodyBytes = requireRequestBodyBytes(configuredMaxRequestBodySize);
+            this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         }
 
         @Override
@@ -662,24 +779,120 @@ public final class WebMvcConfig implements WebMvcConfigurer {
                 throws ServletException, IOException {
             final long declaredLength = request.getContentLengthLong();
             if (declaredLength > this.maxRequestBodyBytes) {
-                reject(response);
+                reject(request, response, REASON_DECLARED_LENGTH, declaredLength);
                 return;
             }
 
             final byte[] body = request.getInputStream().readNBytes(this.maxRequestBodyBytes + 1);
             if (body.length > this.maxRequestBodyBytes) {
-                reject(response);
+                // The read stops one byte past the ceiling, so this figure is a floor on the body's size
+                // rather than its size. Reported as such rather than as a measurement.
+                reject(request, response, REASON_STREAMED_LENGTH, body.length);
                 return;
             }
             filterChain.doFilter(new BufferedHttpServletRequest(request, body), response);
         }
 
-        private static void reject(final HttpServletResponse response) throws IOException {
+        /**
+         * Answers 413, counts the refusal and records one bounded diagnostic.
+         *
+         * <p>The response is byte-for-byte what it always was. Nothing about the external contract moves
+         * here: the status, the media type, the charset and the message body are unchanged, because a
+         * caller must not be able to tell from the answer that the refusal is now being recorded.
+         *
+         * @param  request        the refused request, read only for its method and path
+         * @param  response       the response to complete
+         * @param  reason         the {@link #TAG_REASON} value
+         * @param  observedBytes  the declared length, or the number of bytes read before stopping
+         * @throws IOException if the response cannot be written
+         */
+        private void reject(final HttpServletRequest request, final HttpServletResponse response,
+                final String reason, final long observedBytes) throws IOException {
             response.setStatus(HttpStatus.PAYLOAD_TOO_LARGE.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             response.setCharacterEncoding(StandardCharsets.UTF_8.name());
             response.getWriter().write(
                     "{\"message\":\"Request could not be processed\",\"fieldErrors\":[]}");
+
+            final String method = loggedMethod(request.getMethod());
+            count(reason, method);
+            LOGGER.warn("Refused an API request whose body exceeded its ceiling: method={} path={}"
+                            + " limitBytes={} observedBytes={} reason={}",
+                    method, loggedPath(request), this.maxRequestBodyBytes, observedBytes, reason);
+        }
+
+        /**
+         * Counts one refusal, registering the counter on first use for that pair of tags.
+         *
+         * <p>A meter fault is absorbed at debug. This runs while completing a response that has already
+         * been decided, and a telemetry problem must not become a second, different failure for the
+         * caller.
+         *
+         * @param reason the {@link #TAG_REASON} value
+         * @param method the folded {@link #TAG_METHOD} value
+         */
+        private void count(final String reason, final String method) {
+            try {
+                Counter.builder(REQUEST_REFUSED_METER_NAME)
+                        .description(REQUEST_REFUSED_METER_DESCRIPTION)
+                        .tag(TAG_REASON, reason)
+                        .tag(TAG_METHOD, method)
+                        .register(this.meterRegistry)
+                        .increment();
+            } catch (final RuntimeException meterFailure) {
+                LOGGER.debug("Could not count a refused API request with reason {}: failureType={}",
+                        reason, meterFailure.getClass().getSimpleName());
+            }
+        }
+
+        /**
+         * @param  method the request method as the container reported it, possibly {@code null}
+         * @return the same name when it is one of the eight standard methods, otherwise one marker, so
+         *         that a caller inventing method names cannot fork the metric series
+         */
+        private static String loggedMethod(final String method) {
+            return method != null && LOGGED_METHODS.contains(method) ? method : OTHER_METHOD;
+        }
+
+        /**
+         * Reduces the request path to something safe to write into a log.
+         *
+         * <p>Three reductions, each closing a distinct problem: the context path is removed because it is
+         * deployment configuration rather than information about the request; the result is truncated,
+         * because a container accepts a request line far longer than anything worth logging and an
+         * attacker choosing its length chooses how much of an operator's log to occupy; and every
+         * character outside letters, digits and the four path punctuation marks is replaced, which
+         * removes carriage returns and line feeds and therefore the ability to forge a second log record
+         * inside the first.
+         *
+         * @param  request the refused request
+         * @return a bounded path over a conservative character set, never {@code null}
+         */
+        private static String loggedPath(final HttpServletRequest request) {
+            final String uri = request.getRequestURI();
+            if (uri == null) {
+                return "";
+            }
+            final String contextPath = request.getContextPath();
+            final String relative = contextPath != null && !contextPath.isEmpty()
+                    && uri.startsWith(contextPath)
+                    ? uri.substring(contextPath.length())
+                    : uri;
+            final int length = Math.min(relative.length(), MAX_LOGGED_PATH_LENGTH);
+            final StringBuilder safe = new StringBuilder(length);
+            for (int index = 0; index < length; index++) {
+                final char character = relative.charAt(index);
+                if (character >= 'A' && character <= 'Z'
+                        || character >= 'a' && character <= 'z'
+                        || character >= '0' && character <= '9'
+                        || character == '/' || character == '.'
+                        || character == '_' || character == '-') {
+                    safe.append(character);
+                } else {
+                    safe.append(PATH_SUBSTITUTE);
+                }
+            }
+            return safe.toString();
         }
     }
 

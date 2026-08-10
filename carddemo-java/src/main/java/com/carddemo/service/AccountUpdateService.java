@@ -459,9 +459,6 @@ public final class AccountUpdateService {
     /** Length the account key must occupy, from {@code CC-ACCT-ID PIC X(11)}. */
     private static final int ACCOUNT_KEY_WIDTH = 11;
 
-    /** Length the customer key must occupy, from {@code CC-CUST-ID PIC X(9)}. */
-    private static final int CUSTOMER_KEY_WIDTH = 9;
-
     /** Characters of the postcode that join the state code, from the substring at line 2538. */
     private static final int ZIP_PREFIX_WIDTH = 2;
 
@@ -473,6 +470,40 @@ public final class AccountUpdateService {
      * screen and the response contract cannot drift apart.
      */
     private static final int ZIP_CODE_SCREEN_WIDTH = 5;
+
+    /**
+     * Width of the account group identifier, from {@code ACCT-GROUP-ID PIC X(10)} of
+     * {@code app/cpy/CVACT01Y.cpy} line 16 and {@code AADDGRPI PIC X(10)} of the symbolic map.
+     *
+     * <p><strong>This width is load-bearing, and a shorter value is a financial defect rather than an
+     * untidy one.</strong> The identifier is the leading part of the disclosure-group composite key,
+     * whose own field is {@code DIS-ACCT-GROUP-ID PIC X(10)}, and the reference data carries meaningful
+     * trailing spaces inside that width - two of the three seeded groups are seven characters followed
+     * by three spaces. A nine-or-fewer-character value therefore matches no group row, the rate lookup
+     * falls through to its documented default group, and an account whose group carries a zero rate is
+     * charged the default group's non-zero rate instead. Recorded as {@code DL-297} in
+     * {@code docs/decision-log.md}.
+     */
+    private static final int ACCOUNT_GROUP_ID_WIDTH = 10;
+
+    /**
+     * Width of the middle-name item, from {@code CUST-MIDDLE-NAME PIC X(25)} of
+     * {@code app/cpy/CVCUS01Y.cpy} and {@code ACTSMNI PIC X(25)} of the symbolic map.
+     *
+     * <p>One of the two fields the source decorates and never edits, so no constraint may be attached
+     * to it anywhere and nothing may reject a value on account of it. The width is nonetheless the
+     * record's, and a terminal could never have transmitted more than this many characters; see
+     * {@link #atRecordWidth(String, int)}.
+     */
+    private static final int MIDDLE_NAME_RECORD_WIDTH = 25;
+
+    /**
+     * Width of the second address line, from {@code CUST-ADDR-LINE-2 PIC X(50)} of
+     * {@code app/cpy/CVCUS01Y.cpy} and {@code ACSADL2I PIC X(50)} of the symbolic map.
+     *
+     * <p>The other unedited field, treated exactly as the middle name is.
+     */
+    private static final int ADDRESS_LINE_2_RECORD_WIDTH = 50;
 
     /** Inclusive lower bound of {@code FICO-RANGE-IS-VALID}, line 848. */
     static final int FICO_SCORE_MINIMUM = 300;
@@ -913,7 +944,7 @@ public final class AccountUpdateService {
         }
 
         /**
-         * {@code MOVE LOW-VALUES TO WS-NON-KEY-FLAGS}, at lines 1466 and 1471 and again after a
+         * The clearing of WS-NON-KEY-FLAGS, at lines 1466 and 1471 and again after a
          * no-change determination: every field flag returns to its valid state.
          */
         private void clearFieldFlags() {
@@ -950,7 +981,7 @@ public final class AccountUpdateService {
 
         /**
          * The first-error-wins gate that wraps <em>every</em> message assignment in this program:
-         * {@code IF WS-RETURN-MSG-OFF} guards each {@code STRING ... INTO WS-RETURN-MSG}. The outcome
+         * the WS-RETURN-MSG-OFF gate guards every composition into WS-RETURN-MSG. The outcome
          * of a turn is therefore one summary message plus as many independent field errors as the edits
          * found.
          *
@@ -962,12 +993,12 @@ public final class AccountUpdateService {
             }
         }
 
-        /** {@code SET WS-RETURN-MSG-OFF TO TRUE}, at lines 876 and 2574. */
+        /** The WS-RETURN-MSG-OFF condition, set at lines 876 and 2574. */
         private void clearMessage() {
             this.returnMessage = "";
         }
 
-        /** {@code SET INPUT-ERROR TO TRUE}, at every failing arm. */
+        /** The INPUT-ERROR condition, set at every failing arm. */
         private void markInputError() {
             this.inputError = true;
         }
@@ -1106,7 +1137,7 @@ public final class AccountUpdateService {
      * The map output area {@code CACTUPAO}, mutable for the duration of one turn.
      *
      * <p>Modelled as a mutable holder rather than an immutable value because that is what the legacy
-     * builds: line 2669 clears the whole area with {@code MOVE LOW-VALUES}, and the header, value and
+     * builds: line 2669 clears the whole area to low values, and the header, value and
      * message paragraphs then move fields into it one at a time before the send at lines 3594 to 3601.
      * An absent component is {@code null}, which is this translation of the null-byte state the cleared
      * area holds.
@@ -1164,7 +1195,7 @@ public final class AccountUpdateService {
         private String primaryCardHolderIndicator;
 
         /**
-         * {@code MOVE LOW-VALUES TO CACTUPAO}, line 2669, and the same clearing the initial-values
+         * The clearing of CACTUPAO to low values, line 2669, and the same clearing the initial-values
          * paragraph performs across the detail fields at lines 2732 onward.
          */
         private void clearDetailFields() {
@@ -1256,8 +1287,8 @@ public final class AccountUpdateService {
                 LEGACY_TRANSACTION_ID, programIdParagraph(), dateWrittenParagraph(),
                 dateCompiledParagraph());
 
-        // INITIALIZE CC-WORK-AREA, WS-MISC-STORAGE, WS-COMMAREA at line 866, then
-        // SET WS-RETURN-MSG-OFF TO TRUE at line 876.
+        // Line 866 clears CC-WORK-AREA, WS-MISC-STORAGE, WS-COMMAREA, then
+        // Line 876 sets WS-RETURN-MSG-OFF.
         final EditState state = new EditState();
         state.clearMessage();
         final MapOutput output = new MapOutput();
@@ -1275,12 +1306,12 @@ public final class AccountUpdateService {
         state.customerId = orEmpty(request.customerId());
         final ScreenInputState workArea = screenWorkArea(state, request);
 
-        // PERFORM YYYY-STORE-PFKEY THRU ...-EXIT at lines 898 to 899, then the validity test at
+        // Lines 898 to 899 run the YYYY-STORE-PFKEY range, then the validity test at
         // lines 905 to 916 which forces ENTER whenever the pressed key is not usable here.
         final KeyAction pressedKey = storePfKey(state, request, rawAttentionKeyIdentifier, workArea);
         final KeyAction keyAction = screenKeyIsValid(state, pressedKey);
 
-        // EVALUATE TRUE at line 921. Clause order is contractual and is preserved exactly.
+        // Line 921 holds a multi-way selection. Clause order is contractual and is preserved exactly.
         final AccountUpdateOutcome response;
         if (keyAction == KeyAction.PFK03) {
             response = exitToCaller(state, context, output);
@@ -2343,6 +2374,15 @@ public final class AccountUpdateService {
      * identifier, and the response record redacts it from its own rendering for the same reason.
      */
     private void editUsSsn(final EditState state, final AccountUpdateCommand request) {
+        if (nationalIdentifierIsUnchangedAndAbsent(state, request)) {
+            // The three components carry no error and no mark: there is nothing to edit, because the
+            // operator submitted nothing and the record holds nothing. See the method's own account.
+            state.setFlag(ScreenField.EDIT_US_SSN_PART1, FieldFlag.ISVALID);
+            state.setFlag(ScreenField.EDIT_US_SSN_PART2, FieldFlag.ISVALID);
+            state.setFlag(ScreenField.EDIT_US_SSN_PART3, FieldFlag.ISVALID);
+            editUsSsnExit();
+            return;
+        }
         editNumericRequired(state, ScreenField.EDIT_US_SSN_PART1, request.ssnPart1());
         if (state.flag(ScreenField.EDIT_US_SSN_PART1).isValid()
                 && isExcludedSsnFirstPart(request.ssnPart1())) {
@@ -2352,6 +2392,55 @@ public final class AccountUpdateService {
         editNumericRequired(state, ScreenField.EDIT_US_SSN_PART2, request.ssnPart2());
         editNumericRequired(state, ScreenField.EDIT_US_SSN_PART3, request.ssnPart3());
         editUsSsnExit();
+    }
+
+    /**
+     * Reports whether the national identifier is absent in the record and unsupplied in the submission,
+     * which is the one state in which the three mandatory component edits have nothing to judge.
+     *
+     * <p><strong>Why this state exists at all.</strong> The legacy record carries the identifier as nine
+     * cleartext digits in a fixed-width field, so it is always present and the edits at lines 2431 to
+     * 2488 always see real digits. This estate protects the column, and protecting it made it the
+     * schema's only nullable one - a value that cannot be produced without a key cannot be a mandatory
+     * column with a meaningful default. Every seeded row holds no identifier as a result, by the
+     * recorded privacy decision that the sample data carries none.
+     *
+     * <p><strong>What went wrong without it.</strong> An operator opening a seeded account received no
+     * identifier - there was none to reveal, and withholding an absent value yields absence rather than
+     * a stand-in - echoed that absence back, and had the whole submission rejected by three mandatory
+     * edits on a field they had never touched. Every seeded account was therefore unmaintainable: not a
+     * credit limit, not an address, not a status could be changed through this transaction. The
+     * rejection was not the legacy's behaviour, because the legacy could not reach this state; it was
+     * this estate's protection of the column being reported to the operator as their own input error.
+     *
+     * <p><strong>Why it is safe, and why it cannot be forged.</strong> Both halves of the condition are
+     * server-side facts. The stored identifier's absence is read from the record this turn locked, never
+     * from the body. The submission's silence is the absence of all three components, and a caller who
+     * types any one of them fails this test and gets the full cascade - including the excluded-range
+     * check on the first part. A caller cannot use it to blank an identifier that exists either: with a
+     * value stored, the test fails and blanking is refused exactly as before. It changes one outcome and
+     * one only - an operator who supplied nothing, over a record that holds nothing, is no longer told
+     * they supplied something wrong.
+     *
+     * <p>Neither the stored value nor any component reaches a diagnostic here, as everywhere else on
+     * this path.
+     *
+     * @param  state   the turn's working storage, holding the record this turn locked
+     * @param  request the submission as transmitted, after withheld values were restored
+     * @return {@code true} when the record holds no identifier and the submission supplies none
+     */
+    private boolean nationalIdentifierIsUnchangedAndAbsent(final EditState state,
+            final AccountUpdateCommand request) {
+        if (state.customer == null) {
+            return false;
+        }
+        if (!isUnsuppliedScreenValue(request.ssnPart1())
+                || !isUnsuppliedScreenValue(request.ssnPart2())
+                || !isUnsuppliedScreenValue(request.ssnPart3())) {
+            return false;
+        }
+        return revealed(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
+                state.customer.getCustSsn()) == null;
     }
 
     /**
@@ -3182,7 +3271,7 @@ public final class AccountUpdateService {
      * where the three arms genuinely differ.
      *
      * <p><strong>The move is ungated.</strong> The source composes this text into {@code WS-RETURN-MSG}
-     * with no {@code IF WS-RETURN-MSG-OFF} around it, unlike every not-found arm, so it replaces whatever
+     * with no WS-RETURN-MSG-OFF gate around it, unlike every not-found arm, so it replaces whatever
      * an earlier edit had claimed. That asymmetry is reproduced by assigning the slot directly rather
      * than claiming it through the gate.
      *
@@ -3281,7 +3370,7 @@ public final class AccountUpdateService {
      * {@code 9300-GETACCTDATA-BYACCT}, lines 3701 to 3746: the account master read.
      *
      * <p>Source anomaly, and a documented divergence from it. The not-found arm's
-     * {@code SET DID-NOT-FIND-ACCT-IN-ACCTDAT} is commented out at line 3719, so the condition the
+     * setting of DID-NOT-FIND-ACCT-IN-ACCTDAT is commented out at line 3719, so the condition the
      * caller's guard at line 3627 tests is never satisfied and the legacy walks on to read the customer
      * master with an unresolved key. This translation claims the declared text, which makes that guard
      * reachable and stops the flow. The divergence is deliberate and fail-safe: it prevents a screen
@@ -3434,7 +3523,7 @@ public final class AccountUpdateService {
      * reports a conflict, this method translates it.
      *
      * <p><strong>Both holds test for the normal response and treat everything else alike.</strong> The
-     * source writes {@code IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL) ... ELSE}, not a three-arm evaluation,
+     * source tests WS-RESP-CD only for the normal response, with a single else arm and no three-arm evaluation,
      * so a missing row and a failing read reach one arm: the input error is raised, the could-not-lock
      * text is claimed through the message gate, and the range is left. A read that raised instead of
      * returning nothing is therefore mapped onto that arm rather than escaping, because escaping would
@@ -3444,7 +3533,7 @@ public final class AccountUpdateService {
         writeRange:
         while (true) {
             // Lines 3892 to 3915: hold the account. The source's test is
-            // IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL) ... ELSE, so EVERY non-normal response is the
+            // a test of WS-RESP-CD for the normal response with a single else arm, so EVERY non-normal response is the
             // failure to hold it - not only the missing row. An absent result and a failing read are
             // therefore the same arm here, which is what makes the arm reachable for both.
             final Optional<Account> heldAccount;
@@ -3757,7 +3846,7 @@ public final class AccountUpdateService {
 
     /**
      * Moves the cascade's three flags into the three field flags, which is the
-     * {@code MOVE WS-EDIT-DATE-FLGS TO ...} at lines 1482, 1494, 1507, 1538 and 1542.
+     * carriage of WS-EDIT-DATE-FLGS onto them at lines 1482, 1494, 1507, 1538 and 1542.
      */
     private void applyDateResult(final EditState state, final ScreenField yearField,
             final ScreenField monthField, final ScreenField dayField,
@@ -3832,6 +3921,11 @@ public final class AccountUpdateService {
      *
      * <p>No amount is scaled here. Every monetary lexeme goes through the codec, which is the only holder
      * of a rounding policy in the module and truncates toward zero.
+     *
+     * <p>The group identifier crosses at exactly its record width. It is the only field written here
+     * whose value is afterwards used to compose a key, and the key it composes carries meaningful
+     * trailing spaces, so it is moved through {@link #atRecordWidth(String, int)} rather than assigned
+     * as received. See {@link #ACCOUNT_GROUP_ID_WIDTH} for what a shorter value costs.
      */
     private static void applyAccountChanges(final AccountUpdateCommand request,
             final Account account) {
@@ -3847,7 +3941,7 @@ public final class AccountUpdateService {
                 request.expiryDay()));
         account.setAcctReissueDate(storedDate(request.reissueYear(), request.reissueMonth(),
                 request.reissueDay()));
-        account.setAcctGroupId(request.accountGroupId());
+        account.setAcctGroupId(atRecordWidth(request.accountGroupId(), ACCOUNT_GROUP_ID_WIDTH));
     }
 
     /**
@@ -3858,13 +3952,22 @@ public final class AccountUpdateService {
      * keyed parts. Both regulated identifiers are sealed before they are set, because the entity refuses
      * cleartext for either of them - which is the mechanism that stops an unprotected value ever reaching
      * the persistence boundary.
+     *
+     * <p>The middle name and the second address line cross through
+     * {@link #withinRecordWidth(String, int)}. They are the two fields the source decorates and never
+     * edits, so they carry no constraint and nothing here may reject a value on account of either; every
+     * other text field on this screen is bounded by the map width it declares and an over-long value is
+     * answered before the transaction runs. Truncating these two is what keeps that asymmetry from
+     * turning into a failure at the persistence boundary, which would be a rejection by another name.
      */
     private void applyCustomerChanges(final AccountUpdateCommand request, final Customer customer) {
         customer.setFirstName(screenValue(request.firstName()));
-        customer.setMiddleName(screenValue(request.middleName()));
+        customer.setMiddleName(withinRecordWidth(screenValue(request.middleName()),
+                MIDDLE_NAME_RECORD_WIDTH));
         customer.setLastName(screenValue(request.lastName()));
         customer.setAddrLine1(screenValue(request.addressLine1()));
-        customer.setAddrLine2(screenValue(request.addressLine2()));
+        customer.setAddrLine2(withinRecordWidth(screenValue(request.addressLine2()),
+                ADDRESS_LINE_2_RECORD_WIDTH));
         customer.setAddrLine3(screenValue(request.city()));
         customer.setAddrStateCd(screenValue(request.stateCode()));
         customer.setAddrCountryCd(screenValue(request.countryCode()));
@@ -3996,6 +4099,64 @@ public final class AccountUpdateService {
     }
 
     /**
+     * One transmitted value as an alphanumeric {@code MOVE} into a fixed-width record field leaves it:
+     * left-justified, truncated on the right when longer and space-padded on the right when shorter.
+     *
+     * <p>This is not a convenience. Every value that reaches an account or customer record field in the
+     * legacy program has already crossed at least one {@code MOVE} into a {@code PIC X(n)} item, and
+     * that move is defined to pad a shorter source and to discard the surplus of a longer one. The
+     * terminal could not transmit more characters than the map item declares and BMS delivered the item
+     * at its full declared width, so on the legacy path both halves of the rule were satisfied before
+     * the program ever ran. Over a JSON boundary neither is, which is why the rule has to be applied
+     * here instead of assumed.
+     *
+     * @param transmitted the value as received, or {@code null}
+     * @param width       the declared width of the record field it is moved into
+     * @return the value at exactly {@code width} characters, or {@code null} when there was none
+     */
+    private static String atRecordWidth(final String transmitted, final int width) {
+        if (transmitted == null) {
+            return null;
+        }
+        if (transmitted.length() == width) {
+            return transmitted;
+        }
+        if (transmitted.length() > width) {
+            return transmitted.substring(0, width);
+        }
+        return transmitted + " ".repeat(width - transmitted.length());
+    }
+
+    /**
+     * One transmitted value truncated to a record field's width, and never padded.
+     *
+     * <p>The two fields this serves - the middle name and the second address line - carry no constraint
+     * and never may, because the source states in place that neither is edited, so nothing here may
+     * reject a value however long it is. Truncation is what the {@code MOVE} into their
+     * {@code PIC X(25)} and {@code PIC X(50)} items does with a longer source, and it is also what the
+     * terminal itself did by being unable to accept a further character. Without it an over-long value
+     * reaches a bounded column and the turn fails at the persistence boundary - which is a rejection
+     * arriving by a different route, and the one outcome the source forbids for these two fields.
+     *
+     * <p><strong>Deliberately not padded, unlike {@link #atRecordWidth(String, int)}.</strong> Neither
+     * field is a key, no lookup composes either of them, and every non-key text column in this module
+     * stores the value at its natural length and is padded to the record width by its own mapper on the
+     * way out - which is what keeps the 500-byte customer image byte-identical either way. Padding here
+     * would instead make an updated row's screen echo differ from a seeded row's for no contractual
+     * reason. Recorded as {@code DL-297} in {@code docs/decision-log.md}.
+     *
+     * @param transmitted the value as received, or {@code null}
+     * @param width       the declared width of the record field it is moved into
+     * @return the value at no more than {@code width} characters, or {@code null} when there was none
+     */
+    private static String withinRecordWidth(final String transmitted, final int width) {
+        if (transmitted == null || transmitted.length() <= width) {
+            return transmitted;
+        }
+        return transmitted.substring(0, width);
+    }
+
+    /**
      * One transmitted screen field as the receive paragraph takes it: the decoration marker and an
      * all-space value both read as the cleared state, per the shape at lines 1051 to 1058.
      */
@@ -4078,7 +4239,7 @@ public final class AccountUpdateService {
         return accumulated;
     }
 
-    /** {@code CC-ACCT-ID-N = 0}, tested at lines 2703 and 2712 through the numeric redefinition. */
+    /** A zero numeric account key, tested at lines 2703 and 2712 through the numeric redefinition. */
     private static boolean isZeroOrAbsentKey(final String key) {
         return isUnsuppliedScreenValue(key) || isZeroDigits(key);
     }
@@ -4341,7 +4502,7 @@ public final class AccountUpdateService {
                 || (isMenuProgram(context.fromProgram()) && !context.reEntry());
     }
 
-    /** {@code CDEMO-FROM-PROGRAM = LIT-MENUPGM}, the literal declared at line 558. */
+    /** An originating program equal to the menu-program literal declared at line 558. */
     private static boolean isMenuProgram(final String fromProgram) {
         return NavigationService.Route.USER_MENU.getLegacyProgramName()
                 .equals(orEmpty(fromProgram).trim());

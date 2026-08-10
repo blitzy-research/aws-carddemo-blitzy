@@ -51,7 +51,7 @@ import ch.qos.logback.core.read.ListAppender;
  * amount of correct diagnostic text could compensate for.
  *
  * <p>Two methods deliberately do not throw and are tested for exactly that. {@code displayIoStatus}
- * reproduces the legacy {@code DISPLAY 'FILE STATUS IS: NNNN'} paragraph, which announces a status
+ * reproduces the legacy {@code FILE STATUS IS: NNNN} diagnostic paragraph, which announces a status
  * and falls through to whatever the program does next; and the rejection guard turns a caller defect
  * — asking to abend on a status that reports success or end of file — into an
  * {@link IllegalArgumentException}, which is a programming error and not an abend.</p>
@@ -351,38 +351,52 @@ class AbendServiceBoundaryTest {
         }
 
         @Test
-        @DisplayName("the online path emits the 134-byte context image at debug level")
-        void theOnlinePathEmitsTheContextImageAtDebug() {
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> service.abendOnline(PROGRAM, REASON, TERMINAL_MESSAGE));
-
-            assertThat(capturedLines())
-                    .anyMatch(line -> line.contains("abendContext=")
-                            && line.contains("contextLength=" + CONTEXT_WIDTH));
-        }
-
-        @Test
-        @DisplayName("the emitted context image is the exception's own fixed-width image")
-        void theEmittedContextImageIsTheExceptionsOwnImage() {
-            AbendException expected =
+        @DisplayName("THE REVERSAL: the fixed-width context image is not logged at any level, not even "
+                + "trace, because its message slot is the one field of that area this module did not author")
+        void theContextImageIsNeverLogged() {
+            // Deliberately the most permissive level this backend has. An earlier version of this class
+            // emitted the whole 134-character area at debug, so a single switch published a
+            // 72-character caller-facing message into the log stream in a format built for a 3270 screen.
+            // The image is gone from the record, not merely quieter in it. See docs/decision-log.md DL-312.
+            logger.setLevel(Level.TRACE);
+            AbendException equivalent =
                     new AbendException(ONLINE_CODE, PROGRAM, REASON, TERMINAL_MESSAGE);
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.abendOnline(PROGRAM, REASON, TERMINAL_MESSAGE));
 
             assertThat(capturedLines())
-                    .anyMatch(line -> line.contains(expected.toFixedWidthContext()));
+                    .as("no level of this category may render the area, and none may render the message"
+                            + " slot that made it worth removing")
+                    .noneMatch(line -> line.contains("abendContext="))
+                    .noneMatch(line -> line.contains("contextLength="))
+                    .noneMatch(line -> line.contains(equivalent.toFixedWidthContext()))
+                    .noneMatch(line -> line.contains(TERMINAL_MESSAGE));
         }
 
         @Test
-        @DisplayName("no context image is emitted when debug logging is switched off")
-        void noContextImageWhenDebugIsOff() {
-            logger.setLevel(Level.INFO);
+        @DisplayName("what replaces it says everything the image said that this module authored: the code, "
+                + "the culprit and the reason, as named fields")
+        void theStructuredRecordCarriesTheAuthoredFields() {
+            logger.setLevel(Level.TRACE);
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.abendOnline(PROGRAM, REASON, TERMINAL_MESSAGE));
 
-            assertThat(capturedLines()).noneMatch(line -> line.contains("abendContext="));
+            assertThat(capturedErrorLine())
+                    .isEqualTo(ABENDING_PROGRAM + " abendCode=" + ONLINE_CODE
+                            + " culprit=" + PROGRAM + " reason=" + REASON);
+        }
+
+        @Test
+        @DisplayName("the image itself is not removed from the exception, only from the log: it is the "
+                + "legacy area's renderer and belongs on the value object")
+        void theImageRemainsAvailableOnTheException() {
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.abendOnline(PROGRAM, REASON, TERMINAL_MESSAGE))
+                    .satisfies(abend -> assertThat(abend.toFixedWidthContext())
+                            .hasSize(CONTEXT_WIDTH)
+                            .contains(TERMINAL_MESSAGE));
         }
 
         @Test
@@ -691,6 +705,122 @@ class AbendServiceBoundaryTest {
                             .isEqualTo("FILE STATUS " + STATUS_PERMANENT_ERROR));
 
             assertThat(capturedErrorLine()).contains(" statusName=PERMANENT_ERROR");
+        }
+    }
+    /**
+     * How one field of the record is rendered, now that a caller can influence one of them.
+     *
+     * <h2>Why this became necessary</h2>
+     *
+     * <p>Every value that reached this record used to be a literal or a two-character status from a closed
+     * set, so the record's syntax was safe by provenance. That stopped being true when the navigation abend
+     * was centralised here, because the culprit it names is a destination a caller nominated, bounded to the
+     * legacy field width. Eight characters is enough to attack a reader two ways: {@code route=CA} imitates
+     * a field of the record it sits in, and a separator inside the same eight characters ends the record
+     * early and presents the remainder as a second, invented entry.
+     *
+     * <p>Two things answer that, and this group asserts both. The one site whose culprit is caller-derived
+     * publishes a description of it rather than the value, through
+     * {@link AbendService#onlineAbendWithDescribedCulprit}. And the record's own rendering refuses either
+     * dangerous shape outright, so the guarantee does not rest on every future caller of this class
+     * remembering the rule. A value this module authored is unaffected, which is why every other assertion
+     * in this class reads exactly as it did before.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-312.
+     */
+    @Nested
+    @DisplayName("a field of the record that a caller could influence")
+    class FieldRendering {
+
+        /** A culprit that would imitate one of the record's own fields. */
+        private static final String FORGING_CULPRIT = "route=CA";
+
+        /**
+         * A culprit that would end the record early and invent a second entry.
+         *
+         * <p>Eight characters, not nine: the legacy culprit field is {@code PIC X(8)} and the exception
+         * refuses an over-length value outright, so a longer probe would be testing that refusal instead of
+         * testing this rendering.
+         */
+        private static final String SPLITTING_CULPRIT = "A\r\nFORGE";
+
+        @Test
+        @DisplayName("a value carrying an equals sign is replaced by its length, because eight characters "
+                + "is enough to imitate a field of the record it appears in")
+        void aForgingValueIsReplacedByItsLength() {
+            AbendException failure = AbendService.onlineAbend(FORGING_CULPRIT, REASON, "MESSAGE");
+
+            assertThat(capturedErrorLine())
+                    .isEqualTo(ABENDING_PROGRAM + " abendCode=" + ONLINE_CODE
+                            + " culprit=<not a plain field: length " + FORGING_CULPRIT.length() + ">"
+                            + " reason=" + REASON);
+            assertThat(failure.culprit())
+                    .as("the value still travels on the exception, where it is data and not syntax")
+                    .isEqualTo(FORGING_CULPRIT);
+        }
+
+        @Test
+        @DisplayName("a value carrying a record separator is replaced too, so one emission cannot be read "
+                + "as two entries")
+        void aSplittingValueIsReplaced() {
+            AbendService.onlineAbend(SPLITTING_CULPRIT, REASON, "MESSAGE");
+
+            final String record = capturedErrorLine();
+
+            assertThat(record)
+                    .doesNotContain("\r")
+                    .doesNotContain("\n")
+                    .doesNotContain("FORGE")
+                    .contains("culprit=<not a plain field: length " + SPLITTING_CULPRIT.length() + ">");
+        }
+
+        @Test
+        @DisplayName("every other field is rendered the same way, so no field of the record is the weak one")
+        void everyFieldIsRenderedTheSameWay() {
+            AbendService.onlineAbend(PROGRAM, REASON, "MESSAGE", "op=forged", "resource\u0007bell");
+
+            assertThat(capturedErrorLine())
+                    .contains(" operation=<not a plain field: length 9>")
+                    .contains(" resource=<not a plain field: length 13>")
+                    .doesNotContain("op=forged")
+                    .doesNotContain("\u0007");
+        }
+
+        @Test
+        @DisplayName("a value this module authored passes through byte for byte, which is why the rule costs "
+                + "nothing on every other path")
+        void anAuthoredValuePassesThroughUnchanged() {
+            AbendService.onlineAbend(PROGRAM, REASON, "MESSAGE", "READ NEXT", "ACCTFILE");
+
+            assertThat(capturedErrorLine())
+                    .isEqualTo(ABENDING_PROGRAM + " abendCode=" + ONLINE_CODE + " culprit=" + PROGRAM
+                            + " reason=" + REASON + " operation=READ NEXT resource=ACCTFILE");
+        }
+
+        @Test
+        @DisplayName("the described-culprit form names the description in the record and the value on the "
+                + "exception, which is the whole reason it exists")
+        void theDescribedCulpritFormSeparatesTheTwo() {
+            AbendException failure = AbendService.onlineAbendWithDescribedCulprit("COZZZZZZ",
+                    "<unrecognised, length 8>", REASON, "MESSAGE", "XCTL RULE back-navigation");
+
+            assertThat(capturedErrorLine())
+                    .isEqualTo(ABENDING_PROGRAM + " abendCode=" + ONLINE_CODE
+                            + " culprit=<unrecognised, length 8> reason=" + REASON
+                            + " operation=XCTL RULE back-navigation");
+            assertThat(failure.culprit()).isEqualTo("COZZZZZZ");
+        }
+
+        @Test
+        @DisplayName("one record, at error level, whatever the field held: a refused field changes what is "
+                + "written and not how much")
+        void oneRecordWhateverTheFieldHeld() {
+            logger.setLevel(Level.TRACE);
+
+            AbendService.onlineAbend(SPLITTING_CULPRIT, REASON, "MESSAGE");
+
+            assertThat(capturedLines()).hasSize(1);
+            assertThat(appender.list.getFirst().getLevel()).isEqualTo(Level.ERROR);
         }
     }
 }

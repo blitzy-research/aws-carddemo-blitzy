@@ -37,15 +37,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
-import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.orm.jpa.EntityManagerHolder;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.interceptor.MatchAlwaysTransactionAttributeSource;
-import org.springframework.transaction.interceptor.TransactionInterceptor;
-import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
@@ -203,46 +198,6 @@ final class RecordWriterTest {
             Mockito.verify(entityManager).flush();
             Mockito.verify(entityManager, Mockito.never()).persist(Mockito.any());
             Mockito.verify(entityManager, Mockito.never()).merge(Mockito.any());
-        }
-    }
-
-    @Nested
-    @DisplayName("markRollbackOnly - declaring the unit of work unusable")
-    final class MarkRollbackOnly {
-
-        @Test
-        @DisplayName("declares the rollback on the unit of work actually in progress")
-        void declaresTheRollbackOnTheUnitOfWorkInProgress() {
-            // A real transaction interceptor around a real proxy, because the declaration is made against
-            // the status the interceptor bound and nothing else can bind one. The manager is a double so
-            // that no database is involved; the status it hands back is a real one, and whether the
-            // rollback reached it is exactly what this asserts.
-            final SimpleTransactionStatus status = new SimpleTransactionStatus();
-            final PlatformTransactionManager manager = Mockito.mock(PlatformTransactionManager.class);
-            Mockito.when(manager.getTransaction(Mockito.any())).thenReturn(status);
-
-            final ProxyFactory factory = new ProxyFactory((Runnable) writer::markRollbackOnly);
-            final TransactionInterceptor interceptor = new TransactionInterceptor();
-            interceptor.setTransactionManager(manager);
-            interceptor.setTransactionAttributeSource(
-                    new MatchAlwaysTransactionAttributeSource());
-            factory.addAdvice(interceptor);
-
-            ((Runnable) factory.getProxy()).run();
-
-            assertThat(status.isRollbackOnly())
-                    .as("the arm's declaration must reach the status the boundary will read at commit")
-                    .isTrue();
-        }
-
-        @Test
-        @DisplayName("outside a unit of work it records the intent instead of failing the arm")
-        void outsideAUnitOfWorkItRecordsTheIntent() {
-            // Every arm that needs this is a failure arm, and a unit test exercises those arms with no
-            // transaction at all. Raising here would turn the arm's own outcome into a test failure.
-            writer.markRollbackOnly();
-
-            Mockito.verifyNoInteractions(entityManager);
         }
     }
 

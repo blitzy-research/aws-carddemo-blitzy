@@ -161,21 +161,30 @@ spring:
   # skipped in silence against a database that already holds objects.
   flyway:
     enabled: true
-    # THE ONE MIGRATION LOCATION, SHARED BY EVERY PROFILE. All four scripts are physically flat in
-    # this single directory - V1__create_schema.sql, V2__create_indexes.sql,
-    # V3__seed_reference_data.sql and V4__seed_user_security.sql - and no child directory exists or
-    # may be created.
+    # THE SCHEMA LOCATION ALONE, WHICH IS THE PRODUCTION POSTURE AND WHAT A PROFILE THAT STAYS SILENT
+    # ABOUT MIGRATIONS INHERITS. The delivered scripts sit in two sibling directories whose shared
+    # parent, classpath:db/migration, holds no script at all:
     #
-    # A directory-scoped location therefore cannot separate the seeds from the schema, which is why
-    # the separation is expressed as a VERSION CEILING rather than as a location list. See
-    # docs/decision-log.md DL-127.
-    locations: classpath:db/migration
-    # THE CEILING IS THE CONTROL. This is the production posture, and it is what a profile that stays
-    # silent about migrations inherits: migration stops after V2, so the reference-data seed and the
-    # sign-on-identity seed - numbered 3 and 4 - are never executed. FlywayConfig re-asserts the same
-    # value under the production profile and refuses to start a production deployment whose bound
-    # ceiling reaches version 3 or beyond.
-    target: "2"
+    #   classpath:db/migration/schema  V1__create_schema.sql, V2__create_indexes.sql
+    #   classpath:db/migration/seed    V3__seed_reference_data.sql, V4__seed_user_security.sql
+    #
+    # THE LOCATION LIST IS THE SEPARATION. A location a profile never lists is not a value an operator
+    # can widen, so the seed scripts do not appear in any state at all under this posture - not
+    # applied, not pending, not resolved. Only the local and test overlays add the seed location.
+    #
+    # NEVER DECLARE THE PARENT classpath:db/migration HERE OR ANYWHERE. A Flyway location is scanned
+    # RECURSIVELY, so the parent reaches both children; FlywayConfig refuses it under every profile,
+    # and additionally because Flyway records a script name relative to its location, so the parent
+    # would write schema/V1__create_schema.sql into the history where the bring-up check expects
+    # V1__create_schema.sql. See docs/decision-log.md DL-298.
+    locations: classpath:db/migration/schema
+    # NO VERSION CEILING, AND THAT IS DELIBERATE. This key used to be pinned at "2" as the production
+    # control. It held the seeds out and it also froze the schema: a V5 schema script would never have
+    # been applied and the migration would still have reported success, and FlywayConfig refused every
+    # other value so the pin could not be raised without editing code. The separation is the location
+    # list now, so a number here has no work to do and FlywayConfig REFUSES one under the production
+    # profile rather than leaving it as a trap. See docs/decision-log.md DL-298.
+    target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
@@ -377,6 +386,47 @@ logging:
     # than OFF because the same class reports genuine launch failures.
     org.springframework.batch.core.launch.support.SimpleJobOperator: WARN
     org.flywaydb: INFO
+    # The migration tool's own executor, raised for the same reason and by the same mechanism as the job
+    # launcher above. At INFO that ONE class announces three lines before any migration runs - "Database:
+    # <jdbc url> (<product version>)", "Driver: <driver and version>" and "Database Type: <type>" - so the
+    # host, the port, the database name and the exact server and driver versions of the production estate
+    # are written to a stream that leaves the process. Credentials are already redacted from that URL, which
+    # is precisely why the line reads as safe and is not: topology is the reconnaissance a reader needs
+    # before a credential is of any use, and a version pair is a CVE lookup. Nothing is lost by the raise
+    # and this is a CROSS FILE CONTRACT, so the loss would have mattered: local validation reads this log to
+    # confirm that all four delivered migrations were applied and that the schema reached its highest
+    # version, and every one of those lines comes from a DIFFERENT category
+    # (org.flywaydb.core.internal.command.DbMigrate), which stays at INFO through the parent above. In
+    # addition config/MigrationVersionRecordCallback now writes an application-owned record of each applied
+    # version and of the version reached, so the evidence no longer depends on a third party's log text at
+    # all. WARN rather than OFF because the same class reports a failed migration operation.
+    # Measured against Flyway 11.7.2. See docs/decision-log.md DL-311.
+    org.flywaydb.core.FlywayExecutor: WARN
+    # The queue client's two send templates, and these are pinned OFF rather than raised. The estate's one
+    # online-to-batch bridge publishes eighty-character job-control cards, and BOTH classes format the whole
+    # outbound message - payload and headers - into their own log text: at TRACE and DEBUG on the way out
+    # and on success, and at ERROR together with the raw provider exception and the resolved endpoint when a
+    # send fails. A card image is the submitted job, and the endpoint is the destination this module is
+    # otherwise careful never to print. There is no level that keeps the failure line and drops the payload,
+    # because they are the same statement, so the category goes off entirely and the module's own
+    # boundary diagnostic is the record: service/JobSubmissionService reports a refused publish with the
+    # card ORDINAL and no card text, and carddemo.job.submission.publish counts the outcome. Pinned in the
+    # shared baseline so no overlay - including the local one, which raises whole trees to DEBUG - can
+    # reopen them. Measured against Spring Cloud AWS 3.4.2. See docs/decision-log.md DL-311.
+    io.awspring.cloud.sqs.operations.AbstractMessagingTemplate: "OFF"
+    io.awspring.cloud.sqs.operations.SqsTemplate: "OFF"
+    # The trace exporter's two transports, pinned OFF for a different reason: what they log is written by
+    # somebody else. On a failed export both compose their text from the COLLECTOR's response - the HTTP
+    # status line and the response body verbatim, or the transport exception's own message - and the trace
+    # collector is a remote party this module authenticates but does not author. That text lands in the
+    # machine-facing JSON appender, so a compromised or merely misconfigured collector chooses content in
+    # this deployment's log stream. Export failures stay visible without it: config/ObservabilityConfig
+    # counts every failed export batch on carddemo.tracing.export, tagged by outcome, which is a bounded
+    # signal this module composes. Both categories reach logback through the JUL bridge the framework
+    # installs, so they are named here in the same list as every other level. Measured against
+    # OpenTelemetry 1.49.0. See docs/decision-log.md DL-311.
+    io.opentelemetry.exporter.internal.http.HttpExporter: "OFF"
+    io.opentelemetry.exporter.internal.grpc.GrpcExporter: "OFF"
 
 # Module-owned settings. The queue name is the one AWS resource name prescribed by the migration
 # plan; the bucket, message group and topic are this module's choices. Every operational artefact must
@@ -404,12 +454,21 @@ carddemo:
     # generations themselves stay owner-only either way.
     staging-directory: ${CARDDEMO_BATCH_STAGING_DIRECTORY:${java.io.tmpdir}/carddemo-batch-staging}
   aws:
-    # THE SIX KEYS UNDER THIS PREFIX ARE THE MIGRATION PLAN'S OWN CONTRACT, and com.carddemo.config
-    # AwsProperties binds exactly these and nothing else: region, endpoint-override,
+    # THE SIX KEYS com.carddemo.config AwsProperties BINDS UNDER THIS PREFIX ARE THE MIGRATION PLAN'S
+    # OWN CONTRACT, and that type binds exactly these and nothing else: region, endpoint-override,
     # s3.batch-staging-bucket, sqs.job-queue, sqs.message-group-id and sns.job-notification-topic.
     # The agreement between this document and its binder proves nothing on its own, because one edit
     # can move both; the plan is what states the key paths, and a test asserts that no key outside this
     # set is bound.
+    #
+    # ONE FURTHER KEY EXISTS UNDER THE PREFIX AND IS NOT BOUND BY THAT TYPE: expected-account-id,
+    # which the production overlay requires and com.carddemo.config AwsResourceTrustVerifier reads by
+    # key. It is deliberately not a component of the settings type - it is meaningless outside
+    # production, where it has no default, and a component would make every other profile declare it
+    # or blank it. The sentence above is therefore about what AwsProperties binds and not about how
+    # many keys the prefix carries, and the two are held apart on purpose: the emulator bootstrap's
+    # key table was allowed to name two withdrawn spellings for exactly as long as no test asked. See
+    # docs/decision-log.md DL-302 for the trust check and DL-314 for the key table.
     #
     # The region, stated once per profile and derived from here by the AWS integration's own
     # spring.cloud.aws.region.static above rather than restated there. Every resource below is

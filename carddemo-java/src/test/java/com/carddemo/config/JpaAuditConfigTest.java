@@ -27,8 +27,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import javax.sql.DataSource;
-
 import jakarta.persistence.EntityManagerFactory;
 
 import org.junit.jupiter.api.DisplayName;
@@ -85,7 +83,7 @@ class JpaAuditConfigTest {
 
     private static final String EXPECTED_JDBC_TIME_ZONE = "UTC";
 
-    private static final String MIGRATION_NAME = "db/migration/V1__create_schema.sql";
+    private static final String MIGRATION_NAME = "db/migration/schema/V1__create_schema.sql";
 
     private static final List<String> FORBIDDEN_AUDIT_COLUMNS =
             List.of("created_at", "created_by", "modified_at", "modified_by", "last_updated");
@@ -215,7 +213,7 @@ class JpaAuditConfigTest {
         void contributesNoPersistenceInfrastructure() {
             runner.run(context -> {
                 assertThat(context).hasNotFailed();
-                assertThat(context).doesNotHaveBean(DataSource.class);
+                assertThat(context).doesNotHaveBean(javax.sql.DataSource.class);
                 assertThat(context).doesNotHaveBean(EntityManagerFactory.class);
                 assertThat(context).doesNotHaveBean(LocalContainerEntityManagerFactoryBean.class);
                 assertThat(context).doesNotHaveBean(JpaVendorAdapter.class);
@@ -232,7 +230,7 @@ class JpaAuditConfigTest {
                 assertThat(context)
                         .as("an entity manager appearing here would mean an entity scan had been added")
                         .doesNotHaveBean(EntityManagerFactory.class);
-                assertThat(context.getBeanNamesForType(DataSource.class))
+                assertThat(context.getBeanNamesForType(javax.sql.DataSource.class))
                         .as("a repository factory cannot be wired without a data source, so the absence "
                                 + "of one is the behavioural proof")
                         .isEmpty();

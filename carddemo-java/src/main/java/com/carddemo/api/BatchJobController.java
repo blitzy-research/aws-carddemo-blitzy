@@ -25,6 +25,7 @@ import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.BatchLaunchGateway.LaunchRejectedException;
 import com.carddemo.service.BatchLaunchGateway.RejectionReason;
 import com.carddemo.service.BatchJobLaunchService;
+import com.carddemo.util.ApiRoutePaths;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -45,7 +46,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -124,7 +124,7 @@ import org.springframework.web.bind.annotation.RestController;
  * deliberately no run-everything operation, no pipeline operation, no next-job operation, no schedule and
  * no bulk launch; adding one would invent an ordering guarantee the estate never made.
  *
- * <p>{@link BatchJobCatalog#DAILY_TRANSACTION_READ_JOB_NAME} needs its own sentence. It names the job
+ * <p>{@link BatchJobCatalog#DAILY_TRANSACTION_READ_JOB} needs its own sentence. It names the job
  * that translates a complete program that <em>no</em> job member, cataloged procedure or online resource
  * definition invokes. It is registered and it is launchable here by its stable name, which is how it
  * stays exercisable rather than becoming dead code; it is <strong>not</strong> part of any default
@@ -208,26 +208,28 @@ public final class BatchJobController {
      * Path prefix the whole batch-control surface lives beneath, and the address the security chain gates
      * to the administrative authority.
      *
-     * <p>Declared here rather than in the configuration because a route belongs to the controller that
-     * claims it - the same arrangement the sign-on route uses, where the controller owns the literal and
-     * {@code config/SecurityConfig} reads it. The rule and the mapping therefore cannot name different
-     * addresses, and the direction that drift would fail in is the dangerous one: a mapping moved out from
-     * under the gated prefix would still answer requests, but would answer them under the chain's closing
-     * rule and therefore to any signed-on caller.
+     * <p>Read from {@link ApiRoutePaths} rather than written here, exactly as every other controller of
+     * this package reads its own address from it. The literal used to be spelled out in this file, which
+     * made this the one route in the module with two independent spellings - one the mapping used and one
+     * the security chain used - and the direction that drift fails in is the dangerous one: a mapping moved
+     * out from under the gated prefix would still answer requests, but would answer them under the chain's
+     * closing rule and therefore to any signed-on caller. With one authority the mapping and the rule
+     * cannot name different addresses at all.
      *
      * <p>It sits outside the administrative prefix on purpose - see the class documentation - and it
      * shadows neither the management base path nor the interface-description path, both of which the
      * security chain treats separately.
      */
-    public static final String BATCH_CONTROL_PATH_PREFIX = "/api/batch";
+    public static final String BATCH_CONTROL_PATH_PREFIX = ApiRoutePaths.BATCH_CONTROL_PATH_PREFIX;
 
     /**
      * The base address of the batch control surface.
      *
-     * <p>Assembled from {@link #BATCH_CONTROL_PATH_PREFIX} so that every operation this class maps is
-     * beneath the prefix the chain gates, by construction rather than by inspection.
+     * <p>Read from the same authority, which assembles it from {@link #BATCH_CONTROL_PATH_PREFIX}, so
+     * every operation this class maps is beneath the prefix the chain gates by construction rather than by
+     * inspection.
      */
-    public static final String BATCH_JOBS_PATH = BATCH_CONTROL_PATH_PREFIX + "/jobs";
+    public static final String BATCH_JOBS_PATH = ApiRoutePaths.BATCH_JOBS_PATH;
 
     /** The launch operation, addressed by the stable job name. */
     public static final String LAUNCH_SUBPATH = "/{jobName}/launch";
@@ -251,7 +253,7 @@ public final class BatchJobController {
      * to it or take from it.
      *
      * <p>The eight operational jobs are independently launchable in any order the operator chooses.
-     * {@link BatchJobCatalog#DAILY_TRANSACTION_READ_JOB_NAME} is the ninth and is the recorded orphan
+     * {@link BatchJobCatalog#DAILY_TRANSACTION_READ_JOB} is the ninth and is the recorded orphan
      * described in the class documentation: launchable by name, and part of no sequence.
      */
     public static final Set<String> LAUNCHABLE_JOB_NAMES = BatchJobCatalog.LAUNCHABLE_JOB_NAMES;
@@ -331,9 +333,6 @@ public final class BatchJobController {
     /** Outcome tag: the addressed execution was found and reported. */
     private static final String OUTCOME_REPORTED = "reported";
 
-    /** Outcome tag: the request named a parameter the addressed job does not declare. */
-    private static final String OUTCOME_REJECTED = "rejected";
-
     /** Record type reported when a launch names a job outside the closed inventory. */
     private static final String RECORD_TYPE_BATCH_JOB = "BatchJob";
 
@@ -397,7 +396,17 @@ public final class BatchJobController {
     // ==================================================================================================
 
     /**
-     * Starts one allow-listed job and answers with the execution the framework assigned.
+     * Starts one allow-listed job and answers with the execution the framework assigned, without waiting
+     * for the job to finish.
+     *
+     * <p><strong>The response is the receipt for a run that has begun, not the report of one that has
+     * ended.</strong> The launch boundary reserves the execution synchronously - so an unrecognised name, a
+     * refused parameter and a job already running are all answered here and now - and then runs the job on
+     * its own bounded workers. This method therefore returns as soon as the identifier exists, which is
+     * what makes the identifier useful: the execution surface can be asked about a run while it is still
+     * running. It is also why a job that reads a hundred-thousand-record dataset no longer holds a request
+     * thread, and why no client or proxy read timeout can turn a long successful run into an apparent
+     * failure.
      *
      * <p>The order of the five steps is the whole of the method and each step is load-bearing. The name is
      * checked against the closed inventory first, so an unrecognised name reaches no framework call and
@@ -415,42 +424,38 @@ public final class BatchJobController {
      * entry a string, every entry identifying, so the type is fixed here and the identifying flag is the
      * server's decision and not the caller's.
      *
-     * <p><strong>Nothing is added to the parameters and nothing unknown is passed on.</strong> The same
-     * name with the same values is the same job identity, so the framework answers a repeat out of its own
-     * metadata rather than starting a second run - and because a name outside the job's schema is refused
-     * rather than forwarded, a caller cannot manufacture a distinguishing parameter to defeat that. Which
-     * values each accepted parameter must carry is still decided by the job's own validator during the
-     * launch and is deliberately not restated here; this boundary decides only which names exist and that a
-     * value is printable, comma-free single-byte text within {@link #MAX_PARAMETER_VALUE_LENGTH}.
+     * <p><strong>Nothing is added to the parameters and nothing unknown is passed on, and a repeat starts a
+     * second run on purpose.</strong> This boundary appends no timestamp, no unique value and no run
+     * counter, and because a name outside the job's schema is refused rather than forwarded, a caller cannot
+     * manufacture a distinguishing parameter either. The one identifying value that separates one launch
+     * from the next is minted on the server, below the service, by the shared parameter incrementer every
+     * job configuration attaches - so the same name with the same values starts a second, distinct instance
+     * rather than being answered out of the framework's metadata. That is the faithful reading: a job member
+     * resubmitted with an identical parameter set simply ran again on the estate, and refusing the second
+     * submission would be a behavioural regression presented as an idempotency guarantee. What is refused is
+     * an <em>overlapping</em> run of the same job. Which values each accepted parameter must carry is still
+     * decided by the job's own validator during the launch and is deliberately not restated here; this
+     * boundary decides only which names exist and that a value is printable, comma-free single-byte text
+     * within {@link #MAX_PARAMETER_VALUE_LENGTH}. See {@code docs/decision-log.md} entry DL-310.
      *
      * @param jobName       the stable job name, which must be one of {@link #LAUNCHABLE_JOB_NAMES}
      * @param jobParameters the parameters to launch with, bound from the request's query parameters; each
      *                      name must appear in {@link #ACCEPTED_JOB_PARAMETER_NAMES} for the addressed job
      *                      and each value is carried through unchanged once screened. An absent or empty
      *                      map launches the job with no parameters at all
-     * @return {@code 200} carrying the execution identifier and the stable job name
+     * @return {@code 200} carrying the identifier of the execution that was started and the stable job
+     *         name; the run is normally still in progress when this is written
      * @throws RecordNotFoundException if the name is outside the closed inventory
      * @throws ValidationException     if a supplied parameter name is not one the addressed job reads, if a
-     *                                 value is refused on its shape, if the framework declined the launch
-     *                                 because that job identity has already been used or is already
-     *                                 running, or because the job's own validator rejected the parameters
+     *                                 value is refused on its shape, or if the launch was declined because
+     *                                 an execution of that job is already active, because the generated
+     *                                 instance already exists, or because the job's own validator rejected
+     *                                 the parameters
      * @throws IllegalStateException   if an allow-listed name is not registered, which is a wiring fault
      *                                 rather than a caller fault
      */
     @PostMapping(path = LAUNCH_SUBPATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Launch one batch job on demand",
-            description = "Starts one of the nine registered jobs from a closed typed parameter body. "
-                    + "The batch-control surface requires administrative authority.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200",
-                description = "The job was started and the execution identifier is returned.")})
-    public ResponseEntity<BatchJobLaunchResponse> launchTypedJob(
-            @PathVariable(name = JOB_NAME_PATH_VARIABLE) final String jobName,
-            @Valid @RequestBody(required = false) final BatchJobLaunchRequest launchRequest) {
-        return launchJob(jobName, parametersOf(launchRequest));
-    }
-
     @Operation(summary = "Launch one batch job on demand",
             description = "Starts one of the nine registered jobs by its stable name. Nothing runs when "
                     + "the application starts, so this is the only way a job begins. Each launch is "
@@ -462,11 +467,14 @@ public final class BatchJobController {
                     + "and are validated by the job itself. The jobs are independent - there is no "
                     + "run-everything operation and no ordering imposed here. Requires the administrative "
                     + "authority: starting a job is an operational act no legacy transaction exposed, and "
-                    + "one of the nine clears the transaction master.")
+                    + "one of the nine clears the transaction master. The reply is a receipt rather than "
+                    + "a report: it is written as soon as the execution has been reserved and handed to "
+                    + "the bounded launch workers, so the run is normally still in progress.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The job was started. Carries the execution identifier to ask after and "
-                        + "the stable job name it was started under."),
+                        + "the stable job name it was started under. The run is normally still in "
+                        + "progress, so the execution surface is where its outcome is read."),
         @ApiResponse(responseCode = "400",
                 description = "A parameter name is not one this job reads, a value was refused on its "
                         + "shape, the job refused the parameters supplied, or this job has already been "
@@ -478,9 +486,28 @@ public final class BatchJobController {
                         + "authority this surface requires."),
         @ApiResponse(responseCode = "404",
                 description = "The name is not one of the nine jobs this surface will start.")})
-    public ResponseEntity<BatchJobLaunchResponse> launchJob(
+    public ResponseEntity<BatchJobLaunchResponse> launchTypedJob(
             @PathVariable(name = JOB_NAME_PATH_VARIABLE) final String jobName,
-            @RequestParam final Map<String, String> jobParameters) {
+            @Valid @RequestBody(required = false) final BatchJobLaunchRequest launchRequest) {
+        return launchJob(jobName, parametersOf(launchRequest));
+    }
+
+    /**
+     * The launch itself, shared by the mapped handler above and exercised directly by its unit tests.
+     *
+     * <p>Not a request handler: it carries no mapping, so it publishes no operation and binds no request.
+     * It used to carry a copy of the operation description and the parameter-binding annotations, both of
+     * which were inert - the framework maps only annotated <em>mapped</em> methods and the interface
+     * description is generated only from those - so the richer of the two descriptions was the one that
+     * was never published. That description now sits on the mapped handler, which is what a reader of the
+     * interface actually receives, and this method carries none.
+     *
+     * @param  jobName       the stable job name, already screened by the caller
+     * @param  jobParameters the parameters to launch with, already screened by the caller
+     * @return {@code 200} carrying the execution identifier and the stable job name
+     */
+    public ResponseEntity<BatchJobLaunchResponse> launchJob(final String jobName,
+            final Map<String, String> jobParameters) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
 
         if (!this.batchJobLaunchService.launchable(jobName)) {
@@ -510,6 +537,9 @@ public final class BatchJobController {
 
         recordLaunch(sample, stableJobName, OUTCOME_LAUNCHED);
         LOG.info("Batch job launched: job={} executionId={}", stableJobName, executionId);
+        // The timer therefore measures the launch, not the job. That is the intended reading: this
+        // boundary's own latency is what an operator can act on, and a job's duration is a step-level
+        // figure the batch tier records against the execution.
 
         return ResponseEntity.ok(new BatchJobLaunchResponse(executionId, stableJobName));
     }
@@ -534,16 +564,6 @@ public final class BatchJobController {
      */
     @GetMapping(path = EXECUTION_SUBPATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Report one batch job execution",
-            description = "Reports the stable job name, batch status and exit code for one execution.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200",
-                description = "The execution was found and its bounded status is returned.")})
-    public ResponseEntity<BatchJobExecutionResponse> readTypedJobExecution(
-            @PathVariable(name = EXECUTION_ID_PATH_VARIABLE) final long executionId) {
-        return readJobExecution(executionId);
-    }
-
-    @Operation(summary = "Report one batch job execution",
             description = "Reads one execution of one of the nine registered jobs out of the framework's "
                     + "own metadata, which is the single source of truth for what ran. Answers the "
                     + "execution identifier, the stable job name, the batch status and the exit code, and "
@@ -566,8 +586,24 @@ public final class BatchJobController {
         @ApiResponse(responseCode = "404",
                 description = "No such execution is held, or it belongs to a job this surface does not "
                         + "own.")})
-    public ResponseEntity<BatchJobExecutionResponse> readJobExecution(
+    public ResponseEntity<BatchJobExecutionResponse> readTypedJobExecution(
             @PathVariable(name = EXECUTION_ID_PATH_VARIABLE) final long executionId) {
+        return readJobExecution(executionId);
+    }
+
+    /**
+     * The execution read itself, shared by the mapped handler above and exercised directly by its unit
+     * tests.
+     *
+     * <p>Not a request handler, for the reason given on {@link #launchJob(String, java.util.Map)}: its
+     * operation description and parameter binding were inert and the description has moved to the mapped
+     * handler.
+     *
+     * @param  executionId the execution identifier, already bound by the caller
+     * @return {@code 200} carrying the execution identifier, the stable job name, the batch status and
+     *         the exit code
+     */
+    public ResponseEntity<BatchJobExecutionResponse> readJobExecution(final long executionId) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
 
         final BatchJobLaunchService.JobExecutionReport report =
@@ -590,6 +626,12 @@ public final class BatchJobController {
     /**
      * Projects the typed transport request onto the service's neutral name/value boundary.
      *
+     * <p>The four names come from {@link BatchJobCatalog}, which is the same authority the screening a few
+     * lines above reads and the same one each job's validator reads. They were spelled out here as literals,
+     * which put a fifth independent copy of each name in the module: a name changed in the catalogue would
+     * have left this projection quietly emitting the old spelling, and the screening - reading the
+     * catalogue - would then have refused the parameter the typed body had just supplied.
+     *
      * @param request typed request, or {@code null} for a launch with no parameters
      * @return only supplied parameter names and their unmodified values
      */
@@ -598,10 +640,12 @@ public final class BatchJobController {
             return Map.of();
         }
         final Map<String, String> parameters = new HashMap<>();
-        putIfPresent(parameters, "interestParmDate", request.interestParmDate());
-        putIfPresent(parameters, "reportStartDate", request.reportStartDate());
-        putIfPresent(parameters, "reportEndDate", request.reportEndDate());
-        putIfPresent(parameters, "fileProbeMode", request.fileProbeMode());
+        putIfPresent(parameters, BatchJobCatalog.INTEREST_PARM_DATE_PARAMETER,
+                request.interestParmDate());
+        putIfPresent(parameters, BatchJobCatalog.REPORT_START_DATE_PARAMETER,
+                request.reportStartDate());
+        putIfPresent(parameters, BatchJobCatalog.REPORT_END_DATE_PARAMETER, request.reportEndDate());
+        putIfPresent(parameters, BatchJobCatalog.FILE_PROBE_MODE_PARAMETER, request.fileProbeMode());
         return Map.copyOf(parameters);
     }
 

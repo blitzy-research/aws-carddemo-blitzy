@@ -66,6 +66,15 @@ import com.carddemo.support.AbstractPostgresIT;
 @DisplayName("Card browse: repository-side ordered first match and the keyset browse of the list screen")
 final class CardBrowseRepositoryIT extends AbstractPostgresIT {
 
+    /**
+     * The bound the two alternate-key finders now require.
+     *
+     * <p>Generous, because most specifications here measure what the finder returns rather than how much
+     * of it. The bound's own behaviour is measured separately, on a fixture that holds more rows than the
+     * bound admits.
+     */
+    private static final Limit ALTERNATE_KEY_ROWS = Limit.of(100);
+
     /** The screen row count of the card list, from its seven-occurrence row table. */
     private static final int SCREEN_ROWS = 7;
 
@@ -117,14 +126,14 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
             runner().run(context -> {
                 final CardRepository repository = context.getBean(CardRepository.class);
 
-                assertThat(repository.findByCardAcctId(SEEDED_ACCOUNT))
+                assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS))
                         .as("the seeded account owns exactly one card")
                         .extracting(Card::getCardNum)
                         .containsExactly(SEEDED_CARD);
                 try {
                     repository.saveAndFlush(reservedCard());
 
-                    final List<Card> matches = repository.findByCardAcctId(SEEDED_ACCOUNT);
+                    final List<Card> matches = repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS);
 
                     assertThat(matches)
                             .extracting(Card::getCardNum)
@@ -140,7 +149,7 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
                     repository.flush();
                 }
 
-                assertThat(repository.findByCardAcctId(SEEDED_ACCOUNT))
+                assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS))
                         .as("the one-to-one seed is restored")
                         .hasSize(1);
             });
@@ -153,7 +162,7 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
             runner().run(context -> {
                 final CardRepository repository = context.getBean(CardRepository.class);
 
-                assertThat(repository.findByCardAcctId("99999999999")).isEmpty();
+                assertThat(repository.findByCardAcctIdOrderByCardNumAsc("99999999999", ALTERNATE_KEY_ROWS)).isEmpty();
             });
         }
     }
@@ -277,7 +286,7 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
                             .as("with two cards on the account the ordered-first read still returns the "
                                     + "lowest base key, which is what the legacy keyed read returns")
                             .isEqualTo(SEEDED_CARD);
-                    assertThat(repository.findByCardAcctId(SEEDED_ACCOUNT))
+                    assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS))
                             .as("while the list form still exposes both, because the two answer "
                                     + "different questions")
                             .hasSize(2);
@@ -309,7 +318,7 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
                 final CardCrossReferenceRepository crossReferences =
                         context.getBean(CardCrossReferenceRepository.class);
 
-                assertThat(crossReferences.findByXrefAcctId(SEEDED_ACCOUNT))
+                assertThat(crossReferences.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS))
                         .extracting(CardCrossReference::getXrefCardNum)
                         .as("the seeded shape is one row per account")
                         .containsExactly(SEEDED_CARD);
@@ -319,7 +328,7 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
                             SEEDED_ACCOUNT));
 
                     final List<CardCrossReference> matches =
-                            crossReferences.findByXrefAcctId(SEEDED_ACCOUNT);
+                            crossReferences.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS);
 
                     assertThat(matches)
                             .extracting(CardCrossReference::getXrefCardNum)
@@ -348,7 +357,7 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
                     cards.flush();
                 }
 
-                assertThat(crossReferences.findByXrefAcctId(SEEDED_ACCOUNT))
+                assertThat(crossReferences.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS))
                         .as("the one-to-one seed is restored")
                         .hasSize(1);
             });
@@ -362,7 +371,7 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
                 final CardCrossReferenceRepository crossReferences =
                         context.getBean(CardCrossReferenceRepository.class);
 
-                assertThat(crossReferences.findByXrefAcctId("99999999999")).isEmpty();
+                assertThat(crossReferences.findByXrefAcctIdOrderByXrefCardNumAsc("99999999999", ALTERNATE_KEY_ROWS)).isEmpty();
                 assertThat(crossReferences.findFirstByXrefAcctIdOrderByXrefCardNumAsc("99999999999"))
                         .isEmpty();
             });

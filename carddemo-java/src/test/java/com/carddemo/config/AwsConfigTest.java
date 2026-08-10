@@ -54,6 +54,8 @@ import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.client.config.SdkAdvancedClientOption;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.retries.api.BackoffStrategy;
+import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.sns.SnsClient;
@@ -330,9 +332,12 @@ class AwsConfigTest {
     /**
      * Applies all three customizers, so one assertion can speak about all three clients.
      *
-     * <p>The queue customizer reads the builder's current override configuration before extending it,
-     * so a bare double would hand it {@code null}. Seeding an empty configuration lets the queue client
-     * be observed on the same terms as the other two.</p>
+     * <p>Every customizer reads the builder's current override configuration before extending it - the
+     * call budgets and the pinned retry strategy are written onto a copy of what the integration already
+     * applied - so a bare double would hand it {@code null}. Seeding an empty configuration on all three
+     * doubles lets each client be observed on the same terms, and it is deliberately not worked around
+     * inside the class under test: a null-tolerant branch there would be a branch no real builder can
+     * reach.</p>
      *
      * @param configuration the class under test
      * @param objectStore   a double for the object-store client builder
@@ -343,7 +348,11 @@ class AwsConfigTest {
             final S3ClientBuilder objectStore,
             final SqsAsyncClientBuilder queue,
             final SnsClientBuilder notifications) {
+        when(objectStore.overrideConfiguration())
+                .thenReturn(ClientOverrideConfiguration.builder().build());
         when(queue.overrideConfiguration()).thenReturn(ClientOverrideConfiguration.builder().build());
+        when(notifications.overrideConfiguration())
+                .thenReturn(ClientOverrideConfiguration.builder().build());
         configuration.batchStagingS3ClientCustomizer().customize(objectStore);
         configuration.singleAttemptSqsClientCustomizer().customize(queue);
         configuration.jobNotificationSnsClientCustomizer().customize(notifications);
@@ -427,6 +436,146 @@ class AwsConfigTest {
     }
 
     @Nested
+    @DisplayName("The call budgets and retry strategies the three clients are pinned to")
+    class ClientBudgetsAndRetryStrategies {
+
+        @Test
+        @DisplayName("bound every one of the three clients, so no provider call can occupy the "
+                + "resource it holds indefinitely")
+        void boundEveryClient() {
+            final ClientOverrideConfiguration objectStore = appliedToObjectStore();
+            final ClientOverrideConfiguration queue = appliedToQueue();
+            final ClientOverrideConfiguration notifications = appliedToNotifications();
+
+            assertThat(objectStore.apiCallTimeout())
+                    .as("an object-store call runs inside the generation publication lock, so an "
+                            + "unbounded one pins a connection and blocks every later publication of "
+                            + "its base")
+                    .contains(AwsConfig.OBJECT_STORE_CALL_BUDGET);
+            assertThat(objectStore.apiCallAttemptTimeout())
+                    .contains(AwsConfig.OBJECT_STORE_ATTEMPT_BUDGET);
+            assertThat(queue.apiCallTimeout())
+                    .as("a card publish holds a request thread and the submission lock every other "
+                            + "replica queues behind")
+                    .contains(AwsConfig.QUEUE_CALL_BUDGET);
+            assertThat(queue.apiCallAttemptTimeout())
+                    .contains(AwsConfig.QUEUE_ATTEMPT_BUDGET);
+            assertThat(notifications.apiCallTimeout())
+                    .as("a notification runs on the single-slot notifier, so an unbounded one stops "
+                            + "every subsequent completion notice")
+                    .contains(AwsConfig.NOTIFICATION_CALL_BUDGET);
+            assertThat(notifications.apiCallAttemptTimeout())
+                    .contains(AwsConfig.NOTIFICATION_ATTEMPT_BUDGET);
+        }
+
+        @Test
+        @DisplayName("keep every per-attempt budget at or below its own total, so the per-attempt "
+                + "figure is the one that binds an attempt")
+        void keepEveryAttemptBudgetWithinItsTotal() {
+            assertThat(AwsConfig.OBJECT_STORE_ATTEMPT_BUDGET)
+                    .isLessThanOrEqualTo(AwsConfig.OBJECT_STORE_CALL_BUDGET);
+            assertThat(AwsConfig.QUEUE_ATTEMPT_BUDGET)
+                    .isLessThanOrEqualTo(AwsConfig.QUEUE_CALL_BUDGET);
+            assertThat(AwsConfig.NOTIFICATION_ATTEMPT_BUDGET)
+                    .isLessThanOrEqualTo(AwsConfig.NOTIFICATION_CALL_BUDGET);
+            assertThat(Stream.of(AwsConfig.OBJECT_STORE_CALL_BUDGET,
+                            AwsConfig.OBJECT_STORE_ATTEMPT_BUDGET, AwsConfig.QUEUE_CALL_BUDGET,
+                            AwsConfig.QUEUE_ATTEMPT_BUDGET, AwsConfig.NOTIFICATION_CALL_BUDGET,
+                            AwsConfig.NOTIFICATION_ATTEMPT_BUDGET))
+                    .as("a zero or negative ceiling would refuse every call before it was made")
+                    .allSatisfy(budget -> assertThat(budget.isPositive()).isTrue());
+        }
+
+        @Test
+        @DisplayName("pin the object store to a bounded, deterministic, jitter-free schedule rather "
+                + "than to whichever retry mode the host environment resolves")
+        void pinTheObjectStoreSchedule() {
+            assertThat(appliedToObjectStore().retryStrategy())
+                    .as("an unpinned strategy is not a default, it is whichever mode AWS_RETRY_MODE, "
+                            + "the matching system property or the shared configuration file selects")
+                    .isPresent()
+                    .get()
+                    .extracting(RetryStrategy::maxAttempts)
+                    .isEqualTo(AwsConfig.OBJECT_STORE_MAX_ATTEMPTS);
+            assertThat(AwsConfig.OBJECT_STORE_MAX_ATTEMPTS)
+                    .as("the object store is the one client whose operations are safe to repeat, and "
+                            + "the repeat is deliberately small")
+                    .isGreaterThan(LEGACY_ATTEMPTS_PER_WRITE);
+            assertThat(BackoffStrategy.fixedDelayWithoutJitter(AwsConfig.OBJECT_STORE_RETRY_DELAY)
+                            .computeDelay(2))
+                    .as("jitter-free means two runs of the same failure wait the same time, which is "
+                            + "what lets the schedule be asserted rather than sampled")
+                    .isEqualTo(BackoffStrategy
+                            .fixedDelayWithoutJitter(AwsConfig.OBJECT_STORE_RETRY_DELAY)
+                            .computeDelay(2))
+                    .isEqualTo(AwsConfig.OBJECT_STORE_RETRY_DELAY);
+            assertThat(AwsConfig.OBJECT_STORE_THROTTLE_DELAY)
+                    .as("a throttled call is told to wait longer than a merely failed one")
+                    .isGreaterThan(AwsConfig.OBJECT_STORE_RETRY_DELAY);
+        }
+
+        @Test
+        @DisplayName("pin the notification client to one attempt, so an accepted-then-retried publish "
+                + "cannot deliver one job's completion notice twice")
+        void pinTheNotificationClientToOneAttempt() {
+            assertThat(appliedToNotifications().retryStrategy())
+                    .isPresent()
+                    .get()
+                    .extracting(RetryStrategy::maxAttempts)
+                    .as("a subscriber cannot tell a duplicated notice from a second run of the job")
+                    .isEqualTo(LEGACY_ATTEMPTS_PER_WRITE);
+        }
+
+        @Test
+        @DisplayName("are written onto the configuration the integration already applied, so nothing "
+                + "it established is discarded")
+        void extendRatherThanReplaceTheExistingConfiguration() {
+            final S3ClientBuilder builder = S3Client.builder()
+                    .overrideConfiguration(ClientOverrideConfiguration.builder()
+                            .putAdvancedOption(SdkAdvancedClientOption.USER_AGENT_PREFIX,
+                                    SEEDED_USER_AGENT)
+                            .build());
+
+            configuration().batchStagingS3ClientCustomizer().customize(builder);
+
+            final ClientOverrideConfiguration applied = builder.overrideConfiguration();
+            assertThat(applied.advancedOption(SdkAdvancedClientOption.USER_AGENT_PREFIX))
+                    .as("a customizer that built a fresh configuration would discard the client "
+                            + "identification and the observation wiring the integration installed, "
+                            + "while still satisfying every budget assertion above")
+                    .contains(SEEDED_USER_AGENT);
+            assertThat(applied.apiCallTimeout()).contains(AwsConfig.OBJECT_STORE_CALL_BUDGET);
+        }
+
+        /**
+         * @return the configuration the object-store customizer leaves on a real builder
+         */
+        private ClientOverrideConfiguration appliedToObjectStore() {
+            final S3ClientBuilder builder = S3Client.builder();
+            configuration().batchStagingS3ClientCustomizer().customize(builder);
+            return builder.overrideConfiguration();
+        }
+
+        /**
+         * @return the configuration the queue customizer leaves on a real builder
+         */
+        private ClientOverrideConfiguration appliedToQueue() {
+            final SqsAsyncClientBuilder builder = SqsAsyncClient.builder();
+            configuration().singleAttemptSqsClientCustomizer().customize(builder);
+            return builder.overrideConfiguration();
+        }
+
+        /**
+         * @return the configuration the notification customizer leaves on a real builder
+         */
+        private ClientOverrideConfiguration appliedToNotifications() {
+            final SnsClientBuilder builder = SnsClient.builder();
+            configuration().jobNotificationSnsClientCustomizer().customize(builder);
+            return builder.overrideConfiguration();
+        }
+    }
+
+    @Nested
     @DisplayName("The queue definition's five load-bearing attributes")
     class QueueDefinitionAttributes {
 
@@ -484,8 +633,8 @@ class AwsConfigTest {
         }
 
         @Test
-        @DisplayName("turn a refused publish into nothing fatal, because no interceptor is installed "
-                + "and no budget of any kind is set")
+        @DisplayName("turn a refused publish into nothing fatal, and turn an unanswered one into a "
+                + "refusal rather than an unbounded wait")
         void turnARefusedPublishIntoNothingFatal() {
             final SqsAsyncClientBuilder builder = SqsAsyncClient.builder();
 
@@ -498,14 +647,20 @@ class AwsConfigTest {
                             + "and logs; this class installs none")
                     .isEmpty();
             assertThat(applied.apiCallTimeout())
-                    .as("no call budget is set here, and the absence is the point: the legacy write "
-                            + "had none and nothing in this migration establishes one")
-                    .isEmpty();
+                    .as("a card publish holds a request thread and the database transaction carrying "
+                            + "the deployment-wide submission lock, so the whole call must be bounded: "
+                            + "a peer that answers a byte at a time is never inactive and would "
+                            + "otherwise never be abandoned")
+                    .isPresent();
             assertThat(applied.apiCallAttemptTimeout())
-                    .as("no per-attempt budget is set here either, for the same reason")
-                    .isEmpty();
+                    .as("the per-attempt budget bounds one request on the wire, which the total budget "
+                            + "does not; both are stated even though the queue makes one attempt")
+                    .isPresent();
+            assertThat(applied.apiCallAttemptTimeout().orElseThrow())
+                    .as("a per-attempt budget at or above the total would never be the binding one")
+                    .isLessThanOrEqualTo(applied.apiCallTimeout().orElseThrow());
             assertThat(applied.retryStrategy())
-                    .as("what the class does set is the single attempt, so a refusal stays a refusal "
+                    .as("what the class also sets is the single attempt, so a refusal stays a refusal "
                             + "rather than becoming a later success")
                     .isPresent();
         }

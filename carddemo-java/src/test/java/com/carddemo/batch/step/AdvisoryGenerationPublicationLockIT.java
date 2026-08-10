@@ -103,10 +103,14 @@ class AdvisoryGenerationPublicationLockIT extends AbstractPostgresIT {
                 witness.enter();
                 witness.leave();
             }));
-            assertThat(second.isDone()).isFalse();
-            // Give it real time to get it wrong. Without the lock this window is where the second
-            // publication ran its own list-sort-delete against a set the first was still changing.
-            Thread.sleep(750L);
+
+            // THE SECOND PUBLISHER IS OBSERVED WAITING ON THE SERVER, not merely given time to get it
+            // wrong. A sleep followed by "still unfinished" is satisfied by a thread the scheduler has not
+            // run, so it would pass on a loaded machine with the lock deleted - which is the whole defect
+            // this class exists to detect. PostgreSQL publishes the wait itself: a session blocked on an
+            // advisory lock holds an entry in pg_locks that is not granted, so the query below observes
+            // the contender at the exclusion rather than inferring it from elapsed time.
+            awaitAContenderBlockedOnAnAdvisoryLock();
             assertThat(witness.peakConcurrency()).as("both publications were inside the base at once")
                     .isEqualTo(1);
             assertThat(second.isDone()).as("the second publication entered while the base was held")
@@ -255,6 +259,62 @@ class AdvisoryGenerationPublicationLockIT extends AbstractPostgresIT {
                 jdbcUrl(), databaseUser(), databasePassword());
         dataSource.setDriverClassName(driverClassName());
         return new AdvisoryGenerationPublicationLock(new JdbcTemplate(dataSource));
+    }
+
+    /**
+     * Waits until the server reports a session blocked on an advisory lock, and fails if none appears.
+     *
+     * <p><strong>Why this replaces a sleep.</strong> The property under test is that a second publisher
+     * cannot enter a held base. Establishing it needs two facts: the contender reached the exclusion, and
+     * it did not get through. A sleep establishes only the second, and only in the weak sense that nothing
+     * has happened yet - which is equally true of a thread that has not been scheduled. This method
+     * establishes the first from the server's own bookkeeping. {@code pg_advisory_xact_lock} registers a
+     * row in {@code pg_locks} for the waiting session with {@code granted} false, so the condition is a
+     * state the contender is in rather than an interval the test hopes was long enough.
+     *
+     * <p>The condition is monotone until the holder releases, so polling for it is deterministic in
+     * outcome: what varies between machines is how quickly it is seen, never whether it becomes true. A
+     * host so loaded that the contender never reaches the server fails here, with a message saying exactly
+     * that, instead of passing as though exclusion had been observed.
+     *
+     * @throws InterruptedException if the wait is interrupted
+     */
+    private static void awaitAContenderBlockedOnAnAdvisoryLock() throws InterruptedException {
+        final JdbcTemplate observer = observerTemplate();
+        final long deadline = System.nanoTime() + PATIENCE.toNanos();
+        while (blockedAdvisoryWaiters(observer) == 0) {
+            assertThat(System.nanoTime() < deadline)
+                    .as("no session reached the advisory lock within %d seconds, so nothing about "
+                            + "exclusion can be concluded from what follows", PATIENCE.toSeconds())
+                    .isTrue();
+            TimeUnit.MILLISECONDS.sleep(20L);
+        }
+    }
+
+    /**
+     * Counts the sessions currently waiting for an advisory lock on this server.
+     *
+     * @param  observer a template over a connection of its own, so the reading is the server's and not a
+     *                  participant's
+     * @return how many advisory-lock requests are outstanding
+     */
+    private static int blockedAdvisoryWaiters(final JdbcTemplate observer) {
+        final Integer waiting = observer.queryForObject(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+                Integer.class);
+        return waiting == null ? 0 : waiting.intValue();
+    }
+
+    /**
+     * Builds a template on a connection of its own, used only to read the server's lock table.
+     *
+     * @return the observer template
+     */
+    private static JdbcTemplate observerTemplate() {
+        final DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                jdbcUrl(), databaseUser(), databasePassword());
+        dataSource.setDriverClassName(driverClassName());
+        return new JdbcTemplate(dataSource);
     }
 
     /** Waits without letting an interruption be mistaken for the latch having opened. */

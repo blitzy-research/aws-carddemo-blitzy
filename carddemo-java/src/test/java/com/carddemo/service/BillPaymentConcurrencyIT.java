@@ -43,6 +43,7 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -51,7 +52,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -109,6 +109,14 @@ import org.springframework.transaction.support.TransactionTemplate;
  * by having the waiting thread publish a nanosecond reading on acquisition and comparing it against the
  * reading the holder published on release: a lock that did not block would produce the opposite order.
  *
+ * <p><strong>And where a test asserts that a caller has NOT got through, the caller is first observed at
+ * the lock.</strong> Three such assertions previously ran a timed probe - sleep, then check that the
+ * contender was unfinished - and that establishes nothing: a thread the scheduler has not run is also
+ * unfinished, so on a loaded host the assertion passes with the locking removed. Each now waits for the
+ * server's own bookkeeping to show a session whose lock request is not granted, through
+ * {@link #awaitAContenderWaitingOn}, and only then asserts non-entry. The observation is of a state the
+ * contender is in rather than of an interval the test hoped was long enough.
+ *
  * <p>Provenance: the rules are those of {@code app/cbl/COBIL00C.cbl} lines 154, 196 to 235, 343 and 377,
  * and the file attributes are those of {@code app/csd/CARDDEMO.CSD}, read as read-only reference at commit
  * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
@@ -129,9 +137,16 @@ import org.springframework.transaction.support.TransactionTemplate;
             // Relaxed exactly as the other repository-slice specifications relax it.
             "management.endpoint.health.validate-group-membership=false",
             "management.tracing.enabled=false",
-            // Two turns run at once and each holds a connection for the length of its unit, so the pool
-            // must be able to seat both plus the raw observer connection.
-            "spring.datasource.hikari.maximum-pool-size=8"
+            // Small ON PURPOSE. An admitted turn needs two connections at its widest point - the outer
+            // unit holding the account row plus the nested unit the independently durable insert opens -
+            // and a queued turn must need none. A pool this size makes both properties observable: the
+            // exhaustion specification puts a turn on every connection at once, and if a queued turn ever
+            // holds one again the run fails here rather than in production. Kept in step with
+            // DECLARED_POOL_SIZE.
+            "spring.datasource.hikari.maximum-pool-size=8",
+            // Fail fast rather than wait: a turn that cannot get a connection is the defect this class
+            // guards against, and a long wait would report it as a slow test instead of a failing one.
+            "spring.datasource.hikari.connection-timeout=5000"
         })
 @DisplayName("Bill payment under concurrency: the held row and the serialised allocation, observed")
 final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
@@ -140,12 +155,26 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
     private static final long COMPLETION_TIMEOUT_SECONDS = 30L;
 
     /**
-     * How long a test waits before concluding that a thread it expects to be BLOCKED really is.
+     * The connection pool this class declares, as a number rather than only as a property value.
      *
-     * <p>Long enough that a thread which was not blocked would certainly have finished, short enough that
-     * the suite does not stall. It is only ever used to confirm an expected absence of progress.
+     * <p>Read by the pool-exhaustion specification, which puts exactly this many concurrent turns in
+     * flight. The absolute figure does not matter and is deliberately not the shipped default: what the
+     * specification is about is that as many concurrent payments as there are connections all complete,
+     * which is a property of the design and not of the number.
      */
-    private static final long BLOCKED_PROBE_MILLIS = 750L;
+    private static final int DECLARED_POOL_SIZE = 8;
+
+    /**
+     * The {@code pg_locks} kinds a session waiting behind a held row appears under.
+     *
+     * <p>A blocked row read waits on the holding transaction's identifier, and takes a tuple lock while it
+     * queues behind other waiters, so both kinds are counted. Neither is ever held by a session that is not
+     * waiting for something another session has.
+     */
+    private static final List<String> ROW_LOCK_WAIT_TYPES = List.of("transactionid", "tuple");
+
+    /** The {@code pg_locks} kind a session waiting for a transaction-scoped advisory lock appears under. */
+    private static final List<String> ADVISORY_LOCK_WAIT_TYPES = List.of("advisory");
 
     /** The account the concurrent turns contend over. */
     private static final String CONTENDED_ACCOUNT_ID = "00000000901";
@@ -221,7 +250,7 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
 
     /** The data source the unproxied-fragment test builds its own template over. */
     @Autowired
-    private DataSource dataSource;
+    private javax.sql.DataSource dataSource;
 
     /** The threads two-caller tests run on. */
     private ExecutorService threads;
@@ -238,7 +267,9 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
     @BeforeEach
     void seedContendedRows() throws SQLException {
         truncateApplicationTables();
-        this.threads = Executors.newFixedThreadPool(2);
+        // One thread per pooled connection, so the pool-exhaustion specification can put a turn on every
+        // connection at once. The two-caller specifications use two of them.
+        this.threads = Executors.newFixedThreadPool(DECLARED_POOL_SIZE);
 
         seedAccountWithCard(CONTENDED_CUSTOMER_ID, CONTENDED_ACCOUNT_ID, CONTENDED_CARD_NUMBER);
         seedAccountWithCard(SECOND_CUSTOMER_ID, SECOND_ACCOUNT_ID, SECOND_CARD_NUMBER);
@@ -378,6 +409,68 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
         return future.get(COMPLETION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
+    /**
+     * Waits until the server reports a session waiting for a lock of the given kind, and fails if none
+     * appears.
+     *
+     * <h3>Why this replaces a timed probe</h3>
+     *
+     * <p>Every proof of exclusion in this class needs two facts: the contender reached the lock, and it did
+     * not get through. Sleeping and then finding the contender unfinished establishes only the second, and
+     * only in the weak sense that nothing has happened yet - which is equally true of a thread the
+     * scheduler has not run. On a loaded host that observation therefore passes with the locking deleted,
+     * which is precisely the defect these tests exist to detect.
+     *
+     * <p>PostgreSQL publishes the wait itself. A session blocked behind a row another transaction holds
+     * waits on that transaction's identifier, and a session blocked on a transaction-scoped advisory lock
+     * waits on an advisory entry; either way {@code pg_locks} carries a row for the waiter with
+     * {@code granted} false. Reading that row observes the contender <em>at</em> the lock.
+     *
+     * <p>The condition is monotone until the holder releases, so polling is deterministic in outcome: what
+     * varies between machines is how quickly the state is seen, never whether it holds. A host on which the
+     * contender never reaches the server fails here with a message that says so.
+     *
+     * @param  lockTypes  the {@code pg_locks} lock types that count as this test's boundary
+     * @param  boundary   what the wait is being observed at, for the failure message
+     * @throws SQLException         if the observer connection fails
+     * @throws InterruptedException if the wait is interrupted
+     */
+    private static void awaitAContenderWaitingOn(final List<String> lockTypes, final String boundary)
+            throws SQLException, InterruptedException {
+        final long deadline = System.nanoTime()
+                + TimeUnit.SECONDS.toNanos(COMPLETION_TIMEOUT_SECONDS);
+        while (blockedWaitersOn(lockTypes) == 0) {
+            assertThat(System.nanoTime() < deadline)
+                    .as("no session reached %s within %d seconds, so nothing about exclusion can be "
+                            + "concluded from what follows", boundary, COMPLETION_TIMEOUT_SECONDS)
+                    .isTrue();
+            TimeUnit.MILLISECONDS.sleep(20L);
+        }
+    }
+
+    /**
+     * Counts the sessions currently waiting for a lock of one of the given kinds.
+     *
+     * @param  lockTypes the {@code pg_locks} lock types to count
+     * @return how many such requests are outstanding
+     * @throws SQLException if the read fails
+     */
+    private static int blockedWaitersOn(final List<String> lockTypes) throws SQLException {
+        final String predicate = String.join(", ", lockTypes.stream().map(type -> "?").toList());
+        try (Connection connection = connect();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT count(*) FROM pg_locks WHERE NOT granted AND locktype IN ("
+                                + predicate + ")")) {
+            for (int index = 0; index < lockTypes.size(); index++) {
+                statement.setString(index + 1, lockTypes.get(index));
+            }
+            try (ResultSet rows = statement.executeQuery()) {
+                assertThat(rows.next()).isTrue();
+                return rows.getInt(1);
+            }
+        }
+    }
+
     // ==============================================================================================
     // The exclusive hold on the account row, lines 343 to 235
     // ==============================================================================================
@@ -467,9 +560,10 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
             final Future<BillPaymentService.BillPaymentResult> contender =
                     run(() -> service.processBillPayment(confirmedTurn(CONTENDED_ACCOUNT_ID)));
 
-            // The absence of progress is the observation. A turn that did not block would have completed in
-            // microseconds, so a probe this long that finds it unfinished can only mean it is waiting.
-            Thread.sleep(BLOCKED_PROBE_MILLIS);
+            // The contender is observed AT the row lock, on the server's own bookkeeping, before its
+            // non-entry is asserted. A blocked row read waits on the holding transaction's identifier, so
+            // pg_locks carries an ungranted entry for it.
+            awaitAContenderWaitingOn(ROW_LOCK_WAIT_TYPES, "the exclusive read of the held account row");
             assertThat(contender.isDone())
                     .as("the contender must still be waiting on the row the holder has locked")
                     .isFalse();
@@ -572,7 +666,7 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
                 return Boolean.TRUE;
             });
 
-            Thread.sleep(BLOCKED_PROBE_MILLIS);
+            awaitAContenderWaitingOn(ADVISORY_LOCK_WAIT_TYPES, "the shared allocation lock");
             assertThat(contender.isDone())
                     .as("the contender must be waiting: an advisory lock that did not serialise would "
                             + "have let it through immediately")
@@ -707,7 +801,7 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
             final Future<BillPaymentService.BillPaymentResult> turn =
                     run(() -> service.processBillPayment(confirmedTurn(CONTENDED_ACCOUNT_ID)));
 
-            Thread.sleep(BLOCKED_PROBE_MILLIS);
+            awaitAContenderWaitingOn(ADVISORY_LOCK_WAIT_TYPES, "the shared allocation lock");
             assertThat(turn.isDone())
                     .as("the turn must be waiting on the shared allocation lock; if it were not taking the "
                             + "same lock it would already have posted")
@@ -751,6 +845,82 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
                             TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY))
                     .withMessageContaining("transaction-scoped")
                     .withMessageContaining("serialise nothing");
+        }
+    }
+
+    // ==============================================================================================
+    // The connection pool: a queued turn must hold none of it
+    // ==============================================================================================
+
+    /**
+     * As many concurrent confirmed payments as the pool has connections, over distinct accounts.
+     *
+     * <p>Distinct accounts on purpose: nothing here contends for a row. What every one of these turns
+     * does contend for is the single global allocation lock, and the turn that holds it needs a SECOND
+     * connection for the nested unit its independently durable insert opens.
+     *
+     * <p>The defect this guards against is specific. While the wait for that lock happened inside the
+     * unit of work, a turn that was waiting held a connection - so filling the pool with waiting turns
+     * left the one turn making progress unable to obtain the connection its nested insert required. Every
+     * turn then waited out the pool's acquisition timeout and failed, and so did every other request in
+     * the application on every unrelated feature. The fix admits one turn at a time BEFORE the unit
+     * opens, so a queued turn holds nothing.
+     */
+    @Nested
+    @DisplayName("The pool under load: a queued payment holds no connection")
+    class ThePoolUnderLoad {
+
+        /** Creates the nest. */
+        ThePoolUnderLoad() {
+        }
+
+        @Test
+        @DisplayName("AS MANY CONCURRENT PAYMENTS AS THERE ARE CONNECTIONS ALL COMPLETE: each over its "
+                + "own account, all contending for the one allocation lock, none of them holding a "
+                + "connection while it waits for it")
+        void asManyConcurrentPaymentsAsConnectionsAllComplete() throws Exception {
+            final List<String> accountIds = new ArrayList<>(DECLARED_POOL_SIZE);
+            for (int index = 0; index < DECLARED_POOL_SIZE; index++) {
+                final String suffix = String.format(Locale.ROOT, "%03d", Integer.valueOf(910 + index));
+                final String accountId = "00000000" + suffix;
+                seedAccountWithCard("000000" + suffix, accountId, "4000000000000" + suffix);
+                accountIds.add(accountId);
+            }
+            final CountDownLatch allReady = new CountDownLatch(DECLARED_POOL_SIZE);
+
+            final List<Future<BillPaymentService.BillPaymentResult>> turns =
+                    new ArrayList<>(DECLARED_POOL_SIZE);
+            for (final String accountId : accountIds) {
+                turns.add(run(() -> {
+                    allReady.countDown();
+                    allReady.await(COMPLETION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                    return service.processBillPayment(confirmedTurn(accountId));
+                }));
+            }
+
+            final List<BillPaymentService.BillPaymentResult> outcomes =
+                    new ArrayList<>(DECLARED_POOL_SIZE);
+            for (final Future<BillPaymentService.BillPaymentResult> turn : turns) {
+                outcomes.add(await(turn));
+            }
+
+            assertThat(outcomes)
+                    .as("every turn returned an outcome rather than a connection-acquisition failure")
+                    .hasSize(DECLARED_POOL_SIZE)
+                    .allSatisfy(outcome -> assertThat(outcome.paymentAccepted())
+                            .as("each account is settled by its own turn and by nothing else, so every "
+                                    + "one of them must be accepted: a refusal here is the pool, not the "
+                                    + "balance")
+                            .isTrue());
+            assertThat(storedTransactionCount())
+                    .as("one posted transaction per account, so the serialised allocation minted a "
+                            + "distinct identifier for each")
+                    .isEqualTo(DECLARED_POOL_SIZE);
+            for (final String accountId : accountIds) {
+                assertThat(storedBalanceOf(accountId))
+                        .as("account %s was settled exactly once", accountId)
+                        .isEqualByComparingTo(SETTLED_BALANCE);
+            }
         }
     }
 

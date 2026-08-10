@@ -613,8 +613,9 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the table carries its primary key and the encoding rule and NOTHING else - no "
-                + "foreign key, no unique constraint, and no check over any value's CONTENT")
+        @DisplayName("the table carries its primary key, the encoding rule and four image-width rules and "
+                + "NOTHING else - no foreign key, no unique constraint, and no check over any value's "
+                + "CONTENT")
         void theTableCarriesItsPrimaryKeyAndNothingElse() {
             assertThat(constraintKindCount('f'))
                     .as("a foreign key would refuse a row whose card is absent on INSERT, and such a "
@@ -632,22 +633,42 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
                     .as("the business key is one of the two constraints the table carries")
                     .isEqualTo(1);
             assertThat(constraintKindCount('c'))
-                    .as("exactly one check constraint, and it is the encoding rule; a check over a "
-                            + "value's CONTENT would refuse a malformed value the validation cascade is "
-                            + "supposed to report with a reason code")
-                    .isEqualTo(1);
+                    .as("five check constraints: the encoding rule, and one exact width for each of the "
+                            + "four image-critical fields. Every one of them is about the record IMAGE. A "
+                            + "check over a value's CONTENT would refuse a malformed value the validation "
+                            + "cascade is supposed to report with a reason code, which is a different "
+                            + "thing entirely and is what the definitions below rule out")
+                    .isEqualTo(5);
             assertThat(checkConstraintNames())
                     .as("named, so a content check added later cannot hide behind the count above")
-                    .containsExactly("ck_daily_transaction_single_byte_text");
+                    .containsExactly(
+                            "ck_daily_transaction_card_num_width",
+                            "ck_daily_transaction_cat_cd_width",
+                            "ck_daily_transaction_dalytran_id_width",
+                            "ck_daily_transaction_single_byte_text",
+                            "ck_daily_transaction_type_cd_width");
             assertThat(singleByteTextConstraintDefinition())
                     .as("and the rule compares each column's encoded length against its character length "
                             + "and nothing else: no literal, no pattern and no reference to another table")
                     .doesNotContain("~")
                     .doesNotContain("IN (")
                     .doesNotContain("'");
+            assertThat(checkConstraintDefinitions())
+                    .as("THE ASSERTION THAT MATTERS, and it is now made over EVERY check rather than over "
+                            + "one named one: not a single definition on this table carries a pattern "
+                            + "match, a value list or a literal of any kind. A width is a property of the "
+                            + "350-byte image and every field sliced from a valid image already has it, so "
+                            + "no record the sequential reader can produce is refused - while a content "
+                            + "rule would take the invalid-card, over-limit and expired-account cases away "
+                            + "from the reject dataset that is contractually obliged to report them")
+                    .isNotEmpty()
+                    .allSatisfy(definition -> assertThat(definition)
+                            .doesNotContain("~")
+                            .doesNotContain("IN (")
+                            .doesNotContain("'"));
             assertThat(constraintKinds())
-                    .as("so the whole constraint vocabulary of this table is the primary key and one "
-                            + "encoding check")
+                    .as("so the whole constraint vocabulary of this table is the primary key and its "
+                            + "image checks")
                     .containsExactlyInAnyOrder("p", "c");
         }
 
@@ -1443,6 +1464,28 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     private List<String> checkConstraintNames() {
         return jdbcTemplate.queryForList("""
                 SELECT con.conname
+                  FROM pg_constraint con
+                  JOIN pg_class rel ON rel.oid = con.conrelid
+                  JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+                 WHERE nsp.nspname = 'public'
+                   AND rel.relname = ?
+                   AND con.contype = 'c'
+                 ORDER BY con.conname
+                """, String.class, LANDING_TABLE);
+    }
+
+    /**
+     * Reads the rendered definition of every check constraint this table carries.
+     *
+     * <p>Separate from the single-constraint reader on purpose: that one names its constraint and would
+     * therefore keep passing if a content check were added beside it, which is precisely the regression
+     * this projection exists to catch.
+     *
+     * @return one rendered CHECK definition per check constraint, never {@code null}
+     */
+    private List<String> checkConstraintDefinitions() {
+        return jdbcTemplate.queryForList("""
+                SELECT pg_get_constraintdef(con.oid)
                   FROM pg_constraint con
                   JOIN pg_class rel ON rel.oid = con.conrelid
                   JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace

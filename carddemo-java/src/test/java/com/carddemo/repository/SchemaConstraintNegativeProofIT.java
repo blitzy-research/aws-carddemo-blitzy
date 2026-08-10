@@ -686,6 +686,155 @@ final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
     }
 
     // ==============================================================================================
+    // The image widths of the five tables whose keys were bounded by a MAXIMUM alone
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("Image widths: the fourteen exact-width rules that a bounded maximum did not express")
+    class ImageWidths {
+
+        /** Creates the nest. */
+        ImageWidths() {
+        }
+
+        @Test
+        @DisplayName("an account group identifier shorter than ten characters is refused - the one column "
+                + "on the account table that is a key SOMEWHERE ELSE")
+        void aShortAccountGroupIdentifierIsRefused() {
+            final TableFixture account = fixtureFor("account");
+
+            // The seven-character spelling is the whole point. The seeded groups DEFAULT and ZEROAPR are
+            // seven characters followed by three spaces, so the unpadded form is the value a caller would
+            // most plausibly send and the one that resolves nothing - it matches no disclosure row, the
+            // rate lookup takes its default-group fallback, and a zero-rate account accrues at the default
+            // rate. Nothing else in the schema would have caught it: the group identifier alone is a
+            // nonunique leading part of the disclosure key, so it cannot be a foreign key.
+            assertRefusedBy(account, "acct_group_id", "ZEROAPR",
+                    "ck_account_acct_group_id_width");
+        }
+
+        @Test
+        @DisplayName("and the PADDED ten-character form of the same identifier is accepted, so the rule is "
+                + "a width and not a vocabulary")
+        void thePaddedAccountGroupIdentifierIsAccepted() throws SQLException {
+            final TableFixture account = fixtureFor("account");
+            insertAndRollBack(account, "acct_group_id", "DEFAULT   ");
+        }
+
+        @Test
+        @DisplayName("each of the landing table's four image-critical fields is refused at the wrong width")
+        void theLandingTableRefusesEveryWrongImageWidth() {
+            final TableFixture landing = fixtureFor("daily_transaction");
+
+            assertRefusedBy(landing, "dalytran_id", "999000000000001",
+                    "ck_daily_transaction_dalytran_id_width");
+            assertRefusedBy(landing, "dalytran_type_cd", "1",
+                    "ck_daily_transaction_type_cd_width");
+            assertRefusedBy(landing, "dalytran_cat_cd", "1",
+                    "ck_daily_transaction_cat_cd_width");
+            assertRefusedBy(landing, "dalytran_card_num", "999000000000001",
+                    "ck_daily_transaction_card_num_width");
+        }
+
+        @Test
+        @DisplayName("but the landing table still accepts a non-numeric CONTENT at the right width, "
+                + "because content is the reject dataset's to report and not the schema's to refuse")
+        void theLandingTableAcceptsMalformedContentAtTheRightWidth() throws SQLException {
+            final TableFixture landing = fixtureFor("daily_transaction");
+
+            // A category code whose picture clause is PIC 9(04) and whose final byte is an overpunched
+            // sign - the zoned-decimal form app/jcl/PRTCATBL.jcl declares for the corresponding field.
+            insertAndRollBack(landing, "dalytran_cat_cd", "000J");
+            // A card number that is sixteen characters and is not a card. Reason code 100 exists to
+            // report exactly this, and it can only do so if the row is allowed to land.
+            insertAndRollBack(landing, "dalytran_card_num", "NOTACARDNUMBER01");
+        }
+
+        @Test
+        @DisplayName("each of the category-balance key's three parts is refused at the wrong width")
+        void theCategoryBalanceKeyRefusesEveryWrongPartWidth() {
+            final TableFixture balance = fixtureFor("transaction_category_balance");
+
+            assertRefusedBy(balance, "trancat_acct_id", "1", "ck_tran_cat_bal_acct_id_width");
+            assertRefusedBy(balance, "trancat_type_cd", "9", "ck_tran_cat_bal_type_cd_width");
+            assertRefusedBy(balance, "trancat_cd", "9", "ck_tran_cat_bal_cat_cd_width");
+        }
+
+        @Test
+        @DisplayName("and the category-balance key accepts an OVERPUNCHED category code at the right "
+                + "width, because its own sort specification declares that field zoned decimal")
+        void theCategoryBalanceKeyAcceptsAnOverpunchedCategoryCode() throws SQLException {
+            final TableFixture balance = fixtureFor("transaction_category_balance");
+
+            // THE ASSERTION THAT FIXES THE RULE'S SHAPE. app/jcl/PRTCATBL.jcl declares this very key as
+            // TRANCAT-ACCT-ID,1,11,ZD - TRANCAT-TYPE-CD,12,2,CH - TRANCAT-CD,14,4,ZD. Zoned decimal folds
+            // the sign into the final byte, so 000J reads as minus one and is a legitimate value of a
+            // PIC 9(04) field in this estate. A digit class here would have refused it - and the
+            // category-balance report's own ordering fixture is built from it.
+            insertAndRollBack(balance, "trancat_cd", "000J");
+        }
+
+        @Test
+        @DisplayName("each of the disclosure key's three parts is refused at the wrong width, the group "
+                + "identifier included")
+        void theDisclosureKeyRefusesEveryWrongPartWidth() {
+            final TableFixture group = fixtureFor("disclosure_group");
+
+            assertRefusedBy(group, "dis_acct_group_id", "PROOFGRP",
+                    "ck_disclosure_group_acct_group_id_width");
+            assertRefusedBy(group, "dis_tran_type_cd", "9",
+                    "ck_disclosure_group_tran_type_cd_width");
+            assertRefusedBy(group, "dis_tran_cat_cd", "9",
+                    "ck_disclosure_group_tran_cat_cd_width");
+        }
+
+        @Test
+        @DisplayName("the two reference tables refuse a key part at the wrong width, which is what stops "
+                + "'1' and '01' claiming the same two bytes of one record")
+        void theReferenceTablesRefuseEveryWrongKeyWidth() {
+            final TableFixture type = fixtureFor("transaction_type");
+            final TableFixture category = fixtureFor("transaction_category");
+
+            assertRefusedBy(type, "tran_type", "9", "ck_transaction_type_tran_type_width");
+            assertRefusedBy(category, "tran_type_cd", "9",
+                    "ck_transaction_category_tran_type_cd_width");
+            assertRefusedBy(category, "tran_cat_cd", "9",
+                    "ck_transaction_category_tran_cat_cd_width");
+        }
+
+        @Test
+        @DisplayName("all FOURTEEN named image-width constraints exist in the catalogue, and not one of "
+                + "them is a digit class")
+        void allFourteenNamedImageWidthConstraintsExist() throws SQLException {
+            final List<String> expected = List.of(
+                    "ck_account_acct_group_id_width",
+                    "ck_daily_transaction_dalytran_id_width",
+                    "ck_daily_transaction_type_cd_width",
+                    "ck_daily_transaction_cat_cd_width",
+                    "ck_daily_transaction_card_num_width",
+                    "ck_tran_cat_bal_acct_id_width",
+                    "ck_tran_cat_bal_type_cd_width",
+                    "ck_tran_cat_bal_cat_cd_width",
+                    "ck_disclosure_group_acct_group_id_width",
+                    "ck_disclosure_group_tran_type_cd_width",
+                    "ck_disclosure_group_tran_cat_cd_width",
+                    "ck_transaction_type_tran_type_width",
+                    "ck_transaction_category_tran_type_cd_width",
+                    "ck_transaction_category_tran_cat_cd_width");
+
+            assertThat(namedCheckConstraints())
+                    .as("every width constraint this nest asserts on must be declared; one missing would "
+                            + "make its assertion fail for the wrong reason")
+                    .containsAll(expected);
+            assertThat(expected)
+                    .as("and every one of them is named a width rather than a digit class, which is the "
+                            + "naming convention this file already uses to tell the two rules apart - the "
+                            + "reason each is a width is recorded per table in V1__create_schema.sql")
+                    .allSatisfy(name -> assertThat(name).endsWith("_width"));
+        }
+    }
+
+    // ==============================================================================================
     // Catalogue readers
     // ==============================================================================================
 

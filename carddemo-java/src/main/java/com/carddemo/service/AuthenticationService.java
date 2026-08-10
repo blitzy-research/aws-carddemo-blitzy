@@ -50,7 +50,8 @@ import org.springframework.stereotype.Service;
  * first-entry operation {@link #initialEntry()} plus {@link #handle(KeyAction, String, String)}, whose
  * attention-key {@code EVALUATE} is reproduced clause for clause and in source order.
  * {@code PROCESS-ENTER-KEY} becomes {@link #signOn(String, String)}.
- * {@code READ-USER-SEC-FILE} becomes {@link #verifyCredential(String, String)}. {@code SEND-SIGNON-SCREEN}
+ * {@code READ-USER-SEC-FILE} becomes {@link #verifyCredential(String, String, String)}.
+ * {@code SEND-SIGNON-SCREEN}
  * and {@code SEND-PLAIN-TEXT} have no counterpart here at all: they are terminal-write operations, and
  * what they wrote is the result this method returns. {@code POPULATE-HEADER-INFO} becomes
  * {@link #screenHeader()}.
@@ -312,7 +313,7 @@ public final class AuthenticationService {
     /**
      * Drives one sign-on attempt: the translation of {@code PROCESS-ENTER-KEY}.
      *
-     * <p>The two presence tests are an {@code EVALUATE TRUE} whose clauses are evaluated in order, so the
+     * <p>The two presence tests are a multi-way selection whose clauses are evaluated in order, so the
      * identifier is reported before the secret and never both at once. The blank test is the legacy
      * {@code = SPACES OR LOW-VALUES}: an absent value, an empty one and one made only of spaces are the
      * same state, because a fixed-width screen field that the operator left alone arrives as spaces.
@@ -340,7 +341,7 @@ public final class AuthenticationService {
      */
     public SignOnScreen signOn(final String presentedUserId, final String presentedPassword,
             final String sourceKey) {
-        // Lines 132 to 136 sit after END-EVALUATE and therefore execute on every ENTER turn, including
+        // Lines 132 to 136 sit after the selection's scope terminator and therefore execute on every ENTER turn, including
         // turns whose ordered blank cascade has already selected a prompt.
         final String foldedUserId = CobolStringUtils.asciiUpperFold(nullToEmpty(presentedUserId));
         final String foldedPassword = CobolStringUtils.asciiUpperFold(nullToEmpty(presentedPassword));
@@ -365,7 +366,7 @@ public final class AuthenticationService {
     /**
      * Reads the credential master and decides the turn: the translation of {@code READ-USER-SEC-FILE}.
      *
-     * <p>The legacy {@code EVALUATE WS-RESP-CD} has three arms. Response zero is a record that was found,
+     * <p>The legacy selection on WS-RESP-CD has three arms. Response zero is a record that was found,
      * and the secret is then compared. Response thirteen is the not-found condition, which the repository
      * expresses as an empty result. Every other response is the catch-all; a Spring Data transport failure
      * reaches this non-transactional outer method as a {@link DataAccessException} after the repository
@@ -432,6 +433,25 @@ public final class AuthenticationService {
         }
 
         final UserSecurity record = stored.orElseThrow();
+        if (!credentialDigestService.isDigest(record.credentialDigest())) {
+            // A stored value that is not a digest can never verify, so this was always going to end in
+            // the same refusal - matches() screens the structure and answers false. It is called out
+            // here so the condition is stated rather than inferred, and so the log can name it: a
+            // credential column that stopped holding a digest is a deployment fault, and an operator
+            // reading "secret-does-not-match" for every attempt against one identity has no way to
+            // tell that from a caller who keeps mistyping.
+            //
+            // The caller-visible answer is deliberately unchanged - the same rejection, the same
+            // decision, the same nominated field - because whether this deployment's column is intact
+            // is not something a sign-on caller may learn. The inert comparison is performed for the
+            // same reason the not-found path performs it: returning without the hashing work would
+            // make the corrupt case measurably faster than the wrong-password case, which is the
+            // oracle the equalisation exists to close.
+            credentialDigestService.matches(password, inertDigest());
+            attemptGovernor.recordFailure(userId, sourceKey);
+            LOG.warn("Sign-on rejected: rule=stored-credential-is-not-a-digest");
+            return rejection(Decision.WRONG_PASSWORD, userId, false, FIELD_PASSWORD);
+        }
         if (!credentialDigestService.matches(password, record.credentialDigest())) {
             // Line 240: this branch composes a message and leaves the error flag lowered.
             attemptGovernor.recordFailure(userId, sourceKey);

@@ -73,8 +73,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -1542,7 +1542,7 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         @Test
         @DisplayName("★ the first non-blank marker wins and a later one is never examined")
         void theFirstNonBlankMarkerWinsAndALaterOneIsIgnored() throws Exception {
-            // The scan at L151-L185 is an EVALUATE TRUE over the ten row items in row order, and EVALUATE
+            // The scan at L151-L185 is an ordered multi-way selection over the ten row items in row order, and it
             // stops at its first true condition - so marking several rows marks the earliest of them.
             final String session = sessionFor(OWNED_ADMIN);
             final JsonNode page = firstPage(session);
@@ -1660,7 +1660,7 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         @DisplayName("★ with the identifier AND the given name empty, the add screen reports the GIVEN "
                 + "NAME - because it tests the identifier third")
         void theAddCascadeReportsTheGivenNameWhenTheIdentifierIsAlsoEmpty() throws Exception {
-            // PROCESS-ENTER-KEY, COUSR01C.cbl L115: the EVALUATE TRUE at L117-L151 tests the given name
+            // PROCESS-ENTER-KEY, COUSR01C.cbl L115: the ordered selection at L117-L151 tests the given name
             // first (L118) and the identifier third (L130). This is the divergence from the update screen.
             final JsonNode body = addTurn(blank(USER_ID_WIDTH), blank(NAME_PART_WIDTH),
                     RESERVED_LAST_NAME, keyedCredential(), USER_ROLE_CODE);
@@ -1730,7 +1730,7 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         @DisplayName("★ exactly one item is reported however many are empty")
         void exactlyOneItemIsReportedHoweverManyAreEmpty() throws Exception {
             // Five independent tests would report all five at once, which is a screen the legacy cannot
-            // produce: EVALUATE TRUE stops at its first true condition.
+            // produce: the selection stops at its first true condition.
             final JsonNode body = addTurn(blank(USER_ID_WIDTH), blank(NAME_PART_WIDTH),
                     blank(NAME_PART_WIDTH), blank(CREDENTIAL_WIDTH), blank(USER_TYPE_WIDTH));
 
@@ -1849,7 +1849,7 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         @DisplayName("★ with the identifier AND the given name empty, the update screen reports the "
                 + "IDENTIFIER - because it tests the identifier first")
         void theUpdateCascadeReportsTheIdentifierWhenTheGivenNameIsAlsoEmpty() throws Exception {
-            // UPDATE-USER-INFO, COUSR02C.cbl L177: the EVALUATE TRUE at L179-L213 tests the identifier
+            // UPDATE-USER-INFO, COUSR02C.cbl L177: the ordered selection at L179-L213 tests the identifier
             // first (L180) and the given name second (L186) - the opposite way round from the add screen.
             final JsonNode body = saveTurn(blank(USER_ID_WIDTH), blank(NAME_PART_WIDTH),
                     RESERVED_LAST_NAME, keyedCredential(), USER_ROLE_CODE);
@@ -2364,7 +2364,7 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
             // identities below are the whole delivered population. Rows this specification wrote are
             // excluded by their reserved prefix rather than by count, so the assertion stays true however
             // many this class writes.
-            final Page<UserSecurityRepository.AdminEntry> everyRow = AdminUserControllerIT.this.users
+            final Slice<UserSecurityRepository.AdminEntry> everyRow = AdminUserControllerIT.this.users
                     .findAllProjectedBy(PageRequest.of(0, 100));
             final List<String> delivered = new ArrayList<>();
             int administrators = 0;

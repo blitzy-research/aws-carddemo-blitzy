@@ -33,6 +33,8 @@ import org.junit.jupiter.api.Test;
 import com.carddemo.support.AbstractPostgresIT;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.InstanceOfAssertFactories.BIG_DECIMAL;
 
 /**
  * Settles, against a real seeded database, exactly which accrual rate-lookup branches the reference
@@ -104,6 +106,14 @@ class DisclosureRateLookupReachabilityIT extends AbstractPostgresIT {
 
     /** The blank group identifier every seeded account carries. */
     private static final String BLANK_GROUP = "          ";
+
+    /**
+     * Identifier of the account whose insertion is expected to be refused, so it never becomes a row.
+     *
+     * <p>Distinct from every other constructed identifier in this class precisely because the insert must
+     * fail: were it shared, a leftover row from another test would make the refusal ambiguous.
+     */
+    private static final String UNPADDED_GROUP_ACCOUNT = "99900000097";
 
     /** The single transaction type every seeded category balance carries. */
     private static final String SEEDED_TYPE = "01";
@@ -233,6 +243,42 @@ class DisclosureRateLookupReachabilityIT extends AbstractPostgresIT {
 
             assertThat(resolved.usedFallback()).isFalse();
             assertThat(resolved.rate()).isEqualByComparingTo(new BigDecimal("15.00"));
+        }
+    }
+
+    @Test
+    @DisplayName("the UNPADDED spelling of the zero-rate group resolves to the fallback's 15.00 instead "
+            + "of 0.00 - and the schema now refuses to store an account carrying it at all")
+    void theUnpaddedZeroRateGroupWouldHaveAccruedAtTheFallbackRate() throws SQLException {
+        try (Connection connection = connect()) {
+            final String unpadded = ZERO_RATE_GROUP.trim();
+
+            assertThat(unpadded)
+                    .as("seven characters, which is how an operator or a JSON caller spells this group")
+                    .hasSize(7)
+                    .isEqualTo("ZEROAPR");
+            assertThat(probeGroup(connection, unpadded, SEEDED_TYPE, SEEDED_CATEGORY))
+                    .as("THE FINANCIAL DEFECT. The seven-character spelling matches no disclosure row, so "
+                            + "the direct probe misses and the lookup goes to its fallback")
+                    .isEmpty();
+            assertThat(probeGroup(connection, ZERO_RATE_GROUP, SEEDED_TYPE, SEEDED_CATEGORY))
+                    .as("while the ten-character spelling of the same group resolves, and to zero")
+                    .isPresent()
+                    .get(BIG_DECIMAL)
+                    .isEqualByComparingTo(new BigDecimal("0.00"));
+            assertThat(probeGroup(connection, FALLBACK_GROUP, SEEDED_TYPE, SEEDED_CATEGORY))
+                    .as("and the fallback the miss lands on charges 15.00, so the cost of the missing "
+                            + "three spaces is interest accrued on an account that owes none")
+                    .isPresent()
+                    .get(BIG_DECIMAL)
+                    .isEqualByComparingTo(new BigDecimal("15.00"));
+
+            assertThatExceptionOfType(SQLException.class)
+                    .as("and this is what closes it: the account table now refuses the unpadded spelling "
+                            + "outright, so no row can reach the state described above")
+                    .isThrownBy(() -> insertAccount(connection, UNPADDED_GROUP_ACCOUNT, unpadded))
+                    .satisfies(refusal -> assertThat(refusal.getMessage())
+                            .contains("ck_account_acct_group_id_width"));
         }
     }
 

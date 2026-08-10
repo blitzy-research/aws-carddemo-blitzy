@@ -653,7 +653,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Maximum and mean wall-clock duration per job. This is where the Gate 3 elapsed-time figure is read. Quote it with the fixture volumes recorded in this dashboard's description. Absent until a job has been launched. This reads the framework's own per-execution job timer, so unlike the rate and peak panels it does measure a real run - but it is shown as a series over the display window, and the figure quoted for Gate 3 is taken from the measured run itself so that all three figures come from one run rather than three windows. Corroboration, not the source.",
+      "description": "Maximum and mean wall-clock duration per job. VISUALIZATION, NOT THE GATE 3 FIGURE, and the title now says so: it previously claimed to corroborate the Gate 3 elapsed figure while the guidance panel correctly stated that no panel on this dashboard is the run-scoped figure, so a reader following the two arrived at opposite conclusions about the same number. This reads the framework's own per-execution job timer, so unlike the rate and peak panels it does measure a real run - but it is shown as a series over the DISPLAY WINDOW, and the figure quoted for Gate 3 is taken from the measured run itself so that the elapsed time, the peak memory and the records per second all come from one run rather than from three windows. Read it to see the shape of a run and to sanity-check an order of magnitude; quote RunScopedPerformanceRecorder's output, recorded in docs/gate-evidence.md, for the gate. Absent until a job has been launched. See docs/decision-log.md entry DL-313.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -752,7 +752,7 @@
           "refId": "B"
         }
       ],
-      "title": "Batch job elapsed time - corroborates the Gate 3 elapsed figure",
+      "title": "Batch job elapsed time - visualization, not the Gate 3 elapsed figure",
       "type": "timeseries"
     },
     {
@@ -2328,7 +2328,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## Gate 3 establishes the first Java performance baseline. It asserts no threshold.\n\nNo numeric latency, throughput, availability or capacity figure exists anywhere in the\nlegacy estate - not in the COBOL, not in the job streams, not in the CICS resource\ndefinitions - so there is nothing here for a panel to be checked against. **These panels\nmeasure.** Recorded figures are written up in `docs/gate-evidence.md`.\n\n### Where each of the three figures the gate names is read\n\n| Gate 3 figure | Where the QUOTABLE figure comes from | What this dashboard shows instead |\n| --- | --- | --- |\n| Elapsed time | The run's own job execution, measured by the Gate 3 measurement | *Batch job elapsed time* and *Batch step elapsed time*, which read the same framework timer and are sound as corroboration |\n| Peak memory | The JVM's own per-pool peak accounting, reset immediately before the measured run | *Peak heap across scraped samples*, a maximum over scrapes - a peak between two scrapes is invisible to it |\n| Records per second | The run's record count divided by that run's own elapsed time | *Application records per second (rolling rate)*, which divides by the rate window instead, so a job that finishes inside the window reads low |\n\n**No panel on this dashboard is the Gate 3 figure.** Each of the three is measured per run by\n`InterestCalculationJobIT`'s Gate 3 measurement, through\n`support/RunScopedPerformanceRecorder`, which writes the figures to\n`target/gate-evidence/` for a person to copy into `docs/gate-evidence.md` beside the date and the\nmachine the run was taken on. The panels above corroborate a figure; they do not produce it.\n`docs/decision-log.md` DL-182 records why.\n\n### Quote every figure alongside the fixture volumes it was measured over\n\n- **Daily transactions - 300 records, 105,300 bytes.** 250 point-of-sale purchases and\n  50 operator-originated returns, so both signed directions of the balance computation\n  are exercised. All 300 carry the same processing date and the same timestamp, so\n  date-window filtering has to be exercised by a separately constructed fixture rather\n  than by this input.\n- **Accounts - 50 records.**\n- **Transaction-category balances - 50 records.** The interest run's driving set.\n- **Disclosure groups - 51 records.** Three complete groups, one of which is the default\n  group, which is what makes both the direct-hit and the fallback branch of the interest\n  lookup reachable from seeded data alone.\n\nA number taken from these panels without those volumes beside it is not a baseline.\n\n### Batch rows are empty until a job is launched\n\n`spring.batch.job.enabled` is `false`, so no job runs at application startup. Spring\nBatch series come into existence only once a job has been launched through the module's\nbatch job launch endpoint. The application-registered meters row behaves the same way,\nbecause a Micrometer meter is created on first use. **An empty panel before the first\nrun is expected, not a defect.**\n\n### Why there is no threshold, no limit line and no alert rule here\n\nPercentiles, rates and windowed peaks are instrumentation. A boundary drawn across one\nof them would be a service level, and this migration is expressly forbidden from\ninventing one. `refresh` and `time` are display cadence and display window - viewing\npreferences, not limits.\n\n### Provenance\n\nLegacy estate checkout SHA `7756d895ffeb65f7ea72aaa609e356d9899afcec`; upstream release\nstamp `CardDemo_v1.0-15-g27d6c6f-68` (2022-07-19), the designated provenance identifier\nfor this migration. Traceability is by citation - path and line number - and no legacy\nsource text is reproduced anywhere in this module.\n",
+        "content": "## Gate 3 establishes the first Java performance baseline. It asserts no threshold.\n\nNo numeric latency, throughput, availability or capacity figure exists anywhere in the\nlegacy estate - not in the COBOL, not in the job streams, not in the CICS resource\ndefinitions - so there is nothing here for a panel to be checked against. **These panels\nmeasure.** Recorded figures are written up in `docs/gate-evidence.md`.\n\n### Where each of the three figures the gate names is read\n\n| Gate 3 figure | Where the QUOTABLE figure comes from | What this dashboard shows instead |\n| --- | --- | --- |\n| Elapsed time | The run's own job execution, measured by the Gate 3 measurement | *Batch job elapsed time* and *Batch step elapsed time*, which read the same framework timer over the display window - useful for the shape of a run, never the quoted number |\n| Peak memory | The JVM's own per-pool peak accounting, reset immediately before the measured run | *Peak heap across scraped samples*, a maximum over scrapes - a peak between two scrapes is invisible to it |\n| Records per second | The run's record count divided by that run's own elapsed time | *Application records per second (rolling rate)*, which divides by the rate window instead, so a job that finishes inside the window reads low |\n\n**No panel on this dashboard is the Gate 3 figure.** Each of the three is measured per run by\n`InterestCalculationJobIT`'s Gate 3 measurement, through\n`support/RunScopedPerformanceRecorder`, which writes the figures to\n`target/gate-evidence/` for a person to copy into `docs/gate-evidence.md` beside the date and the\nmachine the run was taken on. The panels above corroborate a figure; they do not produce it.\n`docs/decision-log.md` DL-182 records why.\n\n### Quote every figure alongside the fixture volumes it was measured over\n\n- **Daily transactions - 300 records, 105,300 bytes.** 250 point-of-sale purchases and\n  50 operator-originated returns, so both signed directions of the balance computation\n  are exercised. All 300 carry the same processing date and the same timestamp, so\n  date-window filtering has to be exercised by a separately constructed fixture rather\n  than by this input.\n- **Accounts - 50 records.**\n- **Transaction-category balances - 50 records.** The interest run's driving set.\n- **Disclosure groups - 51 records.** Three complete groups, one of which is the default\n  group, which is what makes both the direct-hit and the fallback branch of the interest\n  lookup reachable from seeded data alone.\n\nA number taken from these panels without those volumes beside it is not a baseline.\n\n### Batch rows are empty until a job is launched\n\n`spring.batch.job.enabled` is `false`, so no job runs at application startup. Spring\nBatch series come into existence only once a job has been launched through the module's\nbatch job launch endpoint. The application-registered meters row behaves the same way,\nbecause a Micrometer meter is created on first use. **An empty panel before the first\nrun is expected, not a defect.**\n\n### The boundary row answers a different question from every row above it\n\nThe rows above ask how the request surface, the batch steps and the runtime are behaving.\nThe boundary row asks whether this module's conversations with everything OUTSIDE itself\nare working: the FIFO queue the report submission publishes to, the topic a completed job\nannounces on, the object store batch artifacts are staged through, the control plane that\nlaunches and inspects jobs, and every refusal that happens before a caller is\nauthenticated - an oversized request body, an expired retry token, a wrong management\ncredential. Review found none of them charted, so each was measured and none was visible.\n\nRead that row when something outside this process is suspected. The outcome dimension is\nMicrometer's `error` label on the observation-derived panels - `none` on success, the\nfailure's type name otherwise - and the call site's own `outcome` or `reason` tag on the\nrest. A required inventory of those families is asserted by\n`GrafanaDashboardMetricsContractTest`, in both directions: a family with no panel fails\nthe build, and so does a panel reading a name the exporter does not publish.\n`docs/decision-log.md` DL-313 records why one direction was not enough.\n\n### Why there is no threshold, no limit line and no alert rule here\n\nPercentiles, rates and windowed peaks are instrumentation. A boundary drawn across one\nof them would be a service level, and this migration is expressly forbidden from\ninventing one. `refresh` and `time` are display cadence and display window - viewing\npreferences, not limits.\n\n### Provenance\n\nLegacy estate checkout SHA `7756d895ffeb65f7ea72aaa609e356d9899afcec`; upstream release\nstamp `CardDemo_v1.0-15-g27d6c6f-68` (2022-07-19), the designated provenance identifier\nfor this migration. Traceability is by citation - path and line number - and no legacy\nsource text is reproduced anywhere in this module.\n",
         "mode": "markdown"
       },
       "pluginVersion": "11.6.6",
@@ -2891,6 +2891,1256 @@
         }
       ],
       "title": "Active job executions",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The panels above cover the request surface, the batch steps and the runtime. This row covers the BOUNDARIES: the queue this module publishes to, the notification topic it announces on, the object store it stages through, the control plane that launches and inspects jobs, the turn that submits a report, and every refusal that happens before a caller is authenticated. Review found the dashboard charted none of them, so a failing queue publish, a shed notification, a refused management credential and a lost trace batch were all invisible to a reader of this dashboard even though each was measured. Every panel here reads a meter this module's own code registers, so each is EXPECTED to be empty until its path has run. On the observation-derived panels the outcome dimension is the 'error' label, which Micrometer sets to 'none' on success and to the failure's simple type name otherwise - verified against a real registration rather than assumed. See docs/decision-log.md entry DL-313.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 124
+      },
+      "id": 34,
+      "panels": [],
+      "title": "Boundary telemetry - every outbound, inbound and control-plane meter this module registers itself",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "One observation per job-submission card published to the FIFO queue, which is the estate's single online-to-batch bridge. The error label carries the outcome: 'none' is a delivered card and any other value names the failure type. A non-none series here means a report submission left the queue half-published, which is the condition the publish path treats as non-fatal and reports rather than raising - so this panel is the only place it becomes visible. The queue name, the submission identifier and the card ordinal travel as high-cardinality key values and are deliberately NOT meter tags, so this series cannot grow with traffic.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 125
+      },
+      "id": 35,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (error) (rate(carddemo_job_submission_publish_seconds_count{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Outbound queue publish - rate by outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Maximum and mean time to publish one card, split by outcome. A rising maximum with a flat mean is the signature of an occasional slow call rather than a degraded queue.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 125
+      },
+      "id": 36,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (error) (carddemo_job_submission_publish_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{error}} max",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (error) (carddemo_job_submission_publish_seconds_sum{job=\"$job\"}) / sum by (error) (carddemo_job_submission_publish_seconds_count{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{error}} mean",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Outbound queue publish elapsed time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The delivery count and the loss count side by side, which is the only pair that answers what fraction of completions were actually announced. Losses are counted by reason: a notification displaced from a full pending queue, one offered after the notifier closed, and one abandoned at shutdown are three different operational faults. The channel is deliberately lossy - a completion notification must never hold up a job - so a non-zero loss series is information rather than an error, and its absence from this dashboard was what made the losses silent.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 133
+      },
+      "id": 37,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (error) (rate(carddemo_job_completion_publish_seconds_count{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "announced {{error}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (rate(carddemo_job_completion_shed_total{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "lost {{reason}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Job-completion notification - announced against lost",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "One observation per call this module makes to the object store that replaces the sequential-dataset staging of the legacy job streams, split by operation, by which store implementation answered, and by outcome. The object key travels as a high-cardinality key value and is not a tag.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 133
+      },
+      "id": 38,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, store, error) (rate(carddemo_batch_staging_seconds_count{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{operation}} / {{store}} {{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Batch staging store calls by operation and outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The versioned-object operations the statement and report publication path performs - listing, uploading, enumerating versions and deleting a version. The delete series is the compensation path: it runs when a publication fails after bytes were already sent, so a delete rate above zero with an upload failure beside it is the ledger doing its job rather than a fault.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 141
+      },
+      "id": 39,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, error) (rate(carddemo_batch_generation_seconds_count{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{operation}} {{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Generation store calls by operation and outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The left axis is how long the durable artifact boundary took per job; the counter series is the authoritative terminal verdict, counted only after that boundary completed. The verdict carries the PERSISTED status, the status the framework observation saw, and whether publication was not required, published, failed or skipped - which is why a job can read COMPLETED to the framework and FAILED here.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 141
+      },
+      "id": 40,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (job, artifacts, error) (carddemo_batch_job_publication_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "publish {{job}} {{artifacts}} {{error}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (status, publication) (increase(carddemo_batch_job_terminal_total{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "verdict {{status}} / {{publication}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Durable publication elapsed time, and terminal job verdicts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The control plane. One series per job and outcome for a launch request and for a status request, so a caller repeatedly asking for a job that does not exist, or repeatedly failing validation, is visible without reading a log. The job label is bounded to the allow-list plus one placeholder for anything outside it, so an unknown job name cannot create a series.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 149
+      },
+      "id": 41,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, outcome) (rate(carddemo_batch_joblaunch_request_seconds_count{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "launch {{job}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, outcome) (rate(carddemo_batch_jobstatus_request_seconds_count{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "status {{job}} {{outcome}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Job launch and status requests by outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Maximum and mean turn time for the two control-plane operations. A launch is asynchronous, so this measures the time to accept and start an execution rather than the time to run it - the job elapsed time panel above is where a run's duration is read.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 149
+      },
+      "id": 42,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (job, outcome) (carddemo_batch_joblaunch_request_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "launch {{job}} {{outcome}} max",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (job, outcome) (carddemo_batch_jobstatus_request_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "status {{job}} {{outcome}} max",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Job launch and status request elapsed time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "One observation per turn of the report-request transaction, split by the outcome it reached and the reporting period it resolved - monthly, yearly or a custom range. Beside it, the retry tokens the turn refused: a token whose five-minute validity had expired, and a token this deployment did not issue. The second series is the interesting one, because it distinguishes a caller retrying too late from a caller presenting something forged.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 157
+      },
+      "id": 43,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (outcome, period) (rate(carddemo_online_reportrequest_turn_seconds_count{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "turn {{outcome}} / {{period}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (rate(carddemo_online_reportrequest_retrytoken_refused_total{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "refused token {{reason}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Report-request turns by outcome and period, and refused retry tokens",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The observation-derived active-job meter, which carries a dimension the framework's own active meter does not: the job's status alongside its name. It exists under this name because both meters would otherwise collide on one Prometheus name with two different tag-key sets, and the framework's is the one the panel above reads. Every series reads zero until an execution is running. The second series is how long the longest currently-active execution has been running, which is the reading that distinguishes a job that is progressing from one that is wedged - a count alone cannot.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 157
+      },
+      "id": 44,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (carddemo_batch_job_observed_active_seconds_count{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_job_name}} / {{spring_batch_job_status}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (spring_batch_job_name, spring_batch_job_status) (carddemo_batch_job_observed_active_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_job_name}} / {{spring_batch_job_status}} longest running",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Observed active job executions by job and status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Three refusal counters that all describe something rejected at the edge. A request body refused for exceeding the configured ceiling, by whether the declared length or the streamed length exceeded it and by folded method. And every presentation of the management credential, by outcome: established, a wrong credential, or a credential offered where no operator identity is configured at all. A refused series with no rotation behind it is somebody probing; a refused series that starts where a rotation happened is a collector that was not updated. The surface is deliberately not locked out on repeated failure, so this counter is how an attempt becomes visible.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 165
+      },
+      "id": 45,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason, method) (rate(carddemo_http_request_refused_total{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "body refused {{reason}} / {{method}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (outcome) (rate(carddemo_management_authentication_total{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "management {{outcome}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Refusals before authentication, and management-surface credentials",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The replacement for the exporter's own log output, which was switched off because both transports compose their failure text out of the COLLECTOR's response - making an outbound telemetry channel an inbound one. This counts SPANS rather than batches, so the lost series reads directly as spans that never reached the collector. A rising lost series means the trace baseline is being measured on partial data, which is exactly the thing a silent exporter used to hide.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 165
+      },
+      "id": 46,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (outcome) (rate(carddemo_tracing_export_total{job=\"$job\"}[5m]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Trace spans exported against spans lost",
       "type": "timeseries"
     }
   ],

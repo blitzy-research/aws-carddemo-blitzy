@@ -359,11 +359,11 @@ public final class StatementHtmlTemplates {
      * Builds the account-number heading record: opening literal, the account identifier fitted to its
      * twenty-byte field, then the closing literal, padded out to the record width.
      *
-     * @param  accountNumber the account identifier; may be shorter than its field, in which case the
-     *                       move pads it, and is narrowed to ASCII digits and the ASCII space
+     * @param  accountId the account identifier; may be shorter than its field, in which case the move
+     *                   pads it, and is narrowed to ASCII digits and the ASCII space
      * @return one record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes, with no line terminator
-     * @throws NullPointerException     if {@code accountNumber} is {@code null}
-     * @throws IllegalArgumentException if {@code accountNumber} carries anything but digits and spaces
+     * @throws NullPointerException     if {@code accountId} is {@code null}
+     * @throws IllegalArgumentException if {@code accountId} carries anything but digits and spaces
      */
     public static String accountNumberLine(final String accountId) {
         Objects.requireNonNull(accountId, "accountId must not be null");
@@ -453,10 +453,10 @@ public final class StatementHtmlTemplates {
      * Builds the transaction work line by wrapping the transaction text, as it arrives, in the tags
      * the legacy statement writes, then fitting the result to the record width.
      *
-     * @param  transactionText the transaction text; must be printable US-ASCII
+     * @param  value the transaction text; must be printable US-ASCII
      * @return one record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes, with no line terminator
-     * @throws NullPointerException     if {@code transactionText} is {@code null}
-     * @throws IllegalArgumentException if {@code transactionText} is not printable US-ASCII
+     * @throws NullPointerException     if {@code value} is {@code null}
+     * @throws IllegalArgumentException if {@code value} is not printable US-ASCII
      */
     public static String transactionWorkLine(final String value) {
         Objects.requireNonNull(value, "value must not be null");

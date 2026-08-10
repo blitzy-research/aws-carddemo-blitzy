@@ -440,6 +440,13 @@ public class InterestCalculationProcessor
     /** The zoned-decimal zero at the monetary scale, used to seed a group's running total. */
     private static final BigDecimal ZERO_MONETARY = ZonedDecimalCodec.toMonetaryScale(BigDecimal.ZERO);
 
+    /**
+     * Legacy name of the group's running-total receiving field, {@code app/cbl/CBACT04C.cbl} line 169,
+     * declared {@code PIC S9(09)V99}. Named so the re-derived total is stored into the same geometry the
+     * service stored it into, which is what lets the two be compared for equality at all.
+     */
+    private static final String FIELD_WS_TOTAL_INT = "WS-TOTAL-INT";
+
     /** The fill character of a right-justified zero-filled numeric move. */
     private static final char ZERO_FILL = '0';
 
@@ -779,7 +786,7 @@ public class InterestCalculationProcessor
                 + " category-balance row, which the framework contract forbids");
         final String accountId = requiredAccountKey(item);
 
-        // Line 192: ADD 1 TO WS-RECORD-COUNT, before any control-break decision.
+        // Line 192 adds 1 to WS-RECORD-COUNT, before any control-break decision.
         current.countRecord();
         this.rowsReadCounter.increment();
 
@@ -1504,7 +1511,8 @@ public class InterestCalculationProcessor
                 continue;
             }
             // Line 467: ADD WS-MONTHLY-INT TO WS-TOTAL-INT, one already-truncated addend at a time.
-            running = ZonedDecimalCodec.toMonetaryScale(running.add(row.monthlyInterest()));
+            running = ZonedDecimalCodec.storeIntoMonetary(running.add(row.monthlyInterest()),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_WS_TOTAL_INT);
             minted++;
             lastSuffix = row.tranIdSuffix();
         }

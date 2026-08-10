@@ -17,8 +17,8 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
@@ -160,6 +160,22 @@ import java.util.List;
  * card-list screen's indicator is a differently named item of width 3, and the two are deliberately
  * not unified.</p>
  *
+ * <p><strong>The ten identifiers the previous page displayed are not a component of this contract,
+ * and no component may be added to carry them.</strong> The legacy program does read them back, from
+ * the ten row-value items of the map it had just sent, and pairs each with the selector beside it to
+ * learn which transaction the operator marked. Reproducing that literally over HTTP would make the
+ * identity of the selected transaction a value the submitter states rather than one the server
+ * established: a submission could mark row three and name any sixteen-character identifier as the
+ * one supposedly displayed there, and the hand-off to the transaction-view screen would carry it.
+ * A 3270 map echo travels back from a device the region itself painted; a request body does not.
+ * The identifier is therefore re-established server-side from the browse cursor this contract does
+ * carry - the page the cursor names is re-read and the marked slot's identifier is taken from that
+ * read - which is behaviourally identical for a submission that echoes honestly and is the only
+ * behaviour available to one that does not. The re-read belongs to {@code TransactionListService}, so
+ * this record holds no identifier list, no slot-to-identifier pairing and no continuation state of
+ * any kind; decision log entry DL-299 records the divergence and why it is a labelled improvement on
+ * the legacy posture rather than a change of behaviour.</p>
+ *
  * <p><strong>Backward paging inverts the fill order, and this record does not participate.</strong>
  * The backward paragraph begins at line 333, seeds the row index to the last row at line 349, and
  * walks upward from the bottom row to the top in the loop at lines 351 to 357, reading backward at
@@ -294,11 +310,13 @@ import java.util.List;
  */
 public record TransactionListRequest(
         @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH) String transactionIdFilter,
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+        @Size(max = TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH) String displayedPageNumber,
         @Size(max = TransactionListRequest.ROW_SELECTOR_COUNT)
                 List<@Size(max = TransactionListRequest.ROW_SELECTOR_LENGTH) String> rowSelectors,
         KeyAction keyAction,
         @Valid NavigationContext navigationContext,
-        @Valid ScreenContinuation continuation) {
+        @Valid PageMetadata.PageCursorRequest pageMetadata) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -391,71 +409,6 @@ public record TransactionListRequest(
      */
     public static final int ROW_SELECTOR_COUNT = 10;
 
-    /** Width of each displayed transaction identifier retained in the continuation. */
-    public static final int DISPLAYED_TRANSACTION_ID_LENGTH = TRANSACTION_ID_FILTER_LENGTH;
-
-    /** Maximum displayed identifiers retained in one continuation. */
-    public static final int DISPLAYED_TRANSACTION_ID_COUNT = ROW_COUNT;
-
-    /**
-     * Compatibility constructor for callers that carry the split paging shape, in which the displayed
-     * page number and the cursor pair arrive as two separate components rather than inside one
-     * continuation.
-     *
-     * <p>The two are folded into a {@link ScreenContinuation}: when both are absent the continuation is
-     * {@code null}, which is the shape of a first entry; otherwise a continuation is assembled from the
-     * cursor pair's previous key, next key and direction together with the page number, with the
-     * next-page flag cleared and no displayed identifiers carried. Every other component is passed
-     * straight to the canonical constructor, whose contract is the authority for it.
-     *
-     * @param transactionIdFilter the echoed transaction-identifier filter, as transmitted
-     * @param displayedPageNumber the page number the screen displayed, or {@code null} when none was
-     *                            displayed
-     * @param rowSelectors        the ten row selectors as transmitted; {@code null} becomes the empty
-     *                            sequence
-     * @param keyAction           the decoded attention key
-     * @param navigationContext   the navigation state the client echoed back
-     * @param pageMetadata        the cursor pair the screen carried, or {@code null} when none was
-     *                            carried
-     */
-    public TransactionListRequest(final String transactionIdFilter,
-                                  final String displayedPageNumber,
-                                  final List<String> rowSelectors,
-                                  final KeyAction keyAction,
-                                  final NavigationContext navigationContext,
-                                  final PageMetadata.PageCursorRequest pageMetadata) {
-        this(transactionIdFilter, rowSelectors, keyAction, navigationContext,
-                pageMetadata == null && displayedPageNumber == null
-                        ? null
-                        : new ScreenContinuation(
-                                pageMetadata == null ? null : pageMetadata.previousCursorKey(),
-                                pageMetadata == null ? null : pageMetadata.nextCursorKey(),
-                                pageMetadata == null ? null : pageMetadata.direction(),
-                                displayedPageNumber,
-                                false,
-                                List.of()));
-    }
-
-    /**
-     * Compatibility view of the split page-number component.
-     *
-     * @return the page number the continuation carries, or {@code null} when this request carries no
-     *         continuation at all
-     */
-    public String displayedPageNumber() {
-        return continuation == null ? null : continuation.displayedPageNumber();
-    }
-
-    /**
-     * Compatibility view of the split cursor component.
-     *
-     * @return the previous-key, next-key and direction triple the continuation carries, or {@code null}
-     *         when this request carries no continuation at all
-     */
-    public PageMetadata.PageCursorRequest pageMetadata() {
-        return continuation == null ? null : continuation.pageCursor();
-    }
-
     /**
      * Canonical constructor. Detaches the selector sequence from the caller and leaves every other
      * component exactly as supplied.
@@ -493,95 +446,6 @@ public record TransactionListRequest(
             throw new IllegalArgumentException("rowSelectors may hold at most " + ROW_COUNT
                     + " entries, because that is how many row families the transaction-list screen"
                     + " declares, but it holds " + rowSelectors.size());
-        }
-    }
-
-    /**
-     * Complete bounded state of the page the client is resubmitting.
-     *
-     * @param previousCursorKey first identifier displayed on the page
-     * @param nextCursorKey last identifier displayed on the page
-     * @param direction direction in which the page was reached
-     * @param displayedPageNumber fixed-width page-number image
-     * @param nextPageAvailable whether the look-ahead read found another page
-     * @param displayedTransactionIds identifiers displayed in row order
-     */
-    public record ScreenContinuation(
-            @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH)
-                    String previousCursorKey,
-            @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH)
-                    String nextCursorKey,
-            PageMetadata.PagingDirection direction,
-            @Size(max = TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH)
-            @Pattern(regexp = PageMetadata.RETAINED_PAGE_NUMBER_PATTERN) String displayedPageNumber,
-            boolean nextPageAvailable,
-            @Size(max = TransactionListRequest.ROW_COUNT)
-                    List<@Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH)
-                            String> displayedTransactionIds) {
-
-        public ScreenContinuation {
-            displayedTransactionIds = displayedTransactionIds == null
-                    ? List.of()
-                    : List.copyOf(displayedTransactionIds);
-            if (displayedTransactionIds.size() > ROW_COUNT) {
-                throw new IllegalArgumentException("displayedTransactionIds may hold at most "
-                        + ROW_COUNT + " entries");
-            }
-        }
-
-        public static ScreenContinuation empty() {
-            return new ScreenContinuation(null, null, null, null, false, List.of());
-        }
-
-        public PageMetadata.PageCursorRequest pageCursor() {
-            return new PageMetadata.PageCursorRequest(previousCursorKey, nextCursorKey, direction,
-                    displayedPageNumber, nextPageAvailable);
-        }
-
-        /**
-         * Reads the retained page indicator as a number, answering zero for anything that is not one.
-         *
-         * <p><strong>Total by construction, and that is the point.</strong> The indicator is a fixed-width
-         * screen item that a client echoes back, so it arrives with whatever padding its field carried, and
-         * the value the legacy program's own initialisation leaves in it is not a number at all. A parse
-         * that could throw would turn an echoed screen item into a server fault, which is a failure mode
-         * the legacy screen has no counterpart for: it reads the item, finds it unusable, and carries on
-         * from its own state. The declared pattern already refuses an internally spaced value at the
-         * boundary; this answers zero for every remaining shape - absent, empty, all spaces, or wider than
-         * a page indicator can be - so the two together make a fault unreachable rather than merely
-         * unlikely.
-         *
-         * @return the retained page number, or zero when the indicator carries none
-         */
-        public int currentPageNumber() {
-            if (displayedPageNumber == null) {
-                return 0;
-            }
-            final String numericImage = displayedPageNumber.strip();
-            if (numericImage.isEmpty() || numericImage.length() > DISPLAYED_PAGE_NUMBER_LENGTH) {
-                return 0;
-            }
-            int accumulated = 0;
-            for (int index = 0; index < numericImage.length(); index++) {
-                final char digit = numericImage.charAt(index);
-                if (digit < '0' || digit > '9') {
-                    return 0;
-                }
-                accumulated = accumulated * 10 + (digit - '0');
-            }
-            return accumulated;
-        }
-
-        @Override
-        public String toString() {
-            return "ScreenContinuation["
-                    + "previousCursorKey=" + REDACTION_PLACEHOLDER
-                    + ", nextCursorKey=" + REDACTION_PLACEHOLDER
-                    + ", direction=" + direction
-                    + ", displayedPageNumber=" + displayedPageNumber
-                    + ", nextPageAvailable=" + nextPageAvailable
-                    + ", displayedTransactionIds=" + REDACTION_PLACEHOLDER
-                    + "]";
         }
     }
 
@@ -624,10 +488,11 @@ public record TransactionListRequest(
     public String toString() {
         return "TransactionListRequest["
                 + "transactionIdFilter=" + REDACTION_PLACEHOLDER
+                + ", displayedPageNumber=" + displayedPageNumber
                 + ", rowSelectors=" + rowSelectors
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + navigationContext
-                + ", continuation=" + REDACTION_PLACEHOLDER
+                + ", pageMetadata=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 }

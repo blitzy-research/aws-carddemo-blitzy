@@ -277,6 +277,24 @@ public class TransactionPostingService {
      */
     private static final BigDecimal INITIALIZED_CATEGORY_BALANCE = new BigDecimal("0.00");
 
+    /** Legacy name of the working-storage receiving field of the overlimit test, line 187. */
+    private static final String FIELD_WS_TEMP_BAL = "WS-TEMP-BAL";
+
+    /** Legacy name of the category-balance receiving field, {@code app/cpy/CVTRA01Y.cpy} line 9. */
+    private static final String FIELD_TRAN_CAT_BAL = "TRAN-CAT-BAL";
+
+    /** Legacy name of the posted transaction amount, {@code app/cpy/CVTRA05Y.cpy} line 14. */
+    private static final String FIELD_TRAN_AMT = "TRAN-AMT";
+
+    /** Legacy name of the account balance, {@code app/cpy/CVACT01Y.cpy}. */
+    private static final String FIELD_ACCT_CURR_BAL = "ACCT-CURR-BAL";
+
+    /** Legacy name of the cycle credit accumulator, {@code app/cpy/CVACT01Y.cpy}. */
+    private static final String FIELD_ACCT_CURR_CYC_CREDIT = "ACCT-CURR-CYC-CREDIT";
+
+    /** Legacy name of the cycle debit accumulator, {@code app/cpy/CVACT01Y.cpy}. */
+    private static final String FIELD_ACCT_CURR_CYC_DEBIT = "ACCT-CURR-CYC-DEBIT";
+
     /** Divisor turning a nanosecond-of-second into the two-digit hundredths field of line 700. */
     private static final int NANOS_PER_HUNDREDTH = 10_000_000;
 
@@ -298,7 +316,7 @@ public class TransactionPostingService {
     /** Length of the ten-character date prefix the expiry comparison uses at line 414. */
     private static final int EXPIRY_COMPARISON_LENGTH = 10;
 
-    /** The blank a fixed-width alphanumeric field is padded with, as {@code MOVE SPACES} leaves it. */
+    /** The blank a fixed-width alphanumeric field is padded with, as a blanking move leaves it. */
     private static final char COBOL_SPACE = ' ';
 
     private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
@@ -666,7 +684,7 @@ public class TransactionPostingService {
      */
     private PostingResult postOneRecord(final DailyTransaction record) {
 
-        // Lines 208 to 209: MOVE 0 TO the fail reason, MOVE SPACES TO its description. Per record,
+        // Lines 208 to 209 zero the fail reason and blank its description. Per record,
         // every record, before anything is looked at.
         int reasonCode = NO_REJECT_REASON_CODE;
         String reasonDescription = BLANK_FAIL_REASON_DESCRIPTION;
@@ -675,7 +693,7 @@ public class TransactionPostingService {
         reasonCode = reasonCodeOf(validated.rejectReason());
         reasonDescription = reasonDescriptionOf(validated.rejectReason());
 
-        // Line 211: IF WS-VALIDATION-FAIL-REASON = 0 - post; otherwise the mainline rejects.
+        // Line 211 tests the fail reason for zero - post; otherwise the mainline rejects.
         if (reasonCode == NO_REJECT_REASON_CODE) {
             return postTransaction(record, validated.crossReference(), validated.account());
         }
@@ -724,7 +742,7 @@ public class TransactionPostingService {
      * <p>Published because the acquisition of the sequential input is delegated: the framework opens the
      * reader around the step, so the failure surfaces there and not inside the driving loop. The
      * diagnostic nevertheless belongs to this program, which is why it is produced here and not
-     * reinvented at the call site - {@code DISPLAY 'ERROR OPENING DALYTRAN'}, then
+     * reinvented at the call site - the {@code ERROR OPENING DALYTRAN} diagnostic, then
      * {@code 9910-DISPLAY-IO-STATUS} with the {@code NNNN} image of the raw status, then
      * {@code 9999-ABEND-PROGRAM} with abend code 999. Without this the caller can only report the
      * framework's own "reader is in 'strict' mode" message, which names neither the data definition nor
@@ -776,7 +794,7 @@ public class TransactionPostingService {
 
     /**
      * {@code 0400-ACCTFILE-OPEN}, lines 309 to 325: acquires the account master for update - the
-     * legacy {@code OPEN I-O} - whose failure literal is {@code ERROR OPENING ACCOUNT MASTER FILE}.
+     * legacy input-output open - whose failure literal is {@code ERROR OPENING ACCOUNT MASTER FILE}.
      */
     private void openAccountUpdate() {
         announceAcquired(OPEN_IO, ACCTFILE_DD);
@@ -917,7 +935,7 @@ public class TransactionPostingService {
     private ValidationOutcome validateTransaction(final DailyTransaction record) {
         final ValidationOutcome afterCardLookup = lookupCrossReference(record);
 
-        // Line 372: IF WS-VALIDATION-FAIL-REASON = 0.
+        // Line 372 tests the fail reason for zero.
         if (reasonCodeOf(afterCardLookup.rejectReason()) == NO_REJECT_REASON_CODE) {
             return lookupAccount(record, afterCardLookup.crossReference());
         }
@@ -1020,19 +1038,24 @@ public class TransactionPostingService {
      * makes the arithmetic non-associative. Two algebraically identical orderings can therefore differ
      * by a cent, and a cent decides whether this record is rejected as over limit.
      *
-     * <p>The scaling is the codec's, never this class's, so the truncating policy is applied in exactly
-     * one place in the module.
+     * <p>The store is the codec's, never this class's, so the truncating policy is applied in exactly
+     * one place in the module. It is the <em>storing</em> form rather than the scaling one: the receiving
+     * field declares nine integer digits, and a store into it drops surplus high-order digits as silently
+     * as it drops surplus fractional ones. The cycle accumulators are ten-digit fields, so a sum of two
+     * of them plus an amount can exceed nine digits, and what the overlimit test must measure is the
+     * value this nine-digit field would actually have held.
      *
      * @param  account the account whose cycle totals are being measured
      * @param  record  the record whose amount is being added
-     * @return the temporary balance at scale two
+     * @return the temporary balance as the nine-integer-digit receiving field holds it
      */
     private static BigDecimal computeTemporaryBalance(final Account account,
             final DailyTransaction record) {
         final BigDecimal leftToRight = account.getAcctCurrCycCredit()
                 .subtract(account.getAcctCurrCycDebit())
                 .add(record.getDalytranAmt());
-        return ZonedDecimalCodec.toMonetaryScale(leftToRight);
+        return ZonedDecimalCodec.storeIntoMonetary(leftToRight,
+                ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_WS_TEMP_BAL);
     }
 
     /**
@@ -1135,7 +1158,8 @@ public class TransactionPostingService {
                 record.getDalytranCatCd(),
                 record.getDalytranSource(),
                 record.getDalytranDesc(),
-                ZonedDecimalCodec.toMonetaryScale(record.getDalytranAmt()),
+                ZonedDecimalCodec.storeIntoMonetary(record.getDalytranAmt(),
+                        ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_TRAN_AMT),
                 // The four prefixed-to-unprefixed merchant moves of lines 431 to 434.
                 record.getDalytranMerchantId(),
                 record.getDalytranMerchantName(),
@@ -1236,7 +1260,7 @@ public class TransactionPostingService {
             createFlag = CREATE_FLAG_SET;
         }
 
-        // Lines 495 to 499: IF WS-CREATE-TRANCAT-REC = 'Y' create, ELSE update.
+        // Lines 495 to 499 create when the create flag is 'Y' and update otherwise.
         if (CREATE_FLAG_SET.equals(createFlag)) {
             return createCategoryBalanceRecord(record, crossReference);
         }
@@ -1259,8 +1283,9 @@ public class TransactionPostingService {
      */
     private TransactionCategoryBalance createCategoryBalanceRecord(final DailyTransaction record,
             final CardCrossReference crossReference) {
-        final BigDecimal balance = ZonedDecimalCodec.toMonetaryScale(
-                INITIALIZED_CATEGORY_BALANCE.add(record.getDalytranAmt()));
+        final BigDecimal balance = ZonedDecimalCodec.storeIntoMonetary(
+                INITIALIZED_CATEGORY_BALANCE.add(record.getDalytranAmt()),
+                ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_TRAN_CAT_BAL);
 
         final TransactionCategoryBalance created = new TransactionCategoryBalance(
                 crossReference.getXrefAcctId(),
@@ -1291,8 +1316,9 @@ public class TransactionPostingService {
      */
     private TransactionCategoryBalance updateCategoryBalanceRecord(final DailyTransaction record,
             final TransactionCategoryBalance existing) {
-        existing.setTranCatBal(ZonedDecimalCodec.toMonetaryScale(
-                existing.getTranCatBal().add(record.getDalytranAmt())));
+        existing.setTranCatBal(ZonedDecimalCodec.storeIntoMonetary(
+                existing.getTranCatBal().add(record.getDalytranAmt()),
+                ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_TRAN_CAT_BAL));
 
         return saveCategoryBalance(existing, REWRITE_TCATBALF_FAILURE, REWRITE);
     }
@@ -1376,21 +1402,26 @@ public class TransactionPostingService {
             final Account account) {
         final BigDecimal amount = record.getDalytranAmt();
 
-        // Line 547: ADD DALYTRAN-AMT TO ACCT-CURR-BAL.
-        final BigDecimal currentBalance =
-                ZonedDecimalCodec.toMonetaryScale(account.getAcctCurrBal().add(amount));
+        // Line 547: ADD DALYTRAN-AMT TO ACCT-CURR-BAL. The three receiving fields here declare ten
+        // integer digits, so the store is taken at that width rather than at the nine the working-storage
+        // fields of this program use.
+        final BigDecimal currentBalance = ZonedDecimalCodec.storeIntoMonetary(
+                account.getAcctCurrBal().add(amount),
+                ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_10_V99, FIELD_ACCT_CURR_BAL);
         BigDecimal currentCycleCredit = account.getAcctCurrCycCredit();
         BigDecimal currentCycleDebit = account.getAcctCurrCycDebit();
 
         if (amount.compareTo(BigDecimal.ZERO) >= 0) {
             // Line 549: a non-negative amount joins the cycle credit.
-            currentCycleCredit = ZonedDecimalCodec.toMonetaryScale(
-                    account.getAcctCurrCycCredit().add(amount));
+            currentCycleCredit = ZonedDecimalCodec.storeIntoMonetary(
+                    account.getAcctCurrCycCredit().add(amount),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_10_V99, FIELD_ACCT_CURR_CYC_CREDIT);
         } else {
             // Line 551: a negative amount joins the cycle debit UNCHANGED - not negated, not made
             // absolute - so the debit total goes negative. Deliberate and legacy-faithful.
-            currentCycleDebit = ZonedDecimalCodec.toMonetaryScale(
-                    account.getAcctCurrCycDebit().add(amount));
+            currentCycleDebit = ZonedDecimalCodec.storeIntoMonetary(
+                    account.getAcctCurrCycDebit().add(amount),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_10_V99, FIELD_ACCT_CURR_CYC_DEBIT);
         }
 
         // Establish, under a write lock and BEFORE the rewrite, whether the row the rewrite is about to
@@ -1606,7 +1637,7 @@ public class TransactionPostingService {
         final char firstByte = status.charAt(0);
         final char secondByte = status.charAt(1);
 
-        // Lines 715 to 716: IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'.
+        // Lines 715 to 716 test the status for non-numeric content or a leading '9'.
         if (!isNumeric(status) || firstByte == NON_STANDARD_STATUS_FIRST_BYTE) {
             // Lines 717 to 720: the first byte verbatim, then the second byte's binary value as three
             // digits, which is what moving one byte into the low half of a binary halfword yields.
@@ -1614,7 +1645,7 @@ public class TransactionPostingService {
                     + String.format(Locale.ROOT, "%03d", (int) secondByte);
         }
 
-        // Lines 723 to 724: MOVE '0000', then the status into positions three and four.
+        // Lines 723 to 724 carry '0000', then the status into positions three and four.
         return STANDARD_STATUS_IMAGE_PREFIX + status;
     }
 

@@ -358,11 +358,14 @@ final class ContainerHardeningContractTest {
         // this is asserted rather than left to the next person's judgement.
         //
         // THE TRANSPORT. The probe used to send plaintext unconditionally while the transport is a profile
-        // decision, so a TLS-enabled process was reported unhealthy. It now switches on
-        // SERVER_SSL_ENABLED - the same relaxed-binding form Spring Boot itself binds to
-        // server.ssl.enabled, so the server and its probe read ONE switch and cannot drift - and speaks
-        // TLS through openssl, which the pinned runtime image already ships, so no package and no CVE
-        // surface is added.
+        // decision, so a TLS-enabled process was reported unhealthy. The revision after that branched on
+        // the environment variable SERVER_SSL_ENABLED and defaulted to plaintext, which reads as safe and
+        // is not: application-prod.yml enables transport security as a literal in YAML and exports no
+        // variable at all, so a prod container took the plaintext default against a TLS listener and was
+        // reported unhealthy for its whole life. The probe now OBSERVES the listener - it carries both a
+        // plaintext attempt and a TLS attempt and passes when either returns a 200 status line - and uses
+        // the variable only to order them. TLS is spoken through openssl, which the pinned runtime image
+        // already ships, so no package and no CVE surface is added.
         //
         // THE GROUP. Asking for the aggregate made the probe's own duration a function of four external
         // services under a five-second timeout, and let successive probes overlap. The liveness group
@@ -384,11 +387,56 @@ final class ContainerHardeningContractTest {
                 .contains("/actuator/health/liveness")
                 .as("and never the aggregate, whose duration depends on other services")
                 .doesNotContain("GET /actuator/health HTTP")
-                .as("the transport is read rather than assumed, from the switch the server reads")
-                .contains("SERVER_SSL_ENABLED")
-                .as("and the TLS branch speaks TLS, using the tool the runtime image already ships")
+                .as("the plaintext attempt exists, over the interpreter feature named above")
+                .contains("/dev/tcp/127.0.0.1/${port}")
+                .as("and the TLS attempt exists too, using the tool the runtime image already ships")
                 .contains("openssl s_client")
-                .as("a 200 status line is the pass condition on both branches")
+                .as("a 200 status line is the pass condition on both attempts")
                 .contains("^HTTP/1\\\\.[01] 200");
+    }
+
+    @Test
+    @DisplayName("the image probe establishes the transport by observing the listener, so the production "
+            + "profile's TLS setting cannot leave a healthy container reported unhealthy")
+    void theImageProbeCannotDisagreeWithTheProductionTransport() throws IOException {
+        // THE DEFECT THIS PINS, stated as the sequence that produced it. The probe branched on the
+        // environment variable SERVER_SSL_ENABLED and defaulted to plaintext. application-prod.yml enables
+        // in-JVM transport security by writing `enabled: true` as a literal under server.ssl, and it
+        // exports no variable - a configuration key and an environment variable are not the same thing. So
+        // a container running that profile with nothing else exported probed a TLS listener in plaintext,
+        // never received a status line, and was reported unhealthy for its whole life while serving
+        // correctly; an orchestrator acts on that by restarting it, indefinitely.
+        //
+        // WHAT IS ASSERTED HERE IS THE PROPERTY, NOT THE MECHANISM. Two things must hold together, and
+        // either alone is insufficient: the probe must carry BOTH transports with a fallback between them,
+        // and the profile must not be obliged to export anything for that to work. A future revision is
+        // free to establish the transport some other way - but it may not go back to selecting one
+        // transport from a variable this profile does not set.
+        assertThat(DOCKERFILE_PATH).isRegularFile();
+        final String probe = Files.readString(DOCKERFILE_PATH, StandardCharsets.UTF_8).lines()
+                .dropWhile(line -> !line.startsWith("HEALTHCHECK"))
+                .takeWhile(line -> !line.isBlank())
+                .reduce("", (first, second) -> first + "\n" + second);
+
+        assertThat(probe)
+                .as("both transports are attempted and one falls back to the other, so whichever the "
+                        + "server actually speaks is the one that answers")
+                .contains("plaintext() {")
+                .contains("tls() {")
+                .contains("tls || plaintext")
+                .contains("plaintext || tls");
+        assertThat(probe)
+                .as("the variable may order the attempts but must not select the only one made: a "
+                        + "defaulted-false switch is exactly the defect above")
+                .doesNotContain("SERVER_SSL_ENABLED:-false");
+
+        final JsonNode production =
+                YAML.readTree(Path.of("src/main/resources/application-prod.yml").toFile());
+        final JsonNode transportSecurity = production.path("server").path("ssl").path("enabled");
+        assertThat(transportSecurity.isBoolean() && transportSecurity.asBoolean())
+                .as("production enables transport security as a resolved literal in the document rather "
+                        + "than through an environment reference - which is precisely why the probe may "
+                        + "not depend on a variable to discover it")
+                .isTrue();
     }
 }

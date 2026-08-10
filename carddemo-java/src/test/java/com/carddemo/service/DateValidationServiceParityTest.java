@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  *
  * <ul>
  *   <li>{@code app/cpy/CSUTLDPY.cpy} — the procedural copybook holding the eleven-paragraph
- *       {@code EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT} cascade plus the separate
+ *       EDIT-DATE-CCYYMMDD through EDIT-DATE-CCYYMMDD-EXIT cascade plus the separate
  *       {@code EDIT-DATE-OF-BIRTH} range. The paragraph labels sit at lines 18, 25, 88, 91, 145,
  *       150, 205, 209, 280, 284, 323, 329, 341 and 370, which fixes the stage ordering that this
  *       class asserts. The flag vocabulary comes from {@code app/cpy/CSUTLDWY.cpy} lines 43-57,
@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  * </ul>
  *
  * <p><strong>Why the cascade ordering can be observed at all.</strong> The copybook writes its
- * diagnostic through {@code IF WS-RETURN-MSG-OFF ... STRING ... INTO WS-RETURN-MSG}, so the first
+ * diagnostic through the WS-RETURN-MSG-OFF gate before composing into WS-RETURN-MSG, so the first
  * stage to fail is the only stage whose wording survives. That first-failure-wins rule turns the
  * returned message into a witness for which stage ran first, which is what lets this class prove
  * stage ordering from the outside without reaching into private methods.
@@ -195,7 +195,7 @@ class DateValidationServiceParityTest {
      * earliest one's wording reaches {@code WS-RETURN-MSG}. Reading the surviving message therefore
      * names the stage that ran first. This is the assertion that would catch the single most damaging
      * mistranslation available here — performing only the head paragraph of
-     * {@code PERFORM EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT} and silently skipping the ten
+     * the EDIT-DATE-CCYYMMDD range and silently skipping the ten
      * paragraphs the range falls through.
      */
     @Nested
@@ -650,13 +650,13 @@ class DateValidationServiceParityTest {
      * Verifies {@code EDIT-DATE-LE} and {@code EDIT-DATE-LE-EXIT} at lines 284-328 of the copybook.
      *
      * <p>The stage is guarded: the copybook ends {@code EDIT-DAY-MONTH-YEAR} with
-     * {@code IF WS-EDIT-DATE-IS-VALID CONTINUE ELSE GO TO EDIT-DATE-CCYYMMDD-EXIT}, so the Language
+     * a validity test that continues while the date is still valid and otherwise leaves the range, so the Language
      * Environment call is reached only when all three field flags are already low-values. That guard
      * is the behaviour asserted here, and it is also the reason the stage's own failure branch is
      * unreachable — see this class's type comment.
      *
      * <p>{@code EDIT-DATE-LE-EXIT} carries a genuine source oddity worth stating plainly: the
-     * statement {@code SET WS-EDIT-DATE-IS-VALID TO TRUE} sits after that paragraph's {@code EXIT}
+     * statement that sets WS-EDIT-DATE-IS-VALID sits after that paragraph's {@code EXIT}
      * but before the {@code EDIT-DATE-CCYYMMDD-EXIT} label, and {@code EXIT} in COBOL is a no-op
      * rather than a return, so the statement executes on every path through the paragraph. The
      * translation reproduces the unconditional rewrite instead of guarding it.
@@ -794,7 +794,7 @@ class DateValidationServiceParityTest {
      * from the main cascade in two ways that matter. It arms the flag group to low-values rather
      * than to {@code '000'}, because it is only ever entered once the main cascade has already left
      * every flag valid. And its comparison is strict — the copybook writes
-     * {@code IF WS-CURRENT-DATE-BINARY > WS-EDIT-DATE-BINARY}, so a birth date equal to today is
+     * a strict greater-than of the current binary date over the edited one, so a birth date equal to today is
      * rejected along with genuinely future dates.
      */
     @Nested
@@ -1371,8 +1371,8 @@ class DateValidationServiceParityTest {
      * Verifies {@link DateValidationService#isDateAcceptable} against the caller-side rule at lines
      * 396-406 and 416-426 of {@code app/cbl/CORPT00C.cbl}.
      *
-     * <p>That program writes {@code IF CSUTLDTC-RESULT-SEV-CD = '0000' CONTINUE ELSE IF
-     * CSUTLDTC-RESULT-MSG-NUM NOT = '2513' ...reject... END-IF END-IF}, which means a non-zero
+     * <p>That program accepts a severity code of '0000' and otherwise, when the message number
+     * is not '2513', rejects - two nested tests, which means a non-zero
      * severity whose message number is exactly 2513 is tolerated. The tolerated number is the
      * unsupported-range code, so the reporting screen accepts a date the Language Environment
      * considers out of range while rejecting every other complaint.

@@ -1116,6 +1116,14 @@
                  shortfall. Resolving the location from the running build rather than guessing
                  the conventional path keeps the check correct under a custom repository. -->
             <carddemo.maven.repository>${settings.localRepository}</carddemo.maven.repository>
+            <!-- Handed to the integration tier so that the three gate-evidence files it emits - the
+                 Gate 1 byte comparison, the Gate 3 baselines and the Gate 8 sign-off - can each name
+                 the commit the build was told it was packaging. It is the SAME property the generated
+                 build information carries as source-revision, deliberately: the published artefact and
+                 the evidence measured against it then name one commit rather than two independently
+                 editable ones. A plain local build leaves it at the declared default and the stamp
+                 says so instead of inventing a revision. Recorded in docs/decision-log.md DL-315. -->
+            <carddemo.build.revision>${build.revision}</carddemo.build.revision>
           </systemPropertyVariables>
         </configuration>
         <executions>

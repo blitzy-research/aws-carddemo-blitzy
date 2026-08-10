@@ -49,9 +49,9 @@ import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.Limit;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.SliceImpl;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -554,6 +554,20 @@ class UserManagementServiceTest {
     }
 
     /**
+     * Wraps projections as the window shape the contract returns.
+     *
+     * <p>A {@link SliceImpl} rather than a paged implementation, because the contract carries no total and
+     * a double that carried one could satisfy a specification the real store cannot (DL-296).
+     *
+     * @param  rows the projected rows the window holds
+     * @return the window
+     */
+    private static Slice<UserSecurityRepository.AdminEntry> sliceOf(
+            final List<UserSecurityRepository.AdminEntry> rows) {
+        return new SliceImpl<>(rows);
+    }
+
+    /**
      * Projected rows for a run of ordinals, in the order the identifiers are listed.
      *
      * @param identifiers the identifiers to project, in read order
@@ -818,19 +832,23 @@ class UserManagementServiceTest {
         }
 
         /**
-         * The opening page of the browse, projected so no credential column is selected.
+         * The opening window of the browse, projected so no credential column is selected.
          *
-         * <p>Only page zero is ever asked for, and the sort the service supplies is ascending on the
+         * <p>Only window zero is ever asked for, and the sort the service supplies is ascending on the
          * identifier, which the map already provides. The window is sliced rather than filtered so a
-         * page size larger than the table yields a short page exactly as the store would.
+         * size larger than the table yields a short window exactly as the store would.
+         *
+         * <p>Returns a {@link Slice} because the contract does: nothing reads a total, so the store is
+         * never asked to produce one (DL-296). The fake carries no total either, which is what keeps it
+         * incapable of satisfying a specification the real store could not.
          */
         @Override
-        public Page<AdminEntry> findAllProjectedBy(final Pageable pageable) {
+        public Slice<AdminEntry> findAllProjectedBy(final Pageable pageable) {
             guard("findAllProjectedBy");
             final List<AdminEntry> all = rows.values().stream().map(FakeRepository::project).toList();
             final int from = (int) Math.min(pageable.getOffset(), all.size());
             final int to = Math.min(from + pageable.getPageSize(), all.size());
-            return new PageImpl<>(List.copyOf(all.subList(from, to)), pageable, all.size());
+            return new SliceImpl<>(List.copyOf(all.subList(from, to)), pageable, to < all.size());
         }
 
         @Override
@@ -989,6 +1007,44 @@ class UserManagementServiceTest {
         }
 
         @Test
+        @DisplayName("AN IDENTIFIER KEYED IN LOWER CASE IS STORED UNDER THE KEY SIGN-ON WILL LOOK IT UP "
+                + "BY: without the fold the record existed and READ-USER-SEC-FILE could never find it")
+        void aMixedCaseIdentifierIsStoredUnderTheFoldedKey() {
+            final FakeRepository repository = new FakeRepository();
+
+            final UserOutcome response = serviceFor(repository)
+                    .addUser(recordRequest("lower001", "NOELLE", "PARK", throwawayCredential(), "U",
+                            KeyAction.ENTER));
+
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(repository.rows.keySet())
+                    .as("the sign-on transaction folds the submitted identifier before it reads, so a "
+                            + "record stored under the unfolded spelling is a record it cannot reach")
+                    .containsExactly("LOWER001");
+            assertThat(response.userId())
+                    .as("and the successful add clears the identifier field, exactly as the source's "
+                            + "normal arm does, so the echo is absence rather than either spelling")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("a lower-case identifier is refused as a duplicate of the upper-case record it "
+                + "would collide with, because the two spellings are one key")
+        void aMixedCaseIdentifierCollidesWithItsFoldedRecord() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "LOWER002", "OWEN", "HALL", "U", storedDigestOf(throwawayCredential()));
+
+            final UserOutcome response = serviceFor(repository)
+                    .addUser(recordRequest("lower002", "NOELLE", "PARK", throwawayCredential(), "U",
+                            KeyAction.ENTER));
+
+            assertThat(response.actionSucceeded())
+                    .as("an unfolded key would have created a second record for the same identity")
+                    .isFalse();
+            assertThat(repository.rows.keySet()).containsExactly("LOWER002");
+        }
+
+        @Test
         @DisplayName("neither the digest nor the submitted value reaches the response or a log line")
         void neverDisclosesCredentialMaterial() {
             final FakeRepository repository = new FakeRepository();
@@ -1057,7 +1113,7 @@ class UserManagementServiceTest {
         /**
          * Five empty items report as one, because the legacy cascade stops at its first true clause.
          *
-         * <p>{@code EVALUATE TRUE} at {@code app/cbl/COUSR01C.cbl} L116-L151 evaluates its clauses in
+         * <p>The multi-way selection at {@code app/cbl/COUSR01C.cbl} L116-L151 evaluates its clauses in
          * order and executes only the first whose condition holds. Each clause raises the flag, moves
          * its own text, moves -1 to its own field's length and performs the send, so a submission with
          * every item empty produces exactly one text, one cursor position and one decorated field - the
@@ -1299,6 +1355,41 @@ class UserManagementServiceTest {
             assertThat(verifier.matches(foldedByThisClass(replacement), digestAfter))
                     .isTrue();
             assertThat(verifier.matches(replacement, digestAfter)).isFalse();
+        }
+
+        @Test
+        @DisplayName("AN UPDATE ADDRESSED IN LOWER CASE REACHES THE RECORD SIGN-ON READS: the key it "
+                + "resolves is the folded one, so the identity is not silently left unmaintained")
+        void aMixedCaseIdentifierUpdatesTheFoldedRecord() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "LOWER003", "OWEN", "HALL", "U", storedDigestOf(throwawayCredential()));
+
+            final UserOutcome response = serviceFor(repository)
+                    .updateUser(recordRequest("lower003", "OWEN", "HOLT", null, "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.actionSucceeded())
+                    .as("an unfolded key would have reported the record as not on file")
+                    .isTrue();
+            assertThat(repository.rows.get("LOWER003").getSecUsrLname()).isEqualTo("HOLT");
+            assertThat(repository.rows.keySet())
+                    .as("and no second row was created under the unfolded spelling")
+                    .containsExactly("LOWER003");
+        }
+
+        @Test
+        @DisplayName("a delete addressed in lower case removes the folded record, so the two spellings "
+                + "cannot leave an identity that is neither maintainable nor removable")
+        void aMixedCaseIdentifierDeletesTheFoldedRecord() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "LOWER004", "OWEN", "HALL", "U", storedDigestOf(throwawayCredential()));
+
+            final UserOutcome response = serviceFor(repository)
+                    .deleteUser(recordRequest("lower004", "OWEN", "HALL", null, "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(repository.rows).isEmpty();
         }
 
         @Test
@@ -2422,7 +2513,7 @@ class UserManagementServiceTest {
         /**
          * The save key reports one empty item, not every empty item.
          *
-         * <p>{@code EVALUATE TRUE} at {@code app/cbl/COUSR02C.cbl} L177-L212 stops at its first true
+         * <p>The multi-way selection at {@code app/cbl/COUSR02C.cbl} L177-L212 stops at its first true
          * clause exactly as the add screen's does, and the identifier is the first clause here rather
          * than the given name. So a submission with four items blank reports the identifier alone.
          *
@@ -3033,7 +3124,7 @@ class UserManagementServiceTest {
             final List<String> window = new ArrayList<>(FIRST_PAGE_IDS);
             window.add("USER0011");
             when(mockRepository.findAllProjectedBy(any(Pageable.class)))
-                    .thenReturn(new PageImpl<>(projectionsOf(window)));
+                    .thenReturn(sliceOf(projectionsOf(window)));
 
             final UserOutcome response = serviceWithMocks().listUsers(
                     listRequest(KeyAction.ENTER, null, null, null, List.of()));
@@ -3069,7 +3160,7 @@ class UserManagementServiceTest {
         void presentsAPartialPageWithoutFiller() {
             final List<String> present = List.of("USER0001", "USER0002", "USER0003", "USER0004");
             when(mockRepository.findAllProjectedBy(any(Pageable.class)))
-                    .thenReturn(new PageImpl<>(projectionsOf(present)));
+                    .thenReturn(sliceOf(projectionsOf(present)));
 
             final UserOutcome response = serviceWithMocks().listUsers(
                     listRequest(KeyAction.ENTER, null, null, null, List.of()));
@@ -3094,7 +3185,7 @@ class UserManagementServiceTest {
                 + "presents no rows, reports no further page and raises nothing")
         void presentsAnEmptyTableWithoutRaising() {
             when(mockRepository.findAllProjectedBy(any(Pageable.class)))
-                    .thenReturn(new PageImpl<>(List.of()));
+                    .thenReturn(sliceOf(List.of()));
 
             final UserOutcome response = serviceWithMocks().listUsers(
                     listRequest(KeyAction.ENTER, null, null, null, List.of()));
@@ -3189,7 +3280,7 @@ class UserManagementServiceTest {
                 + "window and the indicator the response carries is the one the walk derived")
         void ignoresASubmittedPageIndicator() {
             when(mockRepository.findAllProjectedBy(any(Pageable.class)))
-                    .thenReturn(new PageImpl<>(projectionsOf(
+                    .thenReturn(sliceOf(projectionsOf(
                             List.of("USER0001", "USER0002", "USER0003", "USER0004"))));
 
             final UserOutcome zero = serviceWithMocks().listUsers(new UserCommand(null, null, null,
@@ -3716,7 +3807,7 @@ class UserManagementServiceTest {
             when(mockRepository.save(any(UserSecurity.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
             when(mockRepository.findAllProjectedBy(any(Pageable.class)))
-                    .thenReturn(new PageImpl<>(projectionsOf(FIRST_PAGE_IDS)));
+                    .thenReturn(sliceOf(projectionsOf(FIRST_PAGE_IDS)));
             final UserManagementService service = serviceWithMocks();
 
             final UserOutcome loaded = service.updateUser(

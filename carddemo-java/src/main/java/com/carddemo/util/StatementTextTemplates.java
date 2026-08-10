@@ -158,16 +158,21 @@ import java.util.Objects;
  *
  * <p><strong>Scale and magnitude contract.</strong> Values arrive already at scale
  * {@value #REQUIRED_AMOUNT_SCALE} with {@code RoundingMode.DOWN} applied upstream by the zoned-decimal
- * codec and the computing service, and <strong>this class never scales, never rounds and never performs
- * arithmetic on a value</strong>: it only formats one. Two rejections follow, and both are divergences
- * from the legacy silent {@code MOVE} recorded in the decision log rather than justified here. A value
- * at any other scale is rejected and never re-scaled, per decision D-05, because re-scaling would place
- * a second rounding policy alongside the estate-wide truncation policy that the total absence of
- * {@code ROUNDED} clauses in the source mandates. An integer part exceeding nine digits is rejected
- * rather than left-truncated, per decision D-06: a COBOL {@code MOVE} truncates on the left and the
- * legacy program does exactly that when it moves a ten-integer-digit account balance into this
- * nine-integer-digit mask, but emitting a plausible wrong amount into a financial statement is worse
- * than failing, and the estate's own field widths mean valid data cannot reach the condition.
+ * codec and the computing service, and <strong>this class never rounds and never performs arithmetic on
+ * a value</strong>: it stores one into the mask and formats it. One rejection follows, and it is a
+ * divergence from the legacy silent {@code MOVE} recorded in the decision log rather than justified
+ * here: a value at any other scale is rejected and never re-scaled, per decision D-05, because
+ * re-scaling would place a second rounding policy alongside the estate-wide truncation policy that the
+ * total absence of {@code ROUNDED} clauses in the source mandates.
+ *
+ * <p><strong>Magnitude, by contrast, is not a rejection.</strong> An integer part exceeding nine digits
+ * is <em>stored</em> into the mask's nine positions, keeping the low-order nine and the operational
+ * sign, because that is precisely what the legacy {@code MOVE} does when it places the
+ * ten-integer-digit account balance of {@code app/cpy/CVACT01Y.cpy} into the nine-integer-digit
+ * {@code ST-CURR-BAL} mask at {@code app/cbl/CBSTM03A.CBL} line 484. Refusing it instead would make a
+ * balance the legacy prints unprintable here, which is a behavioural regression rather than a safeguard.
+ * The store is {@link ZonedDecimalCodec#storeInto(BigDecimal, int, int, String)}'s, so the module holds
+ * one such rule and this class still holds no rounding policy of its own.
  *
  * <p><strong>Character field semantics: truncate and pad.</strong> A supplied character value longer
  * than its field is truncated to the field width and a shorter one padded on the right with ASCII
@@ -183,12 +188,11 @@ import java.util.Objects;
  * ST-LINE8, the current-balance line, carries none. That inconsistency is in the source: no currency
  * symbol is added to the balance line and none is removed from the transaction lines.
  *
- * <p>An integer part exceeding nine digits is rejected rather than left-truncated. A COBOL
- * {@code MOVE} would truncate on the left, and the legacy program does exactly that when it moves a
- * ten-integer-digit account balance into this nine-integer-digit mask. Reproducing that here would
- * emit a plausible but wrong amount into a financial statement, which is worse than failing, and the
- * estate's own field widths mean valid data cannot produce the situation. This is a deliberate,
- * recorded divergence.</p>
+ * <p>An integer part exceeding nine digits is stored into the mask's nine positions rather than
+ * refused: a COBOL {@code MOVE} truncates on the left, and the legacy program does exactly that when it
+ * moves a ten-integer-digit account balance into this nine-integer-digit mask. The store keeps the
+ * low-order nine digits and the operational sign and is taken by the zoned-decimal codec, so the rule
+ * is stated once for the whole module.</p>
  *
  * <h2>Character field semantics: truncate and pad</h2>
  *
@@ -249,10 +253,9 @@ import java.util.Objects;
  *       {@value #REQUIRED_AMOUNT_SCALE} with {@code RoundingMode.DOWN} already applied, and a value
  *       at another scale is rejected rather than silently re-scaled, so a truncation-policy
  *       violation cannot hide here. The estate contains zero {@code ROUNDED} clauses.</li>
- *   <li>An integer part exceeding nine digits is rejected rather than left-truncated -- a deliberate
- *       divergence from COBOL {@code MOVE} semantics, because emitting a plausible wrong amount into
- *       a financial statement is worse than failing, and valid data cannot produce the
- *       situation.</li>
+ *   <li>An integer part exceeding nine digits is stored into the mask's nine integer positions, which
+ *       is COBOL {@code MOVE} semantics into an edited field: the low-order digits and the operational
+ *       sign survive and the rest is dropped. The store is the zoned-decimal codec's.</li>
  *   <li>The dollar sign is present on the transaction and total lines and absent on the
  *       current-balance line. The inconsistency is in the source and is preserved.</li>
  *   <li>The {@value #STATEMENT_RECORD_LENGTH}-byte image carries no line terminator even though the
@@ -910,9 +913,10 @@ public final class StatementTextTemplates {
      * @param currentBalance the account balance, already at scale {@value #REQUIRED_AMOUNT_SCALE}
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
      * @throws NullPointerException     if {@code currentBalance} is {@code null}
-     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE} or the
-     *                                  integer part exceeds {@value #AMOUNT_MASK_INTEGER_DIGITS}
-     *                                  digits
+     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE}. An
+     *                                  integer part wider than {@value #AMOUNT_MASK_INTEGER_DIGITS}
+     *                                  digits is not a rejection: it is stored into the mask, which is
+     *                                  what the legacy move into this narrower field does
      */
     public static String stLine8CurrentBalance(BigDecimal currentBalance) {
         Objects.requireNonNull(currentBalance, "currentBalance");
@@ -967,9 +971,10 @@ public final class StatementTextTemplates {
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
      * @throws NullPointerException     if any argument is {@code null}
      * @throws IllegalArgumentException if {@code transactionId} or {@code transactionDetails} carries
-     *                                  a character outside printable US-ASCII, if the scale is not
-     *                                  {@value #REQUIRED_AMOUNT_SCALE}, or if the integer part
-     *                                  exceeds {@value #AMOUNT_MASK_INTEGER_DIGITS} digits
+     *                                  a character outside printable US-ASCII, or if the scale is not
+     *                                  {@value #REQUIRED_AMOUNT_SCALE}. An integer part wider than
+     *                                  {@value #AMOUNT_MASK_INTEGER_DIGITS} digits is stored into the
+     *                                  mask rather than refused
      */
     public static String stLine14Transaction(String transactionId,
                                              String transactionDetails,
@@ -1000,9 +1005,9 @@ public final class StatementTextTemplates {
      *                               {@value #REQUIRED_AMOUNT_SCALE}
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
      * @throws NullPointerException     if {@code totalTransactionAmount} is {@code null}
-     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE} or the
-     *                                  integer part exceeds {@value #AMOUNT_MASK_INTEGER_DIGITS}
-     *                                  digits
+     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE}. An
+     *                                  integer part wider than {@value #AMOUNT_MASK_INTEGER_DIGITS}
+     *                                  digits is stored into the mask rather than refused
      */
     public static String stLine14aTotalExpenditure(BigDecimal totalTransactionAmount) {
         Objects.requireNonNull(totalTransactionAmount, "totalTransactionAmount");
@@ -1036,9 +1041,11 @@ public final class StatementTextTemplates {
      *               {@code RoundingMode.DOWN} applied upstream
      * @return exactly {@value #AMOUNT_MASK_LENGTH} US-ASCII bytes
      * @throws NullPointerException     if {@code amount} is {@code null}
-     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE}, or the
-     *                                  integer part needs more than
-     *                                  {@value #AMOUNT_MASK_INTEGER_DIGITS} digits
+     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE}. An integer
+     *                                  part needing more than
+     *                                  {@value #AMOUNT_MASK_INTEGER_DIGITS} digits is stored into the
+     *                                  mask - the low-order digits and the operational sign survive -
+     *                                  rather than refused
      */
     public static String formatAmountMaskWithoutZeroSuppression(BigDecimal amount) {
         return renderTrailingMinusAmount(amount, false, MASK_A_PICTURE);
@@ -1063,9 +1070,11 @@ public final class StatementTextTemplates {
      *               {@code RoundingMode.DOWN} applied upstream
      * @return exactly {@value #AMOUNT_MASK_LENGTH} US-ASCII bytes
      * @throws NullPointerException     if {@code amount} is {@code null}
-     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE}, or the
-     *                                  integer part needs more than
-     *                                  {@value #AMOUNT_MASK_INTEGER_DIGITS} digits
+     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE}. An integer
+     *                                  part needing more than
+     *                                  {@value #AMOUNT_MASK_INTEGER_DIGITS} digits is stored into the
+     *                                  mask - the low-order digits and the operational sign survive -
+     *                                  rather than refused
      */
     public static String formatAmountMaskWithZeroSuppression(BigDecimal amount) {
         return renderTrailingMinusAmount(amount, true, MASK_B_PICTURE);
@@ -1107,9 +1116,15 @@ public final class StatementTextTemplates {
      * absolute value so no sign glyph can appear among the digits. The sign is written separately
      * into the trailing position.</p>
      *
+     * <p>The value is first <em>stored</em> into the mask's own geometry through the zoned-decimal
+     * codec, which is what a COBOL {@code MOVE} into an edited field does: nine integer positions and
+     * two fractional ones are kept together with the operational sign, and any high-order digit that
+     * will not fit is dropped. Nothing is rejected for magnitude.</p>
+     *
      * @param amount              the value to render
      * @param suppressLeadingZeros {@code true} for mask B, {@code false} for mask A
-     * @param maskPicture         the picture clause, used only to name the mask in a rejection
+     * @param maskPicture         the picture clause, used to name the mask in a rejection and as the
+     *                            receiving field's name when the store is taken
      * @return exactly {@value #AMOUNT_MASK_LENGTH} US-ASCII bytes
      */
     private static String renderTrailingMinusAmount(BigDecimal amount,
@@ -1126,23 +1141,20 @@ public final class StatementTextTemplates {
                             + " truncation-policy violation cannot hide inside formatting.");
         }
 
+        // THE STORE, not a rejection. A COBOL MOVE into an edited field of nine integer positions keeps
+        // the low-order nine and the operational sign and drops what will not fit, and the legacy program
+        // performs exactly that move when it places a ten-integer-digit account balance into this mask at
+        // app/cbl/CBSTM03A.CBL line 484. The store is the codec's so the whole module has one such rule.
+        BigDecimal stored = ZonedDecimalCodec.storeInto(amount, AMOUNT_MASK_INTEGER_DIGITS,
+                AMOUNT_MASK_FRACTION_DIGITS, maskPicture);
+
         // The only string conversion of a number in this class, and deliberately not a BigDecimal
         // one: BigInteger renders radix-10 ASCII digits with no grouping separator and no locale
         // sensitivity, and the absolute value carries no sign glyph. The sign is applied below.
-        BigInteger magnitude = amount.unscaledValue().abs();
+        BigInteger magnitude = stored.unscaledValue().abs();
         char[] magnitudeDigits = magnitude.toString().toCharArray();
 
         int digitCapacity = AMOUNT_MASK_INTEGER_DIGITS + AMOUNT_MASK_FRACTION_DIGITS;
-        if (magnitudeDigits.length > digitCapacity) {
-            throw new IllegalArgumentException(
-                    "Statement amount does not fit mask " + maskPicture + ": the mask provides "
-                            + AMOUNT_MASK_INTEGER_DIGITS
-                            + " integer digits but the value needs "
-                            + (magnitudeDigits.length - AMOUNT_MASK_FRACTION_DIGITS)
-                            + ". High-order digits are rejected rather than truncated on the left,"
-                            + " because emitting a plausible but wrong amount into a financial"
-                            + " statement is worse than failing.");
-        }
 
         // Right-align the magnitude across the fixed integer-plus-fraction capacity, zero filled.
         char[] positions = new char[digitCapacity];
@@ -1176,7 +1188,7 @@ public final class StatementTextTemplates {
         }
 
         // Trailing sign position: a minus for a negative value, a space otherwise. Never a plus.
-        rendered[AMOUNT_MASK_LENGTH - 1] = amount.signum() < 0 ? TRAILING_MINUS : SPACE;
+        rendered[AMOUNT_MASK_LENGTH - 1] = stored.signum() < 0 ? TRAILING_MINUS : SPACE;
 
         return requireAmountMaskLength(new String(rendered), maskPicture);
     }

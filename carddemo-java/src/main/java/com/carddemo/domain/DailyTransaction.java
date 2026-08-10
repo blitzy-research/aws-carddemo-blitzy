@@ -22,6 +22,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 
 import java.math.BigDecimal;
 import java.util.Objects;
@@ -125,6 +126,32 @@ public class DailyTransaction {
     static final int DALYTRAN_AMT_PRECISION = 11;
 
     /**
+     * Width of the identifier: 16, from {@code DALYTRAN-ID PIC X(16)}.
+     *
+     * <p>Named so that the column declaration, the persistence-time rule and the check constraint in
+     * {@code V1__create_schema.sql} read the one figure rather than three copies of it. The same holds
+     * for the three widths that follow.
+     */
+    static final int DALYTRAN_ID_WIDTH = 16;
+
+    /** Width of the type code: 2, from {@code DALYTRAN-TYPE-CD PIC X(02)}. */
+    static final int DALYTRAN_TYPE_CD_WIDTH = 2;
+
+    /** Width of the category code: 4, from {@code DALYTRAN-CAT-CD PIC 9(04)}. */
+    static final int DALYTRAN_CAT_CD_WIDTH = 4;
+
+    /** Width of the card number: 16, from {@code DALYTRAN-CARD-NUM PIC X(16)}. */
+    static final int DALYTRAN_CARD_NUM_WIDTH = 16;
+
+    /**
+     * Declared record width of the daily-transaction layout: 350 bytes.
+     *
+     * <p>Held here only to enforce the width of a retained source image. The layout's field offsets and
+     * widths belong to the mapper that owns them and are not restated in this class.
+     */
+    static final int SOURCE_RECORD_IMAGE_LENGTH = 350;
+
+    /**
      * Transaction identifier: 16 bytes at offset 0, column {@code dalytran_id}.
      *
      * <p>This is the persistent identity of the record and it is the legacy business key, taken
@@ -139,7 +166,7 @@ public class DailyTransaction {
      * {@code 0000000000683580}, which must never collapse to a shorter numeric form.
      */
     @Id
-    @Column(name = "dalytran_id", length = 16, nullable = false)
+    @Column(name = "dalytran_id", length = DALYTRAN_ID_WIDTH, nullable = false)
     private String dalytranId;
 
     /**
@@ -149,7 +176,7 @@ public class DailyTransaction {
      * the transaction-type reference table, so that an unknown code reaches application validation
      * instead of being refused at insert time.
      */
-    @Column(name = "dalytran_type_cd", length = 2, nullable = false)
+    @Column(name = "dalytran_type_cd", length = DALYTRAN_TYPE_CD_WIDTH, nullable = false)
     private String dalytranTypeCd;
 
     /**
@@ -160,7 +187,7 @@ public class DailyTransaction {
      * four characters and must never collapse to {@code 1}. A numeric property type would silently
      * discard the padding, so this is a {@link String} and not an integral type.
      */
-    @Column(name = "dalytran_cat_cd", length = 4, nullable = false)
+    @Column(name = "dalytran_cat_cd", length = DALYTRAN_CAT_CD_WIDTH, nullable = false)
     private String dalytranCatCd;
 
     /**
@@ -241,6 +268,28 @@ public class DailyTransaction {
     private BigDecimal dalytranAmt;
 
     /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code DALYTRAN-AMT}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean dalytranAmtNegativeZero;
+
+    /**
      * Merchant identifier: 9 bytes at offset 143, column {@code dalytran_merchant_id}.
      *
      * <p>Digit-only in the legacy layout and modelled as text for the same width-preservation reason
@@ -289,7 +338,7 @@ public class DailyTransaction {
      * refused later by application validation with reject reason code 100. Adding a relationship or a
      * constraint here would make that reason code unreachable.
      */
-    @Column(name = "dalytran_card_num", length = 16, nullable = false)
+    @Column(name = "dalytran_card_num", length = DALYTRAN_CARD_NUM_WIDTH, nullable = false)
     private String dalytranCardNum;
 
     /**
@@ -321,6 +370,37 @@ public class DailyTransaction {
      */
     @Column(name = "dalytran_proc_ts", length = 26, nullable = false)
     private String dalytranProcTs;
+
+    /**
+     * The 350 bytes this instance was mapped from, when it was mapped from a record image at all.
+     *
+     * <p><strong>&#9733; Why an entity carries a copy of its own input.</strong> The legacy reject write is
+     * {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA} [app/cbl/CBTRN02C.cbl:L447]. {@code DALYTRAN-RECORD}
+     * is the record <em>area the READ filled</em>, so the leading 350 bytes of a 430-byte reject record are
+     * the input bytes, unaltered and unexamined. They are not re-derived from anything.
+     *
+     * <p>Re-rendering them from these thirteen attributes is <strong>not</strong> equivalent, and the
+     * difference is not theoretical. The amount arrives as a zoned-decimal image whose final byte carries
+     * both a digit and a sign, and twenty distinct bytes encode the ten digits twice over. Decoding is
+     * lossy in one specific place: {@code 0000000000}} and {@code 0000000000{} both decode to a
+     * {@link BigDecimal} zero, because a decimal has no negative zero to carry the distinction into. A
+     * render therefore cannot know which of the two bytes the input held, and would emit one where the
+     * input held the other - a one-byte difference in a 430-byte record that no width check can see. The
+     * trailing 20-byte filler is reconstructed from the declared width for the same reason and with the
+     * same exposure.
+     *
+     * <p><strong>Not persistent, and deliberately so.</strong> Marked {@link Transient}:
+     * there is no column, the schema declares none, and nothing about a stored row depends on it. It takes
+     * no part in {@link #equals(Object)} or {@link #hashCode()} - both of which read the identifier alone,
+     * so an instance's equality cannot change when this is set - and no part in {@link #toString()}, which
+     * would otherwise put a card number and an amount into a diagnostic.
+     *
+     * <p>{@code null} on an instance that never came from a record image: one built by a caller, or one
+     * loaded from the table. For such an instance there are no original bytes to echo and the render is the
+     * only answer there is. Recorded as {@code DL-295} in {@code docs/decision-log.md}.
+     */
+    @Transient
+    private String sourceRecordImage;
 
     /**
      * Creates an empty record.
@@ -496,6 +576,27 @@ public class DailyTransaction {
     }
 
     /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code DALYTRAN-AMT}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isDalytranAmtNegativeZero() {
+        return dalytranAmtNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code DALYTRAN-AMT}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param dalytranAmtNegativeZero the negative-zero bit the image carried
+     */
+    public void setDalytranAmtNegativeZero(boolean dalytranAmtNegativeZero) {
+        this.dalytranAmtNegativeZero = dalytranAmtNegativeZero;
+    }
+
+    /**
      * Returns the merchant identifier exactly as stored, with any leading zeros intact.
      *
      * @return the merchant identifier, possibly {@code null} on an unpopulated instance
@@ -630,15 +731,60 @@ public class DailyTransaction {
     }
 
     /**
+     * Returns the 350-byte image this instance was mapped from, if it was mapped from one.
+     *
+     * <p>The bytes are returned exactly as they were read: nothing is trimmed, re-padded, re-encoded or
+     * normalised, because the whole purpose of retaining them is that they are unaltered.
+     *
+     * @return the source record image at exactly 350 US-ASCII characters, or {@code null} on an instance
+     *         that was built by a caller or loaded from the table rather than mapped from a record
+     */
+    public String getSourceRecordImage() {
+        return sourceRecordImage;
+    }
+
+    /**
+     * Records the 350-byte image this instance was mapped from.
+     *
+     * <p>Called by the mapper that owns the daily-transaction layout, at the moment it slices the image, and
+     * by nothing else in production. The width is enforced here rather than trusted, because an image of the
+     * wrong width would produce a reject record of the wrong width and the failure would surface as a
+     * malformed dataset rather than as a rejected argument.
+     *
+     * @param  sourceRecordImage the image at exactly 350 characters, or {@code null} to record that this
+     *                           instance came from no image
+     * @throws IllegalArgumentException if a non-null image is not exactly 350 characters
+     */
+    public void setSourceRecordImage(String sourceRecordImage) {
+        if (sourceRecordImage != null && sourceRecordImage.length() != SOURCE_RECORD_IMAGE_LENGTH) {
+            throw new IllegalArgumentException("dalytran source record image must be exactly "
+                    + SOURCE_RECORD_IMAGE_LENGTH + " characters, not " + sourceRecordImage.length());
+        }
+        this.sourceRecordImage = sourceRecordImage;
+    }
+
+    /**
      * Normalises the amount to scale two, truncating toward zero, immediately before the row is inserted or
      * updated.
      *
-     * <p>No identifier rule is applied here. This is the raw landing surface for the sequential daily
-     * input: a row arrives <em>before</em> validation, the posting job is what judges it, and a malformed
-     * identifier is a reject record carrying a reason code rather than a refused insert. Refusing it here
-     * would delete the very case the posting job exists to report. The amount is different in kind - it is
-     * normalised rather than judged, and the normalisation is a representation policy that applies to
-     * every stored amount whatever its provenance.
+     * <p><strong>Widths are checked and content is not, and the line between them is the whole rule
+     * here.</strong> This is the raw landing surface for the sequential daily input: a row arrives
+     * <em>before</em> validation, the posting job is what judges it, and an unknown card number, an
+     * over-limit amount or an expired account is a reject record carrying a reason code rather than a
+     * refused insert. Judging any of those here would delete the very case the posting job exists to
+     * report. A <em>width</em> is not one of those judgements. Every field of a 350-byte image is exactly
+     * as wide as the layout declares it, because it is a slice of that image, so no record the sequential
+     * reader can produce is refused by these four rules - while a row assembled by hand, by a bulk load or
+     * by a future writer that never saw an image is. That distinction matters because a landed row which
+     * cannot be re-encoded to 350 bytes cannot be reported either: the reject dataset, and not merely the
+     * posting, would fail on it. No digit class is applied to the category code even though its picture
+     * clause is numeric: a non-numeric category is content and the reject path is where content is
+     * answered, and the estate's own sort specifications type the corresponding field zoned decimal,
+     * whose sign occupies the final byte. Recorded as {@code DL-297} in {@code docs/decision-log.md}.
+     *
+     * <p>The amount is different in kind again - it is normalised rather than judged, and the
+     * normalisation is a representation policy that applies to every stored amount whatever its
+     * provenance.
      *
      * <p>An amount is <strong>normalised</strong> rather than refused: a value computed in a service,
      * parsed from a request or left over from a division carries whatever scale the arithmetic produced,
@@ -647,11 +793,16 @@ public class DailyTransaction {
      * rather than rounding, and why the constants it uses are restated there rather than imported from the
      * fixed-width codec.
      *
-     * @throws IllegalArgumentException if an amount is absent or beyond the declared precision
+     * @throws IllegalArgumentException if an amount is absent or beyond the declared precision, or if one
+     *         of the four image-critical fields is absent or not exactly the width its layout declares
      */
     @PrePersist
     @PreUpdate
     void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidth(dalytranId, DALYTRAN_ID_WIDTH, "dalytranId");
+        StoredValueRules.requireFixedWidth(dalytranTypeCd, DALYTRAN_TYPE_CD_WIDTH, "dalytranTypeCd");
+        StoredValueRules.requireFixedWidth(dalytranCatCd, DALYTRAN_CAT_CD_WIDTH, "dalytranCatCd");
+        StoredValueRules.requireFixedWidth(dalytranCardNum, DALYTRAN_CARD_NUM_WIDTH, "dalytranCardNum");
         this.dalytranAmt =
                 StoredValueRules.normalizedAmount(dalytranAmt, DALYTRAN_AMT_PRECISION, "dalytranAmt");
     }

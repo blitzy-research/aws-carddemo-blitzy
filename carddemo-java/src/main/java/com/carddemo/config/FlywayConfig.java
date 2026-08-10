@@ -50,67 +50,86 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <h2>Why this class exists</h2>
  *
- * <p>The four delivered migrations ship <strong>flat, from one location</strong>.
- * {@value #MIGRATION_LOCATION} carries {@code V1__create_schema.sql},
- * {@code V2__create_indexes.sql}, {@code V3__seed_reference_data.sql} and
- * {@code V4__seed_user_security.sql}, and <strong>every profile resolves exactly that location</strong>.
- * There is no {@code schema/}, {@code seed/}, {@code local/}, {@code test/} or {@code prod/} child
- * directory beneath it; none exists and none may be created.
+ * <p>The four delivered migrations ship from <strong>two sibling locations whose shared parent holds
+ * no script at all</strong>. {@value #SCHEMA_LOCATION} carries {@code V1__create_schema.sql} and
+ * {@code V2__create_indexes.sql}; {@value #SEED_LOCATION} carries {@code V3__seed_reference_data.sql}
+ * and {@code V4__seed_user_security.sql}; and {@value #SHARED_PARENT_LOCATION} carries neither, which
+ * is what makes the arrangement work. The file names are unchanged, because each is a load-bearing
+ * Flyway log token that a bring-up check reads out of the history table, and both directories remain
+ * inside the module plan's own {@code db/migration/**.sql} delivery pattern, whose {@code **}
+ * anticipates nesting.
  *
- * <p><strong>The separation is therefore a ceiling on the migration VERSION, not a location list.</strong>
- * A Flyway location is scanned <em>recursively</em>, so a child directory is reached by any profile that
- * resolves the parent, and a location list that is identical in every profile draws no boundary at all.
- * The version can draw one: {@code spring.flyway.target} is {@value #SCHEMA_ONLY_TARGET} in the shared
- * baseline and again in the production overlay, so a profile silent about migrations inherits the
- * production posture and a production migration ends after {@code V2}; only the local and test overlays
- * lift it to {@value #SEEDING_TARGET} and apply the two seeds. The version is part of each file's own
- * name, so it cannot drift away from the file it governs. The file names are unchanged besides, because
- * each is a load-bearing Flyway log token, and all four remain inside the module plan's own
- * {@code db/migration/**.sql} delivery pattern.
+ * <p><strong>The separation is the LOCATION LIST, and a location a profile never lists is not a value
+ * an operator can widen.</strong> Production resolves {@value #SCHEMA_LOCATION} and nothing else, so the
+ * seed scripts appear in no state whatsoever - not applied, not pending, not above a ceiling, not even
+ * resolved. Local and test resolve both locations and apply everything. That is a stronger statement
+ * than a version comparison can make, because a version comparison first resolves a script and then
+ * declines to run it.
  *
- * <p>The two seeds are what the ceiling exists for. The sign-on seed inserts ten known identities,
+ * <p><strong>Why the shared parent must stay empty, and why two earlier attempts at this split were
+ * withdrawn.</strong> A Flyway location is scanned <em>recursively</em>, so a profile that resolves the
+ * parent reaches every child and the boundary becomes notional. Both earlier attempts moved only the
+ * seeds down and left {@code V1} and {@code V2} in the parent, so the parent had to stay resolvable and
+ * the separation could not hold - and the conclusion drawn was that the location mechanism itself was
+ * unusable. What the premise actually supports is that the <em>schema</em> scripts must move down too.
+ * They have, the parent is empty, and {@link #resolveLocations(Collection, Collection)} refuses the
+ * parent under every profile - not only because it would reach the seeds, but because Flyway records a
+ * script name relative to its location, so resolving the parent would write
+ * {@code schema/V1__create_schema.sql} into the history where the bring-up check expects
+ * {@code V1__create_schema.sql}.
+ *
+ * <p>The two seeds are what the separation exists for. The sign-on seed inserts ten known identities,
  * five of them administrative, whose stored credentials are all digests of one well-known value; the
  * reference seed inserts fifty synthetic customer rows carrying regulated identity data. Neither
  * belongs in a production database, and neither arriving there would be untidiness - it would be a
  * credential incident and a privacy incident respectively.
  *
- * <p><strong>Two independent controls hold that separation.</strong> The <em>version ceiling</em>
- * decides what is applied: {@link #resolveTarget(Collection, String)} refuses a production ceiling that
- * reaches {@code V3} or beyond, and the customiser below re-applies {@value #SCHEMA_ONLY_TARGET} after
- * the configuration has been bound, so an inherited value, an operator override or a merged property
- * source cannot lift it in silence. The <em>applied-state check</em> decides whether this database was
- * ever entitled to start under production at all: {@link ProductionSeedRejectionCallback} refuses a
+ * <p><strong>There is no production version ceiling, and its removal is deliberate rather than
+ * incidental.</strong> The previous arrangement pinned {@code spring.flyway.target} at the highest
+ * delivered schema version and refused every other value. That held the seeds out correctly and it made
+ * every future schema migration undeployable: the day a {@code V5} schema script shipped, a production
+ * migration would have stopped below it and reported success, and the only way to raise the pin was to
+ * edit this class, because {@link #resolveTarget(Collection, String)} refused any other value. A ceiling
+ * is the wrong instrument for a boundary that must never move and the wrong instrument for a sequence
+ * that must keep growing, and it was being asked to be both. {@code resolveTarget} now <strong>refuses a
+ * numeric production ceiling outright</strong> and re-applies {@value #ALL_RESOLVED_VERSIONS_TARGET}, so
+ * every version the schema location contains applies - including versions added after this class was
+ * written.
+ *
+ * <p><strong>Two independent controls hold the separation.</strong> The <em>location list</em> decides
+ * what is resolved: {@link #resolveLocations(Collection, Collection)} pins production to
+ * {@value #SCHEMA_LOCATION} by <em>equality</em>, refusing the seed location, the shared parent, a
+ * second entry, a file-system descriptor, a bare path, a deeper path and a blank entry - because another
+ * location, or an operator-writable directory that merely ends in the same folder name, could present
+ * seed content of its own. The <em>applied-state check</em> decides whether this database was ever
+ * entitled to start under production at all: {@link ProductionSeedRejectionCallback} refuses a
  * production start against a database whose history records a seed migration or whose tables still hold
  * seeded rows.
  *
- * <p>The two are genuinely independent, and each covers what the other cannot. The ceiling cannot help
- * a database that was already seeded before production was pointed at it. The applied-state check
+ * <p>The two are genuinely independent, and each covers what the other cannot. The location list cannot
+ * help a database that was already seeded before production was pointed at it. The applied-state check
  * cannot stop a seed being applied for the first time.
- *
- * <p>The location list is still pinned by <em>equality</em> under production - see
- * {@link #resolveLocations(Collection, Collection)} - but it is a supporting control rather than the
- * separating one: its job is to guarantee that the scripts the ceiling measures are the packaged ones,
- * because another location, or an operator-writable directory that merely ends in the same folder name,
- * could present its own {@code V1} and {@code V2} carrying content this ceiling never measured.
  *
  * <p>Both settings declared in the profile documents are statements, and the documents were the whole
  * of the mechanism until this class existed. <strong>Text is not a control.</strong> The gaps that
  * followed from having no code behind it, and closing them, are this class's entire purpose.
  *
- * <p>Decision {@code DL-127} in {@code docs/decision-log.md} records why the version ceiling is the
- * mechanism and why the location is pinned behind it, and decision {@code DL-110} records the sealing
- * callback - {@code com.carddemo.service.SeededIdentifierSealingCallback}, which registers itself for
- * the two seeding profiles rather than being published from here, so that this package declares no
- * dependency on the service package.
+ * <p>Decision {@code DL-298} in {@code docs/decision-log.md} records why the location list is the
+ * mechanism and why no production ceiling remains; it supersedes {@code DL-127}, whose own correction
+ * had restored the flat layout and the pin. Decision {@code DL-110} records the sealing callback -
+ * {@code com.carddemo.service.SeededIdentifierSealingCallback}, which registers itself for the two
+ * seeding profiles rather than being published from here, so that this package declares no dependency on
+ * the service package.
  *
- * <p><strong>One point of history, recorded so the arrangement is not undone again.</strong> An
- * intervening revision of this class introduced {@code schema/} and {@code seed/} child directories and
- * made the location list the primary control, on the ground that a location that was never listed is
- * not a value an operator can widen. The ground is real but the conclusion was not available: the
- * delivered layout is flat and the migration specifications forbid creating a child directory, so that
- * revision left two competing migration models in one module - a split the code assumed and a flat
- * layout the artefacts actually had. The flat layout is authoritative, the ceiling is the control it
- * supports, and both are now stated in one place only.
+ * <p><strong>One point of history, recorded so the arrangement is not undone a fourth time.</strong> The
+ * split has now been introduced three times. Twice it was withdrawn because the parent stayed reachable,
+ * and the withdrawal reasoning was correct about recursion and wrong about the remedy. The third time it
+ * was withdrawn in favour of the version pin on the ground that the delivered artefacts were flat and
+ * the migration specifications forbade a child directory - which is true of those specifications and
+ * cannot be reconciled with the plan's own structural decision that this class resolve the seeds
+ * <em>from profile-scoped locations</em>. The named structural decision governs over a path listing.
+ * What settles it beyond that reading is the defect the pin brought with it: it froze the production
+ * schema at a version. Nothing about the directory arrangement does that.
  *
  * <h2>Gap one: the profile list is a list, and a list can hold both</h2>
  *
@@ -136,26 +155,27 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * write a chosen line into the start-up log; decision {@code DL-041} in {@code docs/decision-log.md}
  * governs that, and the same rule is applied here.
  *
- * <h2>Gap two: a ceiling is only a control while nothing widens it</h2>
+ * <h2>Gap two: a location list is only a control while nothing widens it</h2>
  *
- * <p>{@link #resolveTarget(Collection, String)} guards the ceiling, which is the separating control.
- * When production is active it <strong>refuses</strong> any ceiling that would reach version
- * {@value #FIRST_SEED_VERSION} or beyond - which includes {@value #SEEDING_TARGET}, a predefined
- * marker and an absent value, because Flyway migrates to the latest version when no target is set - so
- * a merged environment, an operator override or a copied overlay block cannot raise it in silence.
- * When local or test is active it <strong>lifts</strong> a ceiling that would stop short of the seeds,
- * because a fixture-bearing profile that stopped at the schema would migrate no fixtures. With neither
- * active the bound value is returned unchanged, which means the shared baseline's production posture
- * is what a profile-less start inherits.
+ * <p>{@link #resolveLocations(Collection, Collection)} guards the location list, which is the
+ * separating control. When production is active it <strong>refuses</strong> any resolved list other than
+ * exactly {@value #SCHEMA_LOCATION}, matched by equality rather than containment, because a second
+ * entry, the seed location, the shared parent, a file-system descriptor or an operator-writable
+ * directory that merely ends in the same folder name could each present seed content of its own. When
+ * local or test is active it <strong>completes</strong> whichever of the two delivered locations the
+ * bound list is missing, because a profile that resolved no location migrates nothing at all and one
+ * that resolved only half migrates either no schema or no fixtures. Under <em>every</em> profile,
+ * including no profile, it refuses the shared parent, because scanning is recursive and because the
+ * recorded script names would change.
  *
- * <p>{@link #resolveLocations(Collection, Collection)} guards what the ceiling measures. When
- * production is active it <strong>refuses</strong> any resolved location other than the one packaged
- * {@value #MIGRATION_LOCATION}, matched by equality rather than containment, because a second entry, a
- * file-system descriptor or an operator-writable directory that merely ends in the same folder name
- * could present its own {@code V1} and {@code V2} carrying content this ceiling never measured. When
- * local or test is active it <strong>completes</strong> the delivered location if the bound list is
- * missing it, because a profile that resolved no location migrates nothing at all. With neither active
- * the bound list is returned unchanged, so a profile-less start inherits the shared baseline.
+ * <p>{@link #resolveTarget(Collection, String)} guards against a ceiling being used as a substitute.
+ * When production is active it <strong>refuses a numeric ceiling outright</strong> and re-applies
+ * {@value #ALL_RESOLVED_VERSIONS_TARGET}: a number freezes the schema at that version, so a schema
+ * script added after the deployment is never applied while the migration still reports success, and a
+ * low number additionally stops before the indexes and constraints are created. When local or test is
+ * active it <strong>lifts</strong> a ceiling that would stop short of version
+ * {@value #FIRST_SEED_VERSION}, because a fixture-bearing profile that stopped at the schema would
+ * migrate no fixtures. With neither active the bound value is returned unchanged.
  *
  * <p>Both resolutions fire on the <em>merged, bound</em> configuration rather than on any one
  * document, so an inherited value, an operator override on the command line and a co-activated
@@ -209,22 +229,23 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * not <em>supply</em> a location or a ceiling: the values live in the profile documents, where an
  * operator reads them, and supplying them here would create a second place for them to disagree. What
  * it does instead is <em>require</em> production's location, ceiling and enablement to be the canonical
- * ones and refuse the start-up otherwise. Those two postures are not the same, and the difference is
+ * ones and refuse the start-up otherwise. The ceiling it requires is the absence of one. Those two postures are not the same, and the difference is
  * the point of this class: a profile document is a default, and a default can be overridden on the
  * command line, in the environment, or by a co-activated overlay. Leaving the ceiling and the location
  * to the documents alone would leave them to whatever the last property source said. So this class
  * refuses, completes and seals what those documents produced, and refuses to start at all when what
  * they produced for production is not what production must have.
  *
- * <p>It also does not add a versioned migration. Sealing the seeded identifiers as a {@code V5}
- * would have made the delivered migration set end at a version the shipped scripts do not reach,
- * which the profile documents state and a test asserts against the delivered scripts; a callback
- * carries no version and leaves that ledger true.
+ * <p>It also does not add a versioned migration. Sealing the seeded identifiers as a fifth script would
+ * have put a seeding step into a numbered sequence, and the sequence is now shared by two locations with
+ * different audiences: a version in the seed location is invisible to production, and a version in the
+ * schema location must never seed. A callback carries no version and belongs to neither location, so it
+ * cannot be resolved by the wrong profile.
  *
- * <h2>What the scripts below the ceiling replace, and where each fact came from</h2>
+ * <h2>What the two locations replace, and where each fact came from</h2>
  *
- * <p>Everything at or below version {@value #SCHEMA_ONLY_TARGET} - which is exactly what a
- * production deployment applies - stands in for the ten {@code DEFINE CLUSTER} provisioning job
+ * <p>Everything in {@value #SCHEMA_LOCATION} - which is exactly what a production deployment applies -
+ * stands in for the ten {@code DEFINE CLUSTER} provisioning job
  * streams that built the legacy indexed base clusters, one job per cluster:
  * {@code app/jcl/ACCTFILE.jcl}, {@code app/jcl/CARDFILE.jcl}, {@code app/jcl/CUSTFILE.jcl},
  * {@code app/jcl/XREFFILE.jcl}, {@code app/jcl/TRANFILE.jcl}, {@code app/jcl/TCATBALF.jcl},
@@ -257,14 +278,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * </ul>
  *
  * <p>Those three are named here so the production migration can be audited by what it <em>admits</em>
- * as well as by what it excludes. Note where the guarantee that they exist actually rests:
- * {@link #resolveLocations(Collection, Collection)} requires the packaged location and
- * {@link #resolveTarget(Collection, String)} refuses a ceiling only for reaching <em>up</em> into the
- * seeds, deliberately accepting one that stops lower, so that a schema script numbered above
- * {@value #SCHEMA_ONLY_TARGET} is never refused merely for being new. Keeping these three indexes in
- * a production deployment is therefore the profile documents' job - they declare
- * {@code spring.flyway.target} as {@value #SCHEMA_ONLY_TARGET}, not below it - and it is asserted
- * against the delivered numbering by {@code FlywayConfigCoverageTest} rather than assumed here.
+ * as well as by what it excludes. Note where the guarantee that they exist now rests, because it moved:
+ * {@link #resolveLocations(Collection, Collection)} requires the packaged schema location and
+ * {@link #resolveTarget(Collection, String)} refuses a numeric ceiling of <em>any</em> value, so nothing
+ * can stop a production migration short of the last script that location contains. Under the previous
+ * arrangement the guarantee rested on the profile documents declaring a number that happened to be the
+ * highest schema version, which meant a schema script added later was excluded by the same mechanism
+ * that excluded the seeds. It is now excluded by nothing, and a seed script is excluded by not being in
+ * the location production resolves - which is the separation each concern actually needs.
  *
  * <p>Provenance: this configuration has no single legacy antecedent, because the separation it
  * enforces is one the legacy estate had no equivalent of - there, a provisioning job stream that was
@@ -289,25 +310,52 @@ public final class FlywayConfig {
     public static final String TEST_PROFILE = "test";
 
     /**
-     * The one location every profile migrates from, holding all four delivered scripts flat:
-     * {@code V1__create_schema.sql}, {@code V2__create_indexes.sql},
-     * {@code V3__seed_reference_data.sql} and {@code V4__seed_user_security.sql}. Held as a constant so
-     * the value this class refuses to lose and the value the documents declare cannot drift apart.
+     * The location holding the schema scripts, and the only location a production deployment resolves:
+     * {@code V1__create_schema.sql}, {@code V2__create_indexes.sql}, and every schema version added
+     * after them.
      *
-     * <p>It has no child directory, and none may be created. Flyway scans a location
-     * <em>recursively</em>, so a child directory would be reached by any profile that resolves this
-     * one and could separate nothing; the two seeds are held out of production by their VERSION
-     * instead - see {@link #SCHEMA_ONLY_TARGET}.</p>
+     * <p>Held as a constant so the value this class requires and the value the documents declare cannot
+     * drift apart.
      */
-    public static final String MIGRATION_LOCATION = "classpath:db/migration";
+    public static final String SCHEMA_LOCATION = "classpath:db/migration/schema";
 
     /**
-     * The classpath-relative path inside {@link #MIGRATION_LOCATION}. A location is recognised as the
-     * module's migration location by this path rather than by string equality with the descriptor, so
-     * a trailing separator, a differently spelled prefix or a file-system descriptor addressing the
-     * same directory is still recognised - and anything else is not.
+     * The location holding the seed scripts, resolved by the local and test profiles alone:
+     * {@code V3__seed_reference_data.sql} and {@code V4__seed_user_security.sql}.
+     *
+     * <p>Production {@link #resolveLocations(Collection, Collection) refuses} it, so under production
+     * these scripts appear in no state whatsoever - not applied, not pending, not above a ceiling, not
+     * even resolved. That is a stronger statement than a version comparison could make, because a
+     * version comparison first resolves the script and then declines to run it.
      */
-    private static final String MIGRATION_PATH = "db/migration";
+    public static final String SEED_LOCATION = "classpath:db/migration/seed";
+
+    /**
+     * The shared parent of the two locations above, which holds <strong>no script at all</strong> and
+     * which <strong>no profile may resolve</strong>.
+     *
+     * <p>This constant exists to be refused rather than to be used. Flyway scans a location
+     * <em>recursively</em>, so a profile that resolved this parent would reach both children and the
+     * separation would be notional - which is precisely why two earlier attempts at a directory split
+     * were withdrawn: both left the schema scripts in the parent, so the parent stayed reachable. With
+     * the parent empty the recursion has nothing to cross. Resolving it would also change the recorded
+     * script names, since Flyway records a script name relative to its location, so the history would
+     * read {@code schema/V1__create_schema.sql} rather than {@code V1__create_schema.sql}.
+     */
+    public static final String SHARED_PARENT_LOCATION = "classpath:db/migration";
+
+    /**
+     * The classpath-relative path of {@link #SCHEMA_LOCATION}. A location is recognised by this path
+     * rather than by string equality with the descriptor, so a trailing separator or a differently
+     * spelled prefix is still recognised - and anything else is not.
+     */
+    private static final String SCHEMA_PATH = "db/migration/schema";
+
+    /** The classpath-relative path of {@link #SEED_LOCATION}. */
+    private static final String SEED_PATH = "db/migration/seed";
+
+    /** The classpath-relative path of {@link #SHARED_PARENT_LOCATION}. */
+    private static final String SHARED_PARENT_PATH = "db/migration";
 
     /**
      * The path separator a normalised location descriptor uses. A location is recognised by finding
@@ -317,21 +365,25 @@ public final class FlywayConfig {
     private static final String SEGMENT_SEPARATOR = "/";
 
     /**
-     * The ceiling that stops a migration at the schema and its indexes, declared by the shared
-     * baseline and re-declared by the production overlay. It is the highest version the delivered
-     * schema scripts reach, and the first seed script sits above it.
+     * Flyway's own word for "apply every version the resolved locations contain", which every profile
+     * now declares.
+     *
+     * <p><strong>Production declares it too, and that is the point of this entry's revision.</strong>
+     * The previous arrangement pinned production at the highest delivered schema version and refused
+     * every other value, which held the seeds out correctly and made a future schema migration
+     * impossible to deploy: the day a {@code V5} schema script shipped, production could not apply it
+     * without editing this class, and the pin would have reported a successful migration while leaving
+     * the new structures absent. The separation is now the location list, which an operator cannot
+     * widen, so no ceiling is needed and none is permitted.
      */
-    public static final String SCHEMA_ONLY_TARGET = "2";
+    public static final String ALL_RESOLVED_VERSIONS_TARGET = "latest";
 
     /**
-     * The ceiling a seeding profile declares for itself, which is Flyway's own word for "apply
-     * everything". Only the local and test overlays carry it.
-     */
-    public static final String SEEDING_TARGET = "latest";
-
-    /**
-     * The first version a seed script occupies. A ceiling that reaches this version reaches the
-     * reference-data seed, and a ceiling below it cannot.
+     * The first version a seed script occupies.
+     *
+     * <p>No longer a production control - the location list is - but still the figure a seeding profile
+     * is measured against: an inherited ceiling below this version would migrate the schema and none of
+     * the fixtures the profile exists to load.
      */
     private static final String FIRST_SEED_VERSION = "3";
 
@@ -342,7 +394,10 @@ public final class FlywayConfig {
      */
     private static final String MIGRATIONS_ENABLED_KEY = "spring.flyway.enabled";
 
-    /** The property carrying the migration ceiling, which production must declare exactly. */
+    /**
+     * The property carrying the migration target. Production must declare it as
+     * {@value #ALL_RESOLVED_VERSIONS_TARGET} or not at all; a numeric ceiling is refused.
+     */
     private static final String MIGRATION_TARGET_KEY = "spring.flyway.target";
 
     /** The property carrying the migration location list, which production must declare exactly. */
@@ -411,17 +466,19 @@ public final class FlywayConfig {
             if (resolvedTarget != null) {
                 final boolean changed = !resolvedTarget.equals(describe(boundTarget));
                 // Set unconditionally rather than only when it differs. Under production the value is
-                // already '2' by the time control reaches here - resolveTarget refused every other
-                // value - so this is an idempotent re-statement, and re-stating it is what makes the
-                // ceiling a property of this code path rather than of the document that supplied it.
+                // already the apply-everything marker by the time control reaches here - resolveTarget
+                // refused every numeric value - so this is an idempotent re-statement, and re-stating it
+                // is what makes the setting a property of this code path rather than of the document
+                // that supplied it.
                 configuration.target(resolvedTarget);
                 if (changed) {
-                    LOGGER.info("Migration ceiling lifted to the seeding target for a non-production"
-                            + " profile");
+                    LOGGER.info("Migration ceiling lifted to '{}' so every resolved version applies",
+                            resolvedTarget);
                 } else if (containsProfile(activeProfiles, PRODUCTION_PROFILE)) {
-                    LOGGER.info("Migration ceiling pinned to '{}' for the production profile; the two"
-                            + " seed scripts are numbered above it and are therefore never applied",
-                            SCHEMA_ONLY_TARGET);
+                    LOGGER.info("Migration ceiling left at '{}' for the production profile; the seed"
+                            + " scripts are held out by the location list rather than by a version, so"
+                            + " a schema version added later still applies",
+                            ALL_RESOLVED_VERSIONS_TARGET);
                 }
             }
         };
@@ -451,6 +508,30 @@ public final class FlywayConfig {
     }
 
     /**
+     * Publishes this module's own record of which versions a start-up applied and which it reached.
+     *
+     * <p>Unconditional, unlike the callback above, because the evidence it writes is read in every profile:
+     * local validation reads it to confirm that all four delivered migrations were applied and that the
+     * schema reached its highest delivered version, and a production start-up wants the same two facts for
+     * the same reason. Nothing in it is profile-specific and nothing in it inspects data.
+     *
+     * <p>It exists because that evidence used to be read out of the migration tool's own log text, and the
+     * category that carries the tool's opening announcement is now held above the level it speaks at: those
+     * three lines name the JDBC URL, the driver and the database type, so they publish the host, the port,
+     * the database name and the exact server and driver versions of the estate into the stream that leaves
+     * the process. The lines the validation depends on come from a different category and survive that
+     * raise, but depending on a third party's message text at all is a dependency a library upgrade can
+     * break in silence. {@link MigrationVersionRecordCallback} removes it. See
+     * {@code docs/decision-log.md} entry DL-311.
+     *
+     * @return the migration-lifecycle callback that records the versions this start-up applied
+     */
+    @Bean
+    Callback migrationVersionRecordCallback() {
+        return new MigrationVersionRecordCallback();
+    }
+
+    /**
      * Publishes the guard that requires production to have declared the migration source this module
      * ships, before any bean is instantiated.
      *
@@ -471,11 +552,12 @@ public final class FlywayConfig {
      *       the resulting diagnostic. Absence is refused rather than treated as the framework's
      *       {@code true} default, for the same reason the other two are: a production migration source
      *       is stated, not inferred.</li>
-     *   <li>{@value #MIGRATION_TARGET_KEY} exactly {@value #SCHEMA_ONLY_TARGET}, enforced by handing
-     *       the declared value to {@link #resolveTarget(Collection, String)} - the same rule the
-     *       customizer applies, called rather than copied, so the two can never drift apart.</li>
-     *   <li>{@value #MIGRATION_LOCATIONS_KEY} exactly the one packaged location, enforced by handing
-     *       the bound list to {@link #resolveLocations(Collection, Collection)} for the same
+     *   <li>{@value #MIGRATION_TARGET_KEY} absent or {@value #ALL_RESOLVED_VERSIONS_TARGET} and never a
+     *       number, enforced by handing the declared value to
+     *       {@link #resolveTarget(Collection, String)} - the same rule the customizer applies, called
+     *       rather than copied, so the two can never drift apart.</li>
+     *   <li>{@value #MIGRATION_LOCATIONS_KEY} exactly the one packaged schema location, enforced by
+     *       handing the bound list to {@link #resolveLocations(Collection, Collection)} for the same
      *       reason.</li>
      * </ul>
      *
@@ -562,8 +644,9 @@ public final class FlywayConfig {
         resolveLocations(activeProfiles, Binder.get(environment)
                 .bind(MIGRATION_LOCATIONS_KEY, Bindable.listOf(String.class))
                 .orElseGet(List::of));
-        LOGGER.info("Production migration source accepted: migrations enabled, ceiling '{}',"
-                + " one location '{}'", SCHEMA_ONLY_TARGET, MIGRATION_LOCATION);
+        LOGGER.info("Production migration source accepted: migrations enabled, target '{}' with no"
+                + " version ceiling, one location '{}' and no seed location",
+                ALL_RESOLVED_VERSIONS_TARGET, SCHEMA_LOCATION);
     }
 
     /**
@@ -640,65 +723,75 @@ public final class FlywayConfig {
     /**
      * Resolves the migration locations for the active profiles.
      *
-     * <p>This does <strong>not</strong> separate the schema from the seeds: all four delivered scripts
-     * sit flat in {@value #MIGRATION_LOCATION}, so every profile resolves the same value and a location
-     * list can express no separation at all. The separation is the version ceiling - see
-     * {@link #resolveTarget(Collection, String)}. What this method guarantees is that the scripts the
-     * ceiling measures are <em>the packaged ones</em>.
+     * <p><strong>This is where the schema and the seeds are separated, and it is the only place they
+     * are.</strong> The schema scripts and the seed scripts sit in two sibling locations, neither inside
+     * the other, and their shared parent holds no script at all - so a profile that resolves
+     * {@value #SCHEMA_LOCATION} reaches exactly the schema and a profile that resolves both reaches
+     * everything. A location a profile never lists is not a value an operator can widen, which is why
+     * the separation lives here rather than in a version ceiling.
      *
      * <p>Three outcomes, and each is a different kind of statement:
      *
      * <ul>
      *   <li>Production active - any resolved list other than exactly one entry equal, character for
-     *       character, to {@value #MIGRATION_LOCATION} is <strong>refused</strong>. That refuses an
-     *       empty list, a second entry, a blank entry, a file-system descriptor, a bare path, a nested
-     *       sub-path and a trailing separator. Equality rather than containment is deliberate:
-     *       containment cannot separate the packaged directory from an operator-writable directory that
-     *       merely ends in the same folder name, and such a directory could present its own {@code V1}
-     *       and {@code V2} carrying seed content the ceiling would then never measure. It fires on the
-     *       merged, bound list rather than on one document, so an inherited value, an operator override
-     *       and a copied overlay block are all covered by the same check.</li>
-     *   <li>Local or test active - {@value #MIGRATION_LOCATION} is <strong>completed</strong> if the
-     *       bound list does not already resolve it, keeping the declared order and appending rather
-     *       than replacing, because a profile that resolved no location migrates nothing at all.</li>
-     *   <li>Neither active - the bound list is returned unchanged. A profile-less start migrates
-     *       whatever the shared baseline declares, under the shared baseline's ceiling.</li>
+     *       character, to {@value #SCHEMA_LOCATION} is <strong>refused</strong>. That refuses an empty
+     *       list, a second entry, a blank entry, a file-system descriptor, a bare path, a deeper
+     *       sub-path, a trailing separator, {@value #SEED_LOCATION} and
+     *       {@value #SHARED_PARENT_LOCATION} - the last because scanning is recursive, so the parent
+     *       reaches the seeds through their own directory. Equality rather than containment is
+     *       deliberate: containment cannot separate the packaged directory from an operator-writable
+     *       directory that merely ends in the same folder name, and such a directory could present its
+     *       own scripts carrying seed content. It fires on the merged, bound list rather than on one
+     *       document, so an inherited value, an operator override and a copied overlay block are all
+     *       covered by the same check.</li>
+     *   <li>Local or test active - both {@value #SCHEMA_LOCATION} and {@value #SEED_LOCATION} are
+     *       <strong>completed</strong> if the bound list does not already resolve them, keeping the
+     *       declared order and appending rather than replacing, because a profile that resolved no
+     *       location migrates nothing at all. {@value #SHARED_PARENT_LOCATION} is
+     *       <strong>refused</strong> here too: it would apply the same four scripts and record them
+     *       under different names, and the compose bring-up check reads those names out of the history
+     *       table.</li>
+     *   <li>Neither active - the bound list is returned unchanged, except that the shared parent is
+     *       refused for that same naming reason. A profile-less start migrates whatever the shared
+     *       baseline declares.</li>
      * </ul>
      *
      * <p>Nothing here refuses a duplicate entry under local or test, and nothing needs to: a list that
      * resolves the same script twice is rejected by Flyway's own repeated-version error before a single
      * statement is executed. A loud failure from the tool that owns the sequence is a better outcome
-     * than a second refusal in this class that could drift away from it.
+     * than a second refusal in this class that could drift away from it. The same holds for a schema
+     * script and a seed script that were given the same version number: the tool reports the collision.
      *
      * @param activeProfiles    the active-profile list, which may be empty
      * @param declaredLocations the location descriptors the property binding produced, in order
      * @return the locations to migrate from, in order; the same values when nothing changed
      * @throws IllegalStateException when production is active and the resolved list is not exactly the
-     *                               one packaged location
+     *                               schema location, or when any profile resolves the shared parent
      */
     public static List<String> resolveLocations(final Collection<String> activeProfiles,
             final Collection<String> declaredLocations) {
         final List<String> declared = declaredLocations == null
                 ? List.of()
                 : Collections.unmodifiableList(new ArrayList<>(declaredLocations));
+        requireNoSharedParent(declared);
         if (containsProfile(activeProfiles, PRODUCTION_PROFILE)) {
-            // EXACTLY ONE location, and it must be the packaged one. Every other outcome is refused:
-            // an empty list, a second entry, a blank entry, and any descriptor that is not character
-            // for character the packaged location. See isPackagedMigrationLocation for why nothing
-            // looser will do.
-            if (declared.size() != 1 || !isPackagedMigrationLocation(declared.get(0))) {
+            // EXACTLY ONE location, and it must be the packaged schema location. Every other outcome is
+            // refused: an empty list, a second entry, a blank entry, the seed location, the shared
+            // parent, and any descriptor that is not character for character the schema location. See
+            // isPackagedSchemaLocation for why nothing looser will do.
+            if (declared.size() != 1 || !isPackagedSchemaLocation(declared.get(0))) {
                 throw new IllegalStateException("profile '" + PRODUCTION_PROFILE
                         + "' must resolve exactly one migration location and it must be the packaged"
-                        + " '" + MIGRATION_LOCATION + "'; it resolved " + declared.size()
-                        + " location(s), of which the first is not that value. The two seed scripts sit"
-                        + " in that same location and are held out of production by their version"
-                        + " alone, so a location this class cannot recognise is a location whose"
-                        + " scripts the ceiling of '" + SCHEMA_ONLY_TARGET + "' never measured: those"
-                        + " scripts insert fifty synthetic customer rows holding regulated identity"
-                        + " data and ten known sign-on identities whose stored credentials are digests"
-                        + " of one well-known value. A file-system descriptor, a bare path, a nested"
-                        + " path, an additional entry and a blank entry are all refused, because each"
-                        + " can present scripts the packaged sequence does not contain");
+                        + " '" + SCHEMA_LOCATION + "'; it resolved " + declared.size()
+                        + " location(s), of which the first is not that value. The seed scripts sit in"
+                        + " the sibling '" + SEED_LOCATION + "', which production never resolves, so a"
+                        + " location this class cannot recognise is a location whose scripts nothing"
+                        + " held back: those scripts insert fifty synthetic customer rows holding"
+                        + " regulated identity data and ten known sign-on identities whose stored"
+                        + " credentials are digests of one well-known value. A file-system descriptor,"
+                        + " a bare path, a deeper path, the seed location, the shared parent, an"
+                        + " additional entry and a blank entry are all refused, because each can"
+                        + " present scripts the packaged schema sequence does not contain");
             }
             return declared;
         }
@@ -706,12 +799,48 @@ public final class FlywayConfig {
                 && !containsProfile(activeProfiles, TEST_PROFILE)) {
             return declared;
         }
-        if (declared.stream().anyMatch(FlywayConfig::isMigrationLocation)) {
-            return declared;
-        }
+        // A seeding profile must resolve BOTH halves. Completing only one would leave the profile
+        // either without a schema to seed into or without the fixtures it exists to load, and the
+        // declared order is preserved so an operator's own ordering survives.
         final List<String> completed = new ArrayList<>(declared);
-        completed.add(MIGRATION_LOCATION);
-        return Collections.unmodifiableList(completed);
+        if (declared.stream().noneMatch(FlywayConfig::isSchemaLocation)) {
+            completed.add(SCHEMA_LOCATION);
+        }
+        if (declared.stream().noneMatch(FlywayConfig::isSeedLocation)) {
+            completed.add(SEED_LOCATION);
+        }
+        return completed.equals(declared)
+                ? declared
+                : Collections.unmodifiableList(completed);
+    }
+
+    /**
+     * Refuses a location list that resolves the shared parent of the two delivered locations, whatever
+     * profile is active and however the parent is spelled.
+     *
+     * <p>Applied before the profile is examined because the reason is not a profile's. Flyway scans a
+     * location recursively, so the parent reaches both children: under production it would apply the
+     * seeds, and under a seeding profile it would apply the same four scripts while recording each one
+     * under a name relative to the parent - {@code schema/V1__create_schema.sql} instead of
+     * {@code V1__create_schema.sql}. The compose bring-up check reads those names out of the history
+     * table, so the second case is a broken contract rather than a harmless equivalence.
+     *
+     * @param declared the location descriptors the property binding produced
+     * @throws IllegalStateException when any entry addresses the shared parent
+     */
+    private static void requireNoSharedParent(final Collection<String> declared) {
+        for (final String descriptor : declared) {
+            if (isSharedParentLocation(descriptor)) {
+                throw new IllegalStateException("no profile may resolve '" + SHARED_PARENT_LOCATION
+                        + "'. It is the shared parent of '" + SCHEMA_LOCATION + "' and '"
+                        + SEED_LOCATION + "' and holds no script itself, but a location is scanned"
+                        + " RECURSIVELY, so resolving it reaches both children - which applies the seed"
+                        + " scripts and additionally records every script under a name relative to the"
+                        + " parent, breaking the migration names the bring-up check reads out of the"
+                        + " history table. Declare '" + SCHEMA_LOCATION + "' alone, or that location"
+                        + " together with '" + SEED_LOCATION + "'");
+            }
+        }
     }
 
     /**
@@ -720,71 +849,68 @@ public final class FlywayConfig {
      * <p>Three outcomes, mirroring {@link #resolveLocations(Collection, Collection)}:
      *
      * <ul>
-     *   <li>Production active - the ceiling must be exactly {@value #SCHEMA_ONLY_TARGET}; every other
-     *       value is <strong>refused</strong>. Both edges of that equality carry weight. Above it,
-     *       version {@value #FIRST_SEED_VERSION} and beyond admit the seeds, and {@value
-     *       #SEEDING_TARGET}, any predefined marker, a malformed value and an absent value all reach
-     *       them: Flyway migrates to the latest version when no target is set, so silence is the
-     *       dangerous case rather than the safe one, and a value this method cannot read is refused
-     *       rather than assumed harmless. Below it, a ceiling such as {@code 1.1} reaches no seed and
-     *       would have satisfied a seeds-only check, yet it stops before the indexes and constraints
-     *       are created and leaves an under-migrated schema behind a migration that reported success.
-     *       Neither edge is delegated to the profile document: a profile document is a default, and a
-     *       default can be overridden on the command line, in the environment or by a later property
-     *       source, so the ceiling is enforced here in code where nothing downstream can relax it.</li>
+     *   <li>Production active - the ceiling must be absent or exactly
+     *       {@value #ALL_RESOLVED_VERSIONS_TARGET}; <strong>every numeric ceiling is refused</strong>,
+     *       and the method returns {@value #ALL_RESOLVED_VERSIONS_TARGET}. This is the reverse of what
+     *       this method used to require, and the reversal is the substance of the change. A ceiling
+     *       pinned at the highest delivered schema version did hold the seeds out - but it also made
+     *       every future schema migration undeployable: the day a {@code V5} schema script shipped,
+     *       production would have applied nothing above the pin and reported success, and the only way
+     *       to raise the pin was to edit this class, because this method refused every other value. A
+     *       ceiling is the wrong instrument for a boundary that must never move and the wrong instrument
+     *       for a sequence that must keep growing, and it was being used for both. The boundary is now
+     *       the location list, which an operator cannot widen, so the ceiling has no work left to do and
+     *       is refused rather than left as a trap. A ceiling below the highest schema version is refused
+     *       for the reason it always was: it stops before the indexes and constraints are created and
+     *       leaves an under-migrated schema behind a migration that reported success.</li>
      *   <li>Local or test active - a ceiling that would stop short of the seeds is
-     *       <strong>lifted</strong> to {@value #SEEDING_TARGET}, because the inherited baseline
+     *       <strong>lifted</strong> to {@value #ALL_RESOLVED_VERSIONS_TARGET}, because an inherited
      *       ceiling reaching a seeding profile would migrate the schema and none of the fixtures the
      *       profile exists to load.</li>
      *   <li>Neither active - the bound value is returned unchanged.</li>
      * </ul>
      *
-     * <p>The refusal names the two version literals this class declares and never the supplied
-     * value, per decision {@code DL-041}: the ceiling is operator-supplied, so repeating it would
-     * let whoever supplied it write a chosen line into the start-up log.
+     * <p>The refusal names the one version literal this class declares and never the supplied value,
+     * per decision {@code DL-041}: the ceiling is operator-supplied, so repeating it would let whoever
+     * supplied it write a chosen line into the start-up log.
      *
      * @param activeProfiles the active-profile list, which may be empty
      * @param declaredTarget the ceiling the property binding produced, which may be {@code null}
      * @return the ceiling to migrate to; the same value when nothing changed
-     * @throws IllegalStateException when production is active and the ceiling is not exactly
-     *                               {@value #SCHEMA_ONLY_TARGET}
+     * @throws IllegalStateException when production is active and a ceiling other than
+     *                               {@value #ALL_RESOLVED_VERSIONS_TARGET} is declared
      */
     public static String resolveTarget(final Collection<String> activeProfiles,
             final String declaredTarget) {
         final String declared = declaredTarget == null ? null : declaredTarget.strip();
         final boolean reachesSeeds = reachesSeedVersions(parseVersion(declared));
         if (containsProfile(activeProfiles, PRODUCTION_PROFILE)) {
-            // EXACTLY the schema-only ceiling. This is one test with two edges, and both edges are
-            // load-bearing. Above it lie the seeds. Below it lies an under-migrated schema: a ceiling
-            // of '1.1' reaches neither seed and so would have satisfied a seeds-only check, yet it
-            // stops before V2 and leaves the indexes and constraints that V2 creates absent - a
-            // schema that reports a successful migration while missing the structures the application
-            // and every alternate-index query depend on.
-            // Two independent readings of the same requirement, and the ceiling must satisfy both: the
-            // declared text is exactly the schema-only value, AND the value that text parses to is the
-            // schema-only version and not a predefined marker. The text comparison is the strict one - it
-            // refuses even '2.0', which parses to the same version - and the parsed comparison is the one
-            // that stays meaningful if the text form is ever relaxed.
-            if (!SCHEMA_ONLY_TARGET.equals(declared) || !isSchemaOnlyTarget(declared)) {
+            // NO CEILING, and a numeric one is refused rather than tolerated. Both halves matter. A
+            // numeric ceiling at or above the seed versions would once have admitted the seeds; it no
+            // longer can, because production does not resolve the location they live in. What it still
+            // does is freeze the schema: any number stops the sequence there for ever, so a schema
+            // version added later is silently never applied and the migration still reports success.
+            // A ceiling is therefore refused outright, and the separation is left to the location list
+            // where an operator cannot widen it.
+            if (declared != null && !declared.isEmpty()
+                    && !ALL_RESOLVED_VERSIONS_TARGET.equalsIgnoreCase(declared)) {
                 throw new IllegalStateException("profile '" + PRODUCTION_PROFILE
-                        + "' must declare spring.flyway.target exactly '" + SCHEMA_ONLY_TARGET
-                        + "'. A ceiling that reaches version '" + FIRST_SEED_VERSION + "' or beyond"
-                        + " admits the reference-data seed and the sign-on-identity seed, which"
-                        + " insert fifty synthetic customer rows holding regulated identity data and"
-                        + " ten known sign-on identities whose stored credentials are digests of one"
-                        + " well-known value. A ceiling below '" + SCHEMA_ONLY_TARGET + "' is refused"
-                        + " too, because it stops before the indexes and constraints are created and"
-                        + " leaves an under-migrated schema behind a successful-looking migration. An"
-                        + " absent, predefined or unreadable ceiling is refused for the same reason as"
-                        + " a high one: Flyway migrates to the latest version when none is set");
+                        + "' must declare spring.flyway.target as '" + ALL_RESOLVED_VERSIONS_TARGET
+                        + "' or not at all. A NUMERIC ceiling is refused whatever its value: it freezes"
+                        + " the schema at that version, so a schema script added after this deployment"
+                        + " is never applied and the migration still reports success, and a low one"
+                        + " additionally stops before the indexes and constraints are created. The seed"
+                        + " scripts are held out of production by the location list - production"
+                        + " resolves '" + SCHEMA_LOCATION + "' and never '" + SEED_LOCATION + "' - so"
+                        + " no ceiling is needed and none may be used as a substitute for it");
             }
-            return declared;
+            return ALL_RESOLVED_VERSIONS_TARGET;
         }
         if (!containsProfile(activeProfiles, LOCAL_PROFILE)
                 && !containsProfile(activeProfiles, TEST_PROFILE)) {
             return declared;
         }
-        return reachesSeeds ? declared : SEEDING_TARGET;
+        return reachesSeeds ? declared : ALL_RESOLVED_VERSIONS_TARGET;
     }
 
     /**
@@ -819,20 +945,23 @@ public final class FlywayConfig {
      * one of the following is <strong>refused</strong>:
      *
      * <ul>
-     *   <li>{@code filesystem:/tmp/anywhere/db/migration} - a file-system descriptor naming a
-     *       directory outside the artifact. The scripts there are whatever is on that disk, and the
-     *       production ceiling of {@value #SCHEMA_ONLY_TARGET} was measured against the packaged
-     *       sequence, not against them: an operator-writable directory could present its own
-     *       {@code V1} and {@code V2} carrying seed content the ceiling would then never stop.</li>
-     *   <li>{@code db/migration} - a bare path with no prefix. Flyway's default prefix makes this
-     *       resolve as a classpath location today, but the descriptor does not say so, and a
+     *   <li>{@code filesystem:/tmp/anywhere/db/migration/schema} - a file-system descriptor naming a
+     *       directory outside the artifact. The scripts there are whatever is on that disk, and nothing
+     *       else holds the seeds out of production, so an operator-writable directory could simply
+     *       present seed content of its own under a schema-looking name.</li>
+     *   <li>{@code classpath:db/migration} - the shared parent. Scanning is recursive, so it reaches
+     *       the seed directory. Refused twice over, here and in
+     *       {@link #resolveLocations(Collection, Collection)}, because it is the single mistake that
+     *       would undo the whole separation.</li>
+     *   <li>{@code classpath:db/migration/seed} - the seed location itself.</li>
+     *   <li>{@code db/migration/schema} - a bare path with no prefix. Flyway's default prefix makes
+     *       this resolve as a classpath location today, but the descriptor does not say so, and a
      *       production migration source must be stated rather than inferred.</li>
-     *   <li>{@code classpath:db/migration/regional} - a nested sub-path. It resolves a
-     *       <em>subset</em> of the packaged sequence, so a script the ceiling was measured against
-     *       can be silently absent: the schema would come up short of version
-     *       {@value #SCHEMA_ONLY_TARGET} while reporting success.</li>
-     *   <li>{@code classpath:db/migration/} - a trailing separator, and any other spelling that is
-     *       not the exact value. Accepting near-spellings is what obliges the predicate to
+     *   <li>{@code classpath:db/migration/schema/regional} - a deeper sub-path. It resolves a
+     *       <em>subset</em> of the schema sequence, so a script can be silently absent and the schema
+     *       comes up incomplete while reporting success.</li>
+     *   <li>{@code classpath:db/migration/schema/} - a trailing separator, and any other spelling that
+     *       is not the exact value. Accepting near-spellings is what obliges the predicate to
      *       normalise, and normalisation is what re-opens the containment weakness.</li>
      *   <li>{@code null} and blank - nothing to migrate from.</li>
      * </ul>
@@ -844,44 +973,76 @@ public final class FlywayConfig {
      * refusal names the accepted value rather than echoing the rejected one.
      *
      * @param descriptor a location descriptor, which may be {@code null} or blank
-     * @return {@code true} only when the descriptor is exactly {@value #MIGRATION_LOCATION}
+     * @return {@code true} only when the descriptor is exactly {@value #SCHEMA_LOCATION}
      */
-    private static boolean isPackagedMigrationLocation(final String descriptor) {
-        return descriptor != null && MIGRATION_LOCATION.equals(descriptor.strip());
+    private static boolean isPackagedSchemaLocation(final String descriptor) {
+        return descriptor != null && SCHEMA_LOCATION.equals(descriptor.strip());
     }
 
     /**
-     * Reports whether a location descriptor addresses the module's migration path or anything beneath
-     * it.
+     * Reports whether a location descriptor addresses the schema path or anything beneath it.
      *
      * <p>Used only to decide whether the local and test completion step has anything left to add. It
      * is <strong>not</strong> the production predicate; production uses
-     * {@link #isPackagedMigrationLocation(String)}, which is an exact match. The looseness here is
+     * {@link #isPackagedSchemaLocation(String)}, which is an exact match. The looseness here is
      * harmless because its only effect is to avoid appending a duplicate entry to a list that already
-     * addresses the migration path, and because neither profile it serves ever runs against a
-     * production database.
+     * addresses the path, and because neither profile it serves ever runs against a production database.
      *
-     * @param descriptor a location descriptor, such as {@code classpath:db/migration}
-     * @return {@code true} when the descriptor addresses the migration path
+     * @param descriptor a location descriptor, such as {@code classpath:db/migration/schema}
+     * @return {@code true} when the descriptor addresses the schema path
      */
-    private static boolean isMigrationLocation(final String descriptor) {
-        return addressesPath(descriptor, MIGRATION_PATH);
+    private static boolean isSchemaLocation(final String descriptor) {
+        return addressesPath(descriptor, SCHEMA_PATH);
+    }
+
+    /**
+     * Reports whether a location descriptor addresses the seed path or anything beneath it.
+     *
+     * <p>The completion counterpart of {@link #isSchemaLocation(String)}, for the other half of a
+     * seeding profile's list.
+     *
+     * @param descriptor a location descriptor, such as {@code classpath:db/migration/seed}
+     * @return {@code true} when the descriptor addresses the seed path
+     */
+    private static boolean isSeedLocation(final String descriptor) {
+        return addressesPath(descriptor, SEED_PATH);
+    }
+
+    /**
+     * Reports whether a location descriptor addresses the shared parent <strong>itself</strong>, as
+     * opposed to either of its two children.
+     *
+     * <p>The distinction is the whole of this predicate. {@link #addressesPath(String, String)} matches
+     * a path or anything beneath it, so the parent path matches both children as well - which is
+     * exactly the recursion this arrangement is built around and exactly why it cannot be used here
+     * unqualified. A descriptor is the parent only when it addresses the parent path and addresses
+     * neither child, so {@code classpath:db/migration} is refused while
+     * {@code classpath:db/migration/schema} is not.
+     *
+     * @param descriptor a location descriptor, which may be {@code null} or blank
+     * @return {@code true} only when the descriptor addresses the shared parent and neither child
+     */
+    private static boolean isSharedParentLocation(final String descriptor) {
+        return addressesPath(descriptor, SHARED_PARENT_PATH)
+                && !addressesPath(descriptor, SCHEMA_PATH)
+                && !addressesPath(descriptor, SEED_PATH);
     }
 
     /**
      * Reports whether a location descriptor addresses one classpath-relative path or anything
      * beneath it.
      *
-     * <p><strong>Scope.</strong> This predicate serves the local and test completion step alone, and
-     * the question it answers there is only "has the list already named the migration path, so that
-     * appending the packaged location would duplicate it?". It must never be used to authorise a
-     * production migration source: containment cannot distinguish the packaged directory from a
-     * look-alike on disk, which is precisely the distinction production has to make. That is what
-     * {@link #isPackagedMigrationLocation(String)} is for.
+     * <p><strong>Scope.</strong> This predicate serves the completion step and the shared-parent
+     * refusal, and the question it answers is only "does this descriptor address that directory or
+     * something inside it?". It must never be used to authorise a production migration source:
+     * containment cannot distinguish the packaged directory from a look-alike on disk, which is
+     * precisely the distinction production has to make. That is what
+     * {@link #isPackagedSchemaLocation(String)} is for.
      *
      * <p>The match is on a whole path segment sequence rather than on the raw descriptor, so that
-     * every spelling of the same directory is recognised: {@code classpath:db/migration}, a trailing
-     * separator, a nested sub-path such as {@code classpath:db/migration/regional}, a file-system
+     * every spelling of the same directory is recognised: {@code classpath:db/migration/schema}, a
+     * trailing separator, a nested sub-path such as {@code classpath:db/migration/schema/regional}, a
+     * file-system
      * descriptor pointing at the same directory on disk, and a bare {@code db/migration} with no
      * prefix. A nested sub-path is deliberately accepted rather than refused, because Flyway scans a
      * location recursively: a descriptor beneath the given path resolves a subset of the same scripts,
@@ -889,7 +1050,7 @@ public final class FlywayConfig {
      * colon and a file-system descriptor may use back-slashes, so both are normalised to the forward
      * slash before the segment sequence is looked for - and because the match requires a separator on
      * both sides, a sibling whose name merely begins with the same characters, such as
-     * {@code db/migrations}, is not matched.
+     * {@code db/migrations} or {@code db/migration/schemas}, is not matched.
      *
      * <p>The descriptor is deliberately not parsed by {@link Location}. That parser raises its own
      * exception for a malformed descriptor and puts the descriptor into the message, which would
@@ -909,23 +1070,6 @@ public final class FlywayConfig {
                 + descriptor.strip().replace('\\', '/').replace(':', '/')
                 + SEGMENT_SEPARATOR;
         return normalised.contains(SEGMENT_SEPARATOR + path + SEGMENT_SEPARATOR);
-    }
-
-    /**
-     * Reports whether a ceiling is exactly the schema-only version.
-     *
-     * <p>Compared as a parsed version rather than as text, so that every spelling of the same version -
-     * with or without a trailing zero component, for instance - is recognised as the one ceiling
-     * production is allowed. An absent, blank or unreadable value answers {@code false}, which is the
-     * fail-closed direction: it is refused rather than assumed to be the exact value.
-     *
-     * @param target the ceiling as declared, which may be {@code null} or blank
-     * @return {@code true} only when the ceiling is the schema-only version
-     */
-    private static boolean isSchemaOnlyTarget(final String target) {
-        final MigrationVersion parsed = parseVersion(target);
-        return parsed != null && !parsed.isPredefined()
-                && MigrationVersion.fromVersion(SCHEMA_ONLY_TARGET).equals(parsed);
     }
 
     /**
@@ -982,7 +1126,7 @@ public final class FlywayConfig {
             return null;
         }
         if (MigrationVersion.LATEST.equals(version)) {
-            return SEEDING_TARGET;
+            return ALL_RESOLVED_VERSIONS_TARGET;
         }
         return version.getVersion();
     }

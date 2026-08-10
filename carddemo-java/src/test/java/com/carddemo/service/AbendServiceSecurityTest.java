@@ -32,7 +32,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Unit test for {@link AbendService}, the Java realisation of the nine {@code CALL 'CEE3ABD'} sites
+ * Unit test for {@link AbendService}, the Java realisation of the nine CEE3ABD call sites
  * and the {@code EXEC CICS ABEND} path, whose context structure comes from copybook member
  * {@code CSMSG02Y}.
  *

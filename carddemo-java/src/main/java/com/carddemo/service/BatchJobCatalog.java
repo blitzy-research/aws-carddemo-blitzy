@@ -132,19 +132,10 @@ public final class BatchJobCatalog {
     public static final String DAILY_TRANSACTION_READ_JOB = "dailyTransactionReadJob";
 
     /*
-     * Compatibility aliases retained for the already-integrated job configurations and service facade.
-     * The values are compile-time constants and therefore remain valid annotation attributes; each alias
-     * points at the single canonical literal above.
+     * Each job is named once, immediately above. A parallel set of nine "_JOB_NAME" aliases used to sit
+     * here for the job configurations to read, which meant every name existed twice under two spellings
+     * and a reader had to know the two were the same constant. Every reader now reads the canonical name.
      */
-    public static final String POST_TRANSACTION_JOB_NAME = POST_TRANSACTION_JOB;
-    public static final String INTEREST_CALCULATION_JOB_NAME = INTEREST_CALCULATION_JOB;
-    public static final String COMBINE_TRANSACTIONS_JOB_NAME = COMBINE_TRANSACTIONS_JOB;
-    public static final String CREATE_STATEMENT_JOB_NAME = CREATE_STATEMENT_JOB;
-    public static final String TRANSACTION_REPORT_JOB_NAME = TRANSACTION_REPORT_JOB;
-    public static final String BACKUP_TRANSACTION_JOB_NAME = BACKUP_TRANSACTION_JOB;
-    public static final String CATEGORY_BALANCE_REPORT_JOB_NAME = CATEGORY_BALANCE_REPORT_JOB;
-    public static final String FILE_PROBE_JOB_NAME = FILE_PROBE_JOB;
-    public static final String DAILY_TRANSACTION_READ_JOB_NAME = DAILY_TRANSACTION_READ_JOB;
 
     /**
      * The ten-character run date the accrual step carries as its execution parameter.

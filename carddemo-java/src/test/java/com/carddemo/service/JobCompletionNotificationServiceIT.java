@@ -20,8 +20,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.carddemo.support.AbstractLocalStackIT;
 import io.awspring.cloud.sns.core.SnsTemplate;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
@@ -47,9 +50,14 @@ import software.amazon.awssdk.services.sqs.model.Message;
 @DisplayName("job-completion notification, verified through real SNS fan-out")
 class JobCompletionNotificationServiceIT extends AbstractLocalStackIT {
 
-    private static final LocalDateTime STARTED = LocalDateTime.of(2022, 7, 19, 10, 11, 12);
+    /** Zone the framework's wall-clock readings are treated as having been taken in. */
+    private static final ZoneId RECORDING_ZONE = ZoneId.of("America/New_York");
 
-    private static final LocalDateTime ENDED = LocalDateTime.of(2022, 7, 19, 10, 12, 13);
+    private static final Instant STARTED =
+            LocalDateTime.of(2022, 7, 19, 10, 11, 12).atZone(RECORDING_ZONE).toInstant();
+
+    private static final Instant ENDED =
+            LocalDateTime.of(2022, 7, 19, 10, 12, 13).atZone(RECORDING_ZONE).toInstant();
 
     private String topicArn;
 
@@ -94,7 +102,8 @@ class JobCompletionNotificationServiceIT extends AbstractLocalStackIT {
                 .attributeValue("true")
                 .build());
         this.service = new JobCompletionNotificationService(
-                new SnsTemplate(snsClient()), this.topicName, ObservationRegistry.NOOP);
+                new SnsTemplate(snsClient()), this.topicName, ObservationRegistry.NOOP,
+                new SimpleMeterRegistry());
     }
 
     @AfterEach
@@ -132,7 +141,7 @@ class JobCompletionNotificationServiceIT extends AbstractLocalStackIT {
         final List<Message> messages = drainQueue(this.queueUrl, 1);
         assertThat(messages).hasSize(1);
         assertThat(messages.getFirst().body())
-                .isEqualTo("{\"schemaVersion\":1,"
+                .isEqualTo("{\"schemaVersion\":2,"
                         + "\"eventType\":\"carddemo.batch.job-completion\","
                         + "\"jobName\":\"postTransactionJob\","
                         + "\"jobInstanceId\":11,"
@@ -140,7 +149,7 @@ class JobCompletionNotificationServiceIT extends AbstractLocalStackIT {
                         + "\"status\":\"" + status.name() + "\","
                         + "\"exitCode\":\"" + status.name() + "\","
                         + "\"stepsExecuted\":3,"
-                        + "\"startedAt\":\"2022-07-19T10:11:12\","
-                        + "\"endedAt\":\"2022-07-19T10:12:13\"}");
+                        + "\"startedAt\":\"2022-07-19T14:11:12Z\","
+                        + "\"endedAt\":\"2022-07-19T14:12:13Z\"}");
     }
 }

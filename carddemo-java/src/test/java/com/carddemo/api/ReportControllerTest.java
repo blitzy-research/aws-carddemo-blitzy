@@ -20,9 +20,11 @@ import com.carddemo.config.JwtTokenProvider;
 import com.carddemo.config.SecurityConfig;
 import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.service.ConversationState;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ReportRequestService;
+import com.carddemo.service.ReportRetryTokenService;
 import com.carddemo.util.JclCardImageBuilder;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -434,6 +436,123 @@ class ReportControllerTest {
                             ReportController.IDEMPOTENCY_KEY_HEADER, RETRY_TOKEN));
 
             verify(reportRequestService).processReportRequest(any(), eq(RETRY_TOKEN), nullable(String.class));
+        }
+
+        @Test
+        @DisplayName("A RETRY TOKEN IS BOUNDED BEFORE THE TURN BEGINS: an over-long token is refused "
+                + "with a neutral 400 and the service is never entered")
+        void anOverLongRetryTokenIsRefusedBeforeTheService() throws Exception {
+            final String tooLong = "a".repeat(ReportController.IDEMPOTENCY_KEY_MAX_LENGTH + 1);
+
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, tooLong)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(header().doesNotExist(ReportController.IDEMPOTENCY_KEY_HEADER))
+                    .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                            .as("a refusal that echoed the value would be the same reflection the "
+                                    + "bound exists to stop")
+                            .doesNotContain(tooLong));
+
+            verify(reportRequestService, never())
+                    .processReportRequest(any(), nullable(String.class), nullable(String.class));
+        }
+
+        @Test
+        @DisplayName("a token of exactly the bound is still accepted, so the limit refuses only what is "
+                + "past it")
+        void aTokenOfExactlyTheBoundIsAccepted() throws Exception {
+            final String atTheBound = "b".repeat(ReportController.IDEMPOTENCY_KEY_MAX_LENGTH);
+            when(reportRequestService.processReportRequest(any(), eq(atTheBound),
+                    nullable(String.class))).thenReturn(submittedWithToken(atTheBound));
+
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, atTheBound)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isOk());
+
+            verify(reportRequestService).processReportRequest(any(), eq(atTheBound),
+                    nullable(String.class));
+        }
+
+        @Test
+        @DisplayName("a token carrying a space or a control byte is refused, which is the grammar the "
+                + "deduplication digest's field separator depends on")
+        void aTokenCarryingAnUnprintableCharacterIsRefused() throws Exception {
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, "one two")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isBadRequest());
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, "unit\u001fseparator")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isBadRequest());
+
+            verify(reportRequestService, never())
+                    .processReportRequest(any(), nullable(String.class), nullable(String.class));
+        }
+
+        @Test
+        @DisplayName("surrounding whitespace is stripped rather than made part of the identity, so a "
+                + "retry differing only by a space is the same logical submission")
+        void surroundingWhitespaceIsStripped() throws Exception {
+            when(reportRequestService.processReportRequest(any(), eq(RETRY_TOKEN),
+                    nullable(String.class))).thenReturn(submittedWithToken(RETRY_TOKEN));
+
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, "  " + RETRY_TOKEN + "  ")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isOk());
+
+            verify(reportRequestService).processReportRequest(any(), eq(RETRY_TOKEN),
+                    nullable(String.class));
+        }
+
+        @Test
+        @DisplayName("a blank token is treated as no token at all, so the service is handed one spelling "
+                + "of absence rather than two")
+        void aBlankTokenIsTreatedAsAbsent() throws Exception {
+            when(reportRequestService.processReportRequest(any(), isNull(), nullable(String.class)))
+                    .thenReturn(submittedWithToken(MINTED_TOKEN));
+
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, "   ")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isOk());
+
+            verify(reportRequestService).processReportRequest(any(), isNull(), nullable(String.class));
+        }
+
+        @Test
+        @DisplayName("a retry token the service refuses is answered 400 and nothing is echoed back, "
+                + "because the refusal is a contract violation of the header and not a screen outcome")
+        void aRefusedRetryTokenIsAnsweredBadRequest() throws Exception {
+            // The service refuses a token it did not issue or that has outlived the queue service's
+            // deduplication window; the boundary's job is to translate that into the module's error
+            // contract without echoing the value that was refused.
+            final String refused = "a-token-this-deployment-never-issued";
+            when(reportRequestService.processReportRequest(any(), eq(refused), nullable(String.class)))
+                    .thenThrow(new ValidationException(ReportRetryTokenService.REFUSAL_MESSAGE));
+
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, refused)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(header().doesNotExist(ReportController.IDEMPOTENCY_KEY_HEADER));
         }
 
         @Test

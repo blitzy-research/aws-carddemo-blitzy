@@ -388,7 +388,7 @@ public final class UserManagementService {
      * {@code WS-ERR-FLG} with its two condition names {@code ERR-FLG-ON} and {@code ERR-FLG-OFF},
      * declared identically in all four members - {@code COUSR00C.cbl} L40-L42 and the corresponding
      * lines of the other three. A two-state enumeration rather than a character flag, so that
-     * {@code SET ERR-FLG-OFF TO TRUE} becomes an assignment the compiler checks.
+     * setting the error flag off becomes an assignment the compiler checks.
      */
     private enum ErrorFlag {
 
@@ -1014,12 +1014,12 @@ public final class UserManagementService {
     public UserOutcome listUsers(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
-        // L100-L103: SET ERR-FLG-OFF, USER-SEC-NOT-EOF, NEXT-PAGE-NO and SEND-ERASE-YES TO TRUE.
+        // L100-L103 set the error-off, not-at-end-of-file, no-next-page and erase-on conditions.
         state.errorFlag = ErrorFlag.OFF;
         state.eofFlag = EofFlag.NOT_EOF;
         state.nextPageFlag = NextPageFlag.NO;
         state.sendEraseFlag = SendEraseFlag.YES;
-        // L105-L106: MOVE SPACES TO WS-MESSAGE and to the error line of the output map.
+        // L105-L106 blank WS-MESSAGE and the error line of the output map.
         state.message = null;
         // L108: MOVE -1 TO USRIDINL, placing the cursor on the identifier field.
         state.focusFieldId = FIELD_LIST_USER_ID;
@@ -1077,7 +1077,7 @@ public final class UserManagementService {
      * <strong>{@code PROCESS-ENTER-KEY}, {@code app/cbl/COUSR00C.cbl} L149.</strong>
      *
      * <p>Three stages, in the source's order. The selection scan at L151-L185 is an
-     * {@code EVALUATE TRUE} over the ten row items in row order, which stops at the first match, so
+     * ordered multi-way selection over the ten row items in row order, which stops at the first match, so
      * the <strong>first non-blank selection wins</strong> and later ones are not examined. The
      * dispatch at L187-L215 then transfers to the update or delete screen for the two accepted
      * markers, in either case, and emits the invalid-selection text for anything else. Finally
@@ -1107,7 +1107,7 @@ public final class UserManagementService {
             }
         }
         // L218-L222: a blank identifier field positions at a low-value key, otherwise at the field.
-        final String searchUserId = request.searchUserId();
+        final String searchUserId = asKeyedAtTheTerminal(request.searchUserId());
         final BrowseAnchor anchor = isBlank(searchUserId) ? BrowseAnchor.LOW_VALUES : BrowseAnchor.KEY;
         // L224: MOVE -1 TO USRIDINL.
         state.focusFieldId = FIELD_LIST_USER_ID;
@@ -1136,7 +1136,7 @@ public final class UserManagementService {
     private void processPf7Key(final UserCommand request, final TurnState state) {
         final String firstOnPage = request.firstUserIdOnPage();
         final BrowseAnchor anchor = isBlank(firstOnPage) ? BrowseAnchor.LOW_VALUES : BrowseAnchor.KEY;
-        // L245: SET NEXT-PAGE-YES TO TRUE.
+        // L245 sets the next-page-yes condition.
         state.nextPageFlag = NextPageFlag.YES;
         // L246: MOVE -1 TO USRIDINL.
         state.focusFieldId = FIELD_LIST_USER_ID;
@@ -1148,7 +1148,7 @@ public final class UserManagementService {
             browse.release();
             return;
         }
-        // L248: IF CDEMO-CU00-PAGE-NUM > 1.
+        // L248 tests the carried page number for greater than one.
         if (state.pageNumber > 1) {
             processPageBackward(browse, state, anchor, firstOnPage, KeyAction.PFK07);
             return;
@@ -1201,7 +1201,7 @@ public final class UserManagementService {
             browse.release();
             return;
         }
-        // L270: IF NEXT-PAGE-YES.
+        // L270 tests the next-page-yes condition.
         if (state.nextPageFlag.isYes()) {
             processPageForward(browse, state, anchor, lastOnPage, KeyAction.PFK08);
             return;
@@ -1237,7 +1237,7 @@ public final class UserManagementService {
                                     final String key,
                                     final KeyAction keyAction) {
         state.pageDirection = BrowseWindow.PagingDirection.FORWARD;
-        // L284: PERFORM STARTBR-USER-SEC-FILE.
+        // L284 runs STARTBR-USER-SEC-FILE.
         final Optional<UserSecurityRepository.AdminEntry> positioned =
                 startbrUserSecFile(browse, state, anchor, key);
         // L286: IF NOT ERR-FLG-ON.
@@ -1283,7 +1283,7 @@ public final class UserManagementService {
                 state.pageNumber++;
             }
         }
-        // L325: PERFORM ENDBR-USER-SEC-FILE.
+        // L325 runs ENDBR-USER-SEC-FILE.
         endbrUserSecFile(browse);
     }
 
@@ -1313,7 +1313,7 @@ public final class UserManagementService {
                                      final String key,
                                      final KeyAction keyAction) {
         state.pageDirection = BrowseWindow.PagingDirection.BACKWARD;
-        // L338: PERFORM STARTBR-USER-SEC-FILE.
+        // L338 runs STARTBR-USER-SEC-FILE.
         final Optional<UserSecurityRepository.AdminEntry> positioned =
                 startbrUserSecFile(browse, state, anchor, key);
         // L340: IF NOT ERR-FLG-ON.
@@ -1351,7 +1351,7 @@ public final class UserManagementService {
                 state.pageNumber = furtherPageExists ? state.pageNumber - 1 : 1;
             }
         }
-        // L374: PERFORM ENDBR-USER-SEC-FILE.
+        // L374 runs ENDBR-USER-SEC-FILE.
         endbrUserSecFile(browse);
     }
 
@@ -1446,7 +1446,7 @@ public final class UserManagementService {
                             state.lastUserIdOnPage, state.nextPageFlag.isYes(),
                             state.pageNumber > 1, displayedPageNumber);
         }
-        // L528-L544: IF SEND-ERASE-YES ... ELSE ... END-IF, the one erase branch in the four
+        // L528-L544 branch on the erase-yes condition, the one erase branch in the four
         // members. Both arms send the same map data from the same output area and differ only in the
         // 3270 ERASE terminal-control option, which the else arm leaves commented out at L541. That
         // option paints the physical screen rather than shaping the data, so it has no representation
@@ -1502,7 +1502,7 @@ public final class UserManagementService {
      * @param state   the turn being assembled
      */
     private void receiveUsrlstScreen(final UserCommand request, final TurnState state) {
-        state.userId = request.searchUserId();
+        state.userId = asKeyedAtTheTerminal(request.searchUserId());
     }
 
     /**
@@ -1600,7 +1600,7 @@ public final class UserManagementService {
      * Finds the first marked row position, reproducing the ten-arm selection scan at
      * {@code app/cbl/COUSR00C.cbl} L151-L185.
      *
-     * <p>The source is an {@code EVALUATE TRUE} whose ten conditions test the ten row items in row
+     * <p>The source is an ordered multi-way selection whose ten conditions test the ten row items in row
      * order, and {@code EVALUATE} stops at its first true condition, so a submission marking several
      * rows is treated as marking the earliest of them and the rest are never examined. That ordering
      * is the behaviour, not an implementation detail, so the scan here is an ordered walk that
@@ -1933,9 +1933,9 @@ public final class UserManagementService {
     public UserOutcome addUser(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
-        // L73: SET ERR-FLG-OFF TO TRUE.
+        // L73 sets the error-off condition.
         state.errorFlag = ErrorFlag.OFF;
-        // L75-L76: MOVE SPACES TO WS-MESSAGE and to the error line of the output map.
+        // L75-L76 blank WS-MESSAGE and the error line of the output map.
         state.message = null;
 
         final ScreenNavigationState inbound = request.navigationContext();
@@ -1985,7 +1985,7 @@ public final class UserManagementService {
      * Validates the submitted add screen and writes the record.
      * <strong>{@code PROCESS-ENTER-KEY}, {@code app/cbl/COUSR01C.cbl} L115.</strong>
      *
-     * <p>L117-L151 is an {@code EVALUATE TRUE} whose five conditions test the five items for
+     * <p>L117-L151 is an ordered multi-way selection whose five conditions test the five items for
      * emptiness <strong>in this order</strong>: given name, family name, identifier, credential, type.
      * {@code EVALUATE} stops at its first true condition, so exactly one summary text, one cursor and
      * one field-level error belong to the <strong>first</strong> empty item. The final arm at
@@ -2004,33 +2004,33 @@ public final class UserManagementService {
      * @param state the turn being assembled, already carrying the received field values
      */
     private void processAddEnterKey(final TurnState state) {
-        // An ordered cascade and not five independent tests, because EVALUATE TRUE stops at its first
+        // An ordered cascade and not five independent tests, because the selection stops at its first
         // true WHEN. Every arm at L118-L147 raises the flag, moves its own text and moves -1 to its own
         // field's length, then performs the send; no later arm is evaluated. Independent tests would
         // report all five empty items at once, which is a screen the legacy cannot produce.
         if (isBlank(state.firstName)) {
-            // L118-L123: WHEN FNAMEI = SPACES OR LOW-VALUES.
+            // L118-L123: the arm testing the given name for blank or empty.
             raiseFieldError(state, PROPERTY_FIRST_NAME, FIELD_FIRST_NAME,
                     UserOutcome.MSG_ADD_FIRST_NAME_EMPTY);
             return;
         } else if (isBlank(state.lastName)) {
-            // L124-L129: WHEN LNAMEI = SPACES OR LOW-VALUES.
+            // L124-L129: the arm testing the family name for blank or empty.
             raiseFieldError(state, PROPERTY_LAST_NAME, FIELD_LAST_NAME,
                     UserOutcome.MSG_ADD_LAST_NAME_EMPTY);
             return;
         } else if (isBlank(state.userId)) {
-            // L130-L135: WHEN USERIDI = SPACES OR LOW-VALUES.
+            // L130-L135: the arm testing the identifier for blank or empty.
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_ADD_USER_ID,
                     UserOutcome.MSG_ADD_USER_ID_EMPTY);
             return;
         } else if (isBlank(state.submittedCredential)) {
-            // L136-L141: WHEN PASSWDI = SPACES OR LOW-VALUES. The submitted credential is inspected
+            // L136-L141: the arm testing the credential for blank or empty. The submitted credential is inspected
             // only for emptiness; its value is neither retained on the turn nor placed in any entry.
             raiseFieldError(state, PROPERTY_PASSWORD, FIELD_PASSWORD,
                     UserOutcome.MSG_ADD_CREDENTIAL_FIELD_EMPTY);
             return;
         } else if (isBlank(state.userType)) {
-            // L142-L147: WHEN USRTYPEI = SPACES OR LOW-VALUES.
+            // L142-L147: the arm testing the user type for blank or empty.
             raiseFieldError(state, PROPERTY_USER_TYPE, FIELD_USER_TYPE,
                     UserOutcome.MSG_ADD_USER_TYPE_EMPTY);
             return;
@@ -2070,7 +2070,7 @@ public final class UserManagementService {
      * @param state   the turn being assembled
      */
     private void receiveUsraddScreen(final UserCommand request, final TurnState state) {
-        state.userId = request.userId();
+        state.userId = asKeyedAtTheTerminal(request.userId());
         state.firstName = request.firstName();
         state.lastName = request.lastName();
         state.userType = request.userType();
@@ -2220,10 +2220,10 @@ public final class UserManagementService {
     public UserOutcome updateUser(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
-        // L84-L85: SET ERR-FLG-OFF and USR-MODIFIED-NO TO TRUE.
+        // L84-L85 set the error-off and not-modified conditions.
         state.errorFlag = ErrorFlag.OFF;
         state.modifiedFlag = ModifiedFlag.NO;
-        // L87-L88: MOVE SPACES TO WS-MESSAGE and to the error line of the output map.
+        // L87-L88 blank WS-MESSAGE and the error line of the output map.
         state.message = null;
 
         final ScreenNavigationState inbound = request.navigationContext();
@@ -2242,7 +2242,7 @@ public final class UserManagementService {
         if (inbound.firstEntry()) {
             state.context = inbound.withReEntry();
             state.focusFieldId = FIELD_LIST_USER_ID;
-            final String handedOver = request.userId();
+            final String handedOver = asKeyedAtTheTerminal(request.userId());
             if (!isBlank(handedOver)) {
                 state.userId = handedOver;
                 processUpdateEnterKey(state);
@@ -2306,7 +2306,7 @@ public final class UserManagementService {
      * @param state the turn being assembled, already carrying the identifier
      */
     private void processUpdateEnterKey(final TurnState state) {
-        // L146-L151: WHEN USRIDINI = SPACES OR LOW-VALUES.
+        // L146-L151: the arm testing the identifier for blank or empty.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
                     UserOutcome.MSG_UPDATE_USER_ID_EMPTY);
@@ -2333,7 +2333,7 @@ public final class UserManagementService {
      * Validates the submitted update screen and saves the record.
      * <strong>{@code UPDATE-USER-INFO}, {@code app/cbl/COUSR02C.cbl} L177.</strong>
      *
-     * <p>L179-L213 is an {@code EVALUATE TRUE} whose five conditions test for emptiness <strong>in
+     * <p>L179-L213 is an ordered multi-way selection whose five conditions test for emptiness <strong>in
      * this order</strong>: identifier, given name, family name, credential, type. The first true arm
      * returns immediately with its one summary text, one cursor and one field-level error.
      *
@@ -2366,31 +2366,31 @@ public final class UserManagementService {
      */
     private void updateUserInfo(final TurnState state) {
         // An ordered cascade and not five independent tests, for the reason given on the add screen:
-        // EVALUATE TRUE at L179-L212 stops at its first true WHEN, so exactly one item is reported with
+        // The selection at L179-L212 stops at its first true arm, so exactly one item is reported with
         // its own text and its own cursor position however many are empty.
         if (isBlank(state.userId)) {
-            // L180-L185: WHEN USRIDINI = SPACES OR LOW-VALUES.
+            // L180-L185: the arm testing the identifier for blank or empty.
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
                     UserOutcome.MSG_UPDATE_USER_ID_EMPTY);
             return;
         } else if (isBlank(state.firstName)) {
-            // L186-L191: WHEN FNAMEI = SPACES OR LOW-VALUES.
+            // L186-L191: the arm testing the given name for blank or empty.
             raiseFieldError(state, PROPERTY_FIRST_NAME, FIELD_FIRST_NAME,
                     UserOutcome.MSG_UPDATE_FIRST_NAME_EMPTY);
             return;
         } else if (isBlank(state.lastName)) {
-            // L192-L197: WHEN LNAMEI = SPACES OR LOW-VALUES.
+            // L192-L197: the arm testing the family name for blank or empty.
             raiseFieldError(state, PROPERTY_LAST_NAME, FIELD_LAST_NAME,
                     UserOutcome.MSG_UPDATE_LAST_NAME_EMPTY);
             return;
         } else if (state.submittedCredential != null && isBlank(state.submittedCredential)) {
-            // L198-L203: WHEN PASSWDI = SPACES OR LOW-VALUES. An absent item is not an empty one: see
+            // L198-L203: the arm testing the credential for blank or empty. An absent item is not an empty one: see
             // the three-case account in this method's documentation.
             raiseFieldError(state, PROPERTY_PASSWORD, FIELD_PASSWORD,
                     UserOutcome.MSG_UPDATE_CREDENTIAL_FIELD_EMPTY);
             return;
         } else if (isBlank(state.userType)) {
-            // L204-L209: WHEN USRTYPEI = SPACES OR LOW-VALUES.
+            // L204-L209: the arm testing the user type for blank or empty.
             raiseFieldError(state, PROPERTY_USER_TYPE, FIELD_USER_TYPE,
                     UserOutcome.MSG_UPDATE_USER_TYPE_EMPTY);
             return;
@@ -2531,7 +2531,7 @@ public final class UserManagementService {
      * @param state   the turn being assembled
      */
     private void receiveUsrupdScreen(final UserCommand request, final TurnState state) {
-        state.userId = request.userId();
+        state.userId = asKeyedAtTheTerminal(request.userId());
         state.firstName = request.firstName();
         state.lastName = request.lastName();
         state.userType = request.userType();
@@ -2734,11 +2734,11 @@ public final class UserManagementService {
     public UserOutcome deleteUser(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
-        // L84-L85: SET ERR-FLG-OFF and USR-MODIFIED-NO TO TRUE. The modified flag is declared by this
+        // L84-L85 set the error-off and not-modified conditions. The modified flag is declared by this
         // member and never set by it, which is reproduced by leaving it at its initial state.
         state.errorFlag = ErrorFlag.OFF;
         state.modifiedFlag = ModifiedFlag.NO;
-        // L87-L88: MOVE SPACES TO WS-MESSAGE and to the error line of the output map.
+        // L87-L88 blank WS-MESSAGE and the error line of the output map.
         state.message = null;
 
         final ScreenNavigationState inbound = request.navigationContext();
@@ -2756,7 +2756,7 @@ public final class UserManagementService {
         if (inbound.firstEntry()) {
             state.context = inbound.withReEntry();
             state.focusFieldId = FIELD_LIST_USER_ID;
-            final String handedOver = request.userId();
+            final String handedOver = asKeyedAtTheTerminal(request.userId());
             if (!isBlank(handedOver)) {
                 state.userId = handedOver;
                 processDeleteEnterKey(state);
@@ -2814,7 +2814,7 @@ public final class UserManagementService {
      * @param state the turn being assembled, already carrying the identifier
      */
     private void processDeleteEnterKey(final TurnState state) {
-        // L145-L150: WHEN USRIDINI = SPACES OR LOW-VALUES.
+        // L145-L150: the arm testing the identifier for blank or empty.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
                     UserOutcome.MSG_DELETE_USER_ID_EMPTY);
@@ -2840,7 +2840,7 @@ public final class UserManagementService {
      * Validates the confirmation and removes the record.
      * <strong>{@code DELETE-USER-INFO}, {@code app/cbl/COUSR03C.cbl} L174.</strong>
      *
-     * <p>L176-L186 is an {@code EVALUATE TRUE} with one emptiness condition on the identifier and a
+     * <p>L176-L186 is an ordered multi-way selection with one emptiness condition on the identifier and a
      * default arm - this screen validates one item only, because it edits none. L188-L192 then reads
      * the record and removes it.
      *
@@ -2861,7 +2861,7 @@ public final class UserManagementService {
      * @param state the turn being assembled
      */
     private void deleteUserInfo(final TurnState state) {
-        // L177-L182: WHEN USRIDINI = SPACES OR LOW-VALUES.
+        // L177-L182: the arm testing the identifier for blank or empty.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
                     UserOutcome.MSG_DELETE_USER_ID_EMPTY);
@@ -2943,7 +2943,7 @@ public final class UserManagementService {
      * @param state   the turn being assembled
      */
     private void receiveUsrdelScreen(final UserCommand request, final TurnState state) {
-        state.userId = request.userId();
+        state.userId = asKeyedAtTheTerminal(request.userId());
         state.firstName = request.firstName();
         state.lastName = request.lastName();
         state.userType = request.userType();
@@ -3196,7 +3196,7 @@ public final class UserManagementService {
     private void populateHeaderInfo(final TurnState state,
                                     final String transactionId,
                                     final String programName) {
-        // L564: MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA.
+        // L564 carries the current date into WS-CURDATE-DATA.
         final LocalDateTime now = LocalDateTime.now(clock);
         // L566-L569: the two title lines and the screen's own identity.
         state.title01 = messageCatalogService.screenTitle01();
@@ -3260,9 +3260,9 @@ public final class UserManagementService {
     }
 
     /**
-     * Records the single missing mandatory item selected by an ordered {@code EVALUATE TRUE} cascade.
+     * Records the single missing mandatory item selected by an ordered multi-way cascade.
      *
-     * <p>This is where the legacy {@code EVALUATE TRUE} cascade and the field-level error contract are
+     * <p>This is where the legacy ordered cascade and the field-level error contract are
      * reproduced. The cascade stops at its first true condition, and each caller returns immediately
      * after this method, so one submission carries exactly one summary text, one cursor position and
      * one per-field entry.
@@ -3280,7 +3280,7 @@ public final class UserManagementService {
                                 final String propertyName,
                                 final String screenFieldId,
                                 final String message) {
-        // MOVE 'Y' TO WS-ERR-FLG, present in every arm of every cascade.
+        // The error flag is raised in every arm of every cascade.
         final boolean firstError = !state.errorFlag.isOn();
         state.errorFlag = ErrorFlag.ON;
         if (firstError) {
@@ -3339,6 +3339,30 @@ public final class UserManagementService {
     }
 
     /**
+     * Renders an identifier as the eight-character record key the credential master is keyed by.
+     *
+     * <p>Two steps, and both are part of the key rather than of presentation. The value is folded to
+     * upper case for the reason {@link #asKeyedAtTheTerminal(String)} gives - the terminal folded every
+     * submitted value, so a record key can only ever have been upper case - and then left-justified and
+     * space-filled to the column's declared width, because a fixed-width key is compared over its whole
+     * width and a shorter value is a different key.
+     *
+     * <p>The fold is applied here as well as at each screen's receipt, deliberately. Every path that
+     * reaches a stored record passes through this method - the duplicate check, the two reads, the
+     * rewrite and the delete - so folding here means no future caller can reach the master under an
+     * unfolded key by taking a path that skips a receipt. The two folds cannot disagree: folding an
+     * already-folded value returns it unchanged.
+     *
+     * @param  userId the identifier, which may be {@code null}
+     * @return the eight-character record key
+     */
+    private static String recordKeyOf(final String userId) {
+        return CobolStringUtils.leftJustifySpaceFill(
+                userId == null ? "" : CobolStringUtils.asciiUpperFold(userId),
+                UserSecurity.SEC_USR_ID_WIDTH);
+    }
+
+    /**
      * Reports whether a fixed-width item is blank in the legacy sense.
      *
      * <p>The test the four members apply is {@code = SPACES OR LOW-VALUES}, so an item is blank when it
@@ -3347,14 +3371,9 @@ public final class UserManagementService {
      * alphanumeric item, so a value containing one is present rather than blank, and treating it as
      * blank would reject input the legacy accepted.
      *
-     * @param value the item to test; may be {@code null}
+     * @param  value the item to test; may be {@code null}
      * @return {@code true} when the item is absent, empty or entirely spaces
      */
-    private static String recordKeyOf(final String userId) {
-        return CobolStringUtils.leftJustifySpaceFill(userId == null ? "" : userId,
-                UserSecurity.SEC_USR_ID_WIDTH);
-    }
-
     private static boolean isBlank(final String value) {
         if (value == null || value.isEmpty()) {
             return true;
@@ -3439,10 +3458,22 @@ public final class UserManagementService {
      * because the credential never reaches the program in any other form. There is no terminal here to
      * do that folding, so it is done at the one place the submitted credential enters this transaction.
      *
-     * <p>Without it the two halves of the credential's life disagree: this path would store a digest of
-     * the value as typed while the sign-on path verifies the folded value, so every identity created or
-     * maintained with a lower-case character would be locked out at its first sign-on - and the screen
-     * would report success, because nothing on this path ever verifies what it just wrote.
+     * <p><strong>It applies to the identifier as well as to the credential, and for one reason.</strong>
+     * The rule is not "fold the secret"; it is that a value reaching one of these transactions has
+     * already passed through a terminal that folded it, so no submitted value can be lower case in the
+     * first place. That is why none of the three maintenance programs contains a fold of its own and why
+     * the sign-on program's is belt and braces rather than policy. This module has no terminal, so the
+     * transaction has to supply what the terminal supplied - for every submitted value, not for one of
+     * them.
+     *
+     * <p>Without it the two halves of an identity's life disagree in two ways at once. On the credential:
+     * this path would store a digest of the value as typed while the sign-on path verifies the folded
+     * value. On the identifier: this path would store and look up the record under the value as typed
+     * while the sign-on path looks it up folded, so {@code lower001} would be created as a real record
+     * that {@code READ-USER-SEC-FILE} could never find. Either way the identity is locked out at its
+     * first sign-on and the administrative screen reports success, because nothing on this path ever
+     * verifies what it just wrote. Both defects were invisible against the seeded estate, whose ten
+     * identifiers and credential literal are already upper case.
      *
      * <p>The fold is the estate's own ASCII table substitution rather than the platform method, for the
      * reason recorded against every other fold in this module: the intrinsic is locale-sensitive and
@@ -3455,8 +3486,8 @@ public final class UserManagementService {
      * change detector reads the same distinction. Folding an absent value into an empty one would turn a
      * name-only update into a rejected turn.
      *
-     * @param submitted the credential as submitted, which may be {@code null}
-     * @return the folded credential, or {@code null} when none was submitted
+     * @param submitted the value as submitted, which may be {@code null}
+     * @return the folded value, or {@code null} when none was submitted
      */
     private static String asKeyedAtTheTerminal(final String submitted) {
         return submitted == null ? null : CobolStringUtils.asciiUpperFold(submitted);

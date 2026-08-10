@@ -1301,7 +1301,10 @@ class BillPaymentServiceTest {
 
             // Nothing about the write was reported, because nothing about the write happened.
             verify(transactionRepository, never()).findMaxId();
-            assertNothingWasWritten();
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
+            // The settlement committed in the unit that ran before the allocation was attempted, which is
+            // the state the legacy reached when its WRITE never happened and lines 234 and 235 ran anyway.
+            verify(accountRepository).saveAndFlush(any(Account.class));
         }
 
         @Test
@@ -2344,10 +2347,10 @@ class BillPaymentServiceTest {
             // span goes on to do happens while the row is exclusively held.
             final InOrder order = inOrder(accountRepository, transactionRepository);
             order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            order.verify(accountRepository).saveAndFlush(any(Account.class));
             order.verify(transactionRepository).lockIdentifierAllocation(EXPECTED_ALLOCATION_LOCK_KEY);
             order.verify(transactionRepository).findMaxId();
             order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
-            order.verify(accountRepository).saveAndFlush(any(Account.class));
         }
 
         @Test
@@ -2475,8 +2478,6 @@ class BillPaymentServiceTest {
             // conflict for a reason of its own, and the translation stays in place for that.
             stubBothAccountReads(payableAccount());
             stubCrossReferenceRow(CARD_NUMBER);
-            stubHighestIdentifier(null);
-            stubInsertEchoesRecord();
             stubBoundaryRunsUnit();
             when(accountRepository.saveAndFlush(any(Account.class)))
                     .thenThrow(new OptimisticLockException("the row changed"));
@@ -2582,16 +2583,21 @@ class BillPaymentServiceTest {
     class WriteOrderingAndUnitsOfWork {
 
         @Test
-        @DisplayName("the transaction is persisted BEFORE the account is rewritten, and those are the "
-                + "only interactions the turn has with any repository")
-        void theTransactionIsPersistedBeforeTheAccountIsRewritten() {
+        @DisplayName("the held account is settled in the first unit and the transaction is stored in the "
+                + "second, and those are the only interactions the turn has with any repository")
+        void theHeldAccountIsSettledBeforeTheTransactionIsStored() {
             arrangeConfirmablePayment(payableAccount(), HIGHEST_KEY_NINE);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            final InOrder order = inOrder(transactionRepository, accountRepository);
-            order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
+            // The settlement runs first because the exclusion that posts exactly one payment per account is
+            // the row lock it holds; the store runs second because it must survive a rewrite that rolled
+            // back. Both stores are unrecoverable in the legacy and the source tests no flag between them,
+            // so the execution order is not observable - only the arms are, and they are still reported
+            // insert-first. Recorded as DL-288.
+            final InOrder order = inOrder(accountRepository, transactionRepository);
             order.verify(accountRepository).saveAndFlush(any(Account.class));
+            order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
 
             // Account for every remaining interaction, so a stray call cannot slip past unnoticed.
             verify(transactionRepository).lockIdentifierAllocation(EXPECTED_ALLOCATION_LOCK_KEY);
@@ -2624,27 +2630,27 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("the insert runs in a unit of ITS OWN nested inside the unit holding the account row, "
-                + "which is what makes the stored record survive a rewrite that rolls back")
-        void theInsertRunsInAUnitOfItsOwnInsideTheUnitHoldingTheRow() {
+        @DisplayName("the insert runs in a unit of ITS OWN that follows the settlement unit, which is what "
+                + "makes the stored record survive a rewrite that rolled back")
+        void theInsertRunsInAUnitOfItsOwnAfterTheSettlementUnit() {
             arrangeConfirmablePayment(payableAccount(), null);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            // Two units, not one. The outer unit is what holds the account row exclusively from the held
-            // read to the rewrite, reproducing the legacy hold from line 343 to line 235. The inner unit is
-            // the transaction insert, and it is separate precisely because the legacy transaction file is
-            // defined RECOVERY(NONE) with JOURNAL(NO): a record that was written is durable at once, and no
-            // later REWRITE failure can undo it. Sharing one unit between the two writes would make a
-            // failed rewrite discard a stored transaction, which no legacy mechanism does.
+            // Two units, not one, and one after the other rather than one inside the other. The first holds
+            // the account row exclusively and settles it, reproducing the legacy hold from line 343 to line
+            // 235. The second is the transaction insert, and it is separate precisely because the legacy
+            // transaction file is defined RECOVERY(NONE) with JOURNAL(NO): a record that was written is
+            // durable at once and no REWRITE failure undoes it. Sharing one unit between the two stores
+            // would make a failed rewrite discard a stored transaction, which no legacy mechanism does.
             verify(transactionBoundary, times(2)).execute(any());
             verifyNoMoreInteractions(transactionBoundary);
         }
 
         @Test
-        @DisplayName("a HANDLED insert refusal still performs the computation and the rewrite, in a unit of "
-                + "their own, because the source tests no flag between lines 233 and 235")
-        void aHandledInsertRefusalStillRewritesInAUnitOfItsOwn() {
+        @DisplayName("a HANDLED insert refusal leaves the account settled, because the source tests no flag "
+                + "between lines 233 and 235 and the settlement committed in its own unit")
+        void aHandledInsertRefusalStillLeavesTheAccountSettled() {
             // No cross-reference row, so the assembled record carries no card number and the insert is
             // never attempted: the catch-all arm at lines 540 to 546 reports it and nothing was stored.
             stubBothAccountReads(payableAccount());
@@ -2663,11 +2669,11 @@ class BillPaymentServiceTest {
                     () -> assertThat(result.transaction())
                             .as("nothing was inserted")
                             .isNull());
-            // The refusal never reached the store, so no nested unit was opened at all: exactly one unit
-            // ran, the one holding the account row, and the unconditional rewrite of line 235 committed
-            // inside it. The account is settled behind a message saying the transaction could not be added,
-            // which is precisely what the source does by testing no flag between lines 233 and 235.
-            verify(transactionBoundary).execute(any());
+            // Two units still ran - the settlement and the allocation span - and the refusal was resolved
+            // inside the second one without ever reaching the store. The account is settled behind a message
+            // saying the transaction could not be added, which is precisely what the source does by testing
+            // no flag between lines 233 and 235.
+            verify(transactionBoundary, times(2)).execute(any());
             verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
             verify(accountRepository).saveAndFlush(any(Account.class));
             assertThat(capturedRewrittenAccount().getAcctCurrBal()).isEqualByComparingTo(ZERO_BALANCE);
@@ -2704,23 +2710,48 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("the outer unit is opened BEFORE the row is held and the nested insert unit runs "
-                + "inside it, so the row stays held across the insert")
-        void theNestedInsertUnitRunsInsideTheUnitHoldingTheRow() {
-            arrangeConfirmablePayment(payableAccount(), null);
+        @DisplayName("the two units of work are SEQUENTIAL and never nested, so a turn holds one connection "
+                + "at a time and a pool sized to the number of turns cannot starve")
+        void theTwoUnitsOfWorkAreSequentialAndNeverNested() {
+            // Arranged without the shared boundary stub, because this specification supplies its own
+            // depth-counting one in its place.
+            stubBothAccountReads(payableAccount());
+            stubAccountRewriteEchoesRow();
+            stubCrossReferenceRow(CARD_NUMBER);
+            stubHighestIdentifier(null);
+            stubInsertEchoesRecord();
+            final int[] depth = {0};
+            final int[] deepest = {0};
+            // doAnswer rather than when(...): the method is already stubbed to run its unit, and calling it
+            // again inside when(...) would run that answer against a null argument.
+            Mockito.doAnswer(invocation -> {
+                depth[0]++;
+                deepest[0] = Math.max(deepest[0], depth[0]);
+                try {
+                    return ((Supplier<?>) invocation.getArgument(0)).get();
+                } finally {
+                    depth[0]--;
+                }
+            }).when(transactionBoundary).execute(any());
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            // The order of the two boundary calls relative to the held read is the whole guarantee: if the
-            // insert's unit were opened first, or the row were held after the insert, a second operator
-            // could interleave between the read and the rewrite - which is exactly what the legacy's
-            // READ ... UPDATE prevented.
+            // A unit of work is a connection. One unit open at any instant is what makes N simultaneous
+            // turns need N connections rather than 2N; a depth of two is the starvation the finding named,
+            // and no pool figure anywhere compensates for it.
+            assertThat(deepest[0])
+                    .as("no unit of work may be opened while another is still open")
+                    .isEqualTo(1);
+            assertThat(depth[0]).as("every unit that was opened has ended").isZero();
+
+            // The row is held first and settled inside that same unit, so a second operator waits at the
+            // lock and then reads the settled balance - which is what the legacy READ ... UPDATE achieved.
             final InOrder order = inOrder(transactionBoundary, accountRepository, transactionRepository);
             order.verify(transactionBoundary).execute(any());
             order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            order.verify(accountRepository).saveAndFlush(any(Account.class));
             order.verify(transactionBoundary).execute(any());
             order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
-            order.verify(accountRepository).saveAndFlush(any(Account.class));
         }
 
         @Test
@@ -2832,7 +2863,8 @@ class BillPaymentServiceTest {
 
             verify(cardCrossReferenceRepository)
                     .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
-            verify(cardCrossReferenceRepository, never()).findByXrefAcctId(any());
+            verify(cardCrossReferenceRepository, never())
+                    .findByXrefAcctIdOrderByXrefCardNumAsc(any(), any());
             verifyNoMoreInteractions(cardCrossReferenceRepository);
             // The resolved row's card number is written verbatim, even though it is not the lowest value
             // the fixture could have offered.

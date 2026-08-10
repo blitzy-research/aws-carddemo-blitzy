@@ -157,11 +157,11 @@ import java.util.Objects;
  * {@code app/cpy}: every persisted monetary field in the estate is zoned decimal under display
  * usage, so the overpunch convention above is the whole of the numeric representation problem.
  *
- * <p>One asymmetry follows from the target type and is recorded rather than hidden: a
- * {@link BigDecimal} cannot carry a negative zero, so an all-zero image with a negative overpunch
- * decodes to zero and re-emits with the positive overpunch. It is observable only when every digit
- * is zero, and a caller needing byte-exact preservation of that one case reads the field through the
- * codec's signed entry points instead.
+ * <p>One asymmetry of the target type is bridged rather than accepted: a {@link BigDecimal} cannot
+ * carry a negative zero, so this mapper reads and writes the amount through the codec's <em>signed</em>
+ * entry points and carries the missing bit on the entity's transient negative-zero marker. An all-zero
+ * image with a negative overpunch therefore re-emits with the negative overpunch, so a read followed by
+ * a write reproduces the byte the record held.
  *
  * <h2>Fixture evidence, verified by measurement</h2>
  *
@@ -785,13 +785,14 @@ public final class TransactionRecordMapper {
      * at all.
      */
     private static Transaction fromReader(FixedWidthFieldReader reader) {
-        return new Transaction(
+        ZonedDecimalCodec.ZonedValue amount = decodeAmount(reader);
+        Transaction record = new Transaction(
                 reader.field(TRAN_ID, TRAN_ID_OFFSET, TRAN_ID_LENGTH),
                 reader.field(TRAN_TYPE_CD, TRAN_TYPE_CD_OFFSET, TRAN_TYPE_CD_LENGTH),
                 reader.field(TRAN_CAT_CD, TRAN_CAT_CD_OFFSET, TRAN_CAT_CD_LENGTH),
                 reader.field(TRAN_SOURCE, TRAN_SOURCE_OFFSET, TRAN_SOURCE_LENGTH),
                 reader.field(TRAN_DESC, TRAN_DESC_OFFSET, TRAN_DESC_LENGTH),
-                decodeAmount(reader),
+                amount.value(),
                 reader.field(TRAN_MERCHANT_ID, TRAN_MERCHANT_ID_OFFSET, TRAN_MERCHANT_ID_LENGTH),
                 reader.field(TRAN_MERCHANT_NAME, TRAN_MERCHANT_NAME_OFFSET, TRAN_MERCHANT_NAME_LENGTH),
                 reader.field(TRAN_MERCHANT_CITY, TRAN_MERCHANT_CITY_OFFSET, TRAN_MERCHANT_CITY_LENGTH),
@@ -799,6 +800,10 @@ public final class TransactionRecordMapper {
                 reader.field(TRAN_CARD_NUM, TRAN_CARD_NUM_OFFSET, TRAN_CARD_NUM_LENGTH),
                 reader.field(TRAN_ORIG_TS, TRAN_ORIG_TS_OFFSET, TRAN_ORIG_TS_LENGTH),
                 reader.field(TRAN_PROC_TS, TRAN_PROC_TS_OFFSET, TRAN_PROC_TS_LENGTH));
+        // The sign bit the amount cannot carry. Set after construction because it is not part of the
+        // record-image constructor's parameter order and is not persisted state.
+        record.setTranAmtNegativeZero(amount.negativeZero());
+        return record;
     }
 
     /**
@@ -826,7 +831,7 @@ public final class TransactionRecordMapper {
                 .putAlphanumeric(TRAN_DESC, TRAN_DESC_OFFSET, TRAN_DESC_LENGTH,
                         requirePresent(record.getTranDesc(), TRAN_DESC))
                 .putNumeric(TRAN_AMT, TRAN_AMT_OFFSET, TRAN_AMT_LENGTH,
-                        encodeAmount(record.getTranAmt()))
+                        encodeAmount(record.getTranAmt(), record.isTranAmtNegativeZero()))
                 .putNumeric(TRAN_MERCHANT_ID, TRAN_MERCHANT_ID_OFFSET, TRAN_MERCHANT_ID_LENGTH,
                         requirePresent(record.getMerchantId(), TRAN_MERCHANT_ID))
                 .putAlphanumeric(TRAN_MERCHANT_NAME, TRAN_MERCHANT_NAME_OFFSET,
@@ -849,16 +854,23 @@ public final class TransactionRecordMapper {
     }
 
     /**
-     * Slices the amount and decodes it at the canonical monetary scale, with truncation toward zero.
+     * Slices the amount and decodes it at the canonical monetary scale, together with the one bit of sign
+     * an amount cannot carry.
      *
-     * <p>The scale and the rounding policy are the codec's, not this class's: nothing here calls
-     * {@code setScale}, names a rounding mode or performs arithmetic, which is what keeps the module's
-     * rounding policy single-valued. An exception raised by the codec is deliberately not re-wrapped,
-     * because its diagnostic already names the offending byte.
+     * <p>The <em>signed</em> codec entry point, deliberately. A negatively-signed all-zero image differs
+     * from a positively-signed one only in its final byte, and the plain entry point discards that
+     * difference, so a round trip would re-emit {@code '{'} where the record held {@code '}'}. The bit
+     * travels on the entity as a transient marker - the only place it can travel, since neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero - and this mapper is its only
+     * producer and consumer.
+     *
+     * <p>The scale and the rounding policy remain the codec's, not this class's: nothing here calls
+     * {@code setScale}, names a rounding mode or performs arithmetic.
      */
-    private static BigDecimal decodeAmount(FixedWidthFieldReader reader) {
-        return ZonedDecimalCodec.decodeMonetary(
-                reader.field(TRAN_AMT, TRAN_AMT_OFFSET, TRAN_AMT_LENGTH), TRAN_AMT_LENGTH, TRAN_AMT);
+    private static ZonedDecimalCodec.ZonedValue decodeAmount(FixedWidthFieldReader reader) {
+        return ZonedDecimalCodec.decodeSigned(
+                reader.field(TRAN_AMT, TRAN_AMT_OFFSET, TRAN_AMT_LENGTH), TRAN_AMT_LENGTH,
+                ZonedDecimalCodec.MONETARY_SCALE, TRAN_AMT);
     }
 
     /**
@@ -866,11 +878,14 @@ public final class TransactionRecordMapper {
      *
      * <p>The value is passed to the codec exactly as the entity holds it. It is not rescaled here, so
      * a value the entity carries at a different scale is the codec's to accept or reject; that keeps
-     * one decision in one place.
+     * one decision in one place. The entity's negative-zero marker is passed alongside it and applies
+     * only while the amount is zero, because a non-zero amount already carries its own sign.
      */
-    private static String encodeAmount(BigDecimal amount) {
-        return ZonedDecimalCodec.encodeMonetary(requirePresent(amount, TRAN_AMT), TRAN_AMT_LENGTH,
-                TRAN_AMT);
+    private static String encodeAmount(BigDecimal amount, boolean negativeZero) {
+        BigDecimal present = requirePresent(amount, TRAN_AMT);
+        return ZonedDecimalCodec.encodeSigned(
+                new ZonedDecimalCodec.ZonedValue(present, negativeZero && present.signum() == 0),
+                TRAN_AMT_LENGTH, ZonedDecimalCodec.MONETARY_SCALE, TRAN_AMT);
     }
 
     /**

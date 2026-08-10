@@ -509,6 +509,21 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
         };
     }
 
+    /**
+     * The ascending order on one mode's business key, built here from the key name the mode publishes.
+     *
+     * <p>Built by this class rather than read off the mode. The pass itself is ordered by
+     * {@code FileMaintenanceService}'s derived key-ordered finders, so the mode carries the key's name and
+     * nothing more; a query this class issues directly needs an order object, and composing it here from
+     * the published name keeps this test's expectation and the production pass reading the same one fact.
+     *
+     * @param  mode the probe mode
+     * @return the ascending order on that mode's business key
+     */
+    private static Sort ascendingKeyOrder(final ProbeMode mode) {
+        return Sort.by(Sort.Direction.ASC, mode.businessKeyProperty());
+    }
+
     private List<String> repositoryKeys(final ProbeMode mode, final Sort order) {
         return switch (mode) {
             case ACCOUNT -> this.accountRepository.findAll(order).stream()
@@ -725,7 +740,7 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                 throws Exception {
             final ModeContract contract = contractFor(mode);
             final List<String> fixture = fixtureLines(contract);
-            final List<?> rows = repositoryRows(mode, mode.keyOrder());
+            final List<?> rows = repositoryRows(mode, ascendingKeyOrder(mode));
 
             assertThat(mode.legacyProgramName()).isEqualTo(contract.programName());
             assertThat(mode.logicalResourceName()).isEqualTo(contract.resourceName());
@@ -884,9 +899,9 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
             final List<String> expectedDescending = new ArrayList<>(expectedAscending);
             Collections.reverse(expectedDescending);
 
-            assertThat(mode.keyOrder())
+            assertThat(ascendingKeyOrder(mode))
                     .containsExactly(Sort.Order.asc(contract.businessKeyProperty()));
-            assertThat(repositoryKeys(mode, mode.keyOrder()))
+            assertThat(repositoryKeys(mode, ascendingKeyOrder(mode)))
                     .as("the live repository must honour the ascending business-key order")
                     .containsExactlyElementsOf(expectedAscending);
             assertThat(repositoryKeys(mode,
@@ -970,7 +985,8 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                             .sorted(String::compareTo)
                             .toList();
             final List<String> repositoryImages =
-                    crossReferenceRepository.findAll(ProbeMode.CROSS_REFERENCE.keyOrder()).stream()
+                    crossReferenceRepository.findAll(ascendingKeyOrder(ProbeMode.CROSS_REFERENCE))
+                            .stream()
                             .map(reference -> reference.getXrefCardNum()
                                     + reference.getXrefCustId()
                                     + reference.getXrefAcctId())

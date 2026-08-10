@@ -82,8 +82,14 @@ import org.springframework.test.web.servlet.MockMvc;
  * <p>The standalone {@link OpenApiConfig} tests prove that shared metadata and schemas are assembled
  * correctly. They cannot prove that the controller scan merges those components with the routes the
  * application actually publishes. This slice therefore starts a real MVC application context, fetches
- * {@code /v3/api-docs}, parses the bytes returned by Springdoc, and verifies the nineteen-operation
+ * {@code /v3/api-docs}, parses the bytes returned by Springdoc, and verifies the twenty-operation
  * contract end to end without invoking a business collaborator.</p>
+ *
+ * <p>That count is declared once, as {@link #EXPECTED_OPERATION_COUNT}, and the test asserts the
+ * expectation table itself against it before comparing the table with the served document. Prose and
+ * table therefore cannot drift the way they had: the description claimed nineteen operations while the
+ * table already named twenty, and nothing failed, because the only assertion that could have caught the
+ * disagreement compared the document against the table rather than either against a stated number.</p>
  */
 @WebMvcTest(controllers = {
     AccountController.class,
@@ -148,6 +154,24 @@ class OpenApiRouteContractTest {
      */
     private static final Map<String, Set<String>> REACHABLE_ERRORS = reachableErrors();
 
+    /**
+     * Number of operations the served document is expected to publish.
+     *
+     * <p>Declared separately from the table below so that it is an independent statement rather than a
+     * restatement. Comparing the document with the table proves they agree with each other; comparing
+     * the table with this numeral proves the table is still the size a reader of the class description
+     * was told to expect. An entry silently lost from the table would satisfy the first check and fail
+     * the second.
+     */
+    private static final int EXPECTED_OPERATION_COUNT = 20;
+
+    /**
+     * Every operation the controller scan is expected to publish, as method and path.
+     *
+     * <p>The authority for the membership. Adding a route here without publishing it fails the
+     * comparison against the served document, and publishing one without adding it here fails the same
+     * comparison from the other side.
+     */
     private static final Set<String> EXPECTED_OPERATIONS = Set.of(
             "POST " + AccountController.ACCOUNT_VIEW_PATH,
             "POST " + AccountController.ACCOUNT_UPDATE_PATH,
@@ -260,7 +284,7 @@ class OpenApiRouteContractTest {
     private MeterRegistry meterRegistry;
 
     @Test
-    @DisplayName("the served document publishes exactly twenty typed operations and shared errors")
+    @DisplayName("the served document publishes exactly the expected typed operations and shared errors")
     void theServedDocumentPublishesTheCompleteTypedContract() throws Exception {
         final String payload = this.client.perform(get("/v3/api-docs"))
                 .andExpect(status().isOk())
@@ -270,9 +294,12 @@ class OpenApiRouteContractTest {
         final JsonNode document = this.objectMapper.readTree(payload);
         final Map<String, JsonNode> operations = operationsOf(document.path("paths"));
 
+        assertThat(EXPECTED_OPERATIONS)
+                .as("the expectation table must still hold every operation the contract declares")
+                .hasSize(EXPECTED_OPERATION_COUNT);
         assertThat(operations.keySet())
                 .containsExactlyInAnyOrderElementsOf(EXPECTED_OPERATIONS)
-                .hasSize(20);
+                .hasSize(EXPECTED_OPERATION_COUNT);
         operations.forEach((route, operation) -> {
             assertTypedSuccess(route, operation.path("responses").path("200"));
             assertTypedRequest(route, operation);

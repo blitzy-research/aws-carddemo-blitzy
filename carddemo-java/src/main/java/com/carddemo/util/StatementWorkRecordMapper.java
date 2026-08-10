@@ -95,7 +95,6 @@ public final class StatementWorkRecordMapper {
     public static final int KEY_LENGTH = CARD_NUMBER_LENGTH + TRANSACTION_ID_LENGTH;
 
     private static final String FIELD_CARD_NUMBER = "FD-TRNX-CARD";
-    private static final String FIELD_TRANSACTION_ID = "FD-TRNX-ID";
     private static final String FIELD_LEADING_SEGMENT = "TRANSACTION-LEADING-SEGMENT";
     private static final String FIELD_TIMESTAMP_SEGMENT = "TRANSACTION-TIMESTAMP-SEGMENT";
     private static final String FIELD_TRAILING_PAD = "STATEMENT-WORK-TRAILING-PAD";

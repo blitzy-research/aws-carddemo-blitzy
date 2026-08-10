@@ -60,10 +60,20 @@ import java.util.Locale;
  * the estate is written that way - positive values included.
  *
  * <p>Three field shapes occur, at twelve, eleven and six encoded bytes, and each is published as a
- * named width constant below rather than left to a call site. Two further receiving fields exist only
- * in working storage, so they have no encoded image and no width constant here; what matters about
- * them is that their scale is two and that a store into them truncates, which is exactly what
- * {@link #toMonetaryScale(BigDecimal)} reproduces.
+ * named width constant below - together with the integer digit count that goes with it, because a
+ * store is bounded by digit positions rather than by encoded bytes. Two further receiving fields
+ * exist only in working storage, so they have no encoded image; what matters about them is that
+ * their scale is two, that they declare nine integer digits, and that a store into them truncates on
+ * both ends, which is exactly what {@link #storeIntoMonetary(BigDecimal, int, String)} reproduces.
+ *
+ * <p><strong>A store truncates in two directions, and both halves are this class's.</strong>
+ * {@link #toScale(BigDecimal, int)} and {@link #toMonetaryScale(BigDecimal)} drop surplus
+ * <em>fractional</em> digits, which is the half a rounding-mode discussion is about.
+ * {@link #storeInto(BigDecimal, int, int, String)} additionally drops surplus <em>high-order</em>
+ * digits, which is what a COBOL store without {@code ON SIZE ERROR} does - and no arithmetic
+ * statement in this estate carries that clause. Any assignment into a field of declared {@code PIC}
+ * geometry goes through the storing form; the scaling forms remain for a value that is merely being
+ * brought to the estate's scale, such as one read back out of a column that already holds it.
  *
  * <p><strong>Negative zero round-trips byte for byte.</strong> The legacy image distinguishes a
  * negative zero from a positive zero by its final byte, while {@link BigDecimal} has no negative zero
@@ -118,6 +128,18 @@ public final class ZonedDecimalCodec {
     public static final int CATEGORY_BALANCE_WIDTH = WIDTH_PIC_S9_09_V99;
 
     public static final int INTEREST_RATE_WIDTH = WIDTH_PIC_S9_04_V99;
+
+    /** Integer digit positions of {@code PIC S9(10)V99}: the account monetary fields. */
+    public static final int INTEGER_DIGITS_PIC_S9_10_V99 = 10;
+
+    /**
+     * Integer digit positions of {@code PIC S9(09)V99}: the transaction, daily-transaction and
+     * category-balance amounts, and every working-storage receiving field the batch tier computes into.
+     */
+    public static final int INTEGER_DIGITS_PIC_S9_09_V99 = 9;
+
+    /** Integer digit positions of {@code PIC S9(04)V99}: the interest rate. */
+    public static final int INTEGER_DIGITS_PIC_S9_04_V99 = 4;
 
     /**
      * Final-byte characters for a positive value, indexed by low-order digit: the character at index
@@ -393,6 +415,83 @@ public final class ZonedDecimalCodec {
                     + scale);
         }
         return value.setScale(scale, COBOL_TRUNCATION_MODE);
+    }
+
+    /**
+     * Stores a value into a receiving field of a declared {@code PIC} geometry, reproducing a COBOL
+     * store in both directions of truncation.
+     *
+     * <p><strong>This is the whole of a COBOL store, and {@link #toScale(BigDecimal, int)} is only half
+     * of it.</strong> A store into {@code PIC S9(n)V99} without an {@code ON SIZE ERROR} clause - and no
+     * arithmetic statement in this estate carries one - truncates on <em>both</em> ends: surplus
+     * fractional digits are dropped toward zero, and surplus <em>high-order</em> digits are dropped
+     * silently, leaving the low-order {@code integerDigits} positions and nothing else. Only applying
+     * the fractional half leaves a value the receiving field could never have held, and the divergence
+     * is not cosmetic: the temporary balance an overlimit test measures, the interest a rate produces,
+     * the report totals and the statement's edited amounts are all narrower than the values that reach
+     * them, so an overflow that a store would have wrapped decides a rejection, a total or a printed
+     * line differently.
+     *
+     * <p>The sign survives the truncation. COBOL keeps the operational sign of the receiving field and
+     * discards only digit positions, so {@code -1234567890.12} stored into nine integer digits is
+     * {@code -234567890.12} and never {@code +234567890.12}. A value whose surviving digits are all zero
+     * therefore stores as zero, and the negative-zero distinction that only an encoded image can carry is
+     * {@link ZonedValue}'s business rather than this method's.
+     *
+     * <p>Nothing is rejected for magnitude here, by design: a COBOL store does not fail on overflow when
+     * no size-error clause is present, so neither does this. The one rejection is a geometry that cannot
+     * describe a field at all.
+     *
+     * @param  value         the value to store
+     * @param  integerDigits number of integer digit positions the receiving field declares
+     * @param  scale         number of implied decimal digits the receiving field declares
+     * @param  fieldName     legacy field name, used only in diagnostics
+     * @return the value as the receiving field would hold it, at exactly {@code scale}
+     * @throws IllegalArgumentException if the value is absent, or the declared geometry is not positive
+     */
+    public static BigDecimal storeInto(BigDecimal value, int integerDigits, int scale,
+            String fieldName) {
+        if (value == null) {
+            throw new IllegalArgumentException("zoned decimal field " + fieldLabel(fieldName)
+                    + ": the value to store must not be null");
+        }
+        if (integerDigits <= 0) {
+            throw new IllegalArgumentException("zoned decimal field " + fieldLabel(fieldName)
+                    + ": the receiving field must declare at least one integer digit but declared "
+                    + integerDigits);
+        }
+        if (scale < 0) {
+            throw new IllegalArgumentException("zoned decimal field " + fieldLabel(fieldName)
+                    + ": the receiving field's scale must not be negative but was " + scale);
+        }
+
+        final BigDecimal truncatedFraction = value.setScale(scale, COBOL_TRUNCATION_MODE);
+        final BigInteger magnitude = truncatedFraction.unscaledValue().abs();
+        final BigInteger capacity = BigInteger.TEN.pow(integerDigits + scale);
+        if (magnitude.compareTo(capacity) < 0) {
+            return truncatedFraction;
+        }
+
+        // The store keeps the low-order positions the field declares and the operational sign, exactly
+        // as the receiving field's digit positions would have retained them.
+        final BigInteger retained = magnitude.remainder(capacity);
+        final BigInteger signed =
+                truncatedFraction.signum() < 0 ? retained.negate() : retained;
+        return new BigDecimal(signed, scale);
+    }
+
+    /**
+     * Stores a value into a monetary receiving field of a declared integer width.
+     *
+     * @param  value         the value to store
+     * @param  integerDigits number of integer digit positions the receiving field declares
+     * @param  fieldName     legacy field name, used only in diagnostics
+     * @return the value as the receiving field would hold it, at scale {@value #MONETARY_SCALE}
+     * @throws IllegalArgumentException if the value is absent or the declared width is not positive
+     */
+    public static BigDecimal storeIntoMonetary(BigDecimal value, int integerDigits,
+            String fieldName) {
+        return storeInto(value, integerDigits, MONETARY_SCALE, fieldName);
     }
 
     /**

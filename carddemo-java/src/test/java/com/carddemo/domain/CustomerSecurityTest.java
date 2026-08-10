@@ -17,6 +17,7 @@
 package com.carddemo.domain;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 
 import org.junit.jupiter.api.DisplayName;
@@ -404,6 +405,27 @@ class CustomerSecurityTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> withSsn("enc1:" + body))
                     .withMessageContaining("storing cleartext in this attribute is not permitted");
+        }
+
+        @Test
+        @DisplayName("A FORGED ENVELOPE PASSES THIS BOUNDARY AND FAILS THE ONE THAT MATTERS: the "
+                + "entity screens shape and never claims authenticity, which is established by the "
+                + "codec's authenticated decryption and nowhere else")
+        void aForgedEnvelopeIsAcceptedHereAndRefusedByTheCodec() {
+            byte[] arbitrary = new byte[SensitiveFieldCodec.MINIMUM_ENVELOPE_BODY_BYTES];
+            Arrays.fill(arbitrary, (byte) 0x5A);
+            String forged = "ENC1:" + Base64.getEncoder().encodeToString(arbitrary);
+
+            Customer accepted = withSsn(forged);
+
+            assertThat(accepted.getCustSsn())
+                    .as("the boundary's job is to keep cleartext out, and this value is not cleartext")
+                    .isEqualTo(forged);
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> SensitiveFieldCodec.reveal(forged, KEY))
+                    .as("nothing this deployment holds produced it, so the tag does not verify and the "
+                            + "value can never be read back as a customer identifier")
+                    .withMessageContaining("authenticated decryption failed");
         }
 
         @Test

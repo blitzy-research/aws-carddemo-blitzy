@@ -91,7 +91,7 @@ import jakarta.validation.constraints.Size;
  * from the presence of {@link #message()}; deriving it would raise the flag on two paths where the
  * legacy leaves it lowered, which is a behavioural change rather than a simplification.
  *
- * <p>{@link #fieldToFocus()} carries only the <em>identity</em> of the field the operator should be
+ * <p>{@link #focusScreenFieldId()} carries only the <em>identity</em> of the field the operator should be
  * returned to, using the mapset's own symbolic field name. The legacy sentinel, the cursor row and
  * column and the attribute bytes are terminal mechanics with no place in a REST contract.
  *

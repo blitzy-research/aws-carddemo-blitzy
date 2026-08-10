@@ -26,8 +26,20 @@ itself was never modified by the migration.
 The upstream release stamp is the trailer comment embedded in the legacy members of the estate, and
 the count above is a measurement rather than a description: 78 members under `app/` carry exactly that
 stamp. The two identifiers together are the only durable link between the target module and the
-source it was derived from, because no COBOL, JCL, BMS, copybook or CSD text is copied into the
-target. Traceability is by citation, never by transcription.
+source it was derived from, because **no legacy source text is reproduced in the target for traceability
+purposes** — not a program, not a paragraph, not a statement, and not in a comment. Traceability is by
+citation, never by transcription, and the claim is mechanically checkable: a grep over
+`carddemo-java/src/**/*.java` comments for a COBOL or CICS verb carrying one of the legacy program's own
+identifiers, literals or argument lists returns nothing.
+
+**One category of legacy text does appear in the module, and a certification that did not name it would be
+worth less than one that does.** Where a preservation requirement obliges the module to *emit* legacy text
+byte for byte, that text is present as **contract data** rather than as a transcription: the seventeen fixed
+80-column job-submission card images and their `/*EOF` sentinel in `util/JclCardImageBuilder`, the 80- and
+100-byte statement template literals, and the seven sign-on message texts. Emitting those is what the
+identical-external-interface requirement demands — the card images are verified by draining them back out of
+a real queue — and it is a different act from carrying a paragraph's implementation across, which nothing in
+the module does.
 
 The stamp is not perfectly uniform, and the non-uniformity is itself recorded rather than smoothed
 over: a small number of members under `app/` carry later stamps than the 78 — one copybook most
@@ -43,9 +55,21 @@ One rule decides every entry in this log:
 > recorded here rather than resolved by taste.**
 
 This is what makes the rest of the log coherent. It is why arithmetic truncates instead of
-rounding, why an empty paragraph survives as an empty method, why a malformed output literal is
-reproduced malformed, and why two fields that the legacy screen decorates but never validates
-acquire no validation constraints in the Java DTO.
+rounding, why an empty paragraph survives as an empty method, and why a malformed output literal is
+reproduced malformed.
+
+**Two account-update fields acquire no validation constraint in the Java DTO, and only one of the two is an
+application of this rule.** The distinction matters because collapsing them misrepresents both:
+
+- The **second address line** is genuinely never validated by the legacy program — it is decorated for error
+  display and nothing more — so attaching no constraint to it *is* faithful translation, and the rule above
+  is the whole of the reason.
+- The **middle name** is different. The legacy program *does* validate it, through the optional-alphabetic
+  edit at `app/cbl/COACTUPC.cbl` lines 1568 to 1574, and its not-OK flag is tested when the cursor is placed
+  at line 3110. The comment beside its decoration macro reads that no edits are coded, and that comment is
+  wrong about the code it sits next to. Java attaches no constraint regardless, because the migration
+  direction said not to — so this one is a **directive-driven divergence**, an instance of the exception
+  class below rather than of the rule above, and it is recorded as such rather than presented as fidelity.
 
 The rule has exactly one class of exception, and every member of that class appears in section 1:
 a requirement from outside the estate that outranks fidelity. In every such case the entry states
@@ -348,13 +372,17 @@ column holds digests and no cleartext value anywhere.
 What was **not** delivered when this was written is the sign-on path that would consume them:
 `service/AuthenticationService`, the translation of `COSGN00C`, and `api/AuthController` did not exist, so
 no request was authenticated against the credential column. All three now exist - see the correction
-above. This entry therefore records a partially met requirement, and the
-boundary has moved since it was first written: the storage format, the encoder and the seed are
-delivered controls, while the authenticating comparison is still absent. Whatever component fills that
-gap inherits the obligation stated above — write only a digest, never store or compare a cleartext
-credential — and `CredentialDigestService.requireDigest` already exists to enforce the first half of it.
-*Embodied in:* `src/main/resources/db/migration/V1__create_schema.sql` (column shape),
-`src/main/resources/db/migration/V4__seed_user_security.sql` (digests),
+above. This entry therefore records a requirement that was partially met when it was written and is met
+now, and the two states are worth keeping apart: the storage format, the encoder and the seed were the
+delivered controls then, and **the authenticating comparison is delivered too** —
+`service/AuthenticationService` verifies a submitted credential with
+`CredentialDigestService.matches(raw, storedDigest)` against the stored digest, and compares against an
+inert digest on the not-found path so that a missing identity costs what a wrong credential costs. The
+obligation stated above — write only a digest, never store or compare a cleartext credential — is therefore
+enforced at both ends rather than inherited by a future component: `CredentialDigestService.requireDigest`
+holds the storage half, and the verifying comparison holds the other.
+*Embodied in:* `src/main/resources/db/migration/schema/V1__create_schema.sql` (column shape),
+`src/main/resources/db/migration/seed/V4__seed_user_security.sql` (digests),
 `service/CredentialDigestService.java` (encoder, verifying comparison and persistence guard),
 `config/SecurityConfig.java`, `domain/UserSecurity.java`, `api/dto/SignOnRequest.java`.
 
@@ -389,7 +417,7 @@ only between the application and the database. A transport record that carries e
 the wire, never logs it, and never persists it from there.
 
 *Embodied in:* `service/SensitiveFieldEncryptionService.java`, `util/SensitiveFieldCodec.java`,
-`domain/Customer.java`, `resources/db/migration/V1__create_schema.sql`.
+`domain/Customer.java`, `resources/db/migration/schema/V1__create_schema.sql`.
 
 *Also recorded as:* DL-005, DL-006, DL-007, DL-008 and DL-009, which develop the same decision in
 detail — the fail-closed entity guard, the equality-search capability that randomised encryption
@@ -401,7 +429,7 @@ The legacy design applies no field-level encryption, tokenisation or masking to 
 requirement in scope introduces one. **Decision:** none is invented, because that would be feature
 expansion. The gap is carried forward here as an explicit unclosed finding rather than silently
 closed or silently ignored.
-*Recorded against:* `src/main/resources/db/migration/V1__create_schema.sql`.
+*Recorded against:* `src/main/resources/db/migration/schema/V1__create_schema.sql`.
 
 *Also recorded as:* DL-010 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -713,12 +741,14 @@ and `CBTRN03C`, and the only write anywhere is the category-balance `REWRITE` in
 carries the filler back out exactly as it read it in — a behaviour a constant emitted by a writer
 cannot reproduce and a mapped-field entity cannot carry, since the filler is deliberately not a
 column. Third and decisively, **none of the four bounded layouts is a gated output format.** Gate 1
-gates four widths — the 430-byte reject record, the 80-byte statement record, the 100-byte HTML
-statement record and the 133-byte report line — and all four are assembled from mapped fields by
-`RejectRecordWriter`, `StatementTextTemplates`, `StatementHtmlTemplates` and `ReportLineFormatter`,
-none of which places a reference-layout filler byte. The one production path that does emit a bounded
-layout's image is the category-balance report job, whose 50-byte unload and sort records are
-*internal* intermediates of that job: the artefact it publishes is the report line, built from the
+gates five widths — the 430-byte reject record, the 80-byte statement record, the 100-byte HTML
+statement record, the 133-byte report line and the 40-byte category-balance report line — and every one of
+them is assembled from mapped fields, by `RejectRecordWriter`, `StatementTextTemplates`,
+`StatementHtmlTemplates`, `ReportLineFormatter` and `batch/CategoryBalanceReportJobConfig` respectively,
+none of which places a reference-layout filler byte. The fifth width is the instructive one, because its
+job is also the one production path that *reads* a bounded layout's image: the category-balance report
+job's 50-byte unload and sort records are *internal* intermediates of that job, and the artefact it
+publishes is the 40-byte report line, built from the
 mapped prefix. So the filler byte reaches no external contract, and a golden fixture generated at the
 bounds in the table above cannot be wrong about one.
 
@@ -1139,15 +1169,28 @@ DL-032, would put the reject paths at risk.
 
 ### DL-034 — Record mappers are hand-written with explicit offsets, and use no reflection
 
-All eleven fixed-width record mappers slice the record image by explicit offset arithmetic. No
+Every fixed-width record mapper slices the record image by explicit offset arithmetic. No
 annotation-driven mapping library, bean mapper or annotation processor is used anywhere in the
-module.
+module. The delivered inventory is **twelve mapper classes over eleven persisted record layouts**: one
+per layout, plus `StatementWorkRecordMapper` for the statement job's transient work record, which is
+written and re-read within a single job and never stored. The count of layouts and the count of classes
+are different numbers and are stated separately wherever either appears, because an earlier revision
+quoted eleven for both.
 
 This is a consequence of the unsafe-code audit committing to a reflection count of zero, and the
 commitment is worth keeping rather than relaxing: any convention-based mapper reintroduces
 reflection, and under a warnings-as-errors build an annotation processor is also a live source of
 build-failing warnings. The cost is more code; the benefit is that the audit result is a design
 property rather than a measurement that drifts.
+
+*Currency note.* The count is **twelve** classes, not eleven, and both figures are correct about
+different things. Eleven is the number of **persisted record layouts**, which is what this entry was
+counting when it was written. The delivered `util` package holds **twelve** `*RecordMapper` classes: one per
+layout, plus `StatementWorkRecordMapper`, which maps the statement work area and has no table behind it.
+Every one of the twelve slices by explicit offset and none uses reflection, so the decision itself is
+unchanged — only the class count moved, and it moved because a twelfth image needed mapping rather than
+because the rule was relaxed. Count it with
+`ls carddemo-java/src/main/java/com/carddemo/util/*RecordMapper.java | wc -l`.
 
 *Also recorded as:* D-26 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -1178,6 +1221,13 @@ other number-issuing object is created; the identifier is computed inside the po
 database-issued number diverges permanently after the first gap, and a rollback guarantees a gap.
 *Embodied in:* `V1__create_schema.sql` (global rule 4). The bill-payment service is not yet
 delivered.
+
+*Currency note.* **`service/BillPaymentService` is delivered, and it implements this decision rather than
+merely inheriting it.** It seeds the browse key with the high-value sentinel, obtains the highest existing
+identifier through `TransactionRepository.findMaxId()` inside the posting transaction, adds one, and seeds to
+one on an empty table — exactly the derivation this entry fixes. No sequence and no number-issuing object was
+created. The closing sentence above is kept as written because it records the state at the milestone the
+decision was taken in; it is not the current inventory.
 
 *Also recorded as:* DL-018 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -1932,10 +1982,22 @@ than by oversight.
 
 `app/cbl/CBTRN01C.cbl` is a complete program — **491 lines** carrying **18** procedure-division
 paragraphs — and it is invoked by no job member, no cataloged procedure and no CICS definition. It is
-nonetheless translated, because the mandate is to migrate every program, and its job is defined but
-excluded from the default pipeline and exercised only by tests. Both halves are deliberate:
+nonetheless translated, because the mandate is to migrate every program, and its job is defined,
+**registered as launchable and excluded from every sequence**. Both halves are deliberate:
 translating it honours completeness, and leaving it unwired honours the estate's actual
 orchestration.
+
+**"Unwired" means unsequenced, not unreachable, and the distinction is in the code rather than in this
+sentence.** `dailyTransactionReadJob` is one of the **nine** names in
+`service/BatchJobCatalog.LAUNCHABLE_JOB_NAMES`, declared with an empty accepted-parameter set, so the batch
+administration endpoint launches it by name exactly as it launches the other eight — the catalog's own
+wording is "defined and launchable, part of no sequence". What it is *not* is reachable implicitly: no
+pipeline, no ordering and no other job selects it, so it runs only when an operator or a test names it.
+Saying it is "exercised only by tests" would understate that surface and read as dead configuration, which
+is the misreading the next paragraph exists to prevent. Its coverage is
+`batch/DailyTransactionReadJobConfigTest`, `batch/DailyTransactionReadJobConfigIT`,
+`service/BatchJobCatalogTest` for the registration itself and `api/BatchJobControllerIT` for the launch
+path.
 
 **Why both halves matter to a reviewer.** Someone auditing coverage will find a job that no pipeline
 runs and read it as dead configuration; someone auditing the pipeline will find a program the estate
@@ -2020,8 +2082,9 @@ DL-034 depends on. Boilerplate is written explicitly instead.
 
 **Named exclusions, so the absence reads as a decision rather than an oversight.** **Lombok**,
 **MapStruct**, **Immutables' processor** and **AutoValue** appear nowhere in the build. This is the
-constraint that obliges all eleven fixed-width record mappers to be written by hand with explicit
-offsets — a mapping framework would reintroduce reflection, and the audit budget for reflection is
+constraint that obliges every fixed-width record mapper — twelve classes, covering eleven persisted
+layouts plus the statement job's transient work record — to be written by hand with explicit
+offsets; a mapping framework would reintroduce reflection, and the audit budget for reflection is
 zero, not small.
 
 **One distinction is worth stating precisely, because a reader scanning the manifest will meet it.** An
@@ -2200,11 +2263,13 @@ end pairs the entries that record the same decision under both.
 **Path convention in this index.** A citing file is named relative to the module's own source roots, so
 `service/X.java` is `carddemo-java/src/main/java/com/carddemo/service/X.java`, `resources/…` is
 `carddemo-java/src/main/resources/…`, and a test path is under `carddemo-java/src/test/`. Prose entries
-outside this index spell a resource path in full — `src/main/resources/db/migration/V1__create_schema.sql`
-— because there the shorthand has no surrounding table to establish it. Two rows below name artefacts of a
-withdrawn layout, `resources/db/migration/.gitkeep` and the `schema`/`seed` subdirectories, which DL-127's
-correction removed; they are retained as the citation history of that entry and do not describe files that
-exist today.
+outside this index spell a resource path in full — `src/main/resources/db/migration/schema/V1__create_schema.sql`
+— because there the shorthand has no surrounding table to establish it. **The four migration scripts moved one
+level down under DL-298**, into `resources/db/migration/schema/` and `resources/db/migration/seed/`; the rows
+naming them at their former flat paths are the citation history of the entries that cited them there and are
+retained as written. One artefact of a genuinely withdrawn layout, `resources/db/migration/.gitkeep`, is named
+in DL-127's citation list and does not exist: the shared parent is left empty by holding two directories
+rather than a marker file.
 
 This index lists *citations*, not entries. An entry with no row here is not unindexed — it is simply not
 yet cited from the module's own source, which is the ordinary state of an entry that records a
@@ -2220,7 +2285,7 @@ resolves to exactly one entry.
 | Citing file | Entry |
 | :---------- | :---- |
 | `api/GlobalExceptionHandler.java` | DL-080, DL-083, DL-084, DL-085 |
-| `api/dto/AccountUpdateRequest.java` | DL-011, DL-028, DL-029, DL-031, DL-074, DL-078 |
+| `api/dto/AccountUpdateRequest.java` | DL-011, DL-028, DL-029, DL-031, DL-074, DL-078, DL-297 |
 | `api/dto/CardUpdateRequest.java` | DL-103 |
 | `api/dto/CardUpdateResponse.java` | DL-103 |
 | `api/dto/FieldErrorDecorator.java` | DL-080 |
@@ -2236,7 +2301,7 @@ resolves to exactly one entry.
 | `config/FixedLocaleMessageInterpolator.java` | DL-118 |
 | `config/ProductionSeedRejectionCallback.java` | DL-041, DL-110, DL-119 |
 | `config/WebMvcConfig.java` | DL-089, DL-118 |
-| `domain/Account.java` | DL-012, anomaly register (1) |
+| `domain/Account.java` | DL-012, DL-297, anomaly register (1) |
 | `domain/Customer.java` | DL-005, DL-006 |
 | `domain/TransactionType.java` | DL-032 |
 | `domain/UserSecurity.java` | DL-001, DL-002 |
@@ -2267,14 +2332,58 @@ resolves to exactly one entry.
 | `batch/step/FixedWidthFlatFileReaderFactory.java` | DL-213 |
 | `batch/CombineTransactionsJobConfig.java` | DL-212, DL-213, DL-214 |
 | `batch/CategoryBalanceReportJobConfig.java` | DL-212, DL-213 |
-| `batch/TransactionReportJobConfig.java` | DL-212, DL-213 |
+| `batch/TransactionReportJobConfig.java` | DL-212, DL-213, DL-294 (superseding DL-276 in part) |
 | `batch/InterestCalculationJobConfig.java` | DL-207, DL-212, DL-214 |
 | `batch/PostTransactionJobConfig.java` | DL-215 |
 | `service/TransactionPostingService.java` | DL-215 |
 | `batch/DailyTransactionReadJobConfig.java` | DL-216 |
 | `config/ObservabilityConfig.java` | DL-217 |
 | `batch/BatchLaunchCoordinator.java` | DL-218 |
-| `batch/BackupTransactionJobConfig.java` | DL-210 |
+| `batch/BackupTransactionJobConfig.java` | DL-210, DL-292 |
+| `service/BillPaymentService.java` | DL-277, DL-291 |
+| `service/StatementOutputSink.java` | DL-293 |
+| `util/DailyTransactionRecordMapper.java` | DL-295 |
+| `batch/step/RejectRecordWriter.java` | DL-295 |
+| `repository/TransactionRepository.java` | DL-294 (superseding DL-276 in part), DL-296 |
+| `service/TransactionReportService.java` | DL-175, DL-294 |
+| `repository/CardRepository.java` | DL-296 |
+| `service/AccountUpdateService.java` | DL-297 |
+| `api/AccountController.java` | DL-297 |
+| `domain/DailyTransaction.java` | DL-295, DL-297 |
+| `domain/DisclosureGroup.java` | DL-297 |
+| `domain/TransactionCategoryBalance.java` | DL-297 |
+| `domain/TransactionType.java` | DL-297 |
+| `domain/TransactionCategory.java` | DL-297 |
+| `repository/CardCrossReferenceRepository.java` | DL-296 |
+| `repository/UserSecurityRepository.java` | DL-296 |
+| `service/TransactionAddService.java` | DL-296 |
+| `config/FlywayConfig.java` | DL-298 (re-superseding DL-102, DL-108, DL-111, DL-116, DL-119, DL-127) |
+| `resources/application.yml` | DL-298 |
+| `resources/application-local.yml` | DL-298 |
+| `resources/application-test.yml` | DL-298 |
+| `resources/application-prod.yml` | DL-298 |
+| `src/test/resources/application-test.yml` | DL-298 |
+| `domain/TransactionType.java` | DL-298 |
+| `domain/UserSecurity.java` | DL-298 |
+| `repository/TransactionTypeRepository.java` | DL-298 |
+| `support/AbstractPostgresIT.java` | DL-298 |
+| `config/FlywayConfigTest.java` | DL-298 |
+| `config/FlywayConfigCoverageTest.java` | DL-298 |
+| `config/ConfigurationProfileBaselineTest.java` | DL-298 |
+| `config/ApplicationProfileStartupTest.java` | DL-298 |
+| `config/ProductionMigrationSourceGuardTest.java` | DL-298 |
+| `config/SeedMigrationIT.java` | DL-298 |
+| `config/ProductionSeedRejectionCallbackIT.java` | DL-298 |
+| `resources/db/migration/schema/V1__create_schema.sql` | DL-298 |
+| `resources/db/migration/schema/V2__create_indexes.sql` | DL-298 |
+| `resources/db/migration/seed/V3__seed_reference_data.sql` | DL-298 |
+| `resources/db/migration/seed/V4__seed_user_security.sql` | DL-298 |
+| `api/dto/TransactionListRequest.java` | DL-299 |
+| `api/dto/TransactionListResponse.java` | DL-299 |
+| `api/TransactionController.java` | DL-299 |
+| `service/TransactionListService.java` | DL-299 |
+| `service/TransactionListServiceTest.java` | DL-299 |
+| `service/InterestCalculationService.java` | DL-300 (alongside DL-207) |
 | `config/BatchConfig.java` | DL-211 |
 | `service/InterestCalculationService.java` | DL-207 |
 | `batch/step/InterestCalculationProcessor.java` | DL-207 |
@@ -2282,10 +2391,10 @@ resolves to exactly one entry.
 | `resources/application-local.yml` | DL-045, DL-047, DL-088, DL-127, anomaly register (7) |
 | `resources/application-prod.yml` | DL-088, DL-127 |
 | `pom.xml` | DL-088 |
-| `resources/db/migration/V1__create_schema.sql` | DL-005, DL-007, DL-010, DL-012, DL-036, DL-127, anomaly register (1) |
-| `resources/db/migration/V2__create_indexes.sql` | DL-127 |
-| `resources/db/migration/V3__seed_reference_data.sql` | DL-103, DL-127 |
-| `resources/db/migration/V4__seed_user_security.sql` | DL-127 |
+| `resources/db/migration/schema/V1__create_schema.sql` | DL-005, DL-007, DL-010, DL-012, DL-036, DL-127, DL-297, DL-298, anomaly register (1) |
+| `resources/db/migration/schema/V2__create_indexes.sql` | DL-127, DL-298 |
+| `resources/db/migration/seed/V3__seed_reference_data.sql` | DL-103, DL-127, DL-298 |
+| `resources/db/migration/seed/V4__seed_user_security.sql` | DL-127, DL-298 |
 | `api/dto/SignOnRequestTest.java` | DL-001, DL-003, DL-004 |
 | `domain/enums/AccountStatusTest.java` | DL-024, DL-026 |
 | `exception/OptimisticLockConflictExceptionTest.java` | DL-012 |
@@ -2355,7 +2464,7 @@ resolves to exactly one entry.
 | `exception/ValidationException.java` | D-16, D-33, D-34 |
 | `exception/ValidationExceptionTest.java` | D-33, D-34 |
 | `repository/TransactionCategoryRepositoryIT.java` | D-37, D-38 |
-| `resources/db/migration/V1__create_schema.sql` | D-12, D-14 |
+| `resources/db/migration/schema/V1__create_schema.sql` | D-12, D-14 |
 | `service/AbendService.java` | D-41 |
 | `service/JobSubmissionService.java` | D-09, D-16, D-36 |
 | `util/AccountRecordMapper.java` | D-02, D-04, D-08, D-10, D-11, D-26, D-29, D-30, D-42, anomaly 20 |
@@ -3205,7 +3314,7 @@ reporting it as merely unresolved would send a deployer looking for a variable t
 
 **What the guard deliberately does NOT judge.** It judges usability, never shape. It does not parse a
 JDBC location, decode the field-encryption key to thirty-two bytes, or check that a queue name carries
-the first-in-first-out suffix. Three of the twelve settings already carry such a check in the component
+the first-in-first-out suffix. Three of the required settings already carry such a check in the component
 that consumes them - `JwtProperties` constrains the signing secret, `SensitiveFieldEncryptionService`
 decodes and length-checks the key, and `JobSubmissionService` refuses a queue name without the suffix -
 and duplicating those would put one rule in two places and let them drift. What the guard adds to those
@@ -3285,7 +3394,7 @@ This is behaviour 2 above, and it is the only one of the twelve keys it applies 
 one a framework condition reads. **The outcome is the required one** - the deployment stops, and the
 message names the exact variable a deployer must set - so nothing about the setting is corrected. What
 differs is the wording: this fault arrives as the framework's placeholder message rather than as a line in
-the guard's twelve-setting summary, so a deployment missing this variable *and* others learns about it in
+the guard's required-setting summary, so a deployment missing this variable *and* others learns about it in
 two messages instead of one.
 
 **Why the bare reference stays.** The only change that would let the guard speak first about this key is
@@ -3303,9 +3412,10 @@ than repaired, per the same reasoning as the earlier paragraphs of this entry.
 
 ### DL-106 - Two record mappers are deferred to their own deliverable rather than written twice, and the entities that name them say so
 
-**Context.** Eleven record layouts are mapped by eleven hand-written mappers, one per layout, because a
-zero-reflection budget rules out any annotation-driven or convention-based mapping library. Seven of the
-eleven are delivered here: the account, customer, daily-transaction, disclosure-group,
+**Context.** Eleven persisted record layouts are mapped by one hand-written mapper each, because a
+zero-reflection budget rules out any annotation-driven or convention-based mapping library. (The delivered
+tree carries twelve mapper classes: the twelfth, added later, maps the statement job's transient work
+record rather than a persisted layout — see DL-034.) Seven of the eleven are delivered here: the account, customer, daily-transaction, disclosure-group,
 transaction-category, transaction-type and user-security layouts. Four are not, and two of those four -
 the 150-byte card layout of `CVACT02Y` and the 50-byte category-balance layout of `CVTRA01Y` - were being
 named in the present tense by the entities they serve. `Card` stated that fixed-width offset knowledge
@@ -3525,7 +3635,9 @@ records why the flat arrangement looked correct, and it looked correct three tim
 
 **Why the geometry table it replaces was not simply deleted.** The literals were not wrong; they were unanchored. They are therefore kept and made load-bearing rather than discarded, so the same nine rows now fail when the files disagree with them. The suite also asserts that the committed directory holds exactly the nine named files and nothing else, and that the enumeration it drives from names nine distinct files - because a table and a directory that drift apart is precisely how a fixture stops being checked without anyone removing a check.
 
-**One fixture had no reader at all.** `cardxref.txt` was opened by no test, because no cross-reference record mapper is delivered and nothing else needed it. It is a named artefact regardless, so it is measured and compared like the other eight, and the suite asserts that all nine are opened. The absent mapper is recorded as a delivery gap elsewhere and is not created here.
+**One fixture had no reader at all.** `cardxref.txt` was opened by no test, because at that milestone no cross-reference record mapper was delivered and nothing else needed it. It is a named artefact regardless, so it is measured and compared like the other eight, and the suite asserts that all nine are opened.
+
+*Currency note.* **`util/CardXrefRecordMapper` is delivered**, and the gap this paragraph recorded is closed. The mapper is exercised directly by `util/CardXrefRecordMapperTest`, through the reader factory by `batch/step/FixedWidthFlatFileReaderFactoryTest`, and by the static-contract instantiation audit; the fixture itself is now opened by the end-to-end pipeline, the fixture contract test, the gate verification suite and two batch integration tests. The paragraph above is kept as written because it records why the fixture needed measuring in the first place.
 
 *Cited by:* `support/FixtureContractTest.java`. Relies on the zoned-decimal sign convention of DL-015 and the assert-as-bytes discipline of DL-046.
 
@@ -3679,7 +3791,7 @@ The two statements therefore disagreed, and the disagreement was not symmetric. 
 
 ### DL-118 - Every formatter and every fold names its locale, and constraint messages are rendered in one pinned locale
 
-**Context.** This module states its external contract in bytes: four fixed-width output formats, a set of reproduced operator messages, and a field-error payload. A Java formatter that is not given a locale uses the JVM default one, and two of the things it then does are visible in those bytes. `String.format("%04d", 2026)` renders `٢٠٢٦` under an Arabic-Indic numbering locale rather than `2026` - measured, not inferred, by running it. And `"I".toLowerCase()` yields the dotless `ı` under Turkish, which an ASCII-only fold cannot reverse.
+**Context.** This module states its external contract in bytes: five fixed-width output formats, a set of reproduced operator messages, and a field-error payload. A Java formatter that is not given a locale uses the JVM default one, and two of the things it then does are visible in those bytes. `String.format("%04d", 2026)` renders `٢٠٢٦` under an Arabic-Indic numbering locale rather than `2026` - measured, not inferred, by running it. And `"I".toLowerCase()` yields the dotless `ı` under Turkish, which an ASCII-only fold cannot reverse.
 
 The suite could not see either problem, because the build pins `-Duser.language=en -Duser.country=US` in `test.jvm.args`. Pinning the suite is right - a test should not fail because of the machine it runs on - but it makes the suite structurally unable to observe a locale defect, so the defect has to be looked for deliberately.
 
@@ -4815,15 +4927,18 @@ metrics scrape configuration already points at the gate-evidence file as the pla
 written up. That pointer is left standing rather than removed, because the file is intended to exist and
 the comment states where its content belongs.
 
-*Currency note.* Three of the four have since been delivered — `gate-evidence.md`,
-`traceability-matrix.md` at its five hundred and forty-four rows, and `architecture.md`.
-**`onboarding-guide.md` is still absent**, so every reference to it is a statement of what the page is for
-rather than a citable source, and the module's own `carddemo-java/README.md` carries the first-run
-walkthrough in the meantime. Navigation is a separate question from delivery and is currently narrower than
-delivery: `mkdocs.yml` registers this log and `gate-evidence.md`, and registers **neither**
-`architecture.md` **nor** `traceability-matrix.md`, both of which are therefore reachable in the repository
-but not published by the documentation site. Registering them is outstanding work. The paragraph above is
-kept as written because it records the state the decision was taken in; it is not the current inventory.
+*Currency note.* **All four have since been delivered** — `gate-evidence.md`, `traceability-matrix.md` at
+its five hundred and forty-four rows, `architecture.md` and `onboarding-guide.md` — so every reference to
+any of them is now a citable source rather than a statement of intent, and the module's own
+`carddemo-java/README.md` sits beneath the onboarding guide as operator detail rather than standing in for
+it. **Navigation is no longer narrower than delivery**: `mkdocs.yml` carries an explicit `nav` listing all
+eight pages under `docs/` — the landing page, `architecture.md`, `onboarding-guide.md`,
+`traceability-matrix.md`, this log, `gate-evidence.md` and the two prior-delivery references — and
+`config/BuildAndCiContractTest` requires each of the eight to exist *and* to be registered, so a page can no
+longer be delivered and left unpublished. The migration deck is HTML rather than Markdown and is
+deliberately outside the nav, reached from the landing page instead. The paragraph above is kept as written
+because it records the state the decision was taken in; it is not the current inventory, and the two
+sentences distinguishing them are the point of this note.
 
 **Two obligations attach to each one when it is built**, and both are already enforced rather than
 merely written down. Any source assembling an account response must obtain the regulated components from
@@ -5350,6 +5465,18 @@ the logical key and, for a failure, a bounded failure chain.
 
 ### DL-147 - Every outbound object-store call is observed where the call is made, because a boundary is traced once or not at all
 
+> **Correction - integrated state.** The reasoning below stands, but its premise - that the staging service
+> is "the one place in the module that addresses the object store" - no longer holds, for the same reason
+> recorded in the correction to DL-146: the durable staging contract moved to `BatchStagingArea` and
+> `StagedGenerationStore`, and those two make the object-store calls the batch tier actually performs.
+> `BatchStagingService` retains the observation described below and is no longer reached from any
+> configuration, so the observation it carries is not emitted by a run. Neither of the two live boundaries
+> observes its calls today. This is recorded as an open gap rather than closed silently: what the module
+> emits for a batch run remains the per-step timers of Gate 3, and an outbound object-store failure is
+> reported by the failing step rather than by a span of its own. Closing it means moving this decision's
+> observation onto the two live boundaries, which is a change to the traced surface and is therefore left
+> as a decision for a human rather than made while remediating a documentation finding.
+
 **Context.** The archive step's upload was the module's only object-store call and it carried no
 observation, so the trace ended at the boundary and an outbound failure set no error attribute on any
 span. The gate that requires this offers two ways to satisfy it: a manual observation with fixed tags, or
@@ -5763,6 +5890,29 @@ which selects the ceiling; `batch/CreateStatementJobConfig.java`, whose three ga
 expressed as three transitions; and `batch/PostTransactionJobConfig.java`, which raises the completion
 code that is no longer read as a ceiling. The covering suites are `config/BatchConfigTest.java`,
 `batch/BackupTransactionJobConfigTest.java` and `batch/PostTransactionJobConfigTest.java`.
+
+**Correction - integrated state.** The decision above stands unchanged: one ceiling, zero, for all four
+gates, evaluated by the numeric decider. What had to change is *how* a flow that gates more than one step
+hands that decider to the framework, and it is recorded here because the failure it caused is silent at
+compile time and severe at run time.
+
+The framework's flow builder keeps the states it creates in a map keyed by the object handed to it and
+creates a state only when that key is absent. `ALL_PRIOR_STEPS_ZERO` is an enumeration singleton, so the
+statement job - which needs the gate at three points of one flow - handed the same key over three times and
+received **one** decision state carrying all three pairs of outgoing transitions. Every gate then routed
+wherever the first registered pair pointed, which sent the flow back into the step it had just run: the load
+step executed a second time and abended on input the first pass had already consumed. The job's own
+integration specification is what caught it.
+
+`ConditionCodeGate.atOnePlacement()` now answers one placement of the gate per call - a small delegating
+decider that evaluates this constant's rule and nothing else, deliberately not a record, because
+component-wise equality would make two placements equal, collapse them back into one key and reinstate the
+defect. `createStatementJob` takes three placements, one per gated step; the backup job places the gate once
+and continues to use the constant directly. The rule, the ceiling, the two outcome names and the
+failure-propagating transition of DL-208 are all untouched: only the object handed to the builder changed.
+`batch/CreateStatementJobConfigTest` now asserts the placement count and asserts that the shared constant is
+never handed to the builder, and `config/BatchConfigTest` asserts that two placements are unequal and occupy
+two keys of a map - which is precisely what the builder does with them.
 ### DL-228 - The jarmode tools library is declared so the vulnerability gate can see it, the plugin's own copy is turned off so only one writer remains, and the loader's redundant copy is accepted because excluding it would recreate the very gap being closed
 
 > **Formerly recorded under `DL-145`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-145` is the one the module's own source cites. See entry DL-245.
@@ -5831,7 +5981,10 @@ than silently inherited.
 **Coverage after the change, measured rather than asserted.** `dependency-check:check` scans 128
 top-level entries plus 69 merged related entries, a union of 197 artefact names. Every one of the 180
 libraries bundled inside the deployable jar appears in that union: **packaged-JAR coverage is 180 of 180,
-with zero critical or high findings and one medium.** Reproduce it by running `./mvnw -B
+with zero *unsuppressed* critical or high findings and one medium.** The qualifier is the same one DL-159
+carries and is not decoration: one finding above the 7.0 threshold is covered by a written determination
+scoped to a single identifier, so "zero findings" would overstate what the build enforces. Reproduce it by
+running `./mvnw -B
 dependency-check:check` and comparing `target/dependency-check-report.json` - the union of `dependencies`
 and their `relatedDependencies` file names - against the `BOOT-INF/lib` listing of
 `target/carddemo-java-1.0.0.jar`.
@@ -6267,6 +6420,8 @@ reaches the detail operation.
 
 ### DL-237 - Transaction turns carry one bounded list continuation, derive identity from authentication, and keep entered and persisted amounts distinct
 
+> **The list-continuation portion of this entry is superseded by DL-299.** `TransactionListRequest.ScreenContinuation` no longer exists, and neither the request nor the response carries the ten displayed identifiers in any form. The reasoning below is retained because it is the record of what was delivered and why, and because two of its three decisions still stand unchanged: the identity decision — routing and screen state echoed, `userId` and `userType` replaced from the established `Authentication` — is what discharges the principal binding DL-299 relies on rather than re-implementing, and the entered-versus-persisted amount decision is untouched. One naming detail below has drifted and is corrected here rather than in place: the CT00, CT01 and CT02 turns reconcile identity through `ScreenStateAdapter.toNavigationState`, not through the `ConversationStateAdapter.reconcile` this entry names, which is the card-side equivalent. The behaviour is the one described — the two identity members are replaced unconditionally, whatever the caller echoed — and only the class name is stale. Read every sentence below about a bounded identifier list, an eight-field continuation, a constructor-enforced ten-entry collection or a continuation published on the response as a description of the superseded arrangement. DL-299 records what replaced it and why a request body cannot serve as the trusted terminal echo this arrangement treated it as.
+
 > **Formerly recorded under `DL-147`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-147` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The transaction-list boundary divided one pseudo-conversational screen turn between a
@@ -6396,9 +6551,12 @@ production, caps the combined request line and header block at 8 KiB, form conte
 parsed query-plus-form parameters at 64, rejected-body swallowing at 64 KiB, and request-line
 delivery at ten seconds. Multipart parsing is disabled because no upload operation exists. A
 separate 64 KiB request-body filter is necessary because the embedded container's form limit does
-not govern JSON. `RequestBodyLimitFilter` runs before security and MVC, reads at most one byte beyond
-that ceiling, covers bodies with either a declared length or chunked transfer, returns a bounded
-repeatable servlet request, and answers 413 before controller invocation when the ceiling is crossed.
+not govern JSON. `RequestBodyLimitFilter` reads at most one byte beyond that ceiling, covers bodies
+with either a declared length or chunked transfer, returns a bounded repeatable servlet request, and
+answers 413 before controller invocation when the ceiling is crossed. Its position in the chain was
+subsequently corrected and is now stated by DL-297: it runs behind observation and behind
+authentication rather than ahead of both, which is what makes a refusal visible and stops an anonymous
+body being buffered before anyone has established the caller may send one.
 The configurable body ceiling is itself restricted to the range from one byte through 16 MiB so a
 misconfiguration cannot turn the bounded copy into an unbounded allocation.
 
@@ -8299,8 +8457,8 @@ one would be feature expansion, and this entry settles only that no test or diag
 that gap by rendering the value.
 
 *Cited by:* `domain/CardCrossReference`, `repository/CardCrossReferenceRepository`,
-`repository/CardCrossReferenceRepositoryIT`, `src/main/resources/db/migration/V1__create_schema.sql`,
-`src/main/resources/db/migration/V2__create_indexes.sql`.
+`repository/CardCrossReferenceRepositoryIT`, `src/main/resources/db/migration/schema/V1__create_schema.sql`,
+`src/main/resources/db/migration/schema/V2__create_indexes.sql`.
 
 ---
 
@@ -8746,7 +8904,7 @@ descriptions, `card_embossed_name`, the two reference-table descriptions — is 
 round trips that prove it lossless (account 300 B, card 150 B, cross-reference 36 B, daily transaction 350 B,
 customer 500 B) are unaffected because the writers pad on output either way.
 
-*Embodied in:* `src/main/resources/db/migration/V3__seed_reference_data.sql`.
+*Embodied in:* `src/main/resources/db/migration/seed/V3__seed_reference_data.sql`.
 *Cited by:* `repository/DailyTransactionRepositoryIT`, `config/SeedMigrationIT`. Amends DL-203 decision four;
 consistent with DL-035 and with the truncating-scale policy of DL-013.
 
@@ -10328,6 +10486,15 @@ child directory. That entry is *already* headed by a dated correction stating th
 implementation and is superseded, so its body is properly framed as history rather than asserted as fact,
 and it was left alone.
 
+**Correction to the paragraph above, 2026-08-09.** The two sentences describing the delivered layout are no
+longer true, and they are corrected here rather than rewritten in place, which is this entry's own rule.
+`DL-298` re-supersedes `DL-127`-as-corrected and delivers the split: the two schema scripts ship from
+`classpath:db/migration/schema`, the two seeds from `classpath:db/migration/seed`, their shared parent holds
+no script and is refused as a location under every profile, and no profile declares a version ceiling. What
+this paragraph got right is the reasoning - `DL-127`'s body was framed as history and was left alone on that
+basis, and it is now the delivered arrangement again. The near-miss was correctly identified as a near-miss;
+only its statement of what ships has gone stale.
+
 The behaviour the documentation now describes is the behaviour the code has, which is the legacy behaviour:
 one call publishes its own cards once each, in order, into a single first-in-first-out message group; it
 **stops at the first refusal**; the refusal is non-fatal and warns with the published count against the
@@ -10557,8 +10724,8 @@ what moved rather than inferring it.
 | # | The prior delivery's open item | What closes it |
 | :-- | :--------------------------- | :------------- |
 | 1 | Continuous integration not started | `.github/workflows/carddemo-java-ci.yml`, scoped into the module with a working-directory default |
-| 2 | Vulnerability scan pending, execution unconfirmed | `dependency-check-maven` **12.1.3** bound to `verify`, failing the build at CVSS 7.0, with its report as a gate artefact |
-| 3 | Signing secret hardcoded | Eliminated completely: the production profile resolves every secret from the environment with **no fallback value**, so a missing secret fails start-up instead of binding a placeholder |
+| 2 | Vulnerability scan pending, execution unconfirmed | `dependency-check-maven` **12.1.3** bound to `verify`, failing the build at CVSS 7.0, with its report as a gate artefact. The result it establishes is **zero *unsuppressed* critical or high findings** — the qualifier is load-bearing and is stated wherever the result is: exactly **one** finding above the threshold is carried by a written analyst determination in `owasp-suppressions.xml`, scoped to a single identifier and the embedded servlet container, recorded at DL-159 and disclosed in `gate-evidence.md`. "Zero findings" would be a stronger claim than the build enforces and is not made anywhere |
+| 3 | Signing secret hardcoded | Eliminated in **production**, which is the scope the rule has: `application-prod.yml` resolves every secret from the environment with **no fallback value**, so a missing secret fails start-up instead of binding a placeholder. The local and test overlays deliberately *do* carry fallbacks, each labelled non-production in its own text, because a fallback is admissible exactly where the tokens it signs can never reach a production deployment — DL-103 and the JWT-properties entry develop this. The rule is "no defaulted secret in production", not "no default anywhere", and stating it the second way would misdescribe the delivered configuration |
 | 4 | No production profile | `application-prod.yml` |
 | 5 | No transport security configured | Configured in the production profile, which consumes externally supplied keystore material |
 
@@ -10631,6 +10798,16 @@ specification and in `architecture.md`, which is where they belong.
 
 ### DL-276 — The processing-timestamp window is a declared repository query again, and the report job calls it
 
+> **Superseded in part by `DL-294`.** The decision below is right that the window belongs in a declared
+> repository query, right about the predicate it derived, and right that the alternate index had no
+> reader. It is **wrong about the caller**. It gave the report job's record-selection step the live table
+> as its input, and the cataloged procedure the step reproduces does not read the live cluster: it sorts
+> the backup generation the immediately preceding step wrote. Reading the live master after the unload
+> gives the report a row set the backup does not contain. `DL-294` records the correction and the two
+> further changes it forced — one ordering instead of two, and an indexable upper bound. Read the
+> **Decision**, the first of the three properties, and the **excluded figure** paragraph below as
+> superseded by `DL-294`; everything else in the entry stands.
+>
 > **Formerly recorded under `DL-267`.** That identifier is carried by the transport-control-character refusal entry earlier in
 > this log, and an identifier a reader cannot resolve is worse than an absent one, so this decision was
 > renumbered to `DL-276`. Nothing in the reasoning below changed. The renumbering follows the rule
@@ -10694,6 +10871,16 @@ the 133-byte report.
 > renumbered to `DL-277`. Nothing in the reasoning below changed. The renumbering follows the rule
 > DL-245 sets out: the newer of two colliding entries takes a fresh identifier and says where it came
 > from.
+>
+> **The two guarantees below still hold; the mechanism that obtains the second one does not.** This entry
+> obtained the insert's independent durability by *nesting* the insert's unit of work inside the unit
+> holding the account row. That nesting made a thread hold one connection while asking the pool for a
+> second, which starves a pool sized to the number of concurrent turns. `DL-291` records the replacement:
+> the two units run **sequentially**, in settle-then-store order, so a turn holds one connection at a
+> time. Read the third bullet of the decision below as superseded by `DL-291`; every other property
+> recorded here — the exclusive hold, the re-evaluated balance test, the insert surviving a rolled-back
+> rewrite, the removed version comparison, the transaction-mandatory allocation lock — is unchanged and is
+> still obtained the way this entry describes.
 
 **Context.** Two properties of the legacy bill-payment span are stated by the file definitions rather than by
 the program text, and both were lost in the first relational translation.
@@ -10735,10 +10922,11 @@ equivalent:
   the exclusion; the exclusion is obtained inside the unit that performs the writes. The account-read
   paragraph's arms are extracted so that both performances resolve identically, and a row that has gone
   between the two reaches that paragraph's not-found arm.
-- **The transaction insert runs in a unit of its own**, nested inside the unit holding the row. It is
-  therefore committed before the rewrite is attempted and survives a rewrite that rolls back — which is the
-  legacy behaviour, not a relaxation of it. Its refusal is classified in place, so the outer unit stays
-  healthy and the unconditional lines 234 and 235 still run.
+- **The transaction insert runs in a unit of its own** — originally nested inside the unit holding the row,
+  and since `DL-291` sequenced *after* it. Either way it commits independently of the rewrite and survives a
+  rewrite that rolls back, which is the legacy behaviour and not a relaxation of it. Its refusal is
+  classified in place, so the unconditional lines 234 and 235 are still performed and still reported. Only
+  the *nesting* is superseded; the independence is not.
 - The version comparison is gone from the rewrite. It is not a weakening: the row is locked exclusively from
   the unit's first statement, so a version test could only ever pass. `@Version` still increments on the
   store, which is what a reader outside the unit observes, and a provider-reported conflict is still
@@ -10814,8 +11002,12 @@ gap look closed.
   breaks offset arithmetic. The equality is exactly the US-ASCII repertoire rule the fixed-width layer
   enforces, and it makes the declared character bound a byte bound as a consequence: n characters that each
   encode to one byte is n bytes.
-- **It lives in `V1`, not a new migration.** Production pins `spring.flyway.target: 2`, so a `V5` would
-  never be applied there. The constraint belongs to the table definition in any case.
+- **It lives in `V1`, not a new migration.** The constraint belongs to the table definition, which is
+  where a reader looks for it and where checksum validation freezes it. *(Corrected 2026-08-09: this bullet
+  originally gave a second reason - "production pins `spring.flyway.target: 2`, so a `V5` would never be
+  applied there" - and that reason is withdrawn. `DL-298` removes the version ceiling precisely because it
+  had that effect: a `V5` schema migration is now applied under the production posture. The conclusion is
+  unchanged, because the first reason was always the load-bearing one.)*
 - **The three widened columns are included, not exempted.** `customer.cust_ssn` and
   `customer.govt_issued_id` hold an ENC1 envelope whose payload is Base64, and `user_security.sec_usr_pwd`
   holds a BCrypt digest; all three alphabets are US-ASCII by construction. The constraint bounds no length,
@@ -10863,7 +11055,7 @@ escape silently. The seeded rows are asserted to satisfy the rule, so the constr
 data rather than contradicting it. And the reconciliation is asserted directly: the value the schema refuses
 is exactly the value `FixedWidthFieldReader.encodedLength` refuses to measure.
 
-*Embodied in:* `src/main/resources/db/migration/V1__create_schema.sql`.
+*Embodied in:* `src/main/resources/db/migration/schema/V1__create_schema.sql`.
 *Cited by:* `src/test/java/com/carddemo/repository/SchemaConstraintNegativeProofIT.java`,
 `src/test/java/com/carddemo/repository/DailyTransactionRepositoryIT.java`,
 `src/test/java/com/carddemo/repository/CardCrossReferenceRepositoryIT.java`,
@@ -11662,6 +11854,3096 @@ disposition for the no-store arm, which has no exception to catch; and
 generation. Reverting the production change fails exactly the first two and no others.
 
 *Embodied in:* `src/main/java/com/carddemo/config/BatchConfig.java`.
+
+---
+
+### DL-291 — A confirmed bill payment holds one connection at a time, so the two stores are sequential units in settle-then-store order
+
+**Context.** `DL-277` reproduced two legacy properties of the confirmed bill-payment span: the account row is
+held exclusively from the confirmed read to the rewrite, and the transaction insert is durable independently
+of that rewrite. It obtained the second property by opening a `Propagation.REQUIRES_NEW` unit for the insert
+**inside** the unit holding the row.
+
+**The defect that shape had.** `REQUIRES_NEW` suspends the caller's transaction; it does not release the
+caller's connection. A thread executing a confirmed turn therefore held the settlement unit's connection
+while asking the pool for a second one, so *N* simultaneous turns needed *2N* connections. At a pool sized
+to the number of concurrent turns — the sizing an operator would reasonably choose — every thread held one
+connection and waited for a connection every other thread was holding, and no turn could finish until the
+connection timeout expired. The failure is a self-deadlock of the pool, it appears only under concurrency,
+and it is invisible to any test that runs one turn at a time. The nesting was the only such shape in the
+online tier: every other service that opens an `OnlineTransactionBoundary` unit opens exactly one.
+
+**Why the obvious repairs were rejected.** Raising the pool size is tuning a defect out of reach rather than
+removing it, and the plan admits no pool figure at all. A `NESTED` propagation or a savepoint keeps one
+connection but reattaches the insert's fate to the outer unit's rollback, which is precisely the legacy
+property `DL-277` exists to preserve — a rolled-back rewrite must not discard a stored transaction. Putting
+both stores in one unit reintroduces the defect that entry was written to fix.
+
+**Decision.** Run the two stores as **two sequential units of work**, the second beginning only after the
+first has committed, in **settle-then-store** order.
+
+- **Unit one** takes the held read `FOR UPDATE`, re-evaluates the balance test of lines 198 and 199 on what
+  the lock granted, captures the settled amount from that same held balance, performs the computation at line
+  234 and the store half of the rewrite at line 235. It then commits and its connection is returned.
+- **Unit two** takes the transaction-scoped allocation lock, reads the stored maximum, mints its successor,
+  assembles the record and stores it. The amount it carries is the figure unit one captured, because by the
+  time this unit assembles the record the row on disk already reads zero.
+
+**The execution order of the two stores is the reverse of the source's, and that is the deliberate part of
+this entry.** The source writes the transaction at line 233 and rewrites the account at line 235. Executing
+the settlement first is what keeps the exclusion intact: the exclusion that posts exactly one payment per
+account is the row lock, and it must be taken before anything is minted so that a second operator waits,
+reads a settled balance and reaches the nothing-to-pay arm at lines 197 to 206 — never mints a second
+identifier. Ordering the units the other way round would mint first and hold second, which is a different
+program.
+
+**Nothing observable is reordered.** Three facts make the inversion unobservable to any legacy-visible
+surface. Both files are defined `RECOVERY(NONE)` with `JOURNAL(NO)`, so neither store participates in a
+recovery unit whose order could be observed. The source performs lines 234 and 235 whether or not the write
+at line 233 succeeded and **tests no flag between them**, so no branch in the program depends on which
+completed first. And the two *reported* arms are applied after both units have completed, in the source's
+own order — the insert's evaluation at lines 522 to 547 first, then the rewrite's at lines 387 to 403 —
+which is why a successful payment can still carry the recoloured success message *and* a rewrite failure's
+text, exactly as the legacy leaves the colour set when a later arm writes a new message.
+
+**Every arm the source can reach is still reached, and the mapping is exact.** Both stores completed: the
+insert's normal arm, then the rewrite's. Insert refused or failed after the account settled: the insert's
+duplicate arm or its catch-all, then the rewrite's own arm — because the settlement committed in a unit the
+insert's rollback cannot reach. Rewrite failed: unit one rolls back, unit two **still runs**, both arms are
+applied and the operator is told the identifier that was stored and then that the account could not be
+updated. Held read refused: the account-read paragraph's arms, and nothing was written. Lock granted over an
+already-settled account: the nothing-to-pay arm, and no identifier is minted. A failure with no arm in the
+source — the held read's machinery, either unit's commit, the advisory lock, the existence probe —
+propagates unchanged.
+
+**What is deliberately not claimed.** The two units are not atomic with respect to each other, and they were
+not atomic before either: `REQUIRES_NEW` suspended the outer unit, so the insert always committed on its own.
+The window this shape adds is between unit one's commit and unit two's commit, during which an account reads
+settled with no transaction yet stored. The legacy has the same window in the other direction — a record
+written at line 233 with the rewrite at 235 not yet performed — and neither window is observable through any
+program branch, because no legacy path tests one store's completion before performing the other.
+
+*Verified by:* `service.BillPaymentConnectionBudgetIT` runs four simultaneous confirmed turns against a real
+PostgreSQL 16 server with the pool sized to exactly four — `maximum-pool-size=4`, `minimum-idle=4`, a
+four-second acquisition timeout — and asserts every turn completed, each stored a distinct identifier and
+each account settled to zero; under the nested shape the same test exhausts the pool and every turn fails on
+acquisition. `service.BillPaymentServiceTest.theTwoUnitsOfWorkAreSequentialAndNeverNested` instruments the
+boundary with a depth counter and asserts the deepest observed depth is one and the depth returns to zero,
+together with the settle-then-store call sequence. `theHeldAccountIsSettledBeforeTheTransactionIsStored`
+pins the execution order, `theInsertRunsInAUnitOfItsOwnAfterTheSettlementUnit` pins the unit count, and
+`aHandledInsertRefusalStillLeavesTheAccountSettled` pins the arm pairing. `service.BillPaymentConcurrencyIT`
+is unchanged and still passes: it observes the exclusion, the single posted transaction, the loser's
+nothing-to-pay text and the rewrite-failure state, none of which this entry alters.
+
+*Embodied in:* `src/main/java/com/carddemo/service/BillPaymentService.java`.
+*Supersedes:* the nesting recorded in the third bullet of `DL-277`. Every other property of that entry
+stands.
+
+---
+
+### DL-292 — The reset step clears the row set the archive captured, because a whole-table removal deletes records that were never archived
+
+**Context.** `app/jcl/TRANBKP.jcl` is two steps with a condition-code gate between them: an unload of the
+transaction master to the next backup generation, then — only if the unload returned zero — a reset of the
+master. The reset was translated as a count followed by an unconditional bulk removal of every row in the
+table.
+
+**The defect that shape had.** On the mainframe the two steps were separated by a closed file: the region's
+files are disabled for the backup window, so nothing could add a record between the unload's last read and
+the reset's removal, and "delete everything" and "delete what was archived" named the same set. Nothing
+closes a relational table. The unload streams the master in keyset pages and the reset runs as a separate
+step transaction, so a transaction committed after the unload's read position passed it — by an online
+payment turn, a posting run or an interest run — was never written to the generation and was then deleted by
+the reset. The record existed, was acknowledged to whoever created it, and afterwards existed in no
+generation and in no table. The legacy step could not lose a record that way; this one could, silently, with
+both steps reporting success.
+
+**Decision.** The archive step captures the identifier of every record it writes, and the reset step removes
+exactly those identifiers and nothing else.
+
+- The archive writes each identifier to a **manifest sealed beside the generation**, through the same staged
+  writer and the same completion seal the generation itself uses, so the manifest is durable on the same
+  terms as the bytes it describes and survives the discard of a local generation.
+- The manifest's path and its identifier count are published on the **job** execution context, not the step
+  context, because a step context is invisible to a later step. They are published only after the unload has
+  completed, so a failed archive leaves the reset nothing to act on — which is the same outcome the
+  condition-code gate produces.
+- The reset streams the manifest and removes the identifiers it names in bounded pages, one bulk removal per
+  page, checking the cancellation signal between pages. It reads no row count and issues nothing that could
+  reach a row the manifest does not name.
+- A row committed between the two steps is not in the manifest, is therefore not deleted, and is archived by
+  the next cycle. That is the legacy's own outcome for a record created after the backup window opened.
+
+**What is refused rather than assumed.** A **missing** manifest — none published, or the file it named gone —
+stops the step. Without it the step cannot know which rows were archived, and the safe answer to "which rows
+may I delete" is never "all of them". Naming an identifier that is already gone removes nothing and is not an
+error, so a re-run after a partial failure completes, which is what the condition-code resets existed to
+achieve. A manifest line that is not exactly one sixteen-character identifier stops the step as well: a
+malformed manifest is not a licence to guess. The consumed manifest is then removed, and a failure to remove
+it is reported rather than raised — the rows are already cleared, and a stale file is not a wrong outcome.
+
+**What is deliberately not done.** The two steps are not merged into one unit of work. The legacy is two
+steps with a gate between them, the gate's semantics are reproduced by the framework's step transition, and a
+single unit spanning an unload of the whole master would hold a transaction open for the length of the
+backup. Nor is the master locked for the duration of the unload: the legacy obtained its quiet window by
+disabling the region's files, which is an operational act with no relational equivalent, and taking a
+table-level lock to imitate it would stop online traffic that the legacy did not stop from *within* the job.
+Capturing the row set is the property the legacy actually depended on, and it is captured directly.
+
+*Verified by:* `batch.BackupTransactionJobConfigIT.aTransactionCommittedAfterTheArchiveSurvivesTheClear`
+seeds the master, runs the archive step, commits a new transaction **between** the two steps, runs the reset
+step, and asserts the late record is still present, that every archived record is gone, and that the
+published generation is byte-identical to the archive of the master as it stood when the archive ran.
+`batch.BackupTransactionJobConfigTest.TheClear` covers the unit-level dispositions:
+`clearsExactlyTheArchivedIdentifiers`, `leavesARowCommittedAfterTheArchiveInPlace`,
+`clearsAnAlreadyEmptyMasterWithoutFailing`, `refusesToClearWithoutAManifest`,
+`refusesToClearWhenTheManifestIsMissing`, `isRepeatable`, `consumesTheManifest` and `writesNoObject`.
+
+*Embodied in:* `src/main/java/com/carddemo/batch/BackupTransactionJobConfig.java`.
+
+---
+
+### DL-293 — A statement run emits through a sink and returns seven counts, because a `WRITE` hands a record to a dataset and keeps nothing
+
+**Context.** `[app/cbl/CBSTM03A.CBL]` writes two fixed-width streams, the 80-byte plain record of `L45`
+and the 100-byte markup record of `L47`, and its mainline at `L317-L329` produces one statement per
+cross-reference record it consumes. The cross-reference cluster is unbounded, so the number of records one
+run emits is unbounded — the card table's 51-by-10 bound governs *tabulation*, not output.
+
+**The defect.** The first translation returned the run's output: the service accumulated the plain records,
+the markup records, the per-line transaction summaries and the dispatcher trace in four lists, sealed all
+four into its result with defensive copies, and the batch step then iterated the result and wrote it. Heap
+use therefore scaled with the whole output and was paid for twice — once in the accumulating lists and again
+in the copies. The legacy program has no such cost: a COBOL `WRITE` hands one record to an open dataset and
+the program's working storage never holds the file. Measured at 2,000 statements the delivered shape emits
+22.9 MB of fixed-width payload; the superseded shape would have held all of it, plus a second copy, in
+storage the program it translates does not have.
+
+**Decision.** Introduce `StatementOutputSink` and hand each item to it at the moment the source writes it.
+
+- **The service retains nothing.** `writeStatementRecord`, `writeHtmlRecord`, `emitTransactionSummary` and
+  `recordDispatch` each forward one item and bump one counter. The run's working set is one record.
+- **`StatementRun` becomes seven `int` components** — records emitted per stream, summaries emitted,
+  dispatcher entries, and the three counts the legacy program accumulates. A caller that needs the content
+  observes it at the sink; a caller that needs to know what happened reads the tallies.
+- **One batch item is a request, not a source.** `StatementProcessor` takes
+  `StatementRunRequest(transactionSource, outputSink)`, because a run has two ends and the destination is
+  per-execution state while the stage is a singleton.
+- **The per-record proofs move earlier.** A `ProvingSink` wraps the caller's destination and proves each
+  record's US-ASCII purity and encoded width *before* forwarding it, so a mis-sized record never reaches a
+  fixed-width destination — the superseded shape proved the stream after the run and then wrote it. The
+  dispatch trace is proved entry by entry as it arrives, so a breach names the dispatcher entry that
+  diverged. A new closing proof requires the run's own tallies to equal what actually passed through, so a
+  run cannot misreport its output.
+
+**The one consequence of streaming, and how it is contained.** Two properties can only be evaluated on a
+completed run: that the dispatcher was entered exactly six times, and that the tallies agree. Both are
+therefore evaluated *after* records have reached the destination. Nothing pretends otherwise. The statement
+job writes to execution-scoped **working** files and seals them into generations only once the step has
+completed, so a run that fails a closing proof has written into a file that is never sealed, never
+published and is discarded with the execution — the same containment `DL-289` and `DL-290` provide for every
+other staged output. The alternative, buffering in order to keep the proofs ahead of the writes, is the
+defect this entry removes.
+
+**What is deliberately retained.** The dispatch trace, bounded at one entry more than the expected six and
+holding eight-character selector values that carry no customer, account, card or transaction content. It is
+retained because the diagnostic for a diverged trace is only actionable if it can show the trace, and it is
+bounded because a service looping on the dispatcher must not be able to grow it.
+
+*Verified by:* `service.StatementGenerationServiceTest.BoundedWorkingSet` —
+`aHighVolumeRunRetainsNothingButItsCounts` drives 2,000 statements, observes 44,000 plain and 194,000 markup
+records (22,920,000 payload bytes) through a counting sink, and asserts the returned run is `equals` to a
+freshly constructed seven-`int` tuple, which for a record is a proof that it carries nothing else;
+`theHeapLeftBehindIsAFractionOfThePayloadEmitted` runs the same volume twice, releases the test harness's own
+bookkeeping — the scripted handler's journal, the debug log recorder and the mocking framework's invocation
+record, the last of which dominates the figure if left in place — and measures 26 KB to 338 KB still in use
+against 22.9 MB emitted, asserting only that it is under a quarter of the payload because a collection can
+be requested and not commanded. `everyRecordLeavesThroughTheSinkDuringTheRun` asserts no item arrives after
+the call returns. `batch.step.StatementProcessorTest` proves the per-record and per-entry proofs at the sink,
+and `batch.CreateStatementJobConfigIT` proves the whole job still produces both files at their two widths.
+
+*Embodied in:* `src/main/java/com/carddemo/service/StatementOutputSink.java`,
+`src/main/java/com/carddemo/service/StatementGenerationService.java`,
+`src/main/java/com/carddemo/batch/step/StatementProcessor.java`,
+`src/main/java/com/carddemo/batch/CreateStatementJobConfig.java`.
+
+### DL-294 — The report filters the generation it unloaded, orders it once, and reaches its index at both ends
+
+**Context.** DL-276 made the reporting window a declared repository query and gave the report job's
+record-selection step that query as its input. Three defects followed from that one choice, and a fourth
+was found beside them in the same call graph. They are recorded together because they share a cause: the
+step was reasoned about as a *selection* when the legacy step is a *sort of a file*.
+
+**The authority, read literally.** `app/proc/TRANREPT.prc` has two steps. `STEP01R` copies
+`AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS` to `AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)` at `LRECL=350,RECFM=FB`.
+`STEP05R` then runs `SORT` whose `SORTIN` names **`AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)`** — the generation
+`STEP01R` has just written — applies `INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)`
+and `SORT FIELDS=(TRAN-CARD-NUM,A)`, and writes `AWS.M2.CARDDEMO.TRANSACT.DALY(+1)`. `STEP10R` reports
+over that. So the report describes a **frozen copy**, and the backup the job took and the rows the job
+reported are by construction the same set.
+
+**Decision, in four parts.**
+
+- **Lineage.** `FilterAndOrderProgram` reads the unloaded generation, not the table. It is handed
+  `backupGeneration(jobExecutionId)` — the very path the unload step sealed — and reads it through the
+  shared fixed-width reader. The step now issues **no query at all**.
+- **One ordering.** The step previously took an ordered result from the database and then re-sorted every
+  record through the external sorter under a different key. Ordering a collection twice is not a
+  redundancy that costs only time: two orderings are two contracts, and the one that decides the emitted
+  sequence is whichever runs last, which makes the other one documentation. There is now exactly one
+  ordering — the external sorter under the step's own private zoned-decimal card-number comparator, which
+  is the key the specification names — and it is bounded and spill-backed as it already was.
+- **Boundedness and closure.** Nothing is materialised. Records enter one image at a time, are admitted or
+  rejected by `ReportDateWindow.includes`, and admitted images go straight into the sorter. Neither the
+  admitted set nor the excluded set is ever held as a list. The reader is closed on the normal path and
+  released on every failure path, including a failure raised while opening it.
+- **An indexable window.** `findByProcessingDateWindowOrderedByCardNumber` is replaced by
+  `findByProcessingTimestampWindow(start, endExclusive, Limit)`, with
+  `findByProcessingDateWindow(start, endInclusive, Limit)` as its inclusive-date form. Both bounds are now
+  bare column comparisons.
+
+**Why the upper bound became exclusive rather than staying a prefix.** The stored field is 26 characters
+and a date bound is 10, so `<= :endDate` over the whole column drops every record processed on the end
+date — a longer string whose leading characters equal a shorter one sorts above it. DL-276 fixed that by
+wrapping the column in `SUBSTRING(..., 1, 10)`. That is **correct and unindexable**: a function of a
+column cannot drive a B-tree over that column, so the upper bound survived only as a filter applied to
+rows the server had already read. The exclusive next-day bound is correct *and* bare. Any instant on the
+end date compares below the next day's date, because the two differ inside the first ten characters;
+midnight on the next day compares above it, because its leading ten characters equal the bound and it is
+longer. So `< nextDay` admits exactly what `<= endDate` was meant to admit. The contract stays inclusive
+of both dates — the exclusivity is a property of the *derived* bound, and the derivation lives in one
+default method so no caller can get the arithmetic wrong. `exclusiveUpperBoundOf` parses strictly, so an
+impossible date is refused rather than normalised into a neighbour; a silently shifted bound would
+silently shift the window.
+
+**Reference resolution: preload what is closed, batch what is not.** `TransactionReportService` resolved
+each of its three references with a keyed read on a memo miss. The memo bounded the reads by *distinct
+keys*, which sounds bounded and is not: the distinct-key count grows with the report. The three references
+are now treated according to what each actually is.
+
+- **Transaction type and transaction category are closed vocabularies** — 7 and 18 rows in the seeded
+  reference data, sized by the estate rather than by the report. Each is read **in full, once**, at the
+  open of its own resource, which is where the legacy member opens that file. Two queries per run, whatever
+  the report's size.
+- **The cross-reference cluster grows with the card estate**, so reading it whole would not be bounded. It
+  is resolved in batches instead: the run buffers at most 256 records ahead of the one in hand, and a memo
+  miss resolves every not-yet-known card those buffered records name in **one** `findAllById`. The buffer
+  is the run's read position rather than a cache — a record enters it when read from the frozen source and
+  leaves it when the driving loop is given it — which is why it can be bounded and still be the source of
+  the key list.
+
+**What deliberately did not change, because each is a way this could have gone wrong.**
+
+- **Absence is still never memoised, and a batch never decides an outcome.** A code the store does not hold
+  is not recorded as missing, so the first record presenting it still takes its own resource's arm: its own
+  diagnostic literal, its own raw status `23`, its own `AbendException`. A failed batch read is logged and
+  left to the keyed read below it, so the resource that fails is the resource the record needed. A preload
+  and a batch change *how many times the store is read*, never *which record fails or how*.
+- **The window predicate remains the single authority.** Every image the step admits is tested by
+  `ReportDateWindow.includes`, the same predicate the emit step re-checks. The lineage change moved where
+  the rows come from; it did not move where the window is decided.
+- **Nothing is parsed and re-rendered.** The step moves the unloaded 350-byte image through unchanged, so
+  no mapping round trip can perturb a byte on the way to the report.
+- **The excluded figure now means what it says.** DL-276 derived it as the master's row count less the
+  records emitted, which cost a `count()` query and was only equal to the truth while nothing else wrote.
+  It is now **counted**: records read, less records admitted, both observed by the step. A run that
+  filtered everything remains distinguishable from a run that read nothing.
+- **The step sequencing and the job's gates are untouched.** Three steps, no condition-code gate, the same
+  generations resolved by the same logical names.
+
+**The finder now has no production caller, and that is stated rather than dressed up.** It is retained
+because the migration plan requires a JPQL date-range consumer for this third alternate index, and because
+an indexable date window is a contract this table should be able to serve. DL-276's claim that the report
+step is its caller is no longer true, and the class documentation says so in those words instead of
+implying otherwise.
+
+**Evidence.**
+
+- `repository/TransactionRepositoryIT` proves the window against a real server: the end-date record is
+  admitted while an inclusive whole-column bound drops it; midnight on the following day is excluded; the
+  derived bound rolls a month end, a year end and a leap day and refuses `2023-02-29` and `2022-13-01`; the
+  ordering is the timestamp's with the identifier as tie-break, and is asserted to differ from the
+  card-number order; the limit bounds the result and an absent limit is refused. Two access plans are read
+  under identical planner conditions: the shipped form puts **both** bounds in `Index Cond` with no
+  `Filter:` line and no `substring` anywhere, and the superseded prefix form — which selects the identical
+  rows in the identical order, and that is exactly why a review of results could not have caught it —
+  leaves its upper bound as a filter.
+- `batch/TransactionReportJobConfigTest` drives the step over an unloaded generation with no window query
+  stubbed at all, because there is none to stub; asserts that a row appearing in the master between the two
+  step lifecycles is absent from the filtered generation; and asserts structurally that the configuration
+  holds no transaction repository, that no constructor takes one, and that the step declares no field and
+  publishes no member in which a record set could accumulate. Closure is measured rather than asserted: two
+  hundred lifecycles are abended mid-pass on a truncated final record, and the process's open-descriptor
+  count is read from `/proc/self/fd` before and after - one retained handle per run would show as a rise of
+  about two hundred.
+- `batch/TransactionReportJobConfigIT` commits a transaction between the unload and the filter against a
+  real server and asserts the reported row set equals the sealed generation's row set and excludes the late
+  row; a second specification empties the master entirely after the unload and the step still completes with
+  both records and a zero excluded count, which no querying step could do.
+- `service/TransactionReportServiceParityTest` measures the reference reads at high cardinality: three
+  hundred distinct cards, seven types and eighteen categories are resolved with two full vocabulary reads
+  and at most six batches, with not one keyed read of any of the three, and the total read count is asserted
+  to be an order of magnitude below the distinct-key count. Two further specifications hold the properties
+  that must not move - a one-record run costs exactly three reads and inherits nothing from the run before
+  it, and a type code the preloaded vocabulary does not carry is still looked up, found absent, and abends
+  on its own record with its own resource's arm.
+- The four goldens still compare byte for byte in `e2e/BatchPipelineE2ETest`, which is what establishes
+  that none of this changed an emitted byte of the 133-byte report.
+
+*Embodied in:* `repository/TransactionRepository.java`, `batch/TransactionReportJobConfig.java`,
+`service/TransactionReportService.java`.
+*Supersedes in part:* DL-276 — on the step's input, on the excluded figure, and on the shape of the upper
+bound. DL-276's predicate reasoning and its account of why the index needed a declared consumer stand.
+
+---
+
+### DL-295 — The reject record echoes the bytes the record was read as, because a render cannot tell a negative zero from a positive one
+
+**Context.** The 430-byte reject record is a 350-byte source segment followed by an 80-byte validation
+trailer [app/cbl/CBTRN02C.cbl:L176-L182]. The segment was being produced by rendering the parsed
+`DailyTransaction` back through the mapper. That is field-faithful and it is not byte-faithful, and the
+difference is the whole of this entry.
+
+**The authority, read literally.** The write is `MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA`
+[app/cbl/CBTRN02C.cbl:L447]. `DALYTRAN-RECORD` is the record area the `READ` filled. The legacy program
+copies the bytes it received; it does not consult a field, does not re-justify anything, and has nothing to
+render *from* — the record area **is** the bytes. So the contract is a byte copy of the input.
+
+**Where the render diverges, and why it is not a theoretical gap.** Two places, both invisible to a width
+check.
+
+- **The amount's sign byte.** The amount is zoned decimal: the sign folds into the final byte, so twenty
+  distinct bytes encode ten digits — `{` and `A` to `I` for a non-negative low-order digit, `}` and `J` to
+  `R` for a negative one. Decoding is injective everywhere except at zero. `0000000000}` and `0000000000{`
+  both decode to a `BigDecimal` whose signum is zero, because a decimal has no negative zero to carry the
+  distinction into. A render must therefore choose a sign byte, and it chooses the positive one — so a
+  negatively signed zero arriving in the input would be reported to the reject dataset as positively
+  signed. Two different inputs, one output.
+- **The 20-byte trailing filler.** The layout maps it to no field, so it is not an attribute and not a
+  column; a render can only reconstruct it from the declared record width, which means blanks. Whatever the
+  input held there is replaced.
+
+**Decision.** `DailyTransaction` carries the image it was mapped from, and the writer prefers it.
+
+- `DailyTransaction` gains a `@Transient` `sourceRecordImage`. It has no column, the schema declares none,
+  and it takes no part in `equals`, `hashCode` — both of which read the identifier alone, so setting it
+  cannot change an instance's equality across a flush — or `toString`, which would otherwise put a card
+  number and an amount into a diagnostic. Its setter enforces the 350-character width rather than trusting
+  it, so a malformed segment is refused where it is recorded instead of surfacing later as a malformed
+  dataset.
+- `DailyTransactionRecordMapper` records the image at the single point where every mapping entry converges,
+  which is the one moment the bytes are still in hand. Every `FixedWidthFieldReader` factory owns a private
+  copy of exactly its record's bytes, so this is the record's own 350 characters even when the reader was
+  positioned inside a larger buffer — the separator and every neighbouring record are already excluded.
+- `RejectRecordWriter.rejectRecordImage` uses that image, and renders only when there is none.
+
+**Why the entity is the carrier, and not a wider signature change.** The chunk's item type is
+`DailyTransaction` from the reader through the processor to the writer. Threading the image alongside it
+would have meant a pair type through the reader, the diagnosing reader wrapper, the validation processor and
+the writer — four signatures and a new type, to carry a value that is a property of the record itself. The
+entity's own class documentation already anticipated this: it records that a surrogate key was rejected
+partly because it *"would make it impossible to echo the original 350-byte source image into a reject
+record"*. The image belongs to the record, so it lives on the record.
+
+**The render fallback is a defined behaviour, not a residue.** An entity a caller built, or one loaded from
+the table, has no original bytes to echo — for such an entity the rendering *is* its image, and there is no
+other answer available. Every item the posting step rejects came through the sequential reader and therefore
+carries one, which the end-to-end evidence below establishes against the real input rather than by argument.
+
+**Byte parity of the delivered fixture is unchanged, and that is worth stating plainly.** The reference
+daily-transaction input carries blank filler on every record and no all-zero negative amount, so the golden
+`daily-reject.txt` is byte-identical before and after. The defect was latent against *this* input and live
+against any input carrying either form. A fix whose evidence is only that the golden still matches would
+have proved nothing, which is why the evidence below is built on constructed inputs that isolate each case.
+
+**Evidence.**
+
+- `batch/step/RejectRecordWriterTest` gains a group whose every entity is produced by the **production
+  mapper** from an image the suite assembled, because that is the only way to observe the difference. Its
+  decisive specification writes two records differing in one byte — a negatively signed all-zero amount and
+  a positively signed one — and asserts that as read they produce two datasets differing in one byte, while
+  the *same two records with their images discarded* produce one identical dataset, and that the byte the
+  render invents is the positive one. All twenty overpunch sign bytes are asserted to reach the dataset as
+  themselves. A filler run carrying content survives where a blank fixture could not have told a copy from
+  a reconstruction. The mapper's three entries — from text, from bytes, and from a position inside a
+  newline-terminated buffer — are each asserted to record the record's own 350 characters. A width other
+  than 350 is refused where it is recorded.
+- The existing group that builds each entity by hand is retained unchanged. Every one of its assertions is
+  satisfied by a faithful render, which is exactly why it could not have caught this — and it remains the
+  measurement of the fallback path.
+- `e2e/BatchPipelineE2ETest` closes the chain: it reads the staged input back into a set of 300 record
+  images and asserts that the leading 350 bytes of **every** reject record the run produced are one of them,
+  verbatim. A defensive copy, a re-map or a reload anywhere between the reader and the writer would break
+  that, and no unit test of the writer alone could see it. The four goldens still compare byte for byte.
+
+*Embodied in:* `domain/DailyTransaction.java`, `util/DailyTransactionRecordMapper.java`,
+`batch/step/RejectRecordWriter.java`.
+
+---
+
+### DL-296 — A browse declares the bound and the order it reads with, and asks for a total only where something reads one
+
+**Context.** Four read surfaces across three repositories describe browses, and each was declaring a shape
+wider than the read it performs. Two are the card-side alternate-key finders; one is the opening window of
+the administrative user list; one is the highest-key read that allocates a transaction identifier. The
+defects are different but the cause is single: the declaration was chosen for convenience rather than read
+off the access path the legacy member uses.
+
+**The authorities, read literally.**
+
+- The card master's alternate index is defined `KEYS(11 16) NONUNIQUEKEY UPGRADE`, related to the base
+  cluster and reached through a path [app/jcl/CARDFILE.jcl:L83-L88, L100-L102]. The cross-reference's is
+  defined `KEYS(11,25) NONUNIQUEKEY UPGRADE` with the same path construction
+  [app/jcl/XREFFILE.jcl:L72-L77, L90-L92]. `NONUNIQUEKEY` is the operative word: one alternate key admits
+  many base records, and a read through the path returns them in ascending **base-cluster-key** order. The
+  base key is the card number in both cases — `KEYS(16 0)` [app/jcl/CARDFILE.jcl:L54]
+  [app/jcl/XREFFILE.jcl:L43].
+- The administrative user list holds ten rows, `02 USER-REC OCCURS 10 TIMES`
+  [app/cbl/COUSR00C.cbl:L57]. Having filled them, the program performs **one further** `READNEXT` and sets
+  `NEXT-PAGE-YES` if it succeeds or `NEXT-PAGE-NO` if it reaches end of file
+  [app/cbl/COUSR00C.cbl:L311-L318]. It then displays `CDEMO-CU00-PAGE-NUM`
+  [app/cbl/COUSR00C.cbl:L327] — a counter it increments and decrements as the operator moves
+  [app/cbl/COUSR00C.cbl:L309-L310, L320]. One row of lookahead, and a running ordinal. There is no total
+  anywhere: the program computes none, the map has no field for one, and no arithmetic in the member needs
+  one.
+- The highest-key read is `MOVE HIGH-VALUES TO TRAN-ID`, then `STARTBR`, then exactly one `READPREV`, then
+  `ENDBR` [app/cbl/COTRN02C.cbl:L444-L446], repeated verbatim for the copy-last function
+  [app/cbl/COTRN02C.cbl:L475-L477]. On `DFHRESP(ENDFILE)` it moves zeros into the key and raises no error
+  [app/cbl/COTRN02C.cbl:L689], which is what makes the first identifier on an empty master
+  `0000000000000001`. One record, and an empty result that is a value rather than a fault.
+
+**Decision.** Four changes, one per surface.
+
+- `CardRepository.findByCardAcctId(String)` becomes
+  `findByCardAcctIdOrderByCardNumAsc(String, Limit)`, and
+  `CardCrossReferenceRepository.findByXrefAcctId(String)` becomes
+  `findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)`. Each now takes a required bound and declares the
+  ordering its access path produces.
+- `UserSecurityRepository.findAllProjectedBy(Pageable)` returns a `Slice` rather than a `Page`.
+- `TransactionRepository` gains `findFirstByOrderByTranIdDesc()`, and `TransactionAddService` reads the
+  highest key through it rather than through a descending page of size one.
+
+**Why the bound is required rather than optional.** Nothing in the schema bounds how many cards an account
+may own. The delivered seed pairs one card to one account, which is precisely the shape that would never
+reveal the absence of a bound: every call returns one row, and it would keep returning one row until a
+production account acquired a second card. An unbounded finder over a non-unique index is a full read of one
+account's cards with no ceiling, and the only defensible ceiling is the caller's, so the caller must state
+it. Making the parameter required rather than nullable is the difference between a bound and a suggestion.
+
+**Why the order is the access path's rather than the caller's.** An earlier revision declared no ordering on
+either finder, reasoning that a caller which depends on sequence should sort what it receives. That reasoning
+does not survive the addition of a bound: "the first *n* rows" has no referent at all unless the sequence is
+fixed, so a bound over an unordered read returns an arbitrary subset — a worse contract than the unbounded
+read it replaced, because it is now silently lossy. The order was also never the caller's to choose: it is
+the path's, and the sibling first-match finders on both repositories already declared it. The pair now
+describes one path at two depths instead of one declaring its order while the other disclaimed it.
+
+**Why a slice rather than a page.** A page carries a total row count, and a provider produces that count with
+a second statement — an aggregate over the whole table, issued on every turn of the screen. Nothing reads it.
+The legacy member's forward-page logic needs exactly one bit beyond the ten rows, which is whether an
+eleventh exists, and that is what a slice's `hasNext` is. The count was therefore not merely unused; it was
+unrepresentable in the screen it serves. Returning a slice makes it unrequested rather than requested and
+discarded, and — because a slice cannot carry a total — makes it impossible for a later caller to
+reintroduce the cost by reaching for one.
+
+**Why a single-row read rather than a page of size one.** The descending page of one returned the right
+record. It also counted every row of the transaction master to populate a total that the bill-payment and
+add-transaction paths never touch, on a screen that displays a single identifier. The cost grows with the
+table and is paid on every add and every copy-last. `findFirstByOrderByTranIdDesc` states the bound in its
+own name, so there is no total to discard, and its `Optional` empty case is the `ENDFILE` arm that seeds
+zero. `findMaxId()` is retained beside it: it answers the same question with the identifier alone and is
+used where only the number is wanted.
+
+**Neither alternate-key finder has a production caller today, and the documentation now says so.** Both were
+documented as though a service reached the index through them. The bounded browse of the card-list screen
+reads through a keyset path of its own, and the cross-reference is resolved by identity elsewhere. The
+finders are nonetheless retained rather than deleted, because the plan's data-layer design requires the two
+card-side alternate indexes to be reachable as derived finders alongside the one date-range query
+[§0.7.4], and because both are exercised as the specification of the two paths. What changed is that a
+reader is no longer told a caller exists.
+
+**What deliberately did not change.**
+
+- The page size of the administrative user list is still ten, and the backward fill still populates row ten
+  down to row one.
+- The transaction identifier is still the highest existing key plus one, computed inside the caller's unit of
+  work. No database sequence was introduced, and none may be: a sequence diverges permanently after the
+  first rolled-back turn.
+- Both alternate indexes retain their B-tree definitions in the schema. The change is to the finders'
+  contracts, not to the access paths beneath them.
+- No pool, fetch-size or plan setting was tuned. Every figure below is a statement count, which is a
+  property of the shape rather than of a configured environment.
+
+**Evidence.** Statement counts are measured at the server, by enabling the provider's own statistics on the
+one context that needs them and reading the prepared-statement count across a cleared boundary.
+
+- `repository/TransactionRepositoryIT` asserts the highest-key read issues **exactly one** statement, and —
+  in the same specification — that the descending page of size one it replaced issues **exactly two**. The
+  pair is the point: were the two figures equal the specification would be vacuous and the finder could be
+  reverted without any test noticing. It further asserts the finder agrees with `findMaxId()` on a populated
+  master and returns empty on an empty one, which is the arm that seeds zero.
+- `repository/UserSecurityRepositoryIT` asserts the window issues exactly one statement, and that a second
+  window in the opposite direction costs the same one, so the figure is the shape's rather than an artefact
+  of the first read. A separate specification reads the declared return type and requires it to be the slice
+  **exactly** — noting that an assertion of mere assignability would have been satisfied by the paged shape
+  this finder used to declare, and so would have discriminated nothing.
+- `repository/CardRepositoryIT` and `repository/CardCrossReferenceRepositoryIT` each assert, over a fixture
+  holding several cards under one account, that the rows arrive in ascending card-number order, that a bound
+  smaller than the available rows returns the **lowest** of them, that a bound of one agrees with the
+  first-match finder, and that a bound larger than the available rows returns them all — so the bound
+  truncates and never filters. Each also reads the declared signature and requires the bound parameter and
+  the ordering suffix to be present, so neither can be quietly widened again.
+- `service/TransactionAddServiceTest` states the same property at the unit tier: the single-row finder is
+  called, no paged read and no `findMaxId` is consulted, and the finder's declared shape carries neither a
+  total nor a parameter through which one could be requested.
+
+*Embodied in:* `repository/CardRepository.java`, `repository/CardCrossReferenceRepository.java`,
+`repository/UserSecurityRepository.java`, `repository/TransactionRepository.java`,
+`service/TransactionAddService.java`.
+
+---
+
+### DL-297 — A fixed-width value crosses the screen boundary at its record width, and every key part states its width rather than a ceiling
+
+**Context.** Three related defects, one cause. A bounded variable-length column and a maximum-length
+constraint both state a ceiling, and a ceiling is not the contract a fixed-width record field has. Where
+the ceiling was the only rule, three different things went wrong at once: a short key was stored and
+silently resolved the wrong row, an unbounded value reached a bounded column and failed at the persistence
+boundary, and five tables' key parts had no width rule at all.
+
+**The authorities, read literally.**
+
+- `ACCT-GROUP-ID PIC X(10)` [app/cpy/CVACT01Y.cpy:L16] and `DIS-ACCT-GROUP-ID PIC X(10)`
+  [app/cpy/CVTRA02Y.cpy:L6]. The reference data carries the padding inside that width: the three seeded
+  group keys are `A000000000`, `DEFAULT` followed by three spaces, and `ZEROAPR` followed by three spaces,
+  and all fifty seeded accounts carry ten spaces. The screen item is `AADDGRPI PIC X(10)`
+  [app/cpy-bms/COACTUP.CPY:L150], and the program moves it through two further `PIC X(10)` items
+  [app/cbl/COACTUPC.cbl:L1217, L4002] before it reaches the record. Every hop is a ten-to-ten byte copy,
+  and an alphanumeric `MOVE` of a shorter source into a `PIC X(n)` item space-pads it on the right.
+- `CUST-MIDDLE-NAME PIC X(25)` and `CUST-ADDR-LINE-2 PIC X(50)` [app/cpy/CVCUS01Y.cpy]. The source states
+  in place that neither is edited — *"no edits coded"* [app/cbl/COACTUPC.cbl:L3346] and *"NO EDITS CODED AS
+  YET"* [L3370] — so no constraint may be attached to either.
+- `app/jcl/PRTCATBL.jcl` declares the sort typing of the category-balance key:
+  `TRANCAT-ACCT-ID,1,11,ZD`, `TRANCAT-TYPE-CD,12,2,CH`, `TRANCAT-CD,14,4,ZD`. `ZD` is zoned decimal, whose
+  sign folds into the **final byte**, so a legitimately signed value's last character is a brace or a
+  letter rather than a digit.
+
+**Decision, in three parts.**
+
+*The group identifier crosses at exactly ten characters.* `AccountUpdateService` moves it through a helper
+that reproduces the alphanumeric `MOVE`: left-justified, space-padded when shorter, truncated when longer.
+`Account` then requires exactly ten before the write, and `V1__create_schema.sql` carries
+`ck_account_acct_group_id_width` so the rule holds however a row arrives.
+
+*The two unedited fields are truncated at their record widths and never refused.* A second helper
+truncates and deliberately does **not** pad.
+
+*Every key part of the five tables that had only a ceiling now states its width.* Fourteen new check
+constraints, mirrored by the entities' own pre-write rules, two of which — `TransactionType` and
+`TransactionCategory` — had no pre-write callback at all before this entry.
+
+**Why the group identifier is the critical one, and why nothing else would have caught it.** It is the only
+column on the account table that is not a key *there* and is a key *somewhere else*. Being a nonunique
+leading part of the disclosure key, it cannot be a foreign key, so no referential rule sees it. And a short
+value does not fail — it resolves. `ZEROAPR` matches no disclosure row, so the rate lookup takes its
+documented not-found fallback to the default group, and an account whose own group carries a **zero** rate
+accrues at the default group's **fifteen percent**. Nothing raises, nothing logs an error, and the wrong
+money is charged. `DisclosureRateLookupReachabilityIT` now states that consequence as three probes side by
+side: the seven-character spelling resolves nothing, the ten-character spelling resolves to `0.00`, and the
+fallback the miss lands on charges `15.00`.
+
+**Why the two unedited fields are truncated rather than refused, and why they are not padded.** Refusing is
+the one outcome the source forbids for them, and letting an arbitrary length reach a `VARCHAR(25)` produces
+a refusal anyway — just at the persistence boundary rather than at the validator, as a failed turn instead
+of a field error. Truncation is what the `MOVE` into their items does with a longer source and what the
+terminal itself did by being unable to accept a further character. They are not padded because neither is a
+key, no lookup composes either of them, and every non-key text column in this module stores its natural
+length and is padded to the record width by its own mapper on the way out — which is what keeps the
+500-byte customer image byte-identical either way. Padding here would only make an updated row's screen echo
+differ from a seeded row's.
+
+**Why the widths are widths and not digit classes, even where the picture clause is numeric.** This is the
+part of the decision that a reasonable reading of the requirement would have got wrong. Four of the new
+constraints sit on fields whose picture clause is `PIC 9(nn)`, and a digit class on any of them would have
+been a defect rather than a tightening:
+
+- The category-balance key's own sort specification declares two of its three parts `ZD`. The
+  category-balance report's comparator therefore decodes them to signed values rather than comparing them
+  as text, and the report's ordering fixture is built from a category code of `000J` — minus one — precisely
+  to prove that a numeric reading is performed where the specification says so and a character reading where
+  it says `CH`. A digit class would refuse the value that specification is declared to compare.
+- The disclosure key and the transaction-category key are looked up **with** those values, so refusing a
+  signed form there would not make such a row invalid — it would make it permanently unmatchable, which
+  sends the rate lookup to its fallback and is the same class of silent defect this entry exists to close.
+- The landing table is the raw surface for the sequential daily input, where content is judged by the
+  posting job and answered with a reject reason code. A non-numeric category is content.
+
+The digit rule is therefore kept where digits are genuinely required and already enforced: on the account,
+customer and cross-reference identifiers, and on the transaction identifier whose max-plus-one allocation is
+only correct across sixteen zero-padded digits. `SchemaConstraintNegativeProofIT` states the distinction
+both ways — every one of the fourteen new constraints is named `_width`, and an overpunched `000J` is
+asserted to be **accepted** at the right width on both the landing table and the category-balance key.
+
+**Why the landing table's new constraints are not a content rule in disguise.** Its own specification
+already said its checks must be about the record image and not its content, because a landed row that cannot
+be re-encoded to 350 bytes cannot be reported either — the reject dataset, not merely the posting, would
+fail on it. A width is an image property: every field sliced from a valid 350-byte image already has it, so
+no record the sequential reader can produce is refused, while a hand-assembled row or a bulk load with a
+short value is. `DailyTransactionRepositoryIT` now makes the content-freedom assertion over **every** check
+definition on that table rather than over one named one, so a pattern match, a value list or a literal added
+later cannot hide beside them.
+
+**What deliberately did not change.**
+
+- No constraint of any kind was added to the middle name or the second address line, in the request record,
+  the controller, the service or the schema. The request record's two intentionally unannotated components
+  are untouched.
+- The disclosure-group fallback on a not-found status is unchanged. What changed is that a padded key now
+  reaches its own row, so the fallback fires when the legacy's would have and not otherwise.
+- No foreign key was added from the account's group identifier to the disclosure table. The leading part
+  alone is nonunique there, so promoting it would fabricate a constraint the source never had.
+- The pre-write rules refuse and never repair, exactly as they did before. The padding lives at the screen
+  seam, which is where the legacy `MOVE` lived; the entity is where a value of the wrong width is refused.
+
+**Evidence.**
+
+- `service/AccountUpdateServiceTest` gains a group-identifier group: a seven-character value is stored as
+  ten and is asserted **not** to equal its unpadded spelling; a ten-character value crosses byte for byte;
+  an eleven-character value is truncated; and the all-space value every seeded account carries survives as
+  ten spaces, so the rule cannot be mistaken for a trim or a default.
+- The same class gains two specifications for the unedited fields: a forty-character middle name and a
+  hundred-and-twenty-character second address line are both stored truncated with the turn **not** in error
+  and no per-field error composed against either, and a value at or below the width crosses unchanged and
+  unpadded.
+- `repository/SchemaConstraintNegativeProofIT` gains a group covering all fourteen constraints by refusal,
+  the two acceptance cases above, and an existence assertion over the fourteen names.
+- `domain/DisclosureRateLookupReachabilityIT` states the financial consequence of the unpadded spelling and
+  then asserts the schema refuses it outright.
+- `repository/DailyTransactionRepositoryIT` asserts the landing table's five checks by name and that not one
+  of the five carries a pattern, a value list or a literal.
+
+*Embodied in:* `service/AccountUpdateService.java`, `domain/Account.java`, `domain/DailyTransaction.java`,
+`domain/DisclosureGroup.java`, `domain/TransactionCategoryBalance.java`, `domain/TransactionType.java`,
+`domain/TransactionCategory.java`, `resources/db/migration/schema/V1__create_schema.sql`.
+
+---
+
+### DL-298 — The seeds are held out of production by the location list alone, and the version pin is withdrawn because it also froze the schema
+
+**This entry re-supersedes DL-102, DL-108, DL-111, DL-116, DL-119 and DL-127-as-corrected.** The
+delivered arrangement is the profile-scoped location split those entries reached for twice, withdrew
+twice, restored once and then withdrew again. It is recorded here for the third and final time with a
+reason none of them had, and the reason is not a re-reading of the plan: **the version pin was not an
+equivalent control, it was a defective one.**
+
+**What is delivered.** Four scripts in two sibling locations, with their shared parent holding no script
+at all:
+
+- `classpath:db/migration/schema` — `V1__create_schema.sql`, `V2__create_indexes.sql`. Resolved by every
+  profile, production included.
+- `classpath:db/migration/seed` — `V3__seed_reference_data.sql`, `V4__seed_user_security.sql`. Resolved
+  by the local and test profiles only.
+- `classpath:db/migration` — the shared parent. Holds no script and is **refused as a location under
+  every profile**, production and non-production alike.
+
+Every profile declares `spring.flyway.target: latest`. **No profile declares a version, and production
+refuses one.** `FlywayConfig.resolveLocations` refuses any production list that is not exactly the schema
+location, character for character after trimming; `FlywayConfig.resolveTarget` refuses any numeric
+production ceiling whatever its value and returns `latest`; and `FlywayConfig.requireNoSharedParent`
+refuses the parent before the profile is even examined, because the reason it is refused is not a
+profile's.
+
+**The decisive argument, which is new.** The withdrawn control was `spring.flyway.target=2`, a numeric
+ceiling. DL-127's correction, and DL-111 and DL-116 before it, treated it as an equivalent mechanism
+chosen for a good reason — the recursion premise below — and therefore as a fair substitute for the
+plan's named structural decision. It was not equivalent. A ceiling excludes by **arithmetic**, and
+arithmetic does not distinguish a script that must never be applied from a script that has not been
+written yet:
+
+- The day a `V5` schema migration shipped, a production deployment would have applied nothing above the
+  pin **and reported the migration successful**. The deployment would come up on an incomplete schema,
+  and no log line, no exit code and no validation failure would say so — Flyway treats an unapplied
+  version above the target as an ordinary `ABOVE_TARGET` state, not an error.
+- The pin could not be raised to let `V5` through, because `resolveTarget` refused every value except
+  `2`. Shipping a fifth schema script therefore required editing the application class, which is exactly
+  the coupling a migration tool exists to remove.
+- So a single property was being used as a boundary that must never move **and** as the head of a
+  sequence that must keep growing. Those are opposite requirements, and no single number satisfies both.
+
+Nothing about the directory arrangement causes that defect, and the location list has no equivalent of
+it: a location a profile never lists is not a value an operator can widen, and it places no ceiling on
+any future version. `SeedMigrationIT.aFutureSchemaMigrationAppliesUnderTheProductionScope` is the
+measurement — it writes a real `V5` schema script, applies it against PostgreSQL 16 under the delivered
+posture and finds it applied with the eleven application tables still empty, then applies the identical
+configuration under the withdrawn pin of `2` and finds the table it creates absent.
+
+**The recursion premise is retained, and it is why the parent must stay empty.** Every one of the
+superseded entries rests on one true observation, quoted here rather than paraphrased because it is the
+reason the delivered layout looks as it does: a Flyway location is scanned **recursively**, so while any
+script sits directly in the shared parent, no location list can separate the seeds from the schema, and a
+deployment resolving the parent applies the whole ascending sequence whatever folder each script came
+from. Verified again here — resolving `classpath:db/migration` reports all four scripts, and reports them
+under *different* script names (`schema/V1__create_schema.sql` rather than `V1__create_schema.sql`), so
+the parent is not merely permissive: it writes a different history, and the compose bring-up check reads
+those names out of the history table.
+
+**What the premise actually supports is that the schema scripts move down too, which is what both
+withdrawals got wrong.** DL-108 and DL-116 each moved only the seeds and left `V1` and `V2` in the
+parent. The parent therefore stayed a real migration source, the boundary stayed notional, and
+abandoning the mechanism looked like the honest conclusion. It was the wrong conclusion drawn from a
+correct premise. With the parent empty the recursion has nothing to cross, and the delivered refusal of
+the parent closes the one remaining way to re-open it.
+
+**What is stronger than what it replaced, stated as measurements rather than as claims.**
+
+- Under the pin, a production-shaped run **resolved all four scripts** and reported the two seeds
+  `ABOVE_TARGET`. The tool held a pending instruction to apply fifty synthetic customer rows of regulated
+  identity data and ten known sign-on identities, and one property release would have executed it. Under
+  the delivered list the two seed versions appear in **no state at all** — not applied, not pending, not
+  above target, not resolved. `SeedMigrationIT.theTwoSeedsAreNotResolvedAtAll` asserts their absence from
+  the migration state rather than their withheld-ness in it.
+- The exclusion no longer depends on how a seed is **numbered**. Renumbering a seed to `V1_5` defeated
+  the pin outright; it does not touch the location list.
+- The two halves make each other possible, and that is why the target could be opened at all: `latest`
+  is safe under production **because** the seed location is absent. Neither change is sound alone.
+
+**What was reconciled, stated plainly because the tension is real.** The specifications for `V3` and
+`V4` each say in terms that no subdirectory be created, each fixes its script's delivered path in the
+parent, and each names `spring.flyway.target=2` as the production control while permitting "equivalent
+version-aware or filename-aware filtering". Three things bear on that. The file **names** are unchanged,
+which is the constraint both specifications state as load-bearing — Flyway records a script name relative
+to its location, so a child listing reproduces exactly the names the flat layout produced, and the
+bring-up check still reads `V1__create_schema.sql`. Both directories remain inside the plan's own
+delivery pattern for this module, `carddemo-java/src/main/resources/db/migration/**.sql`, whose `**`
+anticipates nesting. And the permitted "equivalent" filtering is permitted on the premise that it is
+equivalent; the argument above is that this particular filter was not, so the permission does not reach
+it. What could not be preserved is the subdirectory prohibition itself, because it and AAP §0.3.1's
+profile-scoped-location decision cannot both hold — the prohibition exists only to explain why the
+location mechanism was thought unimplementable, and moving the schema scripts down removes that reason.
+
+**Status of each superseded entry.**
+
+- **DL-102**, **DL-111**, **DL-116** and **DL-119** are superseded. Their recursion premise is retained
+  and quoted in the delivered comments; only their conclusion is reversed, and the reversal now rests on
+  the pin's own defect rather than on a reading of the plan.
+- **DL-108** remains superseded rather than reinstated: it moved the seeds to `db/seed`, outside the
+  module's delivery pattern, where this entry keeps both halves inside `db/migration`.
+- **DL-127** is superseded **as corrected**. Its body — the split, the empty parent, the sibling
+  locations — is what is delivered; its correction banner, which reverted to the flat layout and the pin,
+  is what this entry withdraws. Its "the version ceiling is retained, and it is retained deliberately"
+  paragraph is specifically withdrawn: the two controls are not belt and braces, because one of them
+  constrains the schema sequence and the other does not.
+- One consequence worth naming for a reader following DL-127's citation list: the five paths that entry
+  reports as unresolvable — the two `db/migration/schema/` scripts and the two `db/migration/seed/`
+  scripts — **resolve again** under this entry. Its `db/migration/.gitkeep` does not; the parent is left
+  empty by holding two directories rather than a marker file.
+
+**What deliberately did not change.** The four file names and their versions. The eleven application
+tables and their checksums. `ProductionSeedRejectionCallback`, which is the second control and the only
+one that inspects the **database** rather than this process's configuration — it still refuses a
+production start against a database seeded before this run existed, and `FIRST_SEED_VERSION` still names
+version 3, which `FlywayConfigTest.theTwoControlsAgreeAboutWhereTheSeedsBegin` now checks against the
+versions the seed location actually carries rather than against a second constant.
+`SeededIdentifierSealingCallback` is untouched. The migration-source guard still refuses a production
+start-up that has not stated `spring.flyway.enabled=true`, because a control one property can switch off
+is not a control. And the seed migrations remain numbered above every schema migration: Flyway orders by
+version across every resolved location rather than by location, so the two directories only compose into
+a correct apply order while every seed sits above every schema script.
+
+*Cited by:* `config/FlywayConfig.java`, `resources/application.yml`, `resources/application-local.yml`,
+`resources/application-test.yml`, `resources/application-prod.yml`,
+`src/test/resources/application-test.yml`, `domain/TransactionType.java`, `domain/UserSecurity.java`,
+`repository/TransactionTypeRepository.java`, `support/AbstractPostgresIT.java`,
+`config/FlywayConfigTest.java`, `config/FlywayConfigCoverageTest.java`,
+`config/ConfigurationProfileBaselineTest.java`, `config/ApplicationProfileStartupTest.java`,
+`config/ProductionMigrationSourceGuardTest.java`, `config/SeedMigrationIT.java`,
+`config/ProductionSeedRejectionCallbackIT.java`.
+
+*Embodied in:* `resources/db/migration/schema/V1__create_schema.sql`,
+`resources/db/migration/schema/V2__create_indexes.sql`,
+`resources/db/migration/seed/V3__seed_reference_data.sql`,
+`resources/db/migration/seed/V4__seed_user_security.sql`.
+
+---
+
+### DL-299 — The identifier of a marked row is re-read from the store, because a request body is not the trusted terminal echo the legacy relied on
+
+**This entry supersedes the list-continuation portion of DL-237.** That entry's identity decision and
+its entered-versus-persisted amount decision are unaffected and still stand; indeed the identity
+decision is what this entry relies on rather than duplicating. What is withdrawn is the inbound
+continuation shape it describes — the eight-field record carrying the ten displayed identifiers — and
+the premise underneath it, that a bounded and validated identifier list submitted by a caller is a safe
+substitute for the map echo the legacy read. Bounding a value constrains its size; it does not make the
+caller's claim about it true.
+
+**The legacy behaviour.** `app/cbl/COTRN00C.cbl` pairs each of the ten screen selector positions with the
+transaction identifier displayed beside it. The ten clauses at lines 151-178 each move the typed selector
+byte into the conversation's selection flag and, in the same clause, move the identifier **read back from
+the map's input group** into the conversation's selected-identifier field; the catch-all at lines 180-181
+blanks both; and the dispatch at lines 183-184 transfers only when both are present and neither is
+low-values. The identifier the next screen acts on is therefore whatever the terminal sent back.
+
+Nothing about that is careless on the mainframe. The other browse state — the two boundary keys, the page
+number and the further-page flag at lines 62-70 — is carried in the program's own extension of
+`CARDDEMO-COMMAREA` and is never written to a map field, so it never leaves the region. The identifier is
+the single exception, and it is safe there because a 3270 map echo is a channel the terminal controls
+under CICS, not one the operator composes.
+
+**Why the translation cannot keep that shape.** A REST request body is composed by the caller. Carrying
+the ten displayed identifiers inbound and acting on the one beside the mark would let any authenticated
+caller name a row that was never on any page it was shown, and the server would have no way to tell that
+submission from an honest one. The prior revision did exactly this, through a nested continuation object
+that also carried its own paging arithmetic — which broke the request contract's frozen component set as
+a second consequence.
+
+**What is delivered.** Two changes, and the first is the reason the second is possible.
+
+- `TransactionListRequest` is restored to its frozen six components: the optional sixteen-character
+  transaction-identifier filter, the eight-character page label (publish-only, bound
+  `@JsonProperty(access = READ_ONLY)` so a submitted value is discarded), the ten one-byte positional
+  selectors, the attention key, the echoed `NavigationContext` and the echoed
+  `PageMetadata.PageCursorRequest`. The nested continuation record and its paging arithmetic are gone,
+  and `TransactionListResponse` loses the same component. **No component of the contract is wide enough
+  to name a row**: the one collection is the selector sequence at one byte per element, and the one
+  sixteen-wide value is the browse position — an operator input on the legacy screen too, which says
+  where to start reading and never which row to act on.
+- `TransactionListService.reReadDisplayedIdentifier` establishes the identifier itself. On a turn that
+  marks a row — and only on such a turn — it issues one bounded read of at most ten rows against the page
+  the echoed cursor names, and takes the identifier from the slot that was marked.
+
+**How the read reproduces the page, and why the direction decides it.** The cursor carries both boundary
+keys and the direction the page being resubmitted was assembled in. That direction is read for this one
+purpose; it never decides which way the current turn travels, which is taken from the attention key.
+
+- A page assembled **forward** fills upward from the first slot, so its `previousCursorKey` is the
+  identifier in slot one. The re-read is ascending and inclusive from that key, and slot *n* is the
+  *n*-th row read.
+- A page assembled **backward** fills downward from the tenth slot — the reverse fill at
+  `app/cbl/COTRN00C.cbl` line 349 seeds its row index with ten and decrements — so its `nextCursorKey` is
+  the identifier in slot ten. The re-read is descending and inclusive from that key, and slot *n* is the
+  (ten minus *n*)-th row read.
+
+The distinction is load-bearing rather than decorative, and a **short** backward page is what proves it. A
+four-row backward page occupies slots seven to ten and reports a `previousCursorKey` that is not on the
+page at all — it is the key the browse repositioned on, which the backward guard consumed. An ascending
+read from that key would resolve the wrong row for every one of the four slots. The descending read from
+the tenth slot's key resolves each of them correctly, and a mark on a slot the reverse fill never reached
+resolves nothing.
+
+**What the change is worth, stated without overclaiming.** For an honest client the behaviour is
+identical: the row it marked is the row that is acted on. What changes is what a dishonest one achieves,
+and the honest answer is *nothing beyond what it already had*:
+
+- A **cursor altered by one byte** names a different position. The identifier handed off is then whatever
+  the store holds at that position — demonstrably not the key the caller named, because a cursor naming an
+  absent key resolves to the next key that exists.
+- A **cursor the server never issued** reaches exactly the row the `transactionIdFilter` reaches, and that
+  filter is an unrestricted operator input in the legacy screen and in this contract alike. It is not an
+  escalation.
+- A **replayed cursor** resolves whatever occupies that position now. No page is remembered between turns,
+  which is what makes the service stateless and the endpoint idempotent.
+- A **full identifier typed into a selector position** is refused: the position is one byte wide, and the
+  service treats a non-`S` mark as an unsupported row action exactly as the legacy does.
+
+So the property gained is narrow and precise: **a caller can choose where to look, and cannot choose what
+the server believes it looked at.** That is the same family of labelled improvement as hashing the
+credential the legacy compared in the clear — AAP §0.1.1 — and it is recorded here rather than presented
+as parity.
+
+**Why no principal-bound token was added.** Binding the cursor to the authenticated caller was considered
+and rejected as unnecessary. `ScreenStateAdapter.toNavigationState` already overwrites the two identity
+members of the echoed conversation state from the authenticated principal on the way in, so a submission
+cannot present another caller's identity whatever it echoes. Legacy `CT00` scopes a browse to no user at
+all — every signed-on operator browses the same cluster from any position — so scoping a cursor to a
+principal would restrict behaviour the legacy permits, which is feature change in the other direction.
+
+**What was deliberately not done.** The page size stays at ten and comes from the loop bounds at
+`app/cbl/COTRN00C.cbl` lines 290 and 297, not from a shared constant. The forward ascending fill and the
+backward descending fill are unchanged, including the bottom alignment of a short backward page. The
+re-read is issued **lazily**, only on a turn that marked a row, so a plain paging turn issues exactly the
+reads it issued before.
+
+*Embodied in:* `api/dto/TransactionListRequest.java`, `api/dto/TransactionListResponse.java`,
+`api/TransactionController.java`, `service/TransactionListService.java`.
+
+---
+
+### DL-300 — The withheld-rewrite outcome publishes its reason and two counters, not the amount, and the amount is not passed to the method that logs it
+
+**What the line is, and what it is not.** `InterestCalculationService.withholdAccountRewrite` reports the
+one outcome the interest run reaches silently: the final account group's balance is never posted, because
+the end-of-file control break at `app/cbl/CBACT04C.cbl` lines 219 to 221 is the unreachable `ELSE` arm of
+the read loop at line 188. DL-207 records that behaviour and why it is reproduced rather than corrected.
+
+The important fact about the log line is its provenance. **The legacy has no `DISPLAY` in that arm at
+all** — the arm contains a single `PERFORM` and nothing else — so the line is not a translation of a
+legacy diagnostic. It exists only because a Java service that silently declines to post a balance is
+harder to operate than a COBOL program whose listing shows the arm is dead. It is a target-added
+diagnostic, and everything it publishes is a target-made choice with no parity claim attached to it.
+
+**What was wrong.** The line published the group's exact withheld interest at `INFO`, beside a stable
+per-run reference to the account. Each half is defensible alone and the combination is not: the reference
+is a redaction marker plus a correlation token, so it is not the account key, but it is stable enough
+within a run to gather every line about one account together — and once gathered, an exact monetary figure
+beside it is one customer's accrued interest sitting in the ordinary operational log, at the level that is
+on by default in production. No parity argument offsets this, because as established above the legacy
+published nothing here to be faithful to.
+
+**What is delivered.** The reason and two counters, and no amount:
+
+- the outcome and its reason, that the control break is unreachable so the update paragraph does not run
+  for the final group, and that the balance and both cycle accumulators are left exactly as read;
+- `interestAccrued` — whether the group's running total was non-zero;
+- `recordsWritten` — how many interest records the group handed to the writer before the break;
+- the account named by `SensitiveLogRedactor.redact`, which is the module-wide convention and yields a
+  marker plus a correlation token rather than the eleven-digit key.
+
+The two counters carry the whole diagnostic value the amount was there for. What an operator acts on is the
+distinction between a group that accrued nothing and lost nothing and a group whose real accrual was
+dropped, and `interestAccrued` states exactly that. The withheld total is still returned to the caller in
+the group result, because that is data the run accounts for rather than a diagnostic.
+
+**The structural part of the decision, which is the part worth copying.** The amount is **not a parameter
+of the method that logs**. `withholdAccountRewrite` takes a `boolean` and an `int`, and the caller reduces
+`group.totalInterest()` to a sign test at the call site. Redacting a value at the log statement would have
+been equivalent today and fragile tomorrow, because the figure would still be in scope for a later edit to
+interpolate. Passing the control fact instead of the value means the disclosure cannot be reintroduced by
+accident: there is nothing there to log.
+
+**How it is held.** `InterestCalculationServiceTest.theWithheldRewriteIsReportedWithoutAMonetaryAmountOrARawIdentifier`
+captures the run's log events, isolates the ones at `INFO`, and requires the outcome line to carry the
+reason and both counters while containing none of the group's monetary values, no two-decimal figure of any
+shape, and no account key — and requires the same of every other `INFO` line the run emits. Both halves of
+the assertion were confirmed to have teeth by deliberate mutation: reintroducing a two-decimal figure in
+the message fails three of its assertions, and replacing the redacted reference with the raw account key
+fails two.
+
+**Scope, stated so the entry is not read as broader than it is.** This is the only site in
+`src/main/java` that published a monetary value through a logger. The peer diagnostics in the same service
+that name an account do so at `DEBUG` and already use the same redaction, and the estate's one legacy
+record-level `DISPLAY` at `app/cbl/CBACT04C.cbl` line 193 is a different site in the read loop and is not
+changed by this entry.
+
+*Embodied in:* `service/InterestCalculationService.java`.
+
+---
+
+### DL-301 — Every provider call carries an explicit total and per-attempt budget, and every retry strategy is pinned rather than inherited from the host
+
+**Context.** `DL-095` records why one card write is one attempt: the legacy transient-data-queue write was
+performed once, and a client that reissued it could turn a failure the writing program reported into a
+success it never had. That entry deliberately set *no* figure — the absence of a retry was the whole of the
+statement — and `AwsConfig` said so, in terms: "no attempt count, no backoff interval, no time-out, no pool
+size and no queue capacity is set anywhere in this class."
+
+**The gap that leaves.** An attempt count bounds how many times a call is made. It bounds nothing about how
+long one call may take, and the transport's inactivity time-outs do not close the difference: a peer that
+answers one byte at a time, or that accepts a connection and then answers nothing further while keeping the
+socket alive, is never inactive, so nothing abandons it. Unbounded, that is not a slow call — it is a lost
+thread, and each of the three clients loses a different one.
+
+- A **card publish** runs on the report-request thread *inside* the deployment-wide submission guard, so a
+  hung publish holds a request thread and a database transaction holding the advisory lock that every other
+  replica's submission waits behind.
+- An **object-store call** runs inside the generation publication lock, so a hung upload pins one connection
+  and blocks every later publication of that base.
+- A **notification** runs on the single-slot notifier, so a hung publish stops every job-completion notice
+  after it.
+
+A second gap sat beside it. Only the queue's strategy was pinned. For the other two, "the default" is not a
+default at all: `AWS_RETRY_MODE`, the matching system property and the shared configuration file each select
+a mode, and none of them is visible to this application — so the number of attempts an object-store or
+notification call made was a property of the host, and could change without any change here.
+
+**Decision.** Each of the three clients is given an explicit total budget, an explicit per-attempt budget
+and a pinned retry strategy, applied on one shared path so that omitting one is not possible and the three
+sets of figures are comparable.
+
+| Client | Total | Per attempt | Attempts | Why |
+| --- | --- | --- | --- | --- |
+| object store | 2 minutes | 45 seconds | 3, fixed 200 ms delay without jitter, 500 ms when throttled | must admit a whole generation upload; its operations are the only ones safe to repeat |
+| queue | 10 seconds | 8 seconds | 1 | holds a request thread and the submission lock; one write is one attempt per `DL-095` |
+| notification | 10 seconds | 8 seconds | 1 | a retried publish the service already accepted delivers one job's completion notice twice |
+
+**Why the figures are ceilings and not targets.** They encode no expectation about latency, they are derived
+from no measurement, and they must not be read as a service level or "tuned" towards one. `docs/gate-evidence.md`
+Gate 3 is where measured figures live, and it records that no legacy baseline exists to compare against. What
+each figure answers is one question: how long may this call occupy the resource it holds before the caller is
+told it failed? On the queue path a budget expiring is reported exactly as a refusal is, so the legacy
+behaviour is *preserved* rather than altered — the operator learns the write did not happen, which is what the
+writing program's own error path did and what an unbounded wait denies them. The legacy estate bounded the
+same calls from outside the program, an online transaction under the region's transaction time-out and a batch
+step under the job's limit, so reproducing a bound is closer to the source than omitting one; what the source
+does not supply is the number, which is why the numbers are stated as ceilings with their reasoning rather
+than as parity claims.
+
+**Why the object store is the one client that retries.** Its operations can be repeated without changing
+their effect: a listing is read-only, a versioned delete names the exact version it removes, and an upload
+writes a key this module allocated one past the highest generation the base holds, so a second attempt can
+only overwrite the bytes the first attempt wrote. The schedule is jitter-free so that two runs of one failure
+behave identically and a test can assert the schedule rather than sample it. The notification client is
+pinned to a single attempt instead, because a duplicated completion notice is indistinguishable to a
+subscriber from a second run of the job, and the channel is documented non-fatal end to end — so declining to
+retry trades a duplicate for a loss in the direction the channel already trades it.
+
+**Consequence for the tests.** The nine figures are package-private rather than private, because a ceiling
+only the class can see is a ceiling nothing can hold it to: a test able to read the applied configuration but
+not the intended figure asserts only that *something* was set, which a wrong value satisfies as readily as
+the right one. `AwsConfigTest` requires each applied budget to equal its declared constant, requires every
+per-attempt budget to be positive and at or below its own total, requires the object store's pinned attempt
+ceiling and jitter-free delay, requires the notification client's single attempt, and requires a seeded
+advanced option to survive the customizer — which is what fails if the shared path is ever simplified into
+the configuration-replacing form. The test that previously asserted the *absence* of both budgets on the
+queue client now asserts their presence and their ordering; it had encoded the gap above as a contract.
+
+*Embodied in:* `src/main/java/com/carddemo/config/AwsConfig.java`.
+
+---
+
+### DL-302 — A production deployment proves its four cloud resources are its own, versioned and writable before it serves anything, and does so without asking the token service
+
+**Context.** Three checks already stood between a production deployment and the wrong resource, and all
+three judge *configuration*: `AwsProperties` refuses a malformed name and a queue without the
+first-in-first-out suffix; `ProductionConfigurationValidator` refuses a missing required variable, an
+endpoint redirection through any of its eight channels, and a queue destination that is not one this
+deployment could have meant; `AwsConfig` aims the three clients at the configured region and nowhere else.
+
+**The gap.** None of them establishes anything about the *resources*. A perfectly configured deployment
+can be pointed at a bucket in another account, at a queue somebody re-created without first-in-first-out
+ordering, at a topic that exists and is not this deployment's, or at all three with a credential that can
+read them and not write them — and every one of those states passes every check above. Two properties of
+this module make the consequences silent rather than obvious.
+
+- **Both outbound channels tolerate a failure by contract.** The queue reproduces `ERROROPTION(IGNORE)`:
+  a refused publish is logged and reported through a return value, never raised. The notification channel
+  is non-fatal by construction. So a read-only credential produces report requests that answer normally
+  and jobs that never run, and completion notices nobody receives — found by an operator wondering where
+  the output went, days later.
+- **Reachability is not ownership.** "Does this bucket exist" is answered YES by a bucket in an account
+  this deployment does not own, and the deployment then writes statements, reports and rejected records —
+  carrying account identifiers, card numbers and monetary balances — into it, reporting UP throughout.
+
+**Decision.** A new required production variable, `CARDDEMO_AWS_ACCOUNT_ID`, declares the account this
+deployment owns, and `AwsResourceTrustVerifier` establishes six properties before any bean that could
+publish is initialised. Anything unproven **stops the start**.
+
+| Property | Established by | Why it is load-bearing |
+| --- | --- | --- |
+| the staging bucket is owned by the declared account | `HeadBucket` carrying the expected owner | the object store compares the owning account **on the call** and refuses when it differs, so ownership is the provider's answer rather than this process's opinion |
+| the bucket carries object versioning | `GetBucketVersioning`, status enabled | versioning carries the retained-generation semantics of the legacy output datasets; without it the depths this module enforces retain nothing |
+| the credential can write and remove an object | one zero-length probe object, written then purged version by version | the only property here that cannot be read |
+| the job queue is owned by the declared account | the resolved queue identifier's account segment | the queue receives the eighty-column job-control cards of every submission |
+| the queue is first-in-first-out with content-based deduplication off | the queue's own attributes | append order survives only within a message group, and content-based deduplication would discard the byte-identical comment and delimiter cards and shorten the job stream to something a reader would accept |
+| the topic exists and is owned by the declared account | listing the topics, then an attribute read of the resolved one | a topic in another account receives this deployment's completion notices |
+
+**Why refusing to start, rather than reporting DOWN.** DOWN leaves the process running and its state
+ambiguous: an operator cannot tell a momentarily unreachable resource from one belonging to another
+account, and the second is not transient. Refusing is unambiguous, happens at deployment time where
+somebody is watching, and is the posture the configuration guard already takes for the same class of
+fault. The readiness indicators keep their narrower job — whether a resource is reachable *now*.
+
+**Why the write probe is shaped as it is.** One zero-length object under a reserved key that no job,
+reader, retention pass or generation allocation can see: an allocation lists its own logical base and the
+staging store composes `batch/jobs/...`, and the probe key is beneath neither. It is removed *version by
+version*, because an unqualified delete against a versioned bucket writes a delete marker and leaves every
+version fetchable — which would make the probe an artefact accumulating one copy per start rather than a
+probe. Removing it also proves the half of the capability that maintains generation depth and compensates a
+failed publication. No **resource** is created: no bucket, queue or topic is created here or anywhere in
+this module; an object is what this module writes as its ordinary function, and the probe writes one where
+nothing reads and takes it back.
+
+**Why the token service is not asked for the caller's own identity.** The obvious way to establish which
+account a deployment runs as is `sts:GetCallerIdentity`. It is deliberately not used, for two reasons, and
+the first is that it would be **weaker**. The expected-owner comparison above is performed by the object
+store on the call that is actually made, so it holds for that call rather than for a separate question
+asked once at start-up; and the queue and topic identifiers are compared against the same declared account,
+so a resource in another account is refused whatever the caller's identity turns out to be. The second is
+that the token-service module is not in the migration plan's pinned dependency inventory, and adding an SDK
+module for an assertion the three checks here already make would widen the supply-chain surface the
+vulnerability gate scans for no gain in assurance. This is recorded as a deliberate divergence from the
+review finding's literal suggestion rather than as an omission.
+
+**What is deliberately NOT proven, and is said so.** Publishing to the queue and to the topic. Proving it
+would require publishing, and a message on the job queue is an eighty-column job-control card a reader
+would act on while a message on the topic is a completion notice for a job that did not run — both
+indistinguishable from real traffic. The capability-evidence record this class logs therefore names what
+was proven **and** what was not, so a reader of the evidence is not left to assume the stronger claim.
+
+**Where the configured value is checked as well as the resolved one.**
+`ProductionConfigurationValidator.validateConfiguredResourceOwnership` refuses a configured queue or topic
+*locator* whose account is not the declared one, before a single bean is created — earlier than the
+verifier, which matters for a fault a deployer fixes by editing one variable. A **bare name is not
+checked, and that is not a gap**: a bare name carries no account, so the client resolves it against this
+deployment's own credentials and it cannot name another account's resource at all. Requiring a resource
+identifier instead — which is what "require exact identifiers" would mean — would be strictly weaker,
+because it would replace a value that cannot be cross-account with one that can and then check it.
+
+**Consequence for the diagnostics.** No refusal repeats the declared account, the offending account, the
+resource identifier or the owner the service reported. A deployer already has the value they configured,
+and a log record naming a resource in another account would put that resource's identity into this
+deployment's log. Every refusal names the property it could not establish and why that property matters.
+
+*Embodied in:* `src/main/java/com/carddemo/config/AwsResourceTrustVerifier.java`,
+`src/main/java/com/carddemo/config/ProductionConfigurationValidator.java`,
+`src/main/java/com/carddemo/util/AwsResourceNamingRules.java`,
+`src/main/resources/application-prod.yml`.
+
+---
+
+### DL-303 — A failed publication compensates every key it *attempted*, because the one outcome it cannot observe is the one that leaves an object behind
+
+**Context.** DL-180 fixed the commit boundary of the durable batch-artifact store: uploads and fixed-name
+alias replacements run as one compensated unit, and a publication that fails anywhere before the commit
+point restores every alias it advanced and removes every object it uploaded, so a job the boundary
+listener marks FAILED leaves nothing externally visible. DL-210 added the generation-number allocation that
+reads the base before the first upload, and DL-211 made every compensating removal version-qualified,
+because against a versioned bucket an unqualified delete is not a delete.
+
+**The gap.** The set that was compensated was built by appending each entry *after* its upload call
+returned — `published.add(upload(...))`. That set is exactly one entry short in the only failure whose
+outcome the caller cannot observe: an upload whose bytes the object store **accepted and durably stored**
+and whose **response never arrived**. A reset connection, a read timeout, or the per-call budget DL-301
+now sets, expiring while the response is in flight — the call throws, the entry is never appended, and the
+compensation that follows walks every key except that one.
+
+What is left behind is not debris. It is an ordinary, complete, current generation of its logical base,
+indistinguishable from real output in every way that matters:
+
+- the generation-number allocation lists the base and counts it, so the next run allocates *past* it and
+  the object is permanent rather than overwritten;
+- a reader asking for the current generation of that base is handed the artefact of a job that failed;
+- the retention depth counts it, so it displaces a generation that *was* published;
+- and the job is FAILED, so no operator is looking for output from it.
+
+The immediate single-artifact path was worse: it carried a comment asserting that "a failed upload uploaded
+nothing" and therefore compensated nothing at all. That path publishes at the end of the producing step
+rather than at the end of the job — reproducing a job stream that catalogued one generation per step — so
+it has no later listener to compensate on its behalf. Its compensation is its own or it does not happen.
+
+**Why no amount of exception handling closes it.** The information the handler would need is whether the
+service kept the bytes, and a lost response is precisely the case that does not carry that information.
+There is no exception type, no response field and no retry that distinguishes "refused before reading the
+body" from "stored, then unanswered". A handler that assumes either one is wrong half the time.
+
+**Decision.** The *ordering* is the fix, not the handling. Every key is recorded in a ledger **before its
+bytes are sent**, and compensation walks that ledger. The compensated set becomes the set of keys that
+*might* hold bytes rather than the set known to — a superset of the old one by exactly the entry that was
+missing. Both publication paths use it: the registered pass records each key as it composes it, and the
+immediate path records its single key before the stream is opened.
+
+**Why the superset is safe to purge.** A generation number is allocated as one more than the highest the
+base currently holds, so a key this pass allocated held nothing before the pass began; anything under it
+afterwards either came from this pass or is residue that no correct publication could have left. Emptying a
+key that holds nothing is the normal case and costs one listing that returns nothing. Reconciling is
+therefore cheap in the ordinary failure and correct in the ambiguous one, which is the trade a
+compensation should make.
+
+**Why the compensation never becomes the reported failure.** The caller has to learn why publication
+failed, not that a rollback ran. Each key is reconciled independently, a reconciliation that itself fails
+is logged and does not replace the original exception, and the original exception is re-thrown with its
+own type and cause intact — an `IOException` from the immediate path still arrives as an
+`UncheckedIOException` naming its base.
+
+**How it is proven.** A compensation cannot be tested by a store that either succeeds or fails, because
+the defect lives in the third outcome. `StagedGenerationStoreTest.TheAmbiguousUpload` therefore drives the
+failure through the fake store's own behaviour: it reads the body, records the version exactly as a
+successful upload against a versioned bucket would, and only then throws the timeout the per-call budget
+raises. Four of its five assertions pass against a succeeded-set compensation only if the defect is
+present, and every pre-existing test in the class passes either way — which is what made the defect
+survivable in the first place.
+
+*Embodied in:* `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`,
+`src/test/java/com/carddemo/batch/step/StagedGenerationStoreTest.java`.
+
+---
+
+### DL-304 — A coordination boundary is bounded in time, and its release is never evidence about the effect it guarded
+
+**Context.** Two advisory locks serialize work whose effects live outside the database, and the rule this
+entry establishes is then applied to every advisory lock in the module in part three.
+`PostgresJobSubmissionCoordinator` holds one lock across a whole seventeen-card submission to the job
+queue, so that the legacy queue's append ordering survives a deployment with several replicas
+(DL-147). `AdvisoryGenerationPublicationLock` holds one lock per generation base across a whole
+publication - upload, alias advance, registry clear and retention prune - so that two publications
+cannot interleave their read-decide-delete passes over the same base (DL-181). Both are
+transaction-scoped, and in both the transaction's commit exists only to release the lock: neither
+transaction carries any business data of its own.
+
+That last fact is what makes both of them subtly wrong in the same two ways.
+
+---
+
+#### Part one: waiting for the boundary was unbounded
+
+**The gap.** The submission coordinator acquired its lock with a plain `pg_advisory_xact_lock` and no
+statement timeout, so a caller waited for as long as the current holder existed. The caller is an
+**online request thread** serving a report request, and it is holding a pooled database connection while
+it waits. One holder that has stopped making progress therefore consumes two of the deployment's
+scarcest resources, and consumes one more of each for every further request that arrives - which is how
+a single stalled queue call becomes an exhausted request pool and an exhausted connection pool. The
+generation lock already bounded its wait; the submission coordinator did not, and it is the one on the
+request path.
+
+**Decision.** The wait is bounded at fifteen seconds, applied with
+`PreparedStatement.setQueryTimeout`. The bound is derived from the work the guard actually covers rather
+than chosen as a round number: a holder publishes at most seventeen cards, each bounded by the queue
+client's own ten-second per-call budget (DL-301), and an ordinary send completes in milliseconds - so a
+submission arriving while another is in flight normally waits a few milliseconds. Fifteen seconds
+accommodates the worst *legitimate* holder, one whose stream contains a single send that consumes its
+entire ten-second budget before the rest completes, and does not accommodate a holder that has stopped
+progressing. Two stalled sends in one stream exceed it, and at that point the queue is unhealthy and
+refusing is the right answer rather than a regrettable one. It is a ceiling on waiting, not a target.
+
+**Why the bound is expressed as a statement timeout.** Not by writing `SET statement_timeout`, which
+would put a value - even one of the module's own constants - into SQL text and give the unsafe-code
+audit a raw-SQL site to count. `setQueryTimeout` is the same bound expressed through the driver, which
+cancels the waiting statement. The generation lock already established this shape and this reasoning.
+
+**Why an expired wait is not fatal.** It raises, and the calling service already translates a
+coordination failure into its non-fatal outcome carrying zero cards published. That is the truthful
+report, because a wait that expired never entered the stream, and it is the migrated form of
+`ERROROPTION(IGNORE)` at `[app/csd/CARDDEMO.CSD:TDQUEUE(JOBS)]`: a write the queue would not accept is
+reported to the operator and abandoned, never retried and never escalated.
+
+---
+
+#### Part two: releasing the boundary was treated as evidence about the effect
+
+**The gap.** In both classes the release ran inside the same `try` as the guarded work:
+
+- the submission coordinator returned the outcome from the transaction callback, so the commit happened
+  *after* the callback and any commit failure was caught and rewrapped as a coordination failure;
+- the publication lock ran `publication.run()` and `connection.commit()` in one block whose `catch`
+  rolled back and rethrew.
+
+So a failure of the commit - the commit whose only effect is releasing the lock - was reported as a
+failure of the thing the lock was protecting. The consequences are not cosmetic, and they are the
+opposite of conservative:
+
+| Boundary | What already happened | What was reported | What an operator then does |
+| --- | --- | --- | --- |
+| submission | all seventeen cards are on the queue; a job stream will run | zero cards published, submission refused | resubmits - and the job runs **twice** |
+| publication | objects durable, aliases advanced, registry cleared, rolled-off generations irreversibly deleted | job FAILED, and the boundary listener discards the local generations naming the durable ones | re-runs the job - which publishes **a second generation of every base** |
+
+Neither report protects anything. Both convert a database fault that harmed nothing into duplicated
+external output.
+
+**Decision.** The moment the guarded work completes is a line, and nothing after it may revise what
+happened before it.
+
+- The submission coordinator **captures the outcome inside the callback**, before the commit. If the
+  commit or release then fails, it logs an operational alert and returns that captured outcome
+  unchanged.
+- The publication lock **moves the commit out of the guarded block**. Acquisition failures and
+  publication failures still roll back and propagate; a release failure after the publication returned
+  logs an operational alert and returns normally.
+- `JobSubmissionCoordinator` and `GenerationPublicationLock` state this in their contracts, because it
+  is the property their callers depend on: `CoordinationFailure` is a caller's licence to report zero
+  cards published, so it is raised only while that remains true.
+
+**Why an alert rather than silence.** The fault is real and worth investigating - a transaction did not
+end the way it was meant to. Both records say explicitly that the external effect stands, so nobody
+resubmits or re-runs a job on the strength of reading one. Both name counts, bases and a failure type
+only; no caller-supplied value reaches either.
+
+**Why declining to fail leaks no lock.** Both locks are transaction-scoped, so they are released by the
+transaction ending in any way at all: a commit that fails leaves the transaction aborted by the server,
+restoring auto-commit on the way out ends it, and a connection returned to the pool in a broken state is
+reset or discarded. There is no path on which a lock survives the method - which is precisely why the
+transaction-scoped form was chosen over a session-scoped lock released by hand.
+
+**The symmetry that settles it.** Retention already receives this exact treatment for this exact reason:
+it runs after the store's commit point, it is irreversible, and a failure is reported rather than raised
+(DL-180). A lock release is in the same position and gets the same answer.
+
+**How it is proven.** Mocks drive the failure at each side of the line: a commit that throws after the
+callback produced a seventeen-card outcome must return that outcome and emit the alert, while a
+publication that throws must still roll back, propagate, and emit **no** alert - the distinction that
+makes the alert meaningful. The bound on waiting needs two tests, because it is half decision and half
+mechanism: a unit test asserts the coordinator applies its own value to that exact statement, and an
+integration test against a real PostgreSQL server proves a statement timeout genuinely cancels a wait for
+an advisory lock already held, checked by SQL state `57014`.
+
+---
+
+#### Part three: the rule applied to every advisory lock in the module
+
+Part one is a rule, not a repair of one line, so the module's other advisory locks were audited against
+it. There are four in total and each is now bounded, by one of the two available means:
+
+| Lock | Guards | Bound |
+| --- | --- | --- |
+| `PostgresJobSubmissionCoordinator` | one seventeen-card submission to the job queue | fifteen seconds, per part one |
+| `AdvisoryGenerationPublicationLock` | one publication of one generation base | thirty seconds, already present |
+| `TransactionInsertRepositoryImpl.lockIdentifierAllocation` | minting the next transaction identifier | **ten seconds, added here** |
+| `BatchLaunchCoordinator` | one launch of one named job | none needed: it uses the `try` form, which never waits |
+
+The identifier-allocation lock deserves its own note, because it was the most exposed of the four and the
+least obviously so. It is a **single application-wide key on the busiest online write path** - every bill
+payment and every added transaction queues on it - and it is held for the remainder of the unit of work
+that reads the maximum, inserts the row and rewrites the account. So an unbounded wait there consumed a
+request thread and a pooled connection *per arriving payment* behind one stuck holder, and the request
+that started it received no answer at all.
+
+Ten seconds is set against the span it covers: read, mint, insert, rewrite - local database work measured
+in milliseconds, repeated at most twice. A waiter that has queued for ten seconds is behind a stuck
+system, not a busy one.
+
+**Nothing about the online contract changes.** An expired wait cancels the statement, and the resulting
+failure reaches the REST boundary's terminal handler, which answers with the frozen terminal literal the
+abend path already uses. No message text is added, altered or chosen. What changes is that a task the
+system cannot complete now ends rather than hanging - which is the behaviour the legacy region's own
+transaction time-out gave the same situation, so the bound restores a legacy property rather than
+introducing a new one.
+
+*Embodied in:* `src/main/java/com/carddemo/service/PostgresJobSubmissionCoordinator.java`,
+`src/main/java/com/carddemo/service/JobSubmissionCoordinator.java`,
+`src/main/java/com/carddemo/service/JobSubmissionService.java`,
+`src/main/java/com/carddemo/batch/step/AdvisoryGenerationPublicationLock.java`,
+`src/main/java/com/carddemo/batch/step/GenerationPublicationLock.java`.
+`src/main/java/com/carddemo/repository/TransactionInsertRepositoryImpl.java`.
+
+---
+
+### DL-305 — Telemetry about a boundary is published by the code that owns the boundary, and context handed to a worker is carried rather than dropped
+
+**Context.** The module's observability is assembled from the framework's own instrumentation plus
+application meters at the points the framework cannot see (DL-211, DL-290). This entry settles four places
+where that division had been drawn in the wrong position, and they share one cause: a measurement was left
+to a component that had already finished, or was never given the registry it needed, so the record it
+produced was true of a moment that was not the one it appeared to describe.
+
+---
+
+#### Part one: a job's terminal verdict is counted after the verdict exists
+
+**The gap.** Spring Batch 5.2.6's `AbstractJob.execute` stops the job observation on every arm *before* it
+invokes `afterJob`. So the framework's `spring.batch.job` timer carries the status as it stood at that
+moment - and the boundary listener's `afterJob` is precisely where this module decides the terminal status
+and then publishes the run's durable artifacts. Two things therefore could never appear in the framework's
+own record, no matter how it was queried:
+
+- a terminal status the listener itself sets, because it is set after the timer has already been written;
+- the outcome of the durable publication, because the publication had not run when the timer was written.
+
+The second is the consequential one. A run whose steps all succeeded and whose artifact publication then
+failed was, to every dashboard and every alert, a completed job.
+
+**Decision.** The listener publishes its own counter, `carddemo.batch.job.terminal`, once per finished
+execution, after the publication has run and the terminal status has been persisted. It carries four tags,
+and the choice of four rather than two is the whole point:
+
+| Tag | Value | Why it is separate |
+| --- | --- | --- |
+| `job` | the job name | the dimension every other batch meter already uses |
+| `status` | the persisted terminal status | what the repository will report, which is the authoritative answer |
+| `observedStatus` | the status the framework recorded | so a divergence between the two is visible rather than a contradiction between two systems |
+| `publication` | `NOT_REQUIRED`, `PUBLISHED`, `FAILED` or `SKIPPED` | the outcome that had no representation anywhere |
+
+Counting the observed status alongside the persisted one is not redundancy. Without it, an operator
+comparing this counter to the framework's timer sees two disagreeing numbers and no way to tell which is
+stale; with it, the disagreement is a single labelled fact.
+
+**Why a counter and not a timer.** Duration is already measured, correctly, by the framework. What was
+missing is a count of outcomes, and adding a second timer over the same span would invite exactly the
+double-counting this entry exists to prevent.
+
+**Non-fatal by construction.** A meter that cannot be published is logged at debug and abandoned. The
+listener runs on the completion path of a finished job, and a telemetry fault must not become that job's
+verdict - the same rule DL-180 applies to retention and DL-304 to a lock release.
+
+---
+
+#### Part two: the durable boundary is a span, and the object-store calls inside it are its children
+
+**The gap.** The publication that runs inside `afterJob` uploads, lists, deletes versions and prunes
+retention against the object store, and none of it was instrumented. Because the job's own observation has
+already been stopped by then, the work was not merely unmeasured: it had no context at all, so anything it
+might have observed would have become a detached root - a trace of one span, unconnected to the run that
+caused it.
+
+**Decision.** Two levels, deliberately.
+
+- The listener opens one observation, `carddemo.batch.job.publication`, around the whole durable boundary,
+  tagged with the job name and the artifact count and carrying the execution id as high-cardinality
+  detail. This is the parent that the stopped job observation can no longer be.
+- The store itself observes each object-store call it makes, under its own name
+  `carddemo.batch.generation`, tagged by operation - `list`, `upload`, `listVersions`, `deleteVersion` -
+  with the object key as high-cardinality detail. All six call sites are covered, including the two that
+  only run while compensating a failure, because a failure's clean-up is exactly when an operator needs to
+  see what the store was asked to do.
+
+**Why the generation store gets its own family rather than joining the staging family.** They answer
+different questions. `carddemo.batch.staging` describes a job moving a working file through its staging
+area; `carddemo.batch.generation` describes the publication of a durable, versioned, retention-governed
+generation - a different lifecycle with operations (`listVersions`, `deleteVersion`) the staging family has
+no analogue for. Folding them together would make a latency figure for either one meaningless.
+
+**And why the S3 staging store does the opposite.** `S3BatchStagingStore` is one implementation of the
+staging port, so it emits into the existing `carddemo.batch.staging` family using that port's own published
+constants. A caller must be able to compare the object-backed implementation with the file-backed one, and
+that comparison only exists if both report under one name with one tag distinguishing them.
+
+---
+
+#### Part three: work handed to a worker keeps its parent
+
+**The gap.** An observation is thread-bound, so handing work to a plain executor severs it. Two places do
+that, both for reasons unrelated to tracing: the completion notifier, so a slow topic cannot delay a
+finished job, and the readiness checks, so an unreachable resource cannot delay a probe past its deadline.
+Each made exactly one outbound call, and each of those calls was appearing as its own disconnected trace.
+
+**Decision.** The submitting observation is captured on the submitting thread and its scope reopened around
+the work on the executing one, by `ObservationPropagation`. What is explicitly *not* done is replacing
+either executor. Their queue depth, ceiling, rejection behaviour and deadline semantics are load-bearing
+and documented where they are declared; substituting a context-propagating executor would change those
+properties as a side effect of fixing a trace, and the trade runs the wrong way.
+
+**What the parent actually is on the notification path.** Not the job's own span - the framework stopped
+that before the terminal callbacks, which is part one's finding. What is carried is whatever context
+encloses the launch. That is a weaker claim than "the publish is a child of the job" and it is the true
+one, so it is what the code says.
+
+**Two differently named methods, not an overload.** A lambda calling a value-returning method satisfies
+both `Runnable` and `Callable`, so an overloaded pair would let a call site bind to the result-returning
+form by accident and discard the result in silence. `inCurrentObservation` and
+`callInCurrentObservation` make the choice explicit at every call site.
+
+**Absent context is a normal case, not an error.** With nothing current the work is returned unwrapped and
+runs exactly as before, because a scheduled probe, a test, or a launch that is not itself observed are all
+ordinary callers.
+
+---
+
+#### Part four: a step composed privately still needs the application's registry
+
+**The gap.** The framework's batch observability post-processor hands the `ObservationRegistry` to step
+*beans*. `BackupTransactionJobConfig` is the one configuration that composes its two steps privately
+rather than publishing them - a deliberate choice, so that no other job can wire a step whose staging
+contract it does not satisfy - and the cost of that choice, unrecorded until now, was that those two steps
+emitted no `spring.batch.step` observation at all.
+
+**Decision.** The configuration receives the application `ObservationRegistry` and applies it to both step
+builders itself. This is the general shape of the rule this entry is about: the framework instruments what
+it can reach, and wherever the module reaches past it, the module owes the same instrumentation by hand.
+
+---
+
+#### What none of this does
+
+It adds no sampling decision, no exporter, no registry and no dependency: every name above is published
+into registries the module already holds, and the artefact inventory is unchanged. It also adds no
+high-cardinality tag to a meter - execution ids and object keys appear only as observation detail, which
+reaches a trace and never becomes a time series.
+
+**How it is proven.** Part one is asserted against a divergence that only the new counter can express: a
+listener whose steps observed one status while the repository persisted another must count both, and a run
+whose publication throws must count `FAILED` while its status is still the persisted one. Part two is
+asserted by recording handlers that capture parent-child relationships, so a store call is required to be
+a child of the publication observation rather than merely present. Part three is asserted from inside the
+work - what the worker thread finds current - because "the context was carried" is a question about the
+executing thread and not about the recorder. Part four was mutation-checked: removing both
+`observationRegistry` applications fails only the test that exists for them, and every other test in that
+class passes either way, which is how the gap survived.
+
+*Embodied in:* `src/main/java/com/carddemo/config/BatchConfig.java`,
+`src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`,
+`src/main/java/com/carddemo/batch/S3BatchStagingStore.java`,
+`src/main/java/com/carddemo/batch/BackupTransactionJobConfig.java`,
+`src/main/java/com/carddemo/util/ObservationPropagation.java`,
+`src/main/java/com/carddemo/service/JobCompletionNotificationService.java`,
+`src/main/java/com/carddemo/config/AwsResourceHealthConfig.java`.
+
+### DL-306 — A channel permitted to lose messages counts every message it loses, and a completion boundary is an instant rather than a wall-clock reading
+
+**Context.** The SNS completion channel is deliberately lossy. It has no legacy antecedent, it announces
+outcomes that are already durable in the batch repository, and its whole contract is that a notification
+can be dropped, shed, refused or timed out without touching a job's verdict. Two properties of that
+channel were weaker than the contract they supported, and they fail in opposite directions: one made a
+loss unobservable, the other made a delivered notice unusable.
+
+---
+
+#### Part one: the losses were inferred from the wrong instant, and one class of loss was invisible
+
+**The gap.** Three things were wrong with the accounting, and they compound.
+
+`ThreadPoolExecutor.DiscardOldestPolicy` discards without reporting. It is not merely quiet - after
+`shutdown()` it checks whether the pool is terminating and, if it is, **does nothing at all**: the task is
+neither run nor queued nor rejected, and `execute` raises nothing. The call site's
+`catch (RejectedExecutionException)` arm, and the "the notifier is closed" warning inside it, were
+therefore unreachable. A notification offered during shutdown left no meter, no log and no exception - the
+strongest form of silent loss available.
+
+The loss that *was* reported was inferred rather than observed. The producer read the queue's depth before
+the hand-off and warned if it was already at capacity. That is a different instant from the rejection, and
+it disagrees with it in both directions under concurrency: the worker drains between the sample and the
+offer and the warning fires for a loss that did not happen, or another producer fills the gap in the same
+interval and a loss happens with no warning. A number that is sometimes too high and sometimes too low is
+not a count.
+
+And `close()` accounted for what it abandoned on only one of its two paths. The path that timed out logged
+the abandoned count; the path whose wait was **interrupted** called `shutdownNow()` and discarded its
+answer. An interrupted shutdown is what a container tear-down under pressure produces, so the path most
+likely to be holding a backlog was the one reporting nothing about it.
+
+**Decision.** Reporting moves inside the rejection, which is the only moment at which a loss is a fact.
+`shedRatherThanQueue` replaces the pool's policy and counts exactly what was lost on
+`carddemo.job.completion.shed`, tagged with why:
+
+| Reason | What happened | What was lost |
+| --- | --- | --- |
+| `NOTIFIER_CLOSED` | the notifier is shut down and takes nothing more | the arriving snapshot |
+| `QUEUE_FULL` | the head was displaced so the arriving snapshot could take its place | the displaced snapshot |
+| `QUEUE_FULL` | another producer refilled the queue between the displacement and the re-offer | the arriving snapshot too |
+| `SHUTDOWN` | a shutdown stopped waiting, on **either** of its two paths | everything still pending |
+
+Each branch counts only what it actually lost: a displacement that finds the queue already drained counts
+nothing, because nothing was lost - precisely the case the discarded depth sample reported as a shed.
+
+**What deliberately does not change.** The pool keeps its single thread, its queue depth, and its shed
+*direction*. The oldest pending snapshot is still the one displaced, and that remains correct here for the
+reason it was chosen: every snapshot describes a job that has already finished, so an operator needs the
+most recent completions rather than the oldest. Nor is a rejected snapshot published inline as a
+consolation - publishing inline on the caller's thread is the behaviour the hand-off exists to remove.
+
+**One mechanical detail worth recording.** The arriving task is re-offered onto the queue rather than
+re-submitted through `execute`. Re-submitting is what the pool's own policy does, and it re-enters the
+rejection handler if the queue has filled again. The re-offer is safe without that recursion because a
+rejection under a single-thread ceiling means exactly one worker is running, a worker never retires while
+the queue holds anything, and the pool re-creates a worker whenever one exits with a non-empty queue.
+
+**Why a counter rather than a gauge, and why one meter for three reasons.** The quantity that matters is
+cumulative loss, not present depth, and the events counted are individually irrecoverable. One meter,
+because an operator asking how many completion notices went unannounced is not asking which mechanism
+dropped them and would be misled by a number covering only some of them; three tag values, because the
+three are different operational situations whose remedies differ.
+
+**The verdict contract is untouched.** A meter fault is absorbed at debug, and the producer's guard is
+widened to any runtime failure rather than narrowed to the rejection type that can no longer occur -
+because the one thing this channel may never do is turn a completed job into a failed one.
+
+---
+
+#### Part two: a wall-clock reading is not a moment
+
+**The gap.** Spring Batch records both job boundaries by calling `LocalDateTime.now()` with no argument,
+so the values on a `JobExecution` are wall-clock readings in the default zone of whichever JVM ran the
+job. The notification carried them onward unchanged, which published a number with no meaning attached.
+Two consequences follow, and neither needs an exotic deployment to bite: notices from two instances
+configured in different zones cannot be put in order at all, and a notice either side of a
+daylight-saving transition is ambiguous against its own neighbours *in the same region*. The consumer of
+a completion notice is establishing what happened when, relative to something else, so the field has to
+be a point in time.
+
+**Decision.** `JobCompletionEvent` carries `Instant`, and the payload renders it with `ISO_INSTANT`, which
+always ends in `Z` so a subscriber cannot read it as local time by mistake.
+
+**Where the zone is applied, and why there.** In `JobCompletionEvent.ofFrameworkExecution`, which takes
+the zone as an argument. The producing JVM is the only party that knows which zone its framework readings
+were taken in, so the conversion cannot live further downstream; and passing the zone rather than reading
+the ambient default makes the interpretation visible at the call site and testable without mutating the
+JVM default, which is a process-wide change no test in a shared suite may make.
+
+**A trap this documents rather than merely avoids.** The module's own `Clock` bean is **not** the right
+zone for this conversion. It is deliberately fixed to UTC so that emitted timestamp images stay stable,
+and interpreting a framework wall-clock reading against it would silently shift every notification
+wherever a deployment is not itself running in UTC. The correct zone is the JVM default, which is what
+the framework used.
+
+**An absent boundary stays absent.** The framework records no end time for an execution abandoned before
+it finished, and the payload emits JSON `null` rather than an epoch or a placeholder, because inventing an
+instant would report a time that never happened.
+
+**Schema version 2.** The two fields changed *meaning*, not only formatting, so the version is incremented
+and the entry records which fields and why - that is the whole purpose of publishing a version to a
+subscriber. `serialVersionUID` is advanced alongside it for the same reason, so the declaration stays an
+honest statement about the shape of the class even though nothing serializes the event in practice.
+
+**How both parts are proven.** Part one is asserted at the boundary rather than near it: a queue filled to
+exactly capacity must lose **nothing**, and the very next offer must lose exactly one - which is the
+assertion the discarded depth sample could not have passed. The two shutdown paths are exercised
+separately, the interrupted one by interrupting the closing thread, which is what a tear-down under
+pressure does. The zero-trace case is asserted directly: a snapshot offered after `close()` must appear on
+the meter. Part two is asserted as a comparison rather than a format check, because a single-zone test
+cannot see the defect at all: one wall-clock reading interpreted in two zones must become two distinct
+instants and two distinct payloads, where it previously became one of each.
+
+*Embodied in:* `src/main/java/com/carddemo/service/JobCompletionNotificationService.java`,
+`src/main/java/com/carddemo/service/JobCompletionEvent.java`,
+`src/main/java/com/carddemo/config/BatchConfig.java`.
+
+### DL-307 — A refusal the deployment cannot see is not a control, so the body ceiling moved behind observation and behind authentication
+
+**Context.** Every API request passes a filter that bounds the body at a configured ceiling and answers
+413 above it (DL-239). It was registered at `Ordered.HIGHEST_PRECEDENCE`, which reads as the safest
+possible position and is in fact the worst one available.
+
+**The gap.** Two consequences followed from being first, and they are of different kinds.
+
+Spring Boot registers its server observation filter one step behind highest precedence. A filter ahead of
+that point completes its response *outside every observation*, so a refusal produced no entry in the
+request timer, opened no span, and had no correlation identifiers in scope for a log line to carry - and
+the filter logged nothing either. The route needs no credential to reach, so the practical position was
+that an anonymous caller could drive refusals indefinitely and leave nothing behind at all. That is a
+monitoring gap rather than a telemetry nicety: a control whose activations are invisible cannot be
+alerted on, rate-limited in response, or even shown to have fired.
+
+Being first also put it ahead of authentication, so an anonymous request's body was read and buffered
+before anything had established that the caller was entitled to send one. The buffer was bounded, so this
+is the smaller of the two - but it is work done on behalf of a caller who may have no standing to ask for
+it.
+
+**Decision.** The filter is registered one step behind the security chain, expressed as
+`SecurityProperties.DEFAULT_FILTER_ORDER + 1` rather than as the literal, so that a change to Boot's
+default moves this filter with it instead of silently reordering the two. That single move satisfies both
+halves: the refusal is now inside the server observation, and an unauthenticated request to a protected
+route is answered by the security chain before this filter allocates anything for it.
+
+**Why moving behind authentication is safe here, which it would not universally be.** A body bound placed
+after authentication is only sound if nothing between the two can read an unbounded body first. Three
+facts establish that, and all three have to keep holding:
+
+| Fact | Why it matters |
+| --- | --- |
+| No security filter in either published chain reads the body | authentication is a header bearer token, form login is not configured, and CSRF is disabled on both chains - so nothing consults a request parameter, which is the only route by which a security filter ends up parsing a body |
+| The one earlier filter that can read a body is Boot's form-content filter | it acts only on form-encoded content, and its parse is bounded by the container at `server.tomcat.max-http-form-post-size`, which this module already sets to the same figure as this filter's own default ceiling |
+| The container bounds headers and swallowed bytes independently | so the pre-filter surface is finite in every dimension a caller controls |
+
+**What is added beyond the move.** Position alone gives the framework's timer and span. It does not give a
+reason, and it cannot give a route: a request refused before dispatch never reaches the handler mapping,
+so the framework's `uri` dimension resolves to its unknown marker. The filter therefore also counts the
+refusal on `carddemo.http.request.refused`, tagged with how the excess was detected - a declared
+`Content-Length` versus bytes actually read - and with the method folded to a closed vocabulary so that a
+caller inventing method names cannot grow the series. One warning is logged per refusal.
+
+**The diagnostic names no unsanitised caller content, and that is not decoration.** The request line is
+attacker-controlled text on an unauthenticated path. An unfiltered copy in a log is a forged-record
+vector, and an unbounded one lets a single request write a great deal of someone else's text into an
+operator's log. So the method is folded to one of eight names or a marker, and the path has its context
+stripped, its length truncated, and every character outside letters, digits and four punctuation marks
+replaced - which removes carriage returns and line feeds and therefore the ability to forge a second
+record inside the first.
+
+**The answer to the caller is byte-for-byte unchanged.** Same status, media type, charset and message
+body. A caller must not be able to tell from the response that the refusal is now being recorded, and no
+external contract moves.
+
+**How it is proven, in two independent ways because these are two claims.** The mechanism is asserted
+against the framework's own two constants rather than against the number this module uses, so a test
+cannot keep passing if Boot moves either filter - which is precisely the change that would undo the fix
+silently. The outcome is asserted in a running container: an oversized body is sent over a real socket and
+the registry is then asked what it recorded. Restoring the old position leaves that container producing
+**no series whatsoever** for status 413 while the application counter still increments, which both
+reproduces the reported defect exactly and shows the two records are independent rather than one derived
+from the other.
+
+*Embodied in:* `src/main/java/com/carddemo/config/WebMvcConfig.java`.
+
+### DL-308 — A ceiling on a shared map is a reservation taken before the write, never a size read before it
+
+**Context.** The sign-on governor keeps one record per subject - a folded identifier and a caller address
+are two subjects - so that a spent allowance can be refused before any credential is read. Part of each
+subject is caller-supplied, so the map is a second denial-of-service channel unless its size is bounded,
+and a ceiling on tracked subjects exists for exactly that reason: it is the only thing standing between an
+enumeration sweep across generated identifiers and unbounded growth.
+
+**The gap.** Admission was decided by reading the map's size, and the read happened inside the per-key
+computation that would do the insert:
+
+```
+records.compute(subject, (key, current) -> {
+    if (current == null) {
+        if (!admits(subject)) { return null; }   // admits() reads records.size()
+        return new AttemptRecord(1, now, null);
+    }
+    ...
+```
+
+Two separate defects follow, and the second is the less obvious and the more serious.
+
+**Defect one - the bound was advisory.** `size()` answers a question about the past. Reading it, deciding
+there is room, and inserting are three steps, and a concurrent hash map locks only the bin of the key being
+computed - so first-attempts for *different* subjects proceed in parallel. Several threads each read a size
+below the ceiling and each then inserted, so the bound could be exceeded by as many subjects as there were
+threads in the gap. A sequential test cannot see this at all: on one thread nothing can come between the
+read and the write, which is why a flood of thousands of invented subjects passed while the property it was
+asserting did not hold.
+
+**Defect two - the sweep mutated the map it was computing in.** When the ceiling was reached, `admits`
+called the expiry sweep, which removed *other* mappings of the same map, and then called `containsKey` on
+the very key being computed. A concurrent hash map's mapping function is required not to modify the map
+during computation; a violation is not merely untidy, it is permitted not to terminate, and a removal or
+read landing in the same locked bin can block against the computation holding it. The estate's own
+diagnostic path made this worse rather than better: the more subjects a caller invented, the more often the
+sweep ran, so the pressure that made the violation likely was caller-controlled.
+
+**Decision.** The ceiling becomes a reservation held against an `AtomicInteger`, taken **before** the
+computation and released if the computation turns out not to need it.
+
+| Step | Where it happens | Why there |
+| --- | --- | --- |
+| probe for an existing subject | before the computation | a repeat failure needs no slot, so it must not provoke a sweep |
+| take a slot by compare-and-set | before the computation | two threads cannot both take the last slot however they interleave |
+| sweep on failure, then retry once | before the computation | this is the only place removing other mappings is legal |
+| consume the slot | inside the computation, on the insert | the insert is the only event that occupies one |
+| return an unconsumed slot | after the computation | the subject already existed, so the slot was never occupied |
+
+The counter is maintained to equal the map's size exactly. Every insertion consumes a reservation, and
+every removal returns one - the expiry sweep and a successful sign-on alike. A leak in either direction is
+worse than the original defect: upward, the ceiling starves until no new subject can ever be tracked and
+the protection silently stops protecting; downward, it hands out slots that do not exist.
+
+**Two smaller corrections that fall out of it.** The sweep now removes by key *and* value rather than
+through the iterator, which reports whether it actually removed anything - needed to make the release exact
+when two sweeps overlap - and declines to remove an entry another thread has replaced since the iteration
+observed it, which could otherwise discard a refusal that had just engaged and let a caller clear the
+record of its own abuse. And the ceiling warning moved to the point where the ceiling actually bit: it is
+emitted when the computation declined for want of a slot, rather than whenever a size read looked full.
+
+**One deliberate, documented loss.** The probe for an existing subject is a fast path, not a guarantee: an
+entry can be swept between the probe and the computation, and then the computation finds no mapping while
+holding no reservation and declines, so that one attempt goes uncounted for that subject. This is
+immaterial and is preferred to the alternative. An entry is only ever swept once it is neither refusing nor
+inside its window, which is precisely the state in which the next failure restarts the count at one
+anyway - so the lost increment would have been discarded a moment later. The alternative, inserting without
+a reservation, would make the bound approximate again, which is the whole defect.
+
+**Nothing about the governor's decisions or its messages changes.** The allowance, the window, the refusal
+period, the refusal semantics, the four counters and the two log records are all as they were. What changes
+is that the memory bound is now true under concurrency and that no code path modifies the map from inside
+one of its own computations.
+
+**How it is proven.** By racing rather than by flooding. Twenty-five independent rounds each release
+thirty-two workers together, every worker contributing two subjects nobody else uses, against a ceiling of
+eight - and the ceiling is asserted after each round. Restoring the size-read admission fails the very
+first round, at sixty-four subjects against eight, while every pre-existing test including the sequential
+flood still passes: direct evidence that the old suite could not have caught this. Between rounds every
+subject is released and the map asserted empty, and after the last round the full ceiling must be
+available again - an assertion no single round could make, and the one that catches a slot retained
+anywhere across the whole run. Removing either release then fails exactly the two tests that exist for
+them.
+
+*Embodied in:* `src/main/java/com/carddemo/service/SignOnAttemptGovernor.java`.
+
+### DL-309 — A staged artefact is admitted on trust, never on existence, and the local rung of every job asks the same question
+
+**Context.** The daily-transaction extract resolves its six inputs through one ordered ladder that every
+staged-dataset job of this package shares: an exact durable object first, then — for a location that is one
+logical dataset name rather than a URI or a path — the local staging root, and only then the application
+resource loader for an explicit `file:` or `classpath:` location (DL-216). The middle rung exists so that a
+deployment can hand a job a dataset the previous job wrote locally, without either job knowing which
+medium the other used.
+
+**The gap.** That rung asked `Files.exists(localCandidate)` — a question about presence, with every default
+in force. Three consequences followed from the one call:
+
+1. *A symbolic link was accepted, and then followed.* `Files.exists` resolves links by default, so a link
+   beneath the staging root bearing the expected dataset name answered `true` on behalf of whatever it
+   pointed at, and the `FileSystemResource` built from that path opened the target. The job read a file of
+   somebody else's choosing while reporting the staged name, and every subsequent step — validation,
+   posting, rejection — treated those bytes as the day's transactions.
+2. *Any entry type was accepted.* A directory, a device or a socket bearing the dataset name satisfied the
+   predicate. The resource then failed to open at read time, which converts a supply-chain question into an
+   unexplained mid-step file failure and an abend.
+3. *Neither ownership nor the root's permissions were examined.* A staging root that grants write outside
+   its owner is the whole precondition of the attack, and nothing in the rung looked at it. The bar for
+   redirecting this job's primary input was write access to one directory and knowledge of one dataset
+   name, which is published in the job's own configuration.
+
+Nothing about this is theoretical for a rung whose entire purpose is to consume what an earlier pass left
+on local disk: the actor best placed to write the staging root is exactly the actor the rung is built to
+trust, and existence cannot distinguish that actor from any other with the same access.
+
+**Decision — apply the module's one trust predicate, do not restate the rule.** The rung now asks
+`util/SecureStagedFiles.isTrustedStagedArtifact(root, candidate)`, the predicate DL-269 introduced and that
+`batch/CombineTransactionsJobConfig` and `batch/step/StagedGenerationStore` already use at their own local
+rungs. It requires four properties together: the candidate is a real regular file inspected with
+`NOFOLLOW_LINKS`; its normalised parent is the normalised root; its owner is the root's owner; and neither
+it nor the root grants write permission outside that owner. Read and execute permission outside the owner
+remain deliberately unexamined, for the reason DL-269 gives.
+
+Writing a second spelling of the same rule here was rejected explicitly. A trust rule that exists in two
+places is a rule that will hold in one of them after the next change to it, and the failure mode of the
+weaker copy is silent. One predicate, one nest of tests over it, seven call sites in `src/main`.
+
+**A present-but-untrusted entry is refused, not repaired, and resolution then falls through unchanged.**
+The rung does not delete the entry, does not correct its mode, and does not abend. It declines, and control
+continues to the configured location exactly as it does when nothing is staged locally at all — so the
+not-found path, the class-path path and the `file:` path are all bit-for-bit the behaviour they were, and
+the only case whose outcome changed is the one that used to be accepted and should not have been. Repairing
+would mean this job mutating an artefact it does not own on the strength of a name; abending would let
+anyone who can create a file in the staging root stop the extract, which is a denial of service bought at
+the same price as the redirection it replaces.
+
+**The refusal is reported, and the report cannot itself be redirected.** Silence would be the worse
+outcome: with the entry declined, the job resolves the configured location and completes, and an operator
+would have no way to learn that a staged-looking entry had been declined — which is precisely the signal
+that someone put it there. So a single WARN is emitted, naming the property, the logical dataset name and
+the DD name, and it is emitted only when something is actually present. Presence for the report is tested
+with `Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)`, so a link is reported as the link it is; the
+report deliberately says nothing about a link's target, because resolving a target in order to describe it
+would reintroduce the follow the refusal exists to prevent.
+
+**How it is proven.** By three tests that differ from the accepted case in one property each, and by
+reverting the predicate. `aSymbolicLinkBeneathTheStagingRootIsRefused` places a link of the right name in
+the right root and asserts both that no resource opens and that the failure names nothing about the link's
+target. `aWorldWritableStagedFileIsRefused` places a real regular file, of the right name, in the right
+root, owned by this process, and differing from the file the sibling specification accepts *only* in mode —
+so the single reason it is refused is who else could have written it. `aRefusedEntryIsReported` captures the
+logger and asserts exactly one WARN carrying the property, the dataset name and the reason. Restoring
+`Files.exists` fails all three and no others: forty-two tests in the class, three failures. An earlier
+fourth candidate — a directory bearing the dataset name — was written and then removed, because
+`FileSystemResource` cannot open a directory either way and the test therefore proved nothing about the
+predicate.
+
+*Embodied in:* `src/main/java/com/carddemo/batch/DailyTransactionReadJobConfig.java` (`stagedResource`),
+over the predicate in `src/main/java/com/carddemo/util/SecureStagedFiles.java`.
+
+*Asserted by:* `src/test/java/com/carddemo/batch/DailyTransactionReadJobConfigTest.java` (nest *Six
+resources are bound, each at its own verified width*).
+
+### DL-310 — An interface promises exactly what its mechanism delivers: the report retry token is dated and its window enforced, and the launch surface stops claiming an idempotence it never had
+
+**Context.** Two surfaces of this module told callers something stronger than the code behind them did, and in
+both cases the gap was invisible from inside: the code was right, the contract was wrong, and the tests had
+been written from the contract.
+
+---
+
+**Part one — the report retry token now carries its age, and the age is enforced.**
+
+The report-request turn publishes its submission as seventeen fixed-width cards onto a FIFO queue. The only
+thing that stops a retry from appending those cards a second time is the queue service collapsing a repeated
+deduplication identifier, and the identifiers are a pure function of the submission identity, which is a pure
+function of the reporting dates, the authenticated operator and the `Idempotency-Key` token. So repeating the
+token repeats the identifiers, the queue recognises them, and a half-published stream is completed rather
+than doubled. That is the promise the header published, and it was published without a horizon.
+
+The mechanism has one. The queue service remembers a deduplication identifier for five minutes and then
+forgets it. A caller that retried after that reissued exactly the same identifiers to a broker for which they
+were new, so the whole stream - or again the prefix that had already landed - was published a second time,
+and the reply told the caller its request had been submitted. The defect was never that duplication was
+possible; it was that the interface said it was not.
+
+*What was rejected.* Persisting the outcome of every logical request, or deduplicating durably on the
+consumer side, would close the gap by making the promise true for longer. Both add a table, a retention
+policy and a reconciliation path to a module whose schema is fixed at eleven tables derived from eleven
+verified record layouts, for a submission surface that is one screen. The alternative the review offered
+second - limit the promise to what the broker delivers, and enforce the limit - costs one utility, one small
+service and no schema at all, and it is the honest shape: five minutes is a real property of the system, and
+a contract that states it is a contract a reader can rely on.
+
+*Why the token had to change to make that possible.* An opaque value a caller chose for itself cannot be
+aged, because nothing in it says when the submission it names began. So the token is minted by the
+deployment, and it carries its mint instant. `util/ReportRetryTokens` mints
+`crt1.<issued>.<nonce>.<tag>` - a version marker so a later scheme is distinguishable by inspection, the
+instant as eight big-endian bytes of epoch second, eight random bytes so two submissions inside one second
+are two submissions, and the authentication tag - each field in the URL-safe unpadded alphabet so the whole
+value is header-safe.
+
+*Why the instant is authenticated and not merely present.* A bound the bounded party can edit is
+documentation, not enforcement; this is the same mistake DL-308 removed from the sign-on governor, where a
+ceiling was read rather than reserved. A caller that could move the instant forward could hold the window
+open indefinitely and would be back to being told a duplicate was a retry. So the instant and the nonce are
+covered by a 128-bit truncated HMAC-SHA256 tag, compared in constant time, and any token whose instant has
+been moved, whose nonce has been changed, or that this deployment never minted, fails.
+
+*Why the key is derived rather than configured.* A new required secret is a new thing to distribute, rotate
+and leak, and production already requires the signing secret with no fallback and a length floor. The token
+key is therefore `HMAC-SHA256(signing secret, "carddemo/report-retry-token/v1")`. The purpose label is what
+keeps the two uses apart: the derived key can neither mint nor verify a credential, and the credential key
+can neither mint nor verify a token. Deriving also means every replica of one deployment computes the same
+key, so a retry may land anywhere and survives a restart - which a per-process key would not. A context that
+configured no signing material at all gets a key that lives as long as the process, and says so at warning
+level; that is the correct degradation, because a deployment with no signing material has no
+deployment-wide authority for a token to represent, and the alternatives were a compiled-in key that
+fabricates one or a refusal to start in a context that needs none.
+
+*What the tag deliberately does not cover.* Not the operator, and not the dates. Both are already folded into
+the submission identity, so one caller's token cannot reach another caller's submission whatever the token
+says; binding them into the tag would add nothing to that protection and would make the operator-scoping
+property unassertable from outside the boundary, where it belongs.
+
+*Why an unusable token is refused rather than ignored.* Treating an expired or unrecognised token as though
+none had been sent would publish a fresh submission while the caller believed it had retried an earlier one -
+the original defect, quieter. The turn is refused instead, before a single card is published, and the caller
+is told to omit the header to submit a new request. The decision about whether the earlier attempt's output
+is wanted twice belongs to the operator, who is the only party that knows. Submitting without a token is
+still a deliberate new request, which is what the legacy screen did unconditionally, so nothing was taken
+away.
+
+*What the caller is told, and what the deployment is told.* One message for both conditions: naming which of
+the two was reached would say whether the value presented was ever a token of this deployment, which is of no
+use to a client following the contract and of some use to one probing it. The distinction that matters
+operationally is recorded instead - `carddemo.online.reportrequest.retrytoken.refused` tagged
+`reason=expired` or `reason=not-issued-here`, published by the boundary that refuses rather than by the one
+above it, per DL-305 - alongside one bounded warning. Neither the metric nor the log carries any part of the
+presented value: it is caller-supplied text, and a refused credential-shaped value is the last thing that
+belongs in a log line.
+
+*Where the window is stated.* Three places, all derived from the one constant `VALIDITY_MINUTES`: the
+`Idempotency-Key` constant's own contract, the published 200 description, and the published 400 description,
+which now names the refusal explicitly and states that nothing is published in that case. A limit a caller
+cannot read is a limit a caller will breach.
+
+*The boundary second is inside the window.* `isWithinValidity` is closed at both ends. A token exactly one
+window old is still honoured, because the broker would still collapse it. A token from the future is refused
+as firmly as an expired one, because a pre-dated instant extends the window by exactly the amount it was
+moved.
+
+*How it is proven.* At three levels. `util/ReportRetryTokensTest` drives the scheme itself: the round trip,
+the second-resolution truncation, distinctness within one second, and then ten ways a token can be
+unusable - a caller-chosen literal, another scheme marker, a field added, a field removed, a moved instant, a
+changed nonce, a truncated tag, an undecodable field, another deployment's key, and a key of the wrong
+width - each answered as an empty result rather than an exception, because the caller of that method is
+handling arbitrary caller text. `service/ReportRetryTokenServiceTest` drives the decision: honoured inside
+the window and at its far edge, honoured by a second instance of the same deployment, refused one second past
+it with the counter under `expired`, refused for a foreign or re-dated token with the counter under
+`not-issued-here`, and refused without any part of the presented value reaching the message or the log.
+`service/ReportRequestServiceTest` drives the turn: an expired token and a foreign token each raise before
+`jobSubmissionService` is touched at all, which is the assertion that nothing is published, and the boundary
+second is still honoured. `api/ReportSubmissionAuthorizationIT` drives it through the real security chain and
+a real queue: a token this deployment never issued is answered 400 and the queue is drained empty.
+
+*Two tests changed rather than added, and why that is correct.* `aSuppliedTokenIsCarriedThroughUnchanged`
+asserted that an arbitrary caller literal was carried through verbatim - which is precisely the behaviour
+being corrected, encoded as a contract. It now presents a minted token. The namespace assertions in
+`api/ReportSubmissionAuthorizationIT` shared a caller-invented label between two operators; they now share a
+minted one, which is still shared and still honoured, because the tag covers the instant and not the
+operator. The values a test invents remain in use for the credential cases, where they now carry an extra
+meaning: a request bearing an unissued token and no credential is still answered 401, which is evidence that
+authentication precedes idempotency.
+
+---
+
+**Part two — the launch surface stops claiming an idempotence it never had.**
+
+`batch/BatchLaunchCoordinator` mints one identifying `run.id` on every launch, through the shared parameter
+incrementer that all nine job configurations attach, so the same job submitted twice with the same parameters
+deliberately starts a second, distinct instance. That is the faithful reading of the estate and it is
+documented correctly where it happens: a job member resubmitted with an identical parameter set simply ran
+again - the posting job on the same processing date, the accrual run with the same run date, the backup after
+a failed cycle - and refusing the second submission would be a behavioural regression presented as an
+idempotency guarantee. `api/BatchJobControllerIT` asserts exactly that, in full, with the reasoning beside
+it.
+
+Two layers above it said the opposite. `service/BatchJobLaunchService`'s class javadoc opened a paragraph
+with "A launch is idempotent, because the framework's metadata already decides that" and concluded that the
+framework "answers the second one out of its own metadata rather than starting a duplicate run";
+`launch(String, Map)` repeated it; and `api/BatchJobController.launchTypedJob` repeated it a third time. All
+three were true of an earlier arrangement and none had been revisited when the incrementer was introduced.
+The true half of the claim survives and is kept: neither of those layers adds anything of its own, and
+because a name outside the addressed job's schema is refused rather than forwarded, a caller cannot
+manufacture a distinguishing parameter either. What is corrected is the conclusion drawn from it - the
+identifying value is minted below them, on the server, and a repeat is a second run on purpose. What *is*
+refused is an overlapping run, which is the property the operational surface actually needs and which the
+coordinator's per-job lock provides.
+
+Three smaller corrections fall out of the same reading. `launch(String, Map)` declared `@throws` for four
+checked framework exceptions its signature does not declare and cannot throw, because the launch port wraps
+them into its own refusal carrying a closed reason code; the tags are replaced by the exceptions actually
+raised, and the four imports that existed only to resolve those tags are gone with them. The class javadoc's
+claim that "the framework's own reports are propagated, not translated" is the reverse of what the port does,
+and now describes the closed three-reason vocabulary and says what is deliberately *not* propagated - the
+framework's exception chain, which carries parameter values, query text and resource locations. And
+`launchTypedJob`'s `@throws ValidationException` listed "that job identity has already been used", a condition
+the minted run identifier makes unreachable.
+
+*Why documentation-only, and why that is still a fix.* The behaviour is right and is the behaviour the estate
+had; changing it to match the stale text would be the regression the integration specification warns about.
+The defect is that three of the four places a reader could look disagreed with the fourth, and the one place
+they agreed with was a test whose display name asserted "stays idempotent" over an assertion that proves
+something else entirely - that this layer adds nothing. That display name and its rationale are corrected
+too, and now point at the coordinator that mints the value and at the integration specification that proves
+the repeat-run behaviour end to end. Nothing about what the surface does changed; what changed is that
+reading it no longer misleads.
+
+*Embodied in:* `src/main/java/com/carddemo/util/ReportRetryTokens.java`,
+`src/main/java/com/carddemo/service/ReportRetryTokenService.java`,
+`src/main/java/com/carddemo/service/ReportRequestService.java`,
+`src/main/java/com/carddemo/api/ReportController.java`,
+`src/main/java/com/carddemo/service/BatchJobLaunchService.java`,
+`src/main/java/com/carddemo/api/BatchJobController.java`.
+
+*Asserted by:* `src/test/java/com/carddemo/util/ReportRetryTokensTest.java`,
+`src/test/java/com/carddemo/service/ReportRetryTokenServiceTest.java`,
+`src/test/java/com/carddemo/service/ReportRequestServiceTest.java`,
+`src/test/java/com/carddemo/api/ReportControllerTest.java`,
+`src/test/java/com/carddemo/api/ReportSubmissionAuthorizationIT.java`,
+`src/test/java/com/carddemo/api/BatchJobControllerIT.java`.
+
+### DL-311 — A library's own log is a boundary this module owns: four third-party categories are silenced, each replaced by something the module authored, and the collector they talked to must now earn the traffic
+
+**Context.** Four log categories in this deployment were written by libraries, not by this module, and each of
+them published something the module would never publish itself. None of the four was reachable by the
+sanitising boundary diagnostics that guard every message this module writes, because a library formats its own
+text before any application code sees the outcome. Two related tracing decisions are recorded here with them,
+because they concern the same egress: the address the exporter is allowed to talk to, and whose sampling
+decision this deployment is willing to obey.
+
+---
+
+**Part one — why a level, and not a filter, and not a sanitiser.**
+
+The three offending categories could not be made safe by editing what they say, because this module does not
+own what they say. That leaves two instruments: a level, or a Logback filter matching their text. A filter was
+rejected. It would encode a third party's exact message wording as a load-bearing part of this module's
+containment, so a library upgrade that reworded one line would silently reopen the leak with every test still
+green. A level is coarse, and being coarse is the point: it holds regardless of what the next version of the
+library chooses to say.
+
+The cost of coarseness is that a level cannot keep the useful half of a statement and drop the dangerous half.
+In all three cases the two halves are the same statement, so there was nothing to keep — which is why each
+suppression is paired below with an application-owned replacement rather than left as a hole.
+
+**The queue client's two send templates — `AbstractMessagingTemplate` and `SqsTemplate` — are held at OFF.**
+Both format the whole outbound message into their own text: on the way out at trace level, on success at
+debug, and on failure at error together with the raw provider exception and the resolved endpoint. The
+outbound message of this module's one queue publication is a job-submission card image, so trace or debug on
+that category writes the eighty-character card into the stream; and the failure line, the one an operator most
+wants, is the line that also carries the provider's exception text and the resolved queue endpoint. There is
+no level that keeps the failure and drops the card.
+
+What replaces it: the module's own publication boundary already reports every outcome of that publication —
+sanitised, naming the queue by its logical role rather than its endpoint, and counted on
+`carddemo.job.submission.publish` with its outcome tag. A failed publication is therefore still visible, still
+alertable, and no longer accompanied by the payload.
+
+**The trace exporter's two transports — `HttpExporter` and `GrpcExporter` — are held at OFF.** Both compose
+their failure text from the collector's HTTP status code and the collector's response body, so a
+misconfigured, compromised or merely verbose collector chooses content that lands in this deployment's
+centralised log stream. That inverts the trust direction: an outbound telemetry channel becomes an inbound
+one. Both also emit through the platform logging API rather than through SLF4J, reaching Logback only via the
+installed bridge — which resolves a record to the same-named category, so the level holds along the path the
+records actually travel, and the specification asserts it along that path rather than by direct SLF4J calls.
+
+What replaces it: `carddemo.tracing.export`, an application-owned counter with an `outcome` tag of
+`succeeded` or `failed`, incremented per span rather than per batch so the figure reads as spans lost. It is
+bounded by construction — two series, no free text, nothing the collector can influence beyond the success
+flag — and it is a better instrument than the line it replaces, because a rate is what an operator wants from
+an export channel and a throttled log line was never that.
+
+**The migration executor — `org.flywaydb.core.FlywayExecutor` — is raised to WARN rather than switched off.**
+Its three opening lines name the JDBC URL with the host, the port and the database name, then the driver and
+its version, then the database type and the server version. The credential in that URL is redacted, which is
+exactly what makes the lines read as safe; topology is the reconnaissance a reader needs before a credential
+is worth anything, and an exact server-and-driver version pair is a vulnerability lookup. This one is raised
+rather than silenced because a failed migration operation must still be heard, and WARN is where that is said.
+
+Two things were deliberately left alone. The parent category `org.flywaydb` stays at information level, so the
+raise is one class and not the whole tree. And the per-migration lines local validation reads come from a
+different class, `org.flywaydb.core.internal.command.DbMigrate`, which is untouched — the suppression was
+scoped so that the cross-file contract with local validation could not break as a side effect.
+
+What replaces it: `MigrationVersionRecordCallback`, which writes the module's own record — one line per
+applied migration naming the version and the description, and one summary line naming how many were applied
+and the highest version reached. Every value in it is one this module authored in its own migration
+filenames. It records an already-current schema as information rather than as a warning, because that is the
+expected state of every start-up after the first and a warning there would train an operator to ignore the
+category. It never raises: a diagnostic that could fail a start-up would be more dangerous than the absence
+it replaces. It is registered unconditionally, because evidence that a start-up applied its schema is wanted
+in every profile that migrates, not only in the one that validates.
+
+**Where the levels live.** All five categories are declared in the shared configuration baseline, which is
+the file that owns levels in this module; the logging configuration declares each of the five at
+`INHERITED` with the reasoning beside it, so a reader who opens either file finds the decision. The `OFF`
+values are quoted, because unquoted `OFF` parses as boolean false.
+
+---
+
+**Part two — the collector must be an approved, authenticated endpoint, and absence is still the only excuse.**
+
+The production profile required an OTLP endpoint to be present and stopped there. Presence is not trust. A
+plain-HTTP address ships every span this deployment produces — operation names, the identifiers carried as
+high-cardinality tags, the shape of the estate's traffic — across the network in the clear and lets anything
+on the path rewrite the reply that the exporter then quotes. An arbitrary host is worse: it is an exfiltration
+target that a single environment variable can select, in the one profile with no interactive review.
+
+Five rules now apply under production, and a violated rule aborts start-up:
+
+1. the scheme is `https`, so the exporter authenticates the collector and the spans are encrypted in transit;
+2. no user-info component, because a credential in an address is a credential in every log that echoes it;
+3. no query and no fragment, so the address cannot smuggle instructions to whatever answers it;
+4. a real host that is not a loopback form, because a loopback collector in production is a silent hole where
+   telemetry is believed to be flowing;
+5. the exact `/v1/traces` path, so the address is the trace endpoint of an OTLP collector and not some other
+   service that happens to answer.
+
+The failure message states how many rules exist and which were broken, names the profile and cites this
+entry, and never repeats the configured value — a validator that echoes a bad address writes it into the log
+of the deployment that refused it.
+
+Absence remains handled exactly as the established endpoint discipline requires: an absent endpoint is
+reported once, by the required-settings check, and is not reported a second time here. Two messages for one
+missing variable is how an operator learns to fix one of them and stop reading.
+
+**The deliberate divergence.** Mutual TLS, a pinned collector certificate and a bearer credential on the
+export channel are all stronger than an approved HTTPS address, and none of them is adopted here. They are
+infrastructure provisioning, which is outside this executor's stated authority, and every gate is validated
+locally with no collector to enrol. The rule set is the strongest thing configuration alone can guarantee,
+and this paragraph exists so that a reviewer reads the ceiling as a stated boundary rather than as an
+oversight.
+
+---
+
+**Part three — an unknown caller does not get to decide what this deployment records.**
+
+The framework's default head sampler is parent-based over the configured ratio in its one-argument form,
+whose remote-parent-sampled arm is unconditional recording. So any caller that arrives with a sampled
+`traceparent` header is recorded in full, at any rate it likes, and the profile's 0.1 ratio applies only to
+traces this deployment starts. The header is not authenticated and arrives before authentication, which makes
+the trace pipeline's volume a caller-chosen quantity: cost, retention and — because spans carry the
+identifiers this module tags them with — disclosure, all selected upstream.
+
+The sampler is now owned by an application bean, standing in front of the framework's conditional default:
+
+- a **remote** sampled parent is re-decided locally at the same ratio, so an unknown caller can join a trace
+  but cannot raise this deployment's rate;
+- a **remote** unsampled parent stays off, which is the one arm where obeying the caller is correct — it costs
+  nothing and it is what makes a partially sampled trace coherent;
+- a **local** parent is followed in both directions, because a local parent is this deployment's own earlier
+  decision and re-deciding mid-trace produces broken traces;
+- a root span follows the ratio.
+
+The ratio itself is still owned by the profile. Only the arms moved, and they moved into a bean because no
+property expresses them: the framework exposes the probability and nothing else, so a profile can state the
+rate but cannot state whose decision it honours. That asymmetry is the whole reason this is code rather than
+configuration, and it is also why the specification for the observability configuration now asserts that
+exactly one sampler bean is contributed where it previously asserted none — the reversal is the finding, not
+a drift in the test.
+
+---
+
+*Embodied in:* `src/main/resources/application.yml` (the five pinned categories),
+`src/main/resources/logback-spring.xml` (the same five declared with their reasoning),
+`src/main/resources/application-prod.yml` (the sampling ratio and the collector address),
+`src/main/java/com/carddemo/config/ObservabilityConfig.java` (`traceSampler`,
+`spanExportOutcomeCounter`, `CountingSpanExporter`),
+`src/main/java/com/carddemo/config/ProductionConfigurationValidator.java`
+(`validateTraceCollectorAddress`),
+`src/main/java/com/carddemo/config/MigrationVersionRecordCallback.java`,
+`src/main/java/com/carddemo/config/FlywayConfig.java` (`migrationVersionRecordCallback`).
+
+*Asserted by:* `src/test/java/com/carddemo/config/ProviderLogSuppressionTest.java`,
+`src/test/java/com/carddemo/config/MigrationVersionRecordCallbackTest.java`,
+`src/test/java/com/carddemo/config/TraceCollectorTrustTest.java`,
+`src/test/java/com/carddemo/config/TraceSamplingPolicyTest.java`,
+`src/test/java/com/carddemo/config/ObservabilityConfigTest.java` (nest *what the wiring refuses
+to own, so an absent collector cannot fail anything*),
+`src/test/java/com/carddemo/config/ApplicationProfileStartupTest.java`.
+
+### DL-312 — Two credentials of the estate's own making: the management secret is held to a quality floor and its refusals are counted, and every online abend now writes one allow-listed record instead of a fixed-width screen image
+
+**Context.** Two findings sat beside each other in the same review pass, and although one concerns a shared
+machine credential and the other concerns a diagnostic, both are the same mistake in different clothing: a
+value this module holds was trusted because of where it came from rather than because anything checked it.
+
+---
+
+**Part one — presence was never a credential rule.**
+
+The management surface accepts one shared machine secret. It mints the monitoring authority, no token issued
+at sign-on can carry that authority, and with it a caller reaches every metrics endpoint, the exposition
+scrape and every non-probe management path - per-endpoint latency distributions, per-batch-step record counts,
+connection-pool saturation, and the JVM's heap, thread and collection internals. The only requirement on it
+was that it not be blank. A single character was a valid production credential.
+
+Three properties made that worse than it first reads. It is presented on every scrape, so it is long-lived by
+construction. It is compared rather than derived, so there is no expiry to lean on. And a wrong presentation
+left **no trace at all** - no meter moved and nothing was logged - so a deployment being probed for this
+credential looked exactly like a deployment nobody had touched.
+
+Three rules now apply under the production profile, checked before a single bean is created:
+
+1. at least thirty-two bytes, which is the floor this module already applies to its signing material and the
+   point at which guessing becomes arithmetic rather than an attack;
+2. at least sixteen distinct characters, which refuses a value of the required length built from a couple of
+   repeated symbols - its search space is those symbols, not its length - while sitting far enough below what
+   thirty-two generated bytes yield that it can never refuse generated material;
+3. none of a short list of words that appear only in values somebody typed. The list is deliberately short: it
+   exists to catch the credential left as the example, which is the failure that actually happens, and a long
+   list would eventually refuse a random value that happened to contain an entry.
+
+The floor is stated on the class that consumes the credential and read by the class that checks it, so the
+rule a deployment is held to and the rule the filter relies on cannot drift apart. It is checked under
+production and not in the constructor, because a local or test profile runs with no credential at all - that
+is the fail-closed state - and a constructor floor would make the empty case a start-up failure everywhere.
+An absent value is still reported once, by the required-settings sweep, and not a second time here.
+
+**What the check does not claim.** It does not measure entropy and does not assert the value is random.
+Randomness is not a property of a string, and a check that pretended otherwise would refuse legitimate
+credentials while passing crafted ones. What it guarantees is that a value which obviously was not generated
+does not start.
+
+**Every presentation is now counted**, on `carddemo.management.authentication` with an outcome of
+`established`, `refused` or `unconfigured` - three series and no caller-derived tag. The third value is not
+padding: a credential presented to a surface that issued none is a deployment fault, and a wrong credential is
+an access attempt, and an operator answers them differently. An anonymous probe against an unconfigured
+surface counts as nothing at all, because that is the ordinary traffic and counting it would bury the
+presentations that mean something. A sustained run of refusals additionally raises one warning per ten, so
+probing is visible without letting a caller choose this deployment's log volume; the warning names the count
+and nothing else.
+
+**The bound is on the diagnostic and not on the authentication, and that is a decision.** A lockout after a
+threshold of failures would let any unauthenticated caller take this deployment's metrics, exposition and
+management endpoints away from its collector - a denial of service with no recovery path, because there is one
+shared secret and no second factor behind it. Keying a lockout per caller instead would mean unbounded state
+driven by an unauthenticated header, which is the shape this module has already refused elsewhere. What makes
+guessing infeasible is the credential's own strength; what makes an attempt visible is the meter. The
+specification states the no-lockout property as a test rather than leaving it as an absence.
+
+**Rotation is documented rather than mechanised.** The credential is read once at start-up and held for the
+process lifetime, so a rotation is a deployment and not a signal, and the collector's configuration moves in
+the same change. There is no overlap window - one credential is configured at a time, which is a property of a
+single shared secret and is exactly why the meter matters: a refused series that begins where a rotation
+happened is a collector that was not updated, and a refused series with no rotation behind it is somebody
+probing. Short-lived issued credentials or mutual TLS would be stronger than all of this and are
+infrastructure provisioning, outside this executor's authority; that ceiling is stated where the variable is
+so a reviewer reads it as a boundary rather than an oversight.
+
+**Two variables were missing from the list that calls itself authoritative.** The production profile's header
+states that its variable list is the authoritative one and that the module README and any deployment runbook
+are written from it. Nothing checked that, and two guarded variables had already gone missing from it: the
+management credential itself, and the expected cloud account every bucket, queue and topic is verified
+against. Both are listed now, and the specification asserts that every guarded variable appears there, because
+a list described as authoritative and never asserted is a list that drifts.
+
+---
+
+**Part two — a screen image is not a log record, and one surface should write one record.**
+
+The online abend path logged the legacy abend area at debug level: the whole hundred-and-thirty-four-character
+image, rendered as one field. Three of its four fields are drawn from vocabularies this module owns - the
+four-character code, the eight-character culprit, the fifty-character reason. The fourth is a
+seventy-two-character operator message slot, and that one carries the text a caller-facing failure is holding.
+So a single debug switch turned the abend path into a channel that copied an arbitrary seventy-two-character
+value into centralised logging, in a format built for a 3270 screen rather than for a reader.
+
+The legacy routine moved that area into a terminal message and transmitted it to the screen the operator was
+sitting at. Rendering it into a searchable, retained, centrally collected stream is a different act with a
+different audience, and calling both "emitting the abend context" is what let the second one look like parity
+with the first. The image is gone from the log entirely - not lowered, gone - and it remains on the exception,
+where the legacy transmission of that area belongs and where the specification still asserts its exact width.
+
+**Three online abend sites bypassed the diagnostic, and one of them logged nothing.** Both of the menu
+service's abend paths built their failure directly, so a menu dispatch that terminated left no record at all -
+not the culprit, not the reason, nothing - on a path that only fires when the option catalog and the
+destination table disagree, which is precisely the condition an operator needs told about. The navigation
+service's path did log, correctly and carefully, but under its own category with its own field names, so a
+reader who searched the abend vocabulary would not find the abend.
+
+All three now record through one method. It returns the exception rather than throwing it, because all three
+sites need the failure as a value - two sit inside `Optional.orElseThrow` suppliers and one inside a lookup
+that must return - and handing it back is what let every site keep its shape and still produce the one record.
+The legacy ordering is unchanged and is the reason the method is shaped this way: the diagnostic is emitted
+before the failure is raised, exactly as the legacy displayed before abending.
+
+**Centralising created a new problem, and the fix is systemic rather than local.** The navigation culprit is
+the one abend culprit in the estate that a caller chooses, bounded to the legacy field width. Eight characters
+is enough to attack a reader twice over: `route=CA` imitates a field of the record it sits in, and a separator
+inside the same eight characters ends the record early and presents the remainder as a second, invented entry.
+Refusing only the control characters would close the splitting attack and leave the forging one open.
+
+Two things answer it. The one site whose culprit is caller-derived publishes a fixed-shape description of it -
+its length, or the position and code point of the first character that is not printable - through a
+described-culprit form whose name says exactly what it does; the value itself travels on the exception, where
+it is data rather than syntax. And the record's own rendering refuses either dangerous shape outright, so the
+guarantee does not depend on every future caller of this class remembering the rule. A value this module
+authored passes through byte for byte, which is why every record this class wrote before is unchanged and why
+the rule costs nothing on any other path.
+
+*Embodied in:* `src/main/java/com/carddemo/config/ProductionConfigurationValidator.java`
+(`validateManagementCredentialQuality`, `MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS`),
+`src/main/java/com/carddemo/config/SecurityConfig.java` (`MANAGEMENT_TOKEN_MINIMUM_BYTES`,
+`MANAGEMENT_AUTHENTICATION_METER`, `MANAGEMENT_REFUSAL_REPORT_INTERVAL`,
+`ManagementTokenAuthenticationFilter`),
+`src/main/resources/application-prod.yml` (the variable list and the setting's own commentary),
+`src/main/java/com/carddemo/service/AbendService.java` (`onlineAbend`,
+`onlineAbendWithDescribedCulprit`, `fieldSafe`, and the removal of the context-image emission),
+`src/main/java/com/carddemo/service/MenuService.java` (`optionTableAbend`, `unresolvableTargetAbend`),
+`src/main/java/com/carddemo/service/NavigationService.java` (`resolveNominatedProgram`).
+
+*Asserted by:* `src/test/java/com/carddemo/config/ManagementCredentialQualityTest.java`,
+`src/test/java/com/carddemo/config/SecurityConfigTest.java` (nest *the management credential's outcome is
+recorded*),
+`src/test/java/com/carddemo/config/ProductionConfigurationValidatorTest.java`
+(`everyGuardedVariableIsListedInTheDocument`),
+`src/test/java/com/carddemo/service/AbendServiceBoundaryTest.java` (nests *online abend* and *a field of the
+record that a caller could influence*),
+`src/test/java/com/carddemo/service/AbendServiceParityTest.java`,
+`src/test/java/com/carddemo/service/MenuServiceTest.java` (nest *a menu abend is recorded, which it
+previously was not*),
+`src/test/java/com/carddemo/service/NavigationServiceSecurityTest.java`,
+`src/test/java/com/carddemo/service/NavigationServiceRuleComplianceTest.java`.
+
+### DL-313 — A dashboard is a claim about what can be seen: every boundary this module measures now has a panel, the inventory is asserted in both directions, and no panel calls itself corroboration of a gate figure
+
+**Context.** The provisioned dashboard charted the request surface, the batch steps, the runtime and four
+application meters. It charted none of the boundaries. Every place this module talks to something outside
+itself was instrumented, paid for on every request, and invisible to the one artefact an operator opens.
+
+---
+
+**Part one — the direction the contract left open.**
+
+The dashboard already had a contract test, and it asserted a real property: every metric name the dashboard
+queries is a name the Prometheus exporter publishes. That catches the loud failure - a panel charting a name
+that does not exist renders nothing, and the test says so before anybody deploys it.
+
+It cannot catch the quiet one. A meter this module registers, tags, and relies on, that no panel reads, is
+indistinguishable from a meter that does not exist - except that it costs memory and cardinality budget and
+gives an operator false confidence that the thing is watched. Nine boundary families were in exactly that
+state, and the review named six of them.
+
+The inventory is therefore a **requirement** rather than a description. Fifteen families are named, each a
+boundary where this module talks to something outside itself or refuses something before a caller is
+authenticated, and adding a sixteenth boundary without a panel is intended to fail the build. Both directions
+are asserted: a required family with no panel fails, a required family the exporter does not publish fails,
+and a panel reading an unpublished name still fails as it always did.
+
+It is deliberately **not** every meter the module registers. The per-screen turn timers are seventeen families
+whose aggregate already appears on the per-endpoint row, and charting each one would produce a dashboard
+nobody reads - which is its own kind of blindness. The line drawn is: boundaries and refusals are required,
+internal turn detail is not.
+
+**Two further properties are asserted rather than left to a reader's eye.** Each required family must be read
+somewhere that groups by an outcome dimension, because a boundary counted without its outcome answers how much
+happened and not how much worked. And each must be read as a rate, an increase or a latency, because a bare
+counter total is a monotonic line nobody can act on. The second of those two caught a panel of my own: the
+active-execution count was charted instantaneously, which is correct for that instrument, and the rule was
+satisfied honestly by adding the longest-running duration beside it - a reading that distinguishes a job
+progressing from a job wedged, which a count alone cannot.
+
+**Every exposition name and every tag was established by execution, not by inference.** A throwaway probe
+registered each family through the same instrument type the production code uses and scraped a real
+Prometheus registry, which settled three things that a guess would have got wrong: a long-task timer publishes
+`_seconds_count`, `_seconds_sum` and `_seconds_max` and there is no `_active_count` suffix anywhere; a counter
+publishes `_total`; and an observation stopped by Micrometer's default handler carries an `error` label set to
+`none` on success and to the failure's simple type name otherwise, while its **high-cardinality key values
+become no tag at all**. That last fact is why the boundary panels group by `error` rather than by an outcome
+tag the observations never declared, and why charting the queue name or the object key was never possible -
+which is the property that keeps these series bounded.
+
+---
+
+**Part two — one number, two contradictory statements.**
+
+The batch job elapsed-time panel was titled "corroborates the Gate 3 elapsed figure". The guidance panel on
+the same canvas stated, correctly and in bold, that no panel on this dashboard is the Gate 3 figure. A reader
+who trusted the title quoted a windowed maximum as gate evidence; a reader who trusted the guidance wondered
+which panel the title meant.
+
+The panel is not wrong about what it reads - it reads the framework's own per-execution job timer, which is
+why the claim was tempting. It is wrong about what that reading is *for*: the series is scoped to the display
+window, while the quoted figure is scoped to the measured run, so that the elapsed time, the peak memory and
+the records per second all come from one run rather than from three different windows. The title now says
+"visualization, not the Gate 3 elapsed figure", joining the three panels already labelled that way, and the
+specification asserts both the word and which figure it is not - because "visualization" alone leaves a reader
+to work out what it is a visualization instead of. A whole-document rule forbids any panel from claiming to
+corroborate a gate figure again, since corroboration was the exact word that let a visualization read as
+evidence.
+
+The guidance table's own wording was softened in the same pass, from "sound as corroboration" to "useful for
+the shape of a run, never the quoted number", so the two statements now say one thing.
+
+*Embodied in:* `carddemo-java/config/grafana/dashboards/carddemo-overview.json` (the boundary row and its
+twelve panels, the corrected panel-nine title and description, and the guidance panel's boundary-row section).
+
+*Asserted by:* `src/test/java/com/carddemo/config/GrafanaDashboardMetricsContractTest.java` (nests *the
+required operational panel inventory, asserted in both directions* and *the boundary row's own honesty*, and
+the whole-document gate-claim rule in `noPanelClaimsToBeTheGateFigure`).
+
+### DL-314 — A private method is reachable from exactly one file, so its reachability is a fact rather than an opinion: three unreached helpers are deleted, the surface that kept them is documented instead of reduced, and an audit now asks the question the compiler never asks
+
+**Context.** Review named two private methods in the job-submission bridge that nothing called, and
+described them together with the class's public surface as dead maintenance paths. Reading the module for
+the same shape found a third, in the card-list service. All three had passed every gate the module
+enforces, and none of them could ever have failed one.
+
+---
+
+**Part one — what unreachable code actually costs, which is not bytes.**
+
+A private method cannot be reached from outside its own file. Its reachability is therefore decidable by
+reading one file, which makes an unreached one a fact rather than a matter of taste. What such a method
+costs is not size and not risk of execution - it never executes - but the reader's ability to tell an
+intentionally general helper from a withdrawn one. The only way to tell them apart is to look for the
+caller, and the three found here show why that matters.
+
+`deduplicationIds` built and returned the list of a submission's deduplication identifiers. Two lines
+below it, `validateDeduplicationIdentifiers` walks the same ordinals and discards each result, because the
+composition itself is the check - an identity too long to carry a card ordinal is refused when the
+identity is minted rather than seventeen cards later. A reader comparing the two would reasonably look for
+the caller that needed the list, and there was none: the materialising form was the earlier design and the
+discarding form replaced it.
+
+`newSubmissionId(String, String)` was worse than unused, because it was documented. Its javadoc said it
+derived "the compatibility identity for the date-only convenience overload" and that the form "is
+intentionally stable for a repeated date range and therefore models a retry". That had been true. It
+stopped being true when the date-only overload moved to `newSubmissionIdentity`, which appends a nonce - so
+each call became a distinct submission, which is what the appending legacy queue did with a repeated
+request. The helper was left behind and its paragraph with it, and two further paragraphs repeated the
+claim: the class javadoc said the date-only overload "remains a documented compatibility form for retries
+and must not be used to express a second run of the same period", and the overload's own summary line
+called its identity deterministic and its repeated calls retries - while the third paragraph of that same
+javadoc correctly described the nonce that makes them not retries. Three places described a design the
+code had left, one of them contradicting itself internally. The tests, meanwhile, had it right all along:
+`twoRequestsForOnePeriodShareNoDeduplicationIdentifier` asserts that a repeat shares nothing with the
+first and records why - "the appending legacy queue ran the job a second time; suppressing it is the
+parity break, not permitting it". So the delivered behaviour was correct, the delivered tests were
+correct, and only the prose was wrong, anchored by a method that existed to justify it.
+
+`BrowseResponse.recordDelivered()` answered whether a card browse delivered a record, which the source
+expresses by handling its normal and duplicate arms with one shared body. Every one of the four
+evaluations over that type is written as a multi-label `case NORMAL, DUPLICATE` arm, which states the same
+parity fact at each of the four places it applies rather than once at a distance. The predicate is what a
+sequence of `if` statements needed before the arms became multi-label. Its documentation value is real and
+is kept, moved onto the `DUPLICATE` constant, which is where a reader asking why two arms share a body
+will be standing.
+
+All three are deleted. Deleting is preferred to keeping-with-a-comment because a comment saying "no caller
+today" is a claim that has to be re-verified by every future reader, whereas the git history holds the
+same text at no ongoing cost and answers the same question exactly once.
+
+---
+
+**Part two — the surface that kept them is documented, not reduced.**
+
+Review's second observation was broader: the bridge exposes six public publishing methods and a running
+deployment reaches one of them. The report-request service calls `submitCanonicalJobImage(String, List)`
+with a complete card image and its own submission identity. The other five - a caller identity over a
+built card image, a built card image under an identity minted here, a canonical image with a minted
+identity, an unchecked stream, and a single card - are reached only by tests.
+
+They are kept, and the reason is that each states a different precondition and the differences are load
+bearing rather than stylistic. `submitCanonicalJobImage` asserts the seventeen-card count and the
+sentinel's position, so a caller that believes it is submitting the legacy job cannot silently submit
+something else; `submitJobStream` deliberately does not, because the legacy loop's own guard is a bound
+and a sentinel test rather than a fixed count, and a test that means to publish a short stream should not
+have to defeat the stronger check to do it. `writeJobSubmissionQueue` is the one-card counterpart of the
+legacy queue-write paragraph and is what lets a test drive the loop itself and observe one card's
+deduplication identifier. Removing the weaker forms would push their preconditions into their callers,
+which is where a precondition is least likely to stay correct.
+
+What was missing was not narrowing but a statement of which one carries production traffic. The class
+javadoc now names it, names the other five as the layers it is composed of, and says outright that
+anything in the class reachable from none of the six is dead rather than general and is deleted rather
+than documented. That is the sentence the three helpers needed and did not have.
+
+---
+
+**Part three — why this is an audit and not a review habit.**
+
+Nothing in the module asked the question. `-Xlint:all -Werror` has no diagnostic for an unused private
+method; the coverage floor is satisfied by the rest of a large class and says nothing about a method no
+test can reach; and a reviewer reading a four-thousand-line service does not hold every private name in
+mind. That is how three of them survived a complete checkpoint with a green build.
+
+`UnreachablePrivateSurfaceAuditTest` reads every production source and reports any private method its own
+file neither calls nor references. Four decisions in it are deliberate and each closes a way the rule
+could have been wrong rather than merely incomplete.
+
+It is sound rather than complete. It counts a call or a method reference and does not compare argument
+counts, so a dead *overload* of a live name is invisible to it - which is precisely how
+`newSubmissionId(String, String)` hid behind its no-argument sibling, and the audit's own test says so
+rather than implying a coverage it does not have. Resolving arities would mean parsing argument lists
+through generics, lambdas and nested calls, and a mistake there reports a live method as dead: a failure
+that blocks a correct change and teaches the next reader to distrust the audit. Under-reporting only lets
+a rarer case through, and that case was caught by review, which is the right place for it.
+
+Three constructs are read as reached. A private constructor is never counted, because declaring one and
+calling it from nowhere is how a class says it is not instantiable. A private method carrying any
+annotation is counted as reached, because an annotation on a private method declares that something
+outside the file may invoke it reflectively - the module's nine entities do exactly that with
+`@PrePersist` and `@PreUpdate`, one visibility level up, and a future one written private would otherwise
+be reported. And a name occurring only in prose is *not* counted: a `{@link}` documents a method, it does
+not call it, so a method whose only mention is its own documentation is dead and the audit says so.
+
+Its comment-and-literal stripper is a character state machine rather than a regular expression, and that
+is not fastidiousness. The obvious expression removes comments before literals, and this module's security
+configuration contains route patterns such as `"/api/**"` - two of whose characters open a block comment.
+A stripper that runs in that order treats everything up to the next comment close as prose and silently
+hides the calls inside it, which turns a reachable method into a reported violation. The audit's own suite
+contains that exact shape.
+
+And the analyser is under test against fabricated sources - a dead method, a method reached only by
+method reference, a method named only in a comment, an annotated method, a private constructor, a route
+pattern that opens a comment, and a name inside a string literal - because an audit that reports nothing
+is indistinguishable from an audit that examines nothing, and the module has no other way to tell those
+two apart.
+
+---
+
+**Part four — a comment binds no property, which is why the bootstrap's key table was wrong for a whole checkpoint.**
+
+The emulator bootstrap's header carries a table mapping each resource it provisions to the configuration
+key the application binds that resource from. Two of its five rows named keys no profile declares:
+`carddemo.aws.s3.bucket` and `carddemo.aws.sqs.job-submission-queue`. Both had been renamed - in the
+settings type, in every overlay, in the container composition - and the table had not followed.
+
+Nothing failed, and nothing could. The *values* were right in all seven files that state them, and forty-nine
+assertions hold them to each other; the header names keys, and a comment binds no property, so there was
+no execution path on which the wrong spelling could be observed. The cost fell entirely on a reader: an
+operator working out which variable to set for a relocated bucket was being sent to a key that has no
+effect, and would have found the stack starting cleanly and coming up short at the first submission,
+because the legacy queue write is defined errors-ignored and there is no fail-fast signal for a
+misconfigured name.
+
+The table is corrected and is now asserted rather than maintained. The assertion reads the key paths out of
+`AwsProperties`' own published constants rather than repeating them as literals, which is the whole
+mechanism: a rename moves the expected values, the table does not move with them, and the suite fails until
+someone edits the table. Three further rules close the ways the correction could decay. Every key the table
+names must resolve in the document the header calls authoritative - which is now the shared baseline rather
+than the local overlay, because the local overlay states outright that it inherits the region rather than
+restating it and therefore cannot be the authority for all five. Any key path the script mentions that no
+profile declares must say on its own line that it is withdrawn, so the two spellings can be recorded as
+history for an operator holding an old runbook without the header being able to send anyone to a dead key
+again. And the two keys under the same prefix that provision nothing here - the endpoint override, and the
+expected account identifier the production trust check requires - are asserted to be *absent* from the
+resource table and *present* in the header's prose, so a reader who does not find them among the resources
+is told they exist elsewhere rather than left to conclude they were forgotten.
+
+The same drift had reached the shared baseline's own commentary, which called six keys "the six keys under
+this prefix" after this checkpoint added a seventh that a different component binds. The sentence is now
+about what `AwsProperties` binds, the seventh key is named with the component that reads it and the reason
+it is not a component of the settings type, and the two statements no longer have to be reconciled by a
+reader counting keys.
+
+*Embodied in:* `src/main/java/com/carddemo/service/JobSubmissionService.java` (the two deleted helpers, the
+corrected class and overload javadocs, and the entry-point paragraph),
+`src/main/java/com/carddemo/service/CardListService.java` (the deleted predicate and the parity note moved
+onto `DUPLICATE`), `localstack/init/01-create-aws-resources.sh` (the corrected key table, the withdrawn-
+spelling record, the two keys outside the table, and the authoritative-document citation),
+`src/main/resources/application.yml` (the six-keys sentence, now about what the settings type binds).
+
+*Asserted by:* `src/test/java/com/carddemo/UnreachablePrivateSurfaceAuditTest.java` (the module-wide rule,
+the read floors, and the analyser's own suite),
+`src/test/java/com/carddemo/config/LocalStackBootstrapContractTest.java` (nest *the property keys the
+header's table names*), and `src/test/java/com/carddemo/service/JobSubmissionServiceSecurityTest.java`
+(`twoRequestsForOnePeriodShareNoDeduplicationIdentifier` and
+`manyRepeatedSubmissionsReceiveDistinctIdentifierSets`, which already held the behaviour the corrected
+prose now describes).
+
+### DL-315 — Evidence a run destroys is not evidence: the three files the gates author are stamped with the build that made them and uploaded before the clean that deleted them, and the sign-off gains the one row that could have failed
+
+**Context.** Three gates emit a run-scoped file into `target/gate-evidence/`: the Gate 1 byte-equivalence
+comparison, the Gate 3 measured baselines and the Gate 8 sign-off checklist. No workflow step uploaded
+them, and the reproducibility gate rebuilds from an empty `target`. Every recorded continuous-integration
+run therefore authored its own evidence and then deleted it, while the recorded evidence page quoted
+figures and named the producing artefact as though it were durable.
+
+---
+
+**Part one — the one artefact set the run authors was the one set it threw away.**
+
+The workflow uploads five artefact sets, and the comment above them states the reasoning plainly: the
+reports are uploaded before the reproducibility gate "so the clean cannot erase evidence". That was true of
+all five and false of a sixth that nobody had listed. Coverage, vulnerability, test, container-scan and jar
+artefacts are produced by *tools*, and someone adding a tool notices they have to publish its output. The
+gate evidence is produced by the module's own test tier, into a directory the module chose, and it slipped
+through the space between "the build directory is not a deliverable" and "the reports are uploaded".
+
+The consequence was specific rather than theoretical. The evidence page's Gate 1 row names
+`target/gate-evidence/gate1-byte-equivalence.md` as the artefact "written by the run that made the
+comparison"; the Gate 3 section names two baseline files "each written by the run that took the figures";
+the Gate 8 row names the sign-off checklist. Not one of the four existed anywhere after the run that wrote
+it, so a reader following the page to the artefact found nothing and had to take the transcribed figures on
+trust - which the page's own rules forbid it to ask for.
+
+The upload is placed with the other five, before the clean. Two things about the step differ from them and
+both are deliberate.
+
+It carries **no `always()` condition**. The other three report uploads do, because a failed run should still
+publish whatever coverage, scan and test output it managed to produce. This step is the opposite case:
+reaching it means every gate above passed, which means the integration tier ran, which means the three files
+exist. A condition here would be asking the step to tolerate a state that cannot arise without a defect.
+
+Its no-files-found behaviour is **`error`** rather than `warn`, for the same reason read the other way
+round. `warn` is right where absence is a legitimate outcome; here absence means the tier that writes the
+files did not write them, and the correct response to that is a failed run rather than an empty artefact
+nobody notices is empty.
+
+And the bundle is **verified by name before it is uploaded**, because the upload action's own error names
+the glob it was given rather than the file that is missing. A missing Gate 3 baseline and a missing Gate 8
+sign-off are different defects belonging to different tests, and a log line that says "no files were found"
+sends the reader to look at the wrong thing.
+
+---
+
+**Part two — a bundle nobody can attribute is a bundle nobody can use.**
+
+Each of the three producers already printed provenance, and all of it was about the *legacy* estate: the
+checkout SHA `7756d895ffeb65f7ea72aaa609e356d9899afcec` and the upstream release stamp
+`CardDemo_v1.0-15-g27d6c6f-68`. Those identify the migration. They are identical in every file this module
+will ever emit, so they say nothing about which build produced the file in front of you. Two bundles from
+two different commits were textually indistinguishable, which matters most for exactly the figures that are
+hardest to re-derive: a Gate 3 row is a property of one run on one machine, and a row whose run cannot be
+identified is a number of unknown origin.
+
+Every generated file now opens with one `Build provenance:` line. `GateEvidenceProvenance` renders it, and
+each field is chosen for a question a reader actually asks.
+
+The **build revision** is read from the `carddemo.build.revision` system property that `pom.xml` hands the
+integration tier from its own `build.revision` property. That is the same property the generated build
+information records as `source-revision`, and using it rather than a second one is the point: the published
+jar and the evidence measured against it name one commit, and there is no way to move one without the
+other. A plain local build leaves the property at its declared default and the line says `not-supplied`,
+because a build with no trustworthy commit context should say so rather than print something that looks
+like an answer.
+
+The **run identity** comes from the workflow environment - repository, run number, attempt and checked-out
+commit - and reads `local` when those are absent. The attempt is included because a re-run of one commit
+produces a second bundle and nothing else distinguishes them. The checked-out commit is stated *alongside*
+the build revision rather than instead of it, because the two answer different questions and are not always
+the same value: one says what was measured, the other says where the logs are.
+
+The **instant** is UTC, truncated to the second. A gate-evidence file is not a trace, and a varying
+sub-second field would make two otherwise identical bundles differ in a field no one reads. The **host** is
+included because a Gate 3 figure without its machine is not a measurement, and the evidence page already
+records one per row.
+
+What is deliberately absent is as considered as what is present: no user name, no working-directory path,
+no branch name, no environment dump. A provenance line travels with a published artefact, so it carries the
+few identifiers that lead a reader back to the run and nothing that describes whose machine it was.
+
+The rendering is asserted through a package-private overload taking the revision, the environment, the
+instant and the host explicitly, because neither the ambient environment nor the wall clock can be set from
+a test and a rule that could only observe the real ones would be a rule about one machine. Writing that
+suite immediately paid for itself: the first assertion for the truncation searched the rendered line for the
+fraction's digits, and the fixture revision happened to contain the same digits, so the rule was passing or
+failing on a coincidence rather than on the truncation. It is now anchored on the second it belongs to.
+
+The workflow additionally refuses to upload a bundle whose files do not name **that run's** revision. Without
+that rule a stale file left in the build directory - by a partial local run, or by a tier that failed after
+writing one of the three - could be published as this run's evidence, which is a worse failure than
+publishing nothing, because it looks like evidence.
+
+---
+
+**Part three — a checklist that cannot state a class of failure will report a pass straight through it.**
+
+The Gate 8 sign-off had nine rows: the seven items the plan's Gate 8 enumerates, plus two the plan adds for
+the named artefacts and the schema. Every row is computed from an artefact, none is a literal, and an absent
+artefact is emitted as MISSING and fails the assertion that writes the table. It is a good mechanism, and it
+signed off a state in which a review then raised thirty-one findings.
+
+That is not a contradiction, and understanding why is the whole of this part. Not one of the nine rows is
+about the boundary where this module talks to something outside itself. So a build in which every outbound
+call was unbounded, every ambiguous upload uncompensated, the trace collector unauthenticated, half the
+boundary telemetry unwatched and the terminal batch verdict capable of being false produced a sign-off with
+nine rows PRESENT - correctly, on the questions asked. The defect was the question list.
+
+A tenth row now enumerates the final-boundary criteria and, for each, resolves it to the suite that holds
+it. What the row claims is deliberately narrow: that each criterion has a guard, and that the guard is a
+suite the build *executes* rather than a file the build merely compiles. Execution is checked rather than
+assumed, by mirroring the two tiers the build declares - a file can sit in the test tree under a name
+neither tier selects, and would satisfy an existence check while holding nothing.
+
+The row does **not** re-assert the behaviours. Each named suite asserts them in detail; restating them here
+would create two places to edit, and one of the two would drift. What the row catches is the failure the
+checklist could not see at all - a criterion with no guard, whether because none was written or because one
+was deleted - and when that happens the row turns MISSING and names the criterion rather than the file.
+
+The recorded evidence page carries the same row, and one further correction beside it. Its status table read
+"No gate is PENDING and none is FAIL" and left a reader to conclude that a PASS is a standing property of the
+repository. It is not: it is the recorded result of one command on one run, bounded by what that command
+asks. The page now says so, and cites the plainest available evidence for it - that thirty-one findings were
+raised against a state in which all eight gates passed.
+
+*Embodied in:* `src/test/java/com/carddemo/support/GateEvidenceProvenance.java` (new),
+`src/test/java/com/carddemo/support/RunScopedPerformanceRecorder.java` and
+`src/test/java/com/carddemo/e2e/BatchPipelineE2ETest.java` (the stamp in the Gate 3 and Gate 1 files),
+`src/test/java/com/carddemo/e2e/GateVerificationTest.java` (the stamp, the final-boundary criteria roster
+and the tenth checklist row), `pom.xml` (the revision property handed to the integration tier),
+`.github/workflows/carddemo-java-ci.yml` (the bundle verification and the upload, both before the
+reproducibility clean), `docs/gate-evidence.md` (the durable artefact table, the provenance paragraph, the
+tenth checklist row and the bounded reading of a PASS).
+
+*Asserted by:* `src/test/java/com/carddemo/support/GateEvidenceProvenanceTest.java` (the rendered fields,
+the local and workflow shapes, the refused inputs, and the property contract with the build),
+`src/test/java/com/carddemo/config/BuildAndCiContractTest.java` (*CI uploads the gate evidence the run
+itself authors*, *an absent or foreign gate-evidence bundle fails the run visibly*, and *the build hands the
+integration tier the revision the evidence stamps*), and
+`src/test/java/com/carddemo/e2e/GateVerificationTest.java` (the ten-row checklist assertion).
+
+### DL-316 — A count in prose is a claim about the tree, so the tree is asked: every published figure about this module's own shape is measured, dated or withdrawn
+
+**Context.** Most figures in this documentation set describe the legacy estate, which does not change — 28
+programs, 544 procedure units, eleven record layouts. A smaller set describes *this delivery*: how many
+files each package holds, how many concrete services exist, how many output widths have a golden fixture,
+how many managed-version overrides the build carries, where the Gate 3 figure comes from, what the
+vulnerability claim actually claims, and how large the suite is. Every one of those was hand-transcribed at
+a moment when it was true. A checkpoint later, six were false — and each was false in a way no reader could
+detect from the document itself, because a count carries no evidence of its own correctness.
+
+---
+
+**Part one — the failure mode is transcription, not carelessness.**
+
+The architecture page's package table had drifted by exactly four packages. The drift is not mysterious: the
+four are `config`, `service`, `util` and the total, and the classes that moved them are the five this
+checkpoint's own remediation added — `AwsResourceTrustVerifier` and `MigrationVersionRecordCallback` in
+`config`, `ReportRetryTokenService` in `service`, `ObservationPropagation` and `ReportRetryTokens` in
+`util`. Nothing was neglected. The page was correct, then code was added, and a number in a second file has
+no way to hear about it.
+
+The module README's override section was worse in degree and identical in kind. It said **three** versions
+sit above the managed floor and named the three most visible. The build's delimited security-remediation
+block held **twelve**. Each of the nine unnamed overrides had been added deliberately, with a comment
+saying which coordinate it governs and which finding it clears — the block documented itself properly. What
+did not happen, nine times, was a hand-edit to a table in a different file.
+
+The remedy is not a more careful author, because the previous author was not careless. It is to stop
+transcribing. `config/DocumentedSourceCountsTest` reads each published figure and the authority that
+decides it, and fails on a disagreement:
+
+- every package-table row is counted against the directory it names, and — in the other direction — every
+  package beneath the source root that holds a Java file must have a row, so a newly created package cannot
+  be invisible to the page's own counts;
+- the service row's two figures, the arithmetic sentence that reconciles them, and the shell block the page
+  offers a reader are all recomputed from the directory, so the page cannot state one figure three ways and
+  be wrong in two of them;
+- the eleven support services the page enumerates must each exist as a class, and must each be absent from
+  the traceability matrix, because the page's claim about them is precisely that they carry no paragraph;
+  every service the matrix *does* name must exist, so the matrix stays followable in the direction it
+  promises;
+- the override table must name exactly the properties the delimited block declares, at exactly the versions
+  it pins, and the README's spelled-out count must be the block's measured size in both places it appears —
+  the section heading included, which was previously the only statement of the count that nothing checked.
+
+A third instance was found while closing the first two, and it is the most instructive of the three because
+it had a test. The operator documents publish the production profile's required environment variables — the
+ones resolved with no fallback, so that a missing one fails startup — and both said **thirteen** while the
+profile required **fourteen**: the account identifier this checkpoint added for outbound resource trust was
+absent from both lists. Worse, the module manual said **five** variables carry a default while the profile
+defaulted **six**, omitting the trusted-proxy list, and that figure had been wrong since before this
+checkpoint began. And a build assertion **pinned the wrong sentence**, requiring the manual to contain
+"Five further variables are non-secret".
+
+That last detail is the point. A test that pins prose does not make the prose true; it makes the prose
+*immovable*, and a wrong figure guarded by a green assertion is harder to correct than an unguarded one,
+because correcting it breaks the build and looks like a regression. The assertion has been narrowed to the
+distinction it was really protecting — that the manual still separates secrets from non-secrets at all — and
+the two counts and both variable lists are now measured against `application-prod.yml` itself.
+
+What the test deliberately does **not** assert is developed in part five: a figure only a run can know
+cannot be asserted by a test that does not run the tier.
+
+One further correction rode along, and it is worth recording because of how it was found rather than what it
+was. Running the complete tier — rather than only the suites a change appeared to touch — surfaced a slice
+configuration that had never been given the observation registry the staging store acquired when its S3
+boundary became observable (DL-305). Nothing in the narrower sweeps could have seen it: the class compiles,
+every unit test passes, and only a context that assembles the real collaborator fails. A full-tier run is
+the sweep; a targeted one is a sample.
+
+---
+
+**Part two — the fifth golden arrived, and the reasoning that excused its absence stayed behind.**
+
+Two documents said Gate 1 compares four output widths and listed the fifth — the 40-byte category-balance
+report line — as an output with no golden fixture. Both were written when that was true. The golden exists:
+`src/test/resources/fixtures/expected/category-balance-report.txt`, 2,120 bytes, 53 records of 40 bytes with
+no separator at all, compared as a byte array by `CategoryBalanceReportJobConfigIT`; and
+`GateVerificationTest` had already carried five widths rather than four.
+
+This is the rarer and more damaging direction of drift. An overstatement invites a reviewer to look for
+evidence and find none, which is self-correcting on contact. An *understatement* tells a reviewer that
+evidence does not exist, so they stop looking — and the work stays unrecognised while the gap it describes
+reads as accepted. Five documents now say five, and the widths table names the file.
+
+One geometric detail travelled with the correction, because a reader who measures the fixtures would
+otherwise conclude the fifth is malformed. The four record-per-line goldens carry one line feed per record,
+so a byte count divides by width-plus-one. The category-balance golden is separator-free, so its byte count
+divides by 40 exactly. Both shapes are what the emitting program writes; neither is a defect.
+
+---
+
+**Part three — a source and a corroboration are different claims, and only one of them can be cited.**
+
+The Gate 3 rows named Micrometer timers as the source of the recorded elapsed and throughput figures. They
+are not. `RunScopedPerformanceRecorder` times the run it reports and writes the file the gate cites; the
+Micrometer timers and the Grafana panels aggregate over a process lifetime, which is a different scope and
+cannot answer a question about one run. DL-313 had already settled the same point from the other side by
+refusing to let a panel title claim it corroborated a run-scoped figure. Naming the corroboration as the
+source is the same error inverted, and it matters because a reader who goes to the timers for the published
+number will not find it and cannot tell whether the number or the instrument is wrong. The recorder is now
+named as the source in every place, with the timers named as corroboration at their own scope.
+
+---
+
+**Part four — a finding suppressed is still a finding, so the claim carries the qualifier.**
+
+Gate 8 was published as "zero critical or high CVEs". The build fails on CVSS 7.0 and above, carries exactly
+one written, artifact-scoped, self-expiring suppression recorded in DL-159, and sets
+`failBuildOnUnusedSuppressionRule` so that the suppression cannot outlive the finding it answers. The
+defensible claim is therefore **zero unsuppressed** critical or high findings, which is what the documents
+now say.
+
+The qualifier is not pedantry. The documents a reviewer reads to discover whether a suppression exists were
+the documents whose phrasing implied none did. Stating the stronger claim concealed the mechanism that makes
+the weaker one trustworthy.
+
+---
+
+**Part five — one definition of what a test is, in one document, with everything else pointing at it.**
+
+Test volume is the figure most likely to be quoted and least likely to be re-measured, so its scope is now
+defined once, in `docs/gate-evidence.md`, and nothing else in the set restates a current figure.
+
+The definition has two halves. The **tiers** are the build's own inclusion rules rather than a naming
+convention: the unit tier is everything matching `**/*Test.java` except `**/*IT.java`, `**/*E2ETest.java`
+and anything under `**/e2e/**`, and the integration tier is exactly those three. A class in the `e2e`
+package whose name ends `Test` therefore belongs to the integration tier despite its name, which is why
+counting by suffix gives a different answer than the build gives. The **unit** of counting is one test
+*execution* as the surefire and failsafe reports count it, so a parameterised or repeated method contributes
+one per invocation rather than one per method. That is the whole explanation for figures in the tens of
+thousands against a few hundred classes, and it is why comparing a class count against a test count — or a
+count under this definition against the prior delivery's — measures nothing.
+
+The split between what is asserted and what is dated follows from that. **Class counts** are a property of
+the tree, so they are asserted against it under the two inclusion rules. **Execution counts** are a property
+of a run: no test can know them without being the run, and a test that re-ran the tier to count it would be
+counting itself. They are therefore published with the command and the revision that produced them, in one
+document, and treated as dated evidence rather than as a standing fact.
+
+The prior delivery's figures follow DL-256 unchanged: only the form that sums — 729 unit plus 159
+integration and end-to-end, 888 in total — is published anywhere in this set. This module's README had
+republished the breakdown that does not sum, in the course of explaining that it does not sum, which is a
+readable intention and a plain violation of the rule; it now cites DL-256 for the discrepancy instead of
+reproducing it. `docs/project-guide.md` is a prior-run artefact this work does not regenerate, and it
+carries only the summing form, so it needed nothing.
+
+---
+
+**Part six — the audit row that undercounted its own sites while describing each of them correctly.**
+
+The Gate 6 raw-SQL row explained its zero by noting that "the one advisory-lock statement" is a compile-time
+constant with its only variable bound as a parameter. The property is exactly right and there are **four**
+such statements, not one: the two advisory locks that serialise job submission and generation publication,
+the launch coordinator's reservation lock, and the transaction insert. DL-304 had already audited all four
+when it bounded their acquisition; the audit row simply never absorbed the result. The count is corrected and
+the correction attributed, because a row that silently gains three sites reads as a fresh measurement rather
+than as the fix to a stale one.
+
+*Embodied in:* `docs/architecture.md` (the delivered onboarding guide and registered navigation, the twelve
+package counts, the service arithmetic and its enumeration, the five compared widths),
+`README.md` and `docs/presentation/index.html` (five widths, the run-scoped recorder as the Gate 3 source,
+the unsuppressed qualifier), `docs/onboarding-guide.md` (the same three, the durable evidence set, and the
+fourteen required production variables), `carddemo-java/README.md` (the fifth golden and its geometry, the
+twelve-row override table, the fourteen required and six defaulted production variables, and the prior
+delivery's breakdown cited rather than reproduced), `docs/gate-evidence.md` (the counting definition, the
+dated suite and coverage figures, and the corrected raw-SQL row),
+`src/test/java/com/carddemo/batch/S3BatchStagingStoreIT.java` (the observation registry the observed S3
+boundary needs).
+
+*Asserted by:* `src/test/java/com/carddemo/config/DocumentedSourceCountsTest.java` (the package table in
+both directions, the service figures against the directory, the support-service enumeration against the
+matrix, the override table against the delimited block, the suite's class counts and counting definition
+against the build's own inclusion rules, and both production-variable counts and lists against the profile),
+and `src/test/java/com/carddemo/config/BuildAndCiContractTest.java` (the narrowed pin that no longer holds a
+figure immovable).
+
+### DL-317 — The warning-suppression audit reaches both source trees, although every other unsafe-code count stops at production
+
+**Context.** `DL-160` records why the unsafe-code audit scopes reflection counting to `src/main/java/**`:
+asserting the *absence* of a member is not expressible without reflection, so a test legitimately does what
+production code may not, and counting the test would report the suite's freedom as the module's risk. That
+reasoning is right, and it is right for every category the audit measures — process execution, native query
+construction, assembled SQL, casts to a parameterised type. All of them describe what the shipped code does
+at run time, and a test source ships nothing.
+
+**Where it stops being right.** Gate 2 is a different requirement from Gate 6. It asks for a build that
+emits no warning **and hides none**, and `@SuppressWarnings` does not describe run-time behaviour at all: it
+changes what the compiler is willing to accept, in whichever compilation unit carries it. Both trees are
+compiled by the same compiler under the same `-Xlint:all -Werror`. A suppression in a test source therefore
+conceals exactly what a suppression in a production source conceals, and the scoping argument that excludes
+tests from the other five categories *requires* including them in this one.
+
+The consequence was not theoretical. Two hand-written suppressions sat in the test tree — one on a raw
+generic Mockito mock assigned to a parameterised `ItemStreamReader` reference, one on an `Object` to
+`Set<String>` cast that only existed because a map had been declared `Map<String, Object>` when it was
+always a `Map<String, Set<String>>`. Neither carried the inline justification this gate requires. The
+published figure read zero the entire time they were there, because it was measured over production alone.
+
+**Decision.** Both suppressions are removed rather than documented: the mock became a fake declaring the
+type parameter, and the map was declared as the type it already was. Neither removal changed an assertion.
+The audit is then widened for this one construct only, and three properties of the widening are deliberate.
+
+- **The count is taken over code, not over text.** A line-containment search cannot tell an annotation from
+  a discussion of one, and the module names this annotation in eleven comments and string literals — the
+  assertions that audit it among them. `JavaSourceCensus.codeOnlyLinesOf` blanks comments, string literals,
+  text blocks and character literals while preserving line numbers, so a finding carries its file and line
+  and a mention is not a finding.
+- **The non-code mentions are asserted to exist.** A scan that silently matched nothing would report zero
+  suppressions and read as a pass. Non-empty mentions prove the scan reached text carrying the name.
+- **The two scopes are labelled wherever either is published**, in the sign-off row, in the evidence page's
+  Gate 2 and Gate 6 sections, and in the audit's own documentation. Reading one scope for the other draws a
+  wrong conclusion in both directions: it understates what was checked for suppressions and overstates what
+  was checked for reflection.
+
+**What is not claimed.** This does not widen the Gate 6 audit. Reflection, process execution, native queries
+and assembled SQL remain scoped to `src/main/java/**` for the reasons `DL-160` gives, and the evidence page
+publishes the suppression figure as the single exception rather than quietly folding the test tree into every
+row.
+
+*Embodied in:* `carddemo-java/src/test/java/com/carddemo/support/JavaSourceCensus.java` and the
+`UnsafeCodeAudit` nest of `carddemo-java/src/test/java/com/carddemo/e2e/GateVerificationTest.java`. Proven by
+`noWarningSuppressionExistsInEitherSourceTree` and `thePublishedSuppressionFiguresAreTheMeasuredOnes`.
+
+---
+
+### DL-318 — The launchers verify and lock rather than trust, so "verified, not trusted" is a property of the launcher and not of the file it reads
+
+**Context.** `DL-063` records why this module commits a Maven Wrapper at all: a clean checkout must build
+with no preinstalled Maven, and the distribution URL and its SHA-256 in
+`carddemo-java/.mvn/wrapper/maven-wrapper.properties` are the sole declaration of the version. The
+launchers themselves were taken from the canonical Apache Maven Wrapper 3.3.4 only-script distribution,
+which is the right starting point — a developer's existing expectations of `./mvnw` are part of the
+contract — but four of its properties do not hold up under the standard this module claims.
+
+**The gap, stated as what upstream actually does.**
+
+1. **The digest is optional.** Verification runs only when `distributionSha256Sum` happens to be
+   non-empty; an absent or blank value prints one note and installs an unverified archive. A guarantee
+   that can be switched off from the file being read is a property of the configuration, not of the
+   launcher.
+2. **The transport is unpoliced.** Neither the configured URL nor the `MVNW_REPOURL` rewrite of it is
+   required to be `https` or to be free of embedded credentials, and redirects are followed by whatever
+   downloader is available — including, on the authenticated path, one that answers a challenge from
+   whichever host a redirect chain ends at. The digest catches substituted *content*; it cannot catch a
+   credential handed to the wrong host, and it cannot catch the request being replayed in clear text.
+3. **The cache is trusted on existence alone.** Any directory at `MAVEN_HOME` is executed. Installation
+   moves a tree out of the system temporary directory, which on the usual layout is a recursive copy
+   across two mounts rather than a rename, and both launchers treat a failed move as success whenever
+   something already occupies the destination — which is exactly the state a previous interrupted install
+   leaves behind. One interrupted or concurrent cold start can therefore publish a partial distribution
+   that every later invocation reuses, with no repair and no revalidation.
+4. **Nothing serialises two cold starts.** Two builds beginning at once on one machine both install.
+
+**Decision.** Both launchers hold the same four-part contract, and each part fails the build closed.
+
+- **The digest is mandatory and shape-checked before anything is fetched** — present, and exactly 64
+  lowercase hexadecimal characters. The shape is checked as well as the presence because a truncated or
+  upper-case value would otherwise surface later as a mismatch and read as a tampered archive rather than
+  as a mis-edited properties file. `maven-mvnd` is consequently refused at the point of configuration,
+  with its own message: it publishes no digest this launcher could hold it to, and upstream's remedy for
+  that collision is to remove `distributionSha256Sum`, which is the one remedy this module does not
+  accept.
+- **The transport is asserted for every URL acted on** — the configured one, the `MVNW_REPOURL` rewrite,
+  and every redirect hop: `https`, no embedded userinfo, and a bounded chain. Credentials are offered
+  only to the host the properties file names. Every diagnostic that prints a URL prints it with any
+  userinfo replaced, because the rejection message has to quote the URL to be useful and must not itself
+  be the leak. The archive shape is checked against the pattern the properties file already documents as
+  a guarantee — an apache-maven `-bin.zip` — and checked *before* the cache lookup, so the same
+  configuration cannot be diagnosed on a cold machine and tolerated on a warm one.
+- **A cache counts as installed only when it is demonstrably complete** — its launcher, its `lib`
+  directory, and a `mvnw.url` marker naming that exact distribution. The marker is written while the tree
+  is still staged under a name no other invocation looks for, so the directory becomes complete before it
+  becomes visible; staging happens beside the destination so publication is a rename on one filesystem;
+  the rename is required to succeed; and the published result is re-validated by the same predicate the
+  fast path uses. An incomplete cache is set aside and rebuilt rather than executed.
+- **Installation is serialised per distribution.** The POSIX launcher locks with an atomically created
+  directory and records its pid, reclaiming the lock only once that pid is provably gone and only after a
+  guard interval, so the window between creating the directory and writing the pid can never be mistaken
+  for abandonment. The Windows launcher locks with an exclusively opened file, which is self-healing
+  without any liveness heuristic: if the invocation holding it dies the operating system closes the
+  handle, so a waiter proves abandonment by opening the lock itself, and a lock a running build still
+  holds cannot be opened and therefore cannot be stolen. Both wait a bounded time — `MVNW_LOCK_TIMEOUT_SECONDS`,
+  default 300 — re-check for a published cache on every attempt, and release before handing over.
+
+**Two consequences are worth stating rather than discovering.** A cache installed by an older wrapper
+that wrote no marker is rebuilt once and then hits the fast path forever after; that is the price of
+validating completeness, and it is paid once per machine. And the POSIX launcher keeps its JDK-only
+fallbacks — download, digest and extraction through the JDK when `wget`, `curl`, a digest utility or
+`unzip` is absent — because the alternative to a fallback here is a machine that cannot build at all;
+verification stays mandatory on every one of those paths.
+
+*Embodied in:* `carddemo-java/mvnw`, `carddemo-java/mvnw.cmd`.
+
+---
+
+### DL-319 — The Windows launcher isolates its own scope and hands nothing back to the command parser, and its diagnostics go to the error stream because stream routing is host-specific
+
+**Context.** `mvnw.cmd` is a polyglot: `cmd.exe` runs the batch lines, then re-reads the same file and
+hands it to PowerShell as a script block, which is why the batch half has to live inside a PowerShell
+block comment and why echo is suppressed per line rather than with `ECHO OFF`. The upstream launcher
+draws two further conclusions from that constraint which do not follow from it.
+
+**The gap.**
+
+1. **It runs without `SETLOCAL`**, and obtains the isolation `SETLOCAL` would give by clearing its own
+   temporaries by hand. That clears the *caller's* `MVNW_USERNAME` and `MVNW_PASSWORD` permanently, so an
+   authenticated retry in the same shell behaves differently from the first attempt, and it leaves the
+   private variables behind.
+2. **Delayed expansion is never disabled**, so under a shell started with `cmd /V:ON` an exclamation mark
+   anywhere in the checkout path, in an argument or in an environment value is expanded or stripped after
+   `%~dp0`, `%~f0`, `%*` and the `FOR` substitutions have been performed.
+3. **Values re-enter the parser as syntax.** Assignments are written unquoted, so an ampersand, a pipe or
+   a redirection character in a valid path, in `PSModulePath`, or in the resolved command is read by
+   `cmd.exe` as a command separator; the resolver's output is echoed back token by token; and the private
+   name that carries the script's own file name is trusted when it arrives pre-set.
+4. **The interpreter is assumed.** Whatever `powershell` resolves on `PATH` is executed, and when that is
+   not an interpreter the only diagnostic is `Cannot start maven from wrapper`.
+
+**Decision.** The batch half runs inside `SETLOCAL DisableDelayedExpansion`; every assignment uses the
+quoted `SET "name=value"` form; the four private names are reset unconditionally; the interpreter is
+resolved from the absolute Windows PowerShell path under `%SystemRoot%`, then its Sysnative view, then
+`pwsh.exe`, then `powershell.exe` on `PATH`, failing early with a diagnostic that names the dependency;
+the resolved distribution's own `mvn.cmd` is invoked with `CALL` so that control returns, and only the
+captured numeric status crosses back out through `ENDLOCAL & EXIT /B`. Because the clearing of
+`MVNW_USERNAME` and `MVNW_PASSWORD` now happens inside the local scope, the Maven process still inherits
+no credential while the caller keeps its own values — the behaviour upstream was reaching for, without
+the side effect.
+
+**One decision came out of running the resolver rather than reading it.** Upstream writes its diagnostics
+to the verbose stream and states that they therefore never reach standard output. That is true on Windows
+PowerShell 5.1 and false on PowerShell 7, which renders verbose and warning records on standard output —
+and standard output is the single channel the batch half reads the resolved command from. Since a captured
+token is no longer echoed back through the parser, an unexpected line on that channel is now treated as a
+failure, which would have turned a verbose run into a failed run on one of the two supported hosts. Every
+diagnostic is therefore written straight to `[Console]::Error`, which makes the guarantee unconditional:
+standard output carries exactly one line, `MVN_CMD=<path>`, on every host and in every verbosity. The
+resolved command is emitted from a single function reached only after the installed distribution has been
+validated, and the global `trap` cleans up, reports on the error stream and exits non-zero instead of
+handling the error and resuming at the next statement.
+
+*Embodied in:* `carddemo-java/mvnw.cmd`.
+
+---
+
+### DL-320 — The launchers' line endings are declared as attributes and asserted against a simulated normalising checkout, because the one input this repository cannot see is the cloner's configuration
+
+**Context.** Three files in the module are read by an interpreter that parses their first line, and the
+required ending is the opposite for two of them: `mvnw` must be LF or its shebang becomes `#!/bin/sh\r`,
+`mvnw.cmd` must be CRLF or `cmd.exe` can fail to resolve its labels, and
+`localstack/init/01-create-aws-resources.sh` must be LF because it is bind-mounted into a Linux container
+and the bytes the container reads are the bytes in the *host* checkout.
+
+**The gap.** The intended endings were described in comments and held only by the bytes that happened to
+be committed. With `core.autocrlf=true` — the setting a Windows clone commonly carries — the checkout
+rewrites `mvnw`'s 484 lines and the hook's 375 lines as CRLF. The consequences are not confined to
+Windows: the Docker builder stage copies `mvnw` into a Linux image and runs it there, so a Windows
+developer's `docker compose build` fails on a bad interpreter, and the emulator's startup hook breaks
+inside a Linux container on a host that changed nothing about the container.
+
+**Decision.** Three narrow attributes in `carddemo-java/.gitattributes` — `/mvnw text eol=lf`,
+`/mvnw.cmd text eol=crlf`, `/localstack/init/*.sh text eol=lf` — and the `mvnw.cmd` blob renormalised so
+the declaration and the stored bytes agree, leaving the working tree CRLF and the index LF. Three narrow
+rules rather than one `text=auto`, because a blanket rule would also claim the fixed-width fixtures in the
+same file, whose bytes are a record-length contract.
+
+**The attribute is asserted by running the filter, not by reading the checkout.** The bootstrap-contract
+gate already checked that the hook carries no carriage return, which is a weaker statement than it looks:
+the runner checks out with normalisation off, so that check passes whether or not anything protects the
+file. The gate now also writes the index out with `git -c core.autocrlf=true checkout-index`, which
+applies exactly the conversion a checkout applies, and asserts against those bytes — no carriage return in
+`mvnw`, its shebang exactly `#!/bin/sh`, no carriage return in the hook, and one carriage return per line
+in `mvnw.cmd`. Removing the three attributes fails that group. Declaring `text` has a second effect worth
+recording: `git diff` and `git diff --check` then read `mvnw.cmd` as text rather than reporting a carriage
+return on every line as trailing whitespace, so no `whitespace=` override is needed for it.
+
+*Embodied in:* `carddemo-java/.gitattributes`, `.github/workflows/carddemo-java-ci.yml`.
 
 ---
 

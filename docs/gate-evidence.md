@@ -23,25 +23,40 @@ and are recorded here as the interface metadata they are.
 
 ## Execution context of the recorded run
 
-A measurement without its context is not evidence. Every measured figure on this page comes from the run
-described here unless the row says otherwise.
+A measurement without its context is not evidence, and **a measurement without the tree it was taken over is
+not evidence either**. Every measured figure on this page comes from the run described here, taken over the
+revision that carries this page, unless the row says otherwise. No commit identifier is quoted anywhere on
+this page, and the omission is deliberate: a page cannot name the commit that contains it, and a page that
+names a different one sends a reader to a revision they cannot check out. What is quoted instead is the
+**command**, the **tree the command ran over** — the one this page ships in — and the **figures a re-run has
+to reproduce.**
 
 The repeated runs are not redundancy for its own sake; they are what separates the two kinds of figure this
 page carries. **Every standing result was identical across every one of those runs** — the same zero compiler
-diagnostics over the same 252 production and 533 test sources, the same merged coverage to the line, the
+diagnostics over the same production and test source counts, the same merged coverage to the line, the
 same test counts with no failure, the same byte-for-byte comparison outcomes, and the same vulnerability
 outcome. **Only the per-run timings moved**, and they moved substantially: the same 300-record posting job
-took 2,545 ms in one run and 3,713 ms in the next, on the same host and over the same input. That is the whole
+took 2,286 ms in one run and 3,713 ms in another, on the same host and over the same input. That is the whole
 argument for recording elapsed time in a dated table and recording everything else as a property of the code.
-The *Measured runs* table under Gate 3 carries two of those runs; the rest are not transcribed, because two
-runs of the same job at the same volume on the same host already make the point the table exists to make.
+The *Measured runs* table under Gate 3 carries the recorded run's three measurements together with the dated
+rows of earlier runs; nothing is transcribed twice, because runs of the same job at the same volume on the
+same host already make the point the table exists to make.
+
+**Where a standing figure moves, it moves because the tree moved, and the older figure is not kept beside
+it.** Earlier runs of earlier revisions measured smaller source, test, line and branch totals, because the
+remediations of this checkpoint added production code and the tests that cover it. Those earlier figures are
+not reconciled with this page and are not meant to be: **every standing figure here is the recorded run's**,
+and the earlier runs survive only as dated rows in the Gate 3 table, which is where a per-run measurement
+belongs. The one thing that never moves is the shape of the claim — zero compiler diagnostics, no failing
+test, byte-equal goldens, merged line coverage above the floor, and nothing unsuppressed at or above the
+vulnerability threshold.
 
 | Property | Value |
 | --- | --- |
-| Date, in UTC | 2026-08-09, build finished 06:23:15Z |
+| Date, in UTC | 2026-08-10, build finished 06:32:58Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
-| Result | `BUILD SUCCESS`, total time 11:47 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine on the same day, each `BUILD SUCCESS` and each producing identical standing results |
+| Result | `BUILD SUCCESS`, total time 11:32 min |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 549 source counts, the same single `[WARNING]` block and it the scanner's rather than the compiler's, the same 26,906 and 1,640 test cases with no failure, the same 23,094 of 24,044 lines and 7,698 of 8,600 branches across the same 491 analysed classes, the same five byte-equal Gate 1 comparisons, and the same 168 dependencies with one below-threshold finding and one written determination. Only the timings differed, which is the distinction this table exists to draw |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -50,6 +65,24 @@ runs of the same job at the same volume on the same host already make the point 
 | Database under test | PostgreSQL 16 through Testcontainers for the integration tier |
 | AWS emulation | LocalStack Community, no authentication token of any kind |
 | Module coordinate | `com.carddemo:carddemo-java:1.0.0` |
+| Sources compiled | **245** production and **549** test, each as `javac [debug parameters release 25]` under `-Xlint:all -Werror`, with no warning and no error |
+
+**Why the two class counts differ from the two source counts, stated rather than smoothed over.** The
+compiler compiled **549** test sources; the runners wrote **449** unit and **76** integration report files.
+Three populations, not one, and each is correct for its own question. Twenty of the 549 declare no test at
+all — the `support` helpers, the fixture builders and the census utilities — so no runner claims them. Four
+more are the abstract container base classes `AbstractPostgresIT`, `AbstractLocalStackIT`,
+`AbstractPostgresAndLocalStackIT` and `AbstractSignOnSourceAttributionIT`, which hold lifecycle for their
+subclasses, declare no test of their own and therefore produce no report file: the integration tier's **80**
+sources become 76 report files for that reason and no other. The unit tier has no such base class, which is
+why its source count and its report count are both 449 — and why that equality is what tells
+`e2e/GateVerificationTest` a run was unscoped rather than narrowed.
+
+**Where any other figure in this repository comes from.** A repository-setup narrative recorded a different
+pair of test counts from a run at an earlier revision on different container availability. It is not
+reconciled with this page and is not meant to be: **the authoritative source for a test count is the report
+directory of a named run at a named revision**, which is what the tables below quote and cite. Where a figure
+elsewhere disagrees, prefer the one carrying a revision.
 
 ## How to read this page
 
@@ -68,7 +101,7 @@ way:
 
 | Status | Meaning |
 | --- | --- |
-| **PASS (measured)** | The check ran in the recorded run and produced the result shown. The result is quoted or the artefact that holds it is named. |
+| **PASS (measured)** | The check ran in the recorded run — `./mvnw -B clean verify` over this tree, described in full under *Execution context* above — and produced the result shown. The result is quoted, or the artefact that holds it is named. Every **PASS (measured)** on this page means that revision and that command; where a figure comes from somewhere else, the row says so. |
 | **PENDING (not yet executed)** | No run has produced the result. The command that will produce it is named, and no figure is offered in its place. |
 | **FAIL (measured)** | The check ran and did not hold. |
 
@@ -85,12 +118,26 @@ Two conventions are load-bearing and are stated once here rather than repeated p
 
 The module's `.gitignore` excludes `/target/`, which is correct — a build directory is not a deliverable —
 and it means **none of the reports quoted below is committed**. On a developer machine they survive until
-the next `clean`. The durable record is the artefact set the **CardDemo Java CI** workflow uploads from
-`.github/workflows/carddemo-java-ci.yml`, which scopes itself into the module with
-`defaults.run.working-directory: carddemo-java`:
+the next `clean`.
+
+**State this plainly, because it is the honest limit of this page: the run quoted above has no durable
+artefact identifier, and none is invented here.** It was executed locally, so its reports lived in
+`carddemo-java/target/` on one machine and are reproducible from the named revision rather than
+retrievable from a URL. **No run of the CI workflow exists for this branch yet**, so there is no workflow
+run number, no run identifier and no artefact download to cite, and this page cites none. What is
+durable about the figures is the pairing of the **tree** with the **command**: anyone who has this page has
+the tree it was measured over, so they can re-run `./mvnw -B clean verify` from `carddemo-java/` and compare,
+which is the reproduction path this page asks a reader to take instead of trusting a number.
+
+The mechanism for durability is in place and is what a future run will populate. The **CardDemo Java CI**
+workflow at `.github/workflows/carddemo-java-ci.yml` — which scopes itself into the module with
+`defaults.run.working-directory: carddemo-java` — uploads the artefact set below on every run. Once a run
+exists, the citation to add here is its **workflow run identifier together with the commit SHA the run
+checked out**, and the artefact names are already fixed:
 
 | Uploaded artefact | Holds | Gate it is the durable record for |
 | --- | --- | --- |
+| `gate-evidence` | `gate1-byte-equivalence.md`, `gate3-pipeline-baseline.md`, `gate3-interest-calculation.md` and `gate8-sign-off.md` — the files the run itself authors | 1, 3, 8 |
 | `jacoco-coverage-reports` | the unit, integration and merged JaCoCo reports and their `.exec` data | 7 |
 | `owasp-dependency-check-report` | `dependency-check-report.html`, `.json` and `.xml` | 8 |
 | `test-reports` | the Surefire and Failsafe result XML | 1, 4, 5, 7 |
@@ -99,6 +146,27 @@ the next `clean`. The durable record is the artefact set the **CardDemo Java CI*
 
 Each is retained for 30 days and is fetched from the workflow run's own artefact list. Anything older than
 that is re-measured rather than quoted, which is the same rule the Gate 3 table applies to itself.
+
+The first row is the one the run authors rather than a tool, and it was the one row that did not exist.
+The three producing gates each wrote their file into `target/gate-evidence/`, no step uploaded it, and the
+reproducibility gate then rebuilds from a clean `target` — so every recorded run destroyed its own evidence,
+and the figures quoted further down this page named a producing artefact that no longer existed anywhere. It
+is now uploaded **before** that clean, for the same reason the other five are, and the step that does it
+differs from the other uploads in two deliberate ways: it carries no `always()` condition, because reaching
+it means the integration tier ran and therefore that the files exist, and its no-files-found behaviour is
+**error** rather than warn, because an absent file at that point is a defect in the tier that writes it
+rather than a skippable condition. A bundle is verified by name before it is uploaded, so a missing Gate 3
+baseline and a missing Gate 8 sign-off are reported as the different defects they are.
+
+**Every generated file names the build and the run that produced it.** Each begins with a
+`Build provenance:` line carrying the commit the build was told it was packaging — the same
+`build.revision` value the generated build information records, handed to the integration tier as a system
+property, so the artefact and the evidence measured against it name one commit — together with the
+repository, the workflow run number, the attempt, the checked-out commit, the UTC instant and the machine.
+A local build has no trustworthy commit context and the line says `not-supplied` and `local` rather than
+inventing either. The workflow additionally refuses to upload a bundle whose files do not name that run's
+own revision, so a stale file left in the build directory cannot be published as this run's evidence.
+Recorded in [decision-log.md](decision-log.md) DL-315.
 
 ## Status at a glance: verified versus specified
 
@@ -119,34 +187,49 @@ position above is history; the column below is the result.
 | Gate | Recorded status | Evidence quoted on this page | Command |
 | --- | :---: | --- | --- |
 | 1 — End-to-end boundary verification | **PASS (measured)** | four contracts compared byte for byte, expected equal to actual on every record and byte count; the fifth width compared by its own job test | `./mvnw -B clean verify` |
-| 2 — Zero-warning build | **PASS (measured)** | `BUILD SUCCESS`; zero compiler warnings across 252 production and 533 test sources under `-Werror` | `./mvnw -B clean verify` |
-| 3 — Performance baseline | **PASS (measured)** | twelve dated rows, six of them from the recorded day across two runs, each beside its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
+| 2 — Zero-warning build | **PASS (measured)** | `BUILD SUCCESS`; zero compiler warnings across 245 production and 549 test sources under `-Werror`; zero warning suppressions across both trees | `./mvnw -B clean verify` |
+| 3 — Performance baseline | **PASS (measured)** | eighteen dated rows, three of them from the recorded run and the rest from earlier runs of earlier revisions, each beside its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
 | 4 — Named validation artefacts | **PASS (measured)** | nine ASCII fixtures at their measured byte counts, twelve encoded datasets by name, ten seeded identities, five lookup cardinalities | `./mvnw -B clean verify` |
 | 5 — Interface contract verification | **PASS (measured)** | seven message texts over real HTTP, routing for both delivered types, seventeen cards drained from a real queue | `./mvnw -B clean verify` |
 | 6 — Unsafe and low-level code audit | **PASS (measured)** | every count zero, with the raw output of the scoped audit published | the grep list below |
 | 7 — Scope matching | **PASS (measured)** | merged line coverage 95.60% against a build-failing floor of 80% | `./mvnw -B clean verify` |
-| 8 — Integration sign-off | **PASS (measured)** | zero unsuppressed critical or high findings, dated; 544 traceability rows asserted | `./mvnw -B clean verify` |
+| 8 — Integration sign-off | **PASS (measured)** | zero unsuppressed critical or high findings, dated; 544 traceability rows asserted; ten final-boundary criteria each held by an executed suite | `./mvnw -B clean verify` |
 
 No gate is PENDING and none is FAIL. Where a figure below is a property of one run rather than of the
 code, it says so in the row that carries it.
+
+**What a PASS in this column is, and is not.** It is the recorded result of the command in the row, on the
+run named in the artefact that produced it. It is not a standing property of the repository, and it is not a
+statement that no defect exists at a boundary the gate does not examine: a review of the external-integration
+and observability boundary raised thirty-one findings against a state in which all eight of these gates
+passed, which is the plainest available evidence that a gate's PASS is bounded by what that gate asks. Gate 8
+now asks about the final boundary as well, through the tenth checklist row below, precisely so that a class
+of failure the sign-off previously could not state can turn it MISSING. Read the column together with that
+row, and re-run the command rather than quoting the column.
 
 ### Gate traceability
 
 ```mermaid
 graph LR
-    F["Nine ASCII fixtures<br/>legacy data tree"] --> S["Flyway V3 and V4<br/>reference and identity seed"]
+    F["Nine ASCII fixtures<br/>app/data/ASCII"] --> S3["Flyway V3<br/>reference and transaction seed"]
+    U["app/jcl/DUSRSECJ.jcl lines 35-44<br/>ten in-stream card images"] --> S4["Flyway V4<br/>identity seed, BCrypt hashed"]
     F --> I["Carried input fixtures<br/>module test resources"]
-    S --> B["e2e/BatchPipelineE2ETest"]
+    S3 --> B["e2e/BatchPipelineE2ETest"]
+    S4 --> B
     I --> B
-    B --> G1["Gate 1<br/>byte equivalence"]
+    B --> G1["Gate 1<br/>byte equivalence, 4 widths"]
+    C["batch/CategoryBalanceReportJobConfigIT<br/>the 40-byte width"] --> G1
     B --> G4["Gate 4<br/>named artefacts"]
-    B --> T["support/RunScopedPerformanceRecorder<br/>Micrometer timers"]
+    V["e2e/GateVerificationTest<br/>fixture names, seed cardinalities,<br/>544 rows, audit budgets"] --> G4
+    V --> G6["Gate 6<br/>unsafe code"]
+    V --> G8["Gate 8<br/>sign-off"]
+    B --> T["support/RunScopedPerformanceRecorder<br/>gate3-*.md"]
     T --> G3["Gate 3<br/>baseline established"]
     O["e2e/OnlineTransactionE2ETest<br/>real HTTP, real SQS FIFO"] --> G5["Gate 5<br/>interface contracts"]
     P["pom.xml<br/>Xlint all, Werror"] --> G2["Gate 2<br/>zero warnings"]
-    A["Scoped grep audit<br/>production tree only"] --> G6["Gate 6<br/>unsafe code"]
+    A["Scoped grep audit<br/>production tree only"] --> G6
     J["JaCoCo 0.8.15<br/>merged line floor"] --> G7["Gate 7<br/>scope tier"]
-    M["traceability-matrix.md<br/>544 rows"] --> G8["Gate 8<br/>sign-off"]
+    M["traceability-matrix.md<br/>544 rows"] --> G8
     D["dependency-check 12.1.3"] --> G8
     G1 --> G8
     G2 --> G8
@@ -172,14 +255,34 @@ cd carddemo-java
 # Gate 8's CVE scan on its own, when only the supply chain needs re-checking.
 ./mvnw -B dependency-check:check
 
-# Gates 3 and 4 have a corroborating view in the local stack, which this brings up.
-docker compose --profile observability up -d
+# Gates 3 and 4 have a corroborating view in the local stack, which this brings up. The image
+# records the version, revision and commit timestamp it was built from, and its build refuses the
+# all-zero sentinel, so the three provenance values are exported before it is built:
+export APP_VERSION="$(./mvnw -q -DforceStdout help:evaluate -Dexpression=project.version)"
+export SOURCE_REVISION="$(git rev-parse HEAD)"
+export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+docker compose up -d --build
+
+# Once that image exists, a later start needs neither the exports nor a rebuild:
+docker compose up -d
 ```
 
-The wrapper resolves its own Maven distribution and its own JDK, so neither needs to be installed and
-`JAVA_HOME` needs no export on a machine whose `java` is already a Java 25 runtime. On the recorded run
-that runtime was Temurin 25.0.3+9 at `/usr/lib/jvm/temurin-25`; if a host's default `java` is older, point
-`JAVA_HOME` at a Java 25 JDK before running the build rather than lowering `<release>`.
+**The wrapper supplies Maven, not a JDK.** The version is pinned in
+`carddemo-java/.mvn/wrapper/maven-wrapper.properties` and the launcher downloads, **verifies** and caches
+that distribution, so a clean checkout needs no preinstalled Maven. It resolves no JDK, and nothing in this
+module does: **JDK 25 is a prerequisite**, and the wrapper only locates the one already installed, through
+`JAVA_HOME` first and then `PATH`. So `JAVA_HOME` needs no export on a machine whose `java` is already a
+Java 25 runtime, and it does need one otherwise. On the recorded run that toolchain was Temurin 25.0.3+9 at
+`/usr/lib/jvm/temurin-25`; if a host's default `java` is older or is a JRE, install a Java 25 JDK and point
+`JAVA_HOME` at it — never lower `<release>`, which would change what the module is.
+
+**Every Compose service starts with the stack, because no service is behind a Compose profile.** An
+earlier revision of this page brought the stack up with `--profile observability`. No service in
+`docker-compose.yml` declares `profiles:`, so that flag selected nothing and Prometheus, Grafana and
+Jaeger started either way — the command worked, but for a reason other than the one it stated. The flag is
+removed rather than implemented: putting the observability services behind a real profile would mean a
+reader who ran the short command got a stack with no scrape target and no dashboard, and would discover it
+only when a Gate 3 corroboration produced nothing.
 
 Three notes on running these, all recorded so a reader is not surprised by them:
 
@@ -317,36 +420,42 @@ carries a filler byte, and a fixture generated at the bounds above cannot disagr
 | **Requirement** | Zero warnings and zero suppressed warnings from a clean checkout, framework-generated code excepted. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | The build log, quoted below; the gate is self-enforcing rather than reported |
-| **Recorded status** | **PASS (measured).** `maven-compiler-plugin` 3.14.1 runs with `<release>25</release>`, `-Xlint:all` and `-Werror`, so any warning fails the build rather than accumulating in a log nobody reads. |
+| **Recorded status** | **PASS (measured).** `maven-compiler-plugin` 3.14.1 runs with `<release>25</release>`, `-Xlint:all` and `-Werror`, so any warning fails the build rather than accumulating in a log nobody reads. The zero-suppression half of the requirement is measured over **both** source trees: `@SuppressWarnings` is declared nowhere in `src/main/java` and nowhere in `src/test/java`. |
 
-The lines that matter, quoted from the recorded run rather than paraphrased:
+The lines that matter, quoted from the recorded run rather than paraphrased. Every line below comes from the **same** `./mvnw -B clean verify` — the compile counts, the coverage check and the outcome are one run's, not a composite assembled from several:
 
 ```text
 [INFO] --- compiler:3.14.1:compile (default-compile) @ carddemo-java ---
-[INFO] Compiling 252 source files with javac [debug parameters release 25] to target/classes
+[INFO] Compiling 245 source files with javac [debug parameters release 25] to target/classes
 [INFO] --- compiler:3.14.1:testCompile (default-testCompile) @ carddemo-java ---
-[INFO] Compiling 533 source files with javac [debug parameters release 25] to target/test-classes
+[INFO] Compiling 549 source files with javac [debug parameters release 25] to target/test-classes
 ...
 [INFO] --- jacoco:0.8.15:check (jacoco-check-line-coverage) @ carddemo-java ---
-[INFO] Analyzed bundle 'carddemo-java' with 484 classes
+[INFO] Analyzed bundle 'carddemo-java' with 491 classes
 [INFO] All coverage checks have been met.
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  11:47 min
-[INFO] Finished at: 2026-08-09T06:23:15Z
+[INFO] Total time:  11:32 min
+[INFO] Finished at: 2026-08-10T06:32:58Z
 ```
 
-**Warning accounting, stated precisely rather than rounded off.** 252 production sources and 533 test
-sources compiled and emitted **no compiler diagnostic of any kind** — no warning, no note, no error. The
-whole log carries exactly **one** `[WARNING]` line and it is not a compiler warning: it is the
-`dependency-check` plugin reporting the single below-threshold finding recorded under Gate 8. That line is
-named here rather than netted out, because "zero warnings" is the sort of claim that is worth only as much
-as the care taken over its one exception.
+**Warning accounting, stated precisely rather than rounded off.** 245 production sources and 549 test
+sources compiled and emitted **no compiler diagnostic of any kind** — no warning, no note, no error, and
+that part is a standing property because `-Werror` would have failed the build otherwise. Every
+`[WARNING]` line the log carries comes from the vulnerability scanner rather than the compiler. The run
+quoted above carried exactly **one**, and it is the `dependency-check` plugin reporting the single
+below-threshold finding recorded under Gate 8. A run on a machine with no NVD API key configured carries a
+second, advising that an update without a key is slow. How many such lines appear is therefore a property
+of the machine rather than of the code, which is why the standing claim made here is about compiler
+diagnostics and the scanner's lines are attributed rather than counted. They are named rather than netted
+out, because "zero warnings" is the sort of claim that is worth only as much as the care taken over its
+exceptions.
 
-**Every repeat full `verify` reproduced this exactly**: the same 252 and 533 source counts, no compiler
-diagnostic, one `[WARNING]` line and it the same advisory, and `BUILD SUCCESS`. A warning count that is a
-property of the code should not move between runs of the same code, and across repeated runs it did not.
+**Every repeat full `verify` reproduced this exactly**: the same 245 and 549 source counts, no compiler
+diagnostic of any kind, the same attributed scanner advisories, and `BUILD SUCCESS`. A warning count that
+is a property of the code should not move between runs of the same code, and across repeated runs it did
+not.
 
 Two things make this a property of the code rather than of a reviewer's diligence. The wrapper is
 committed, so a clean checkout needs no preinstalled Maven and builds the same way everywhere. And
@@ -359,10 +468,60 @@ the identical compiler configuration, the identical JDK and the whole production
 rather than an aspiration; it is not the measurement above, and the figures above come from the recorded
 run.
 
-Suppressed warnings are counted under Gate 6, where the budget is three and the measured count is zero.
+**Suppressed warnings: measured over both source trees, and the measured count is zero.** This paragraph
+used to say the figure was "counted under Gate 6", and that was the wrong place to look. Gate 6's audit is
+scoped to `carddemo-java/src/main/java/**`, and that scoping is deliberate and correct *for Gate 6* — but
+Gate 2 is a different requirement with a different reach. It asks for a build that emits no warning **and
+hides none**, and `@SuppressWarnings` hides one identically wherever it is written: a test source is
+compiled by the same compiler under the same `-Xlint:all -Werror`. Pointing Gate 2 at a production-only
+count left the larger of the two trees unexamined by the one gate that forbids the construct.
+
+Two suppressions were in fact sitting in the test tree the whole time that production-only count read zero
+— `@SuppressWarnings("unchecked")` on a raw generic mock in a batch job test, and another on a cast that a
+correctly declared `Map<String, Set<String>>` made unnecessary in a controller test. Neither carried the
+inline justification this gate requires, and neither needed to exist. The mock became a typed fake reader,
+the map was declared as the type it always was, and both suppressions were deleted rather than documented.
+
+The count is now taken over **both** trees, and it is taken over code rather than over text. A line-
+containment grep cannot tell a real annotation from a discussion of one, and the module names the
+annotation in twelve comments and string literals — including the assertions that audit it and the
+paragraph you are reading about. So the measurement blanks every comment, string literal, text block and
+character literal first, preserving line numbers, and reports the file and line of anything it finds:
+
+| Scope | Sources | Suppressions in code | Mentions in comments or literals |
+| --- | ---: | ---: | ---: |
+| `src/main/java` | 245 | **0** | 0 |
+| `src/test/java` | 549 | **0** | 12 |
+| Whole source | 794 | **0** (budget 3) | 12 |
+
+The two columns are published to different standards, and the difference is worth stating. **The
+suppressions-in-code column is gated**: `GateVerificationTest` reads this table, measures both trees, and
+fails if the published figure and the measured one disagree — so a suppression cannot be added without
+either failing the build or being written down here. **The mentions column is descriptive**, measured at the
+run recorded above; only its non-emptiness is asserted, because the number moves whenever anyone writes the
+annotation's name in prose, and a gated figure that moves for a reason unrelated to the property being
+gated is a false alarm waiting to happen.
+
+Non-emptiness is asserted rather than ignored for a reason of its own: a scan that silently matched nothing
+— a broken pattern, a mistyped path, a walk that read no files — would report zero suppressions and read as
+a pass. Non-empty mentions prove the scan reached text carrying the name, which is what makes the empty code
+column mean something.
+
+**Nothing is excluded, and the requirement's own carve-out is empty.** This gate excepts framework-generated
+code, and the audit honours that exception by covering every Java source the module actually contains: 245
+under `src/main/java` and 549 under `src/test/java`, which is every `.java` file in the module outside
+`target/`. The exception turns out to have nothing to apply to. Maven creates
+`target/generated-sources/` and `target/generated-test-sources/` on every build, and in this module both are
+**empty** — no annotation processor is on the compiler path at all, which is the same decision that keeps
+the reflection count at zero under [Gate 6](#gate-6--unsafe-and-low-level-code-audit) (no Lombok, no
+MapStruct, no Immutables, no AutoValue). So the excluded set is empty because there is nothing generated to
+exclude, rather than because an exclusion was declared and then quietly widened.
+
 Any suppression added later has to carry an inline justification naming the framework construct that forces
 it, plus an entry in [decision-log.md](decision-log.md); a suppression with neither is indistinguishable
-from a warning swept under the carpet.
+from a warning swept under the carpet. The audit lives in `GateVerificationTest`
+(`noWarningSuppressionExistsInEitherSourceTree`), so a suppression added to either tree fails the build
+that adds it rather than waiting for a reader to notice.
 
 ---
 
@@ -387,10 +546,31 @@ are that record.
 | Artefact | Role |
 | --- | --- |
 | Micrometer timers on every REST endpoint and every Spring Batch step | the instrumentation, exported through the Prometheus registry |
-| `/actuator/prometheus` | where the registry is exposed; the recorded run's live endpoint carries `http_server_requests_seconds`, `carddemo_batch_posting_record_seconds`, `carddemo_online_signon_turn_seconds`, `spring_batch_job_launch_count_total` and the `jvm_memory_*` family |
+| `/actuator/prometheus` | where the registry is exposed. A scrape of the running local stack carries the framework's own series — `http_server_requests_seconds`, `spring_batch_job_launch_count_total` and the `jvm_memory_*` family — alongside this module's own, which are named `carddemo_*`: `carddemo_batch_posting_record_seconds`, `carddemo_online_signon_turn_seconds`, and, once a batch endpoint has served a request, `carddemo_batch_joblaunch_request_seconds` and `carddemo_batch_jobstatus_request_seconds` |
 | `carddemo-java/config/prometheus/prometheus.yml` | the scrape configuration, job `carddemo-app`, `metrics_path: /actuator/prometheus` |
 | `carddemo-java/config/grafana/dashboards/carddemo-overview.json` | the provisioned dashboard, "CardDemo Overview", 33 panels with per-endpoint and per-step views |
 | `support/RunScopedPerformanceRecorder` | the run-scoped measurement that produces the quotable figures |
+
+**Two kinds of meter live at that endpoint, and confusing them reads as a missing meter.** The framework's
+meters are registered when the context starts and are therefore in the very first scrape, at zero:
+`spring_batch_job_launch_count_total` is Spring Batch's own `spring.batch.job.launch.count`, published with
+`# HELP spring_batch_job_launch_count_total Job launch count`, and a scrape of a freshly started stack that
+has launched nothing shows it as `spring_batch_job_launch_count_total{application="carddemo"} 0.0`. This
+module's own timers are built at their call site and **registered on first use**, so each one is absent
+from the endpoint until the code path that records it has run once. That was confirmed rather than assumed:
+`carddemo_batch_jobstatus_request_seconds` was absent from a scrape, and after a single authenticated
+`GET /api/batch/jobs/executions/999999999` — which answers 404 — the same scrape carried
+`carddemo_batch_jobstatus_request_seconds_count{application="carddemo",job="unrecognised",outcome="absent"} 1`.
+`carddemo.batch.joblaunch.request`, declared in `api/BatchJobController` and registered in that class's
+launch-recording method, behaves identically after a launch request. So "the endpoint carries *X*" is a
+statement about a scrape taken at a moment, and for a `carddemo_*` timer the moment has to be after the
+request that creates it — which is why the row above separates the two families instead of listing them
+together.
+
+A review of this page read the framework counter as a name no meter carries and asked for it to be replaced
+by the module's launch timer. The scrape quoted above shows both exist, so neither is removed: the counter
+is attributed to Spring Batch, the module's timer is named beside it with the condition under which it
+appears, and the distinction the review was reaching for is now the point of the paragraph.
 
 ### Where each figure comes from, and where it does not
 
@@ -419,9 +599,15 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 
 | Date | Machine | Run | Records | Elapsed (ms) | Peak heap (bytes) | Records/second |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers | `postTransactionJob` | 300 | 2545 | 309288672 | 117.87 |
-| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers | `interestCalculationJob` | 100 | 377 | 175070944 | 265.01 |
-| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers | `interestCalculationJob` | 3 | 25 | 374343952 | 119.67 |
+| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 06:32:58Z | `postTransactionJob` | 300 | 2286 | 290691480 | 131.22 |
+| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 06:32:58Z | `interestCalculationJob` | 100 | 377 | 173250968 | 264.76 |
+| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 06:32:58Z | `interestCalculationJob` | 3 | 21 | 475657928 | 137.78 |
+| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 15:45:40Z | `postTransactionJob` | 300 | 2577 | 237471008 | 116.39 |
+| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 15:45:40Z | `interestCalculationJob` | 100 | 408 | 266912400 | 244.68 |
+| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 15:45:40Z | `interestCalculationJob` | 3 | 84 | 347133808 | 35.67 |
+| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers, earlier run | `postTransactionJob` | 300 | 2545 | 309288672 | 117.87 |
+| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers, earlier run | `interestCalculationJob` | 100 | 377 | 175070944 | 265.01 |
+| 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers, earlier run | `interestCalculationJob` | 3 | 25 | 374343952 | 119.67 |
 | 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers, repeat run | `postTransactionJob` | 300 | 3713 | 306491144 | 80.79 |
 | 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers, repeat run | `interestCalculationJob` | 100 | 1128 | 189050632 | 88.64 |
 | 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16 via Testcontainers, repeat run | `interestCalculationJob` | 3 | 27 | 361386064 | 110.80 |
@@ -432,9 +618,11 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 100 | 2600 | 474827040 | 38.46 |
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 3 | 107 | 235653920 | 27.91 |
 
-The first six rows are two of the runs described at the top of this page, taken on the same host within half an
-hour of each other — which is why they are the clearest illustration of what these figures are and are not:
-the same job at the same volume on the same machine differs by nearly half again in elapsed time. Every row
+The first nine rows are three full runs on the same host on the same day — the recorded run, and the two
+earlier ones described at the top of this page — and the machine column carries the label that tells them
+apart. They are the clearest illustration on this page of what these figures are and are not: the same job at
+the same volume on the same machine posted the same 300 records in **2,577 ms, 2,545 ms and 3,713 ms**, and
+the three-record accrual run took **84 ms, 25 ms and 27 ms**. Every row
 was measured by
 `support/RunScopedPerformanceRecorder` inside the integration tier and copied across verbatim from a
 generated file, with the date and the machine added here — the two things a run cannot know about itself.
@@ -486,11 +674,35 @@ last ran the suite.
 
 ### Structural change expected as a consequence, and not claimed as a result
 
-Two structural differences follow from the migration itself rather than from any tuning: set-based SQL
-replaces record-at-a-time keyed reads against indexed files, and B-tree indexes replace alternate-index
-path traversal. Both are expected to change the shape of the work the database does. **No numeric
-improvement is claimed, because there is nothing to compare against** — the legacy system published no
-figure at any volume, so an improvement could only be asserted, not measured.
+Two structural differences follow from the migration itself rather than from any tuning, and both are
+stated below with the boundary of where they apply, because the unqualified form of either would be an
+overclaim. **No numeric improvement is claimed, because there is nothing to compare against** — the legacy
+system published no figure at any volume, so an improvement could only be asserted, not measured.
+
+**Set-based SQL replaces record-at-a-time reads on the paths where the legacy work was a scan, and not
+everywhere.** Where it does apply, it applies because the legacy read a whole file and the target reads a
+set: the reference-table resolutions in the reporting service preload the two genuinely bounded tables —
+seven transaction types and eighteen categories — in one statement each, and the unbounded cross-reference
+resolution is batched over a bounded look-ahead rather than resolved key by key.
+
+Where the legacy work was a **keyed** read, the target is keyed too, and deliberately so — a keyed read is
+the faithful translation of a keyed read, and turning one into a set operation would change the record the
+program acts on. These paths remain per-key by design and are not covered by the sentence above:
+
+- Every online single-record read: an account, a card, a customer or a cross-reference fetched by its
+  business key, which is what the legacy `EXEC CICS READ` did.
+- The interest run's per-group account and cross-reference reads, and its per-category rate probe.
+- The batch read loops built on the shared step template, which read forward one record at a time because
+  the legacy `READ NEXT` loops did.
+- The three paginated browse screens, which read one bounded page per turn rather than a whole cluster. The
+  transaction-list browse issues **one additional bounded read of at most ten rows on a turn that marks a
+  row**, and none on a turn that only pages — that read re-establishes the marked row's identifier from the
+  store instead of accepting one a caller submitted, and it is recorded in
+  [decision-log.md](decision-log.md) entry DL-299.
+
+**B-tree indexes replace alternate-index path traversal.** All three alternate indexes have a B-tree
+equivalent in `V2`, and each is demonstrably reached by an index scan. Which call paths reach them is a
+separate question, and it is answered exactly rather than implied under Gate 7 below.
 
 Deliberately out of scope for the same reason, and named so their absence is not read as an oversight:
 connection-pool tuning, table partitioning, read replicas, object-store lifecycle policies, and load
@@ -594,8 +806,9 @@ routing arms of Gate 5 reachable from seeded data.
 
 Every stored credential is a **BCrypt digest** — ten independently salted digests, no two alike, none of
 them the delivered value and none of them reversible to it. The migration that applies them,
-`V4__seed_user_security.sql`, is **profile-scoped to local and test only**, so a production deployment
-migrates schema and indexes without inheriting a seeded identity. **No credential value appears on this
+`V4__seed_user_security.sql`, ships from `db/migration/seed/` and is **profile-scoped to local and test
+only** — production resolves `db/migration/schema/` alone, so a production deployment migrates schema and
+indexes without the seed script being resolved at all. **No credential value appears on this
 page**, in any migration, in any configuration file or in any production class; Gate 6 carries the audit
 that establishes it.
 
@@ -751,7 +964,7 @@ design because the module exposes no browser interface.
 | | |
 | --- | --- |
 | **Requirement** | Documented counts of raw SQL string concatenation, `Runtime.exec` usage, reflection, unchecked casts and suppressed warnings. Any count above 50 requires per-site justification. |
-| **Command** | The grep list below, scoped to `carddemo-java/src/main/java/**` |
+| **Command** | The grep list below, scoped to `carddemo-java/src/main/java/**` — except the suppression line, which is measured over both source trees because [Gate 2](#gate-2--zero-warning-build) forbids the construct outright |
 | **Evidence artefact** | The counts table and the raw output, both published here |
 | **Recorded status** | **PASS (measured).** Every count is zero. No count is above 50, so no per-site justification is required — and there are no sites to justify. |
 
@@ -759,40 +972,141 @@ design because the module exposes no browser interface.
 
 | Category | Budget | Measured | Note |
 | --- | ---: | ---: | --- |
-| Raw SQL string concatenation | 0 | **0** | All access through Spring Data derived queries or parameterized JPQL. No `createNativeQuery` anywhere. The one advisory-lock statement is a compile-time constant with its only variable bound as a parameter. |
+| Raw SQL string concatenation | 0 | **0** | All access through Spring Data derived queries or parameterized JPQL. No `createNativeQuery` anywhere. **Four** advisory-lock statements are issued through a JDBC callback rather than a repository — `PostgresJobSubmissionCoordinator`, `AdvisoryGenerationPublicationLock`, `BatchLaunchCoordinator` and `TransactionInsertRepositoryImpl` — and each is a compile-time constant with its only variable bound as a parameter, as are the fixed statements the Flyway callbacks issue. An earlier revision of this row said "the one advisory-lock statement", which undercounted the sites while stating the same true property of each; the corrected count is asserted rather than transcribed. |
 | `Runtime.exec` / `ProcessBuilder` | 0 | **0** | The one construct that could have justified process invocation — legacy job submission — is an SQS publish. |
-| Reflection (`java.lang.reflect`, `Class.forName`) | 0 | **0** | A design constraint rather than hygiene: it is why all eleven record mappers are hand-written with explicit offsets and why no annotation processor appears in the dependency set. |
+| Reflection (`java.lang.reflect`, `Class.forName`) | 0 | **0** | A design constraint rather than hygiene: it is why all **twelve** record mapper classes are hand-written with explicit offsets and why no annotation processor appears in the dependency set. Twelve classes cover eleven persisted layouts; the twelfth maps the statement job's transient work record. |
 | Unchecked casts | ≤ 5 | **0** | `-Xlint:all -Werror` promotes an unchecked operation to a build failure, so the practical count cannot exceed zero. |
 | Casts to a parameterised type, checked or not | ≤ 5 | **5** | The wider measure, published beside the narrower one so the two cannot be confused. All five are enumerated below; all five are checked. |
-| Suppressed warnings | ≤ 3 | **0** | Same mechanism. Where an unchecked generic interaction with a framework API arose, the type was carried through a typed helper rather than suppressed. |
+| Suppressed warnings | ≤ 3 | **0** | Same mechanism. Where an unchecked generic interaction with a framework API arose, the type was carried through a typed helper rather than suppressed. **This is the one row measured over both trees rather than over production alone** — 0 in `src/main/java`, 0 in `src/test/java`, 0 whole-source — because a suppression in a test source hides a warning just as effectively. Two were found in the test tree while this figure was production-scoped, and both were removed; see [Gate 2](#gate-2--zero-warning-build). |
 | Wildcard imports | 0 | **0** | Every import is explicit, so this audit can be performed by inspection rather than by resolution. |
-| `javax.*` imports | 0 | **0** | Every persistence, validation, servlet and transaction annotation imports from `jakarta.*`. Ten fully-qualified uses of the JDK's own `javax.crypto` exist in one class and are not imports; that package was never part of the Jakarta rename. |
+| `javax.*` imports | 0 | **0** | Every persistence, validation, servlet and transaction annotation imports from `jakarta.*`. **Thirteen** fully-qualified uses of the JDK's own `javax.crypto` exist across **two** classes — `SensitiveFieldCodec` and `ReportRetryTokens` — and are not imports; that package was never part of the Jakarta rename and has no `jakarta` counterpart. Both classes state the reasoning at their use sites. An earlier revision said ten uses in one class, which was true before the retry-token hash arrived. |
+
+Every figure in the table above is now **measured against `src/main/java` on each build** by
+`config/DocumentedSourceCountsTest` rather than transcribed here. That change was prompted by the one
+invariant in the table that nothing had been enforcing: the zero-`javax`-import posture was published as an
+audited result, and a later class acquired two such imports without any assertion noticing. The imports were
+withdrawn in favour of fully-qualified references, matching the convention the sibling class already
+documented, and the audit is now a build-breaking check rather than a claim. Recorded in
+[decision-log.md](decision-log.md) DL-316.
+
+
+### The fixed JDBC statements, enumerated
+
+Zero concatenation is a claim about how a statement is built, not a claim that no statement exists. A
+handful of statement constants execute over JDBC rather than through Spring Data — four advisory locks and
+the statements of the two migration callbacks — every one of them a `static final` literal of its own class,
+and every variable in one bound as a parameter:
+
+```text
+service/PostgresJobSubmissionCoordinator.ACQUIRE_LOCK_SQL      SELECT pg_advisory_xact_lock(?, ?)
+batch/step/AdvisoryGenerationPublicationLock.ACQUIRE_LOCK_SQL  SELECT pg_advisory_xact_lock(hashtextextended(?, 0))
+batch/BatchLaunchCoordinator.TRY_LOCK_SQL                      SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))
+repository/TransactionInsertRepositoryImpl (inline constant)    SELECT pg_advisory_xact_lock(?)
+service/SeededIdentifierSealingCallback.SELECT_CUSTOMER_IDENTITIES
+                                                               SELECT cust_id, cust_ssn, govt_issued_id FROM customer
+service/SeededIdentifierSealingCallback.UPDATE_CUSTOMER_IDENTITIES
+                                                               UPDATE customer SET cust_ssn = ?, govt_issued_id = ? WHERE cust_id = ?
+config/ProductionSeedRejectionCallback.TABLE_EXISTS             SELECT count(*) FROM information_schema.tables ... (name bound)
+config/ProductionSeedRejectionCallback.SELECT_APPLIED_VERSIONS SELECT version FROM flyway_schema_history WHERE success = TRUE ...
+config/ProductionSeedRejectionCallback.COUNT_SEEDED_SIGN_ON_IDENTITIES
+                                                               SELECT count(*) FROM user_security WHERE sec_usr_id IN (...)
+config/ProductionSeedRejectionCallback.SEEDED_VOLUMES          five SELECT count(*) FROM <table> constants, one per seeded table
+```
+
+Four of them are advisory locks, which is why the earlier wording said "the one advisory-lock statement" —
+there are four, in four classes, and they differ: two hash a text key, one takes a namespace and a key, one
+takes a single key. The rest belong to the two migration callbacks, which run before any repository exists
+and therefore cannot use one. Several execute through `Statement.executeQuery(sql)` rather than a prepared
+statement, and that is safe for the same reason as the rest and for one more: the `sql` argument is always
+one of the calling class's own constants, never a value that reached it from configuration, a job parameter
+or a request.
 
 ### The audit command, verbatim
 
+**Four commands, not one.** A single forbidden-token grep cannot answer three of the five categories: a
+cast is a *shape* rather than a token, and "SQL built from strings" is a question about how a literal is
+*joined* rather than about whether a literal exists. Earlier revisions of this page published a cast check
+narrowed to `List`, `Map`, `Set` and `Collection` targets, which returns nothing here — not because no cast
+to a parameterised type exists, but because the five that do exist target `ConnectionCallback` and
+`PreparedStatementCallback`. A check that cannot see the sites the same page enumerates is not a check, so
+it is replaced:
+
 ```bash
 cd carddemo-java
-grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery|@SuppressWarnings' src/main/java/
-grep -rnE '\(\s*(List|Map|Set|Collection)\s*<' src/main/java/ | grep -E '\)\s*[a-zA-Z_]'   # unchecked generic cast candidates
+
+# 1 - the forbidden constructs of Gate 6's own scope. Expect no output at all.
+grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery' src/main/java/
+
+# 2 - every cast whose target is a parameterised type. Expect exactly the five sites named below.
+grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/java/
+
+# 3 - SQL assembled from anything other than a literal. Expect no output at all.
+grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
+
+# 4 - warning suppression, over BOTH trees: Gate 2's scope is not Gate 6's. Expect no output at all.
+grep -rn '@SuppressWarnings' src/main/java/ src/test/java/
 ```
+
+The suppression line is deliberately the only one that reaches `src/test/java/`. It is also the only one
+whose published figure is not taken from `grep` alone: a grep counts a line that mentions the annotation as
+readily as a line that carries it, and this module mentions it in twelve comments and literals. The figure
+in the table is measured over code with comments, string literals and text blocks blanked, which is what
+`GateVerificationTest.noWarningSuppressionExistsInEitherSourceTree` asserts. The `grep` above is published
+so a reader can reproduce the raw population; the lines it returns are counted as mentions under
+[Gate 2](#gate-2--zero-warning-build), and none of them is an annotation.
 
 ### The raw output
 
-Published rather than summarised, because a count without its output is an assertion:
+Published rather than summarised, because a count without its output is an assertion. Taken over the
+**245** production sources of the tree this page ships with, so a reader can re-run each line and compare:
 
 ```text
-$ grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery|@SuppressWarnings' src/main/java/
+$ grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery' src/main/java/
 $ echo $?
 1
 
-$ grep -rnE '\(\s*(List|Map|Set|Collection)\s*<' src/main/java/ | grep -E '\)\s*[a-zA-Z_]'
-$ echo $?
-1
+$ grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/java/ | wc -l
+5
+
+$ grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
+src/main/java/com/carddemo/service/MenuService.java:527:                "SELECT OPTION " + optionNumber,
 ```
 
-Both commands produce **no output at all** over 252 production sources; an exit status of 1 from `grep` is
-the no-match status, which is the result this gate wants. Per-pattern counts, for a reader who prefers a
-number to an absence:
+Command 1 produces **no output at all**; an exit status of 1 from `grep` is the no-match status, which is the
+result this gate wants. Command 2 produces exactly five lines, which is the budget rather than a coincidence,
+and they are enumerated below.
+
+**Command 3 produces exactly one line, and publishing it is the point.** The line is not SQL: it is the
+legacy menu prompt `SELECT OPTION` joined to the option number the user typed, reproduced from the 3270
+screen text in `service/MenuService`. Nothing about it reaches a database. It is exactly the false positive a
+keyword grep cannot avoid, and it is why the authoritative census requires a **clause** keyword — `FROM`,
+`INTO`, `SET`, `WHERE`, `TABLE`, `VALUES`, `INDEX` or `SEQUENCE` — in addition to a leading statement verb: a
+prompt reading `SELECT OPTION` has the verb and no clause, so the census does not count it as a query at all
+and there is nothing for it to have assembled. The gated figure is the census's, and it is **zero**; this
+line is published rather than filtered out of the command, because a grep whose output is edited to agree
+with a claim is no longer evidence for it.
+
+**Why commands 2 and 3 are written narrowly, since a looser pattern looks more thorough and is worse.**
+Making the type argument optional, so that a cast to a bare type or a type variable is admitted as well —
+`grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*(<[^<>()]*>)?\s*\)\s*[A-Za-z_$(]' src/main/java/` — matches **163**
+lines, and **83** of them carry no cast at all: they are comment text and message strings in which a
+parenthesised word happens to precede an identifier. Command 3 is already the loose form of its own
+question, and the single line it returns is the screen prompt above rather than a query; loosening it
+further, to any literal joined to a value, matches **1,441** lines, which is a census of string formatting.
+`e2e/GateVerificationTest` resolves both properly — it blanks comments and string literals before matching a
+cast, and it measures a query by its own shape rather than by the words it contains — which is why its
+figures are the authoritative ones and these commands are the reproducible approximation of them.
+
+**The SQL census behind command 3.** The same test counts a query-string literal when it opens with a
+statement verb *and* carries a clause keyword. The production tree holds **17** such literals: seven JPQL
+`@Query` declarations — two on `AccountRepository`, two on `TransactionRepository`, and one each on
+`CustomerRepository`, `TransactionCategoryBalanceRepository` and `UserSecurityRepository` — and ten
+native-SQL constants, eight in `config/ProductionSeedRejectionCallback` and two in
+`service/SeededIdentifierSealingCallback`. **Zero of the 17 is joined to a non-literal on either side.**
+Every variable reaches a statement as a bound `?` placeholder or a named JPQL parameter, which is what makes
+the raw-concatenation count zero rather than merely small.
+
+Per-pattern counts, for a reader who prefers a number to an absence:
 
 ```text
 java\.lang\.reflect    0
@@ -800,9 +1114,17 @@ Class\.forName         0
 Runtime\.getRuntime    0
 ProcessBuilder         0
 createNativeQuery      0
-@SuppressWarnings      0
 import ....*;          0     # wildcard imports
 import javax\.         0
+```
+
+The suppression figure is reported separately because its scope and its method both differ. Over
+`src/main/java` and `src/test/java` together — 794 sources — the raw `grep` returns **twelve** lines and the
+code-only measurement returns **zero**:
+
+```text
+@SuppressWarnings   raw grep, both trees       12     # every one a comment or an asserted-on literal
+@SuppressWarnings   code only, both trees       0     # budget 3, and this is the gated figure
 ```
 
 ### The five casts to a parameterised type
@@ -813,11 +1135,11 @@ parameterised type are five**, and a reader who runs a cast census will find tho
 here rather than left to look like a contradiction:
 
 ```text
-service/PostgresJobSubmissionCoordinator.java:104     (ConnectionCallback<Void>)
-batch/step/AdvisoryGenerationPublicationLock.java:127 (ConnectionCallback<Void>)
-batch/BatchLaunchCoordinator.java:165                 (ConnectionCallback<JobExecution>)
-repository/TransactionInsertRepositoryImpl.java:68    (PreparedStatementCallback<Void>)
-config/FlywayConfig.java:590                          (ConnectionCallback<Void>)
+service/PostgresJobSubmissionCoordinator.java:226     (ConnectionCallback<Void>)
+batch/step/AdvisoryGenerationPublicationLock.java:135 (ConnectionCallback<Void>)
+batch/BatchLaunchCoordinator.java:399                 (ConnectionCallback<JobExecution>)
+repository/TransactionInsertRepositoryImpl.java:94    (PreparedStatementCallback<Void>)
+config/FlywayConfig.java:673                          (ConnectionCallback<Void>)
 ```
 
 Every one is a lambda cast to a functional interface, present only to select between overloads of the same
@@ -838,15 +1160,26 @@ grep -rlE '(CREATE|INSERT|SELECT|ALTER|UPDATE)[[:space:]]' src/main/resources/db
 ```
 
 ```text
-src/main/resources/db/migration/V1__create_schema.sql
-src/main/resources/db/migration/V2__create_indexes.sql
-src/main/resources/db/migration/V3__seed_reference_data.sql
-src/main/resources/db/migration/V4__seed_user_security.sql
+src/main/resources/db/migration/schema/V1__create_schema.sql
+src/main/resources/db/migration/schema/V2__create_indexes.sql
+src/main/resources/db/migration/seed/V3__seed_reference_data.sql
+src/main/resources/db/migration/seed/V4__seed_user_security.sql
 ```
 
 Four files, four phantom violations, and not one of them is application code assembling a statement at run
 time. Test sources are excluded on the same principle: an assertion helper legitimately uses constructs
 production code does not, and counting them would report the test suite's freedom as the module's risk.
+
+**The one exception, and why it is an exception rather than an inconsistency.** The warning suppression is
+audited over both trees. The other categories measure what the shipped code does at run time, and a test
+source ships nothing — a helper that opens a process or loads a class by name is exercising the module, not
+exposing it. A suppression is not like that. It changes what the compiler is willing to accept, it does so
+in whichever compilation unit carries it, and both trees are compiled by the same compiler under the same
+`-Xlint:all -Werror`. So the same reasoning that excludes test sources from five of these categories
+*requires* including them in the sixth, and the scope label on the row says which is which. Reading one
+scope for the other draws the wrong conclusion in either direction: a reader who assumes the suppression
+figure is production-only understates what was checked, and a reader who assumes the reflection figure
+covers the test tree overstates it.
 
 ### Why the zero reflection count is a design constraint
 
@@ -918,27 +1251,57 @@ it: a salted digest cannot be compared by equality, so `findBySecUsrIdAndSecUsrP
 `existsBySecUsrIdAndSecUsrPwd` and `findBySecUsrPwd` do not exist and cannot be added by convention, which
 `repository/UserSecurityRepositoryIT.java` asserts through its frozen-contract nest.
 
-**Where the value does appear, stated exactly rather than approximately.** Three documentation files carry
-it as a value, and naming all three is the point of an audit — omitting one to make the finding smaller
-would be the failure this section exists to prevent:
+**Where the value does appear, measured mechanically rather than classified by hand.** The distinction that
+matters in documentation is whether the token stands alone — which is a value — or is welded into a longer
+identifier such as a datasource, key-store, container or shell variable name — which is a name. That is a
+rule a machine can apply, so it is applied rather than asserted. Run this over the published set and compare
+it with the table beneath:
 
-| File | Occurrences as a value | What it is |
-| --- | ---: | --- |
-| the estate `README.md` at the repository root | 3 | the sign-on instructions for the legacy demonstration application, which is what that README is the authority for |
-| [onboarding-guide.md](onboarding-guide.md) | 1 | one sample sign-on request, so a newcomer can reach the local stack |
-| the prior delivery's `project-guide.md` | 1 | one sample sign-on request in that delivery's own walkthrough |
+```bash
+cd "$(git rev-parse --show-toplevel)"
+python3 - <<'PY'
+import pathlib, re
+cards = pathlib.Path('app/jcl/DUSRSECJ.jcl').read_text().splitlines()[34:44]
+secret = {c[48:56] for c in cards}.pop()          # never printed
+standalone = re.compile(r'(?<![A-Za-z0-9_])' + re.escape(secret) + r'(?![A-Za-z0-9_])')
+published = ['README.md', 'carddemo-java/README.md', 'docs/onboarding-guide.md',
+             'docs/project-guide.md', 'docs/architecture.md', 'docs/decision-log.md',
+             'docs/gate-evidence.md', 'docs/index.md', 'docs/traceability-matrix.md',
+             'docs/presentation/index.html', '.github/workflows/carddemo-java-ci.yml']
+for name in published:
+    path = pathlib.Path(name)
+    if not path.is_file():
+        continue
+    text = path.read_text(errors='replace')
+    raw = text.count(secret)
+    if raw:
+        print(f'{name:46s} raw={raw:3d}  as a value={len(standalone.findall(text))}')
+PY
+```
 
-Two further documentation files — [architecture.md](architecture.md) and
-[decision-log.md](decision-log.md) — contain the word only inside a setting name such as the database or
-key-store credential variable, never as a value. The module's own README is the same: every one of its
-occurrences is a variable name, and where it shows a sign-on request it reads the value interactively into a
-shell variable rather than printing it.
+What it reports, over the whole published set, in the recorded run:
 
-All three value occurrences describe the sample login of a demonstration application whose ten identities
-are published in the upstream project, and none of them is a stored secret of this module: what the module
-stores is ten salted digests, and what production reads is an environment reference with no fallback.
-**This page prints no credential value of any kind** — the audit script above is written so that it cannot,
-and running it over the published documentation reports no hit in this file.
+| File | Raw hits | **Occurrences as a value** | What the raw hits are |
+| --- | ---: | ---: | --- |
+| the estate `README.md` at the repository root | 5 | **2** | The two values are the legacy sign-on instructions for the administrator and the standard identity, which is what that README is the authority for. The other three are the `SEED_…` shell variable of a sign-on example that reads the credential interactively and unsets it afterwards |
+| the prior delivery's `project-guide.md` | 2 | **1** | One sample sign-on request in that delivery's own walkthrough. The other hit is a container variable name |
+| `carddemo-java/README.md` | 10 | **0** | Every hit is a variable name — the datasource, dashboard-admin, key-store, wrapper-authentication and `SEED_…` variables. Its two sign-on examples read the credential interactively and the second unsets it afterwards |
+| [onboarding-guide.md](onboarding-guide.md) | 2 | **0** | Both are setting names, the datasource and key-store credentials. Its sign-on example reads the credential into a shell variable that is never echoed |
+| [architecture.md](architecture.md) | 2 | **0** | Setting names in the production-secret inventory |
+| [decision-log.md](decision-log.md) | 4 | **0** | A datasource setting name, a hashing-strength constant name, and two mentions of the wrapper-authentication variable an entry explains the scoping of |
+| `.github/workflows/carddemo-java-ci.yml` | 1 | **0** | A container variable name, and the value it is given is the throwaway local one, not this |
+| **this page**, and every other published page | 0 | **0** | Not present in any form |
+
+**Three value occurrences in total, across two files.** An earlier revision of this section reported three as
+well but distributed them differently — two of the three were attributed to pages that carry only setting
+names, and one of the estate README's two was missed. Both errors came from counting raw hits and reasoning
+about them in prose, which is precisely why the classification is now a script whose output is printed above.
+
+All three describe the sample login of a demonstration application whose ten identities are published in the
+upstream project, and none of them is a stored secret of this module: what the module stores is ten salted
+digests, and what production reads is an environment reference with no fallback. **This page prints no
+credential value of any kind** — both scripts here are written so that they cannot, and both report zero
+hits in this file.
 
 ---
 
@@ -949,7 +1312,7 @@ and running it over the published documentation reports no hit in this file.
 | **Requirement** | The extended specification tier: multi-subsystem batch processing, file I/O, inter-program calls, JCL orchestration and AWS service integration, with at least 80% line coverage. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/site/jacoco-merged/index.html` — the report over the merged unit and integration data, which is the data the failing check measures. `target/site/jacoco/index.html` and `target/site/jacoco-it/index.html` are the per-tier reports and are informational: either alone understates the figure. A report produced by a scoped run is not this artefact and cannot occupy its path — the `scoped-tests` profile writes under `target/scoped-site/` (DL-284) — so a figure quoted from here always comes from a full unscoped `verify`. |
-| **Recorded status** | **PASS (measured).** Merged line coverage 95.60% against a build-failing floor of 80%. |
+| **Recorded status** | **PASS (measured).** Merged line coverage 96.05% against a build-failing floor of 80%. |
 
 ### The acceptance criterion, stated precisely
 
@@ -964,32 +1327,123 @@ The recorded run's figures, read from the merged report:
 
 | Metric | Covered | Total | Percentage | Gated |
 | --- | ---: | ---: | ---: | :---: |
-| **Line** | 22,072 | 23,089 | **95.60%** | **yes, floor 80%** |
-| Branch | 7,414 | 8,324 | 89.07% | no |
-| Instruction | 96,348 | 100,382 | 95.98% | no |
-| Method | 4,257 | 4,316 | 98.63% | no |
+| **Line** | 23,094 | 24,044 | **96.05%** | **yes, floor 80%** |
+| Branch | 7,698 | 8,600 | 89.51% | no |
+| Instruction | 100,151 | 104,011 | 96.29% | no |
+| Method | 4,411 | 4,464 | 98.81% | no |
 
-The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 484 classes` followed by
-`All coverage checks have been met.` **Every repeat run measured these figures to the line** — 22,072 covered of
-23,089 in each — which is what a coverage figure should do when the code has not changed, and is the reason
+The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 491 classes` followed by
+`All coverage checks have been met.` **Every repeat run measured these figures to the line** — 23,094 covered of
+24,044 in each — which is what a coverage figure should do when the code has not changed, and is the reason
 it is recorded here as a property of the code rather than in the dated table under Gate 3.
 
 Per tier, which is why the merged report and not either component is the gated artefact:
 
 | Report | Line | Branch |
 | --- | ---: | ---: |
-| Unit only — `target/site/jacoco/` | 93.96% | 88.09% |
-| Integration only — `target/site/jacoco-it/` | 75.96% | 59.84% |
-| **Merged — `target/site/jacoco-merged/`** | **95.60%** | **89.07%** |
+| Unit only — `target/site/jacoco/` | 94.58% | 88.65% |
+| Integration only — `target/site/jacoco-it/` | 75.07% | 59.55% |
+| **Merged — `target/site/jacoco-merged/`** | **96.05%** | **89.51%** |
+
+One asymmetry in that table is worth stating rather than leaving for a reader to trip over. The unit row and
+the merged row reproduce **to the line** on every run; the integration row moves by a tenth of a point or so
+between runs, because that tier's own coverage depends on container-backed execution and on which of two
+equivalent paths a real service takes. It is the merged figure that is gated and the merged figure that is
+stable, so the small movement below it is a property of measuring one tier in isolation rather than a change
+in the code. Per [decision-log.md](decision-log.md) DL-316 these are dated evidence from a run rather than
+asserted properties of the tree, which is why no test pins them.
 
 The integration tier alone sits below the floor, which is expected and is not a finding: it exercises wiring
 and boundaries, not every branch of every validator. Quoting it as the module's figure would understate the
-suite by nearly twenty points, and quoting the unit tier alone would omit everything only a real container
+suite by more than twenty points, and quoting the unit tier alone would omit everything only a real container
 reaches.
 
-The suite behind those figures, from the recorded run's own report directories: **26,235 unit tests across
-434 classes** and **1,601 integration and end-to-end tests across 75 classes** — 27,836 in total, with **zero
-failures, zero errors and zero skips**.
+### How this document counts tests, and why nothing else restates the figure
+
+This is the **only** place in the documentation set that publishes a current test figure. Every other
+document points here, because a count restated in a second file has no way of hearing that the first one
+changed — the failure mode recorded in [decision-log.md](decision-log.md) DL-316.
+
+**The two tiers are the build's inclusion rules, not a naming convention.** The unit tier is everything
+matching `**/*Test.java` except `**/*IT.java`, `**/*E2ETest.java` and anything beneath `**/e2e/**`; the
+integration tier is exactly those three. A class in the `e2e` package whose name ends `Test` therefore
+belongs to the **integration** tier in spite of its name, so counting by filename suffix gives a different
+answer than the build gives.
+
+**One test is one test *execution*, as the surefire and failsafe reports count it.** A parameterised or
+repeated method contributes one per invocation rather than one per method. That is the whole explanation for
+figures in the tens of thousands against a few hundred classes, and it is why a class count and a test count
+cannot be compared with one another — or with the prior delivery's figures below, which were taken under a
+different convention.
+
+**Class counts are asserted; execution counts are dated.** A class count is a property of this source tree,
+so `config/DocumentedSourceCountsTest` measures it against the tree under the two rules above and fails the
+build on a disagreement. An execution count is a property of a run: only a run can know it, and a test that
+re-ran the tier in order to count it would be counting itself. Execution counts are therefore recorded here
+as measured evidence rather than as standing fact, and the revision that produced them is the one stamped
+into the evidence bundle that same run wrote — see [DL-315](decision-log.md) and the durable-artefact table.
+
+The figures below are **read out of the runners' own XML**, not counted by hand. That distinction is the
+point of this subsection: an earlier revision published 26,235 unit and 1,601 integration tests, and by the
+time it was read the tree had moved underneath it — the numbers were a transcription of a run nobody could
+still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
+
+The suite behind those figures is the whole estate rather than a sample: the unit tier runs 26,906 test
+executions across 449 classes and the integration and end-to-end tier runs 1,640 across 80 classes,
+under the two inclusion rules stated above. Those class counts are the asserted half of the sentence —
+`config/DocumentedSourceCountsTest` measures both against this tree and fails the build on a
+disagreement — and the execution counts beside them are the dated half, read out of the runners' own
+XML on the recorded run.
+
+| Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Unit | `target/surefire-reports/` | 449 | 26,906 | 0 | 0 | 0 |
+| Integration and end-to-end | `target/failsafe-reports/` | 76 | 1,640 | 0 | 0 | 0 |
+| **Whole suite** | both directories | **525** | **28,546** | **0** | **0** | **0** |
+
+Derive them for yourself from any completed unscoped run. One report file per top-level class, with nested
+classes rolled into their outer class's file, so the file count is the count of classes that **ran**:
+
+```bash
+cd carddemo-java
+for dir in target/surefire-reports target/failsafe-reports; do
+  printf '%-28s classes=%s tests=%s\n' "${dir}" \
+    "$(find "${dir}" -maxdepth 1 -name 'TEST-*.xml' | wc -l | tr -d ' ')" \
+    "$(find "${dir}" -maxdepth 1 -name 'TEST-*.xml' -exec grep -hoE '<testcase[[:space:]/>]' {} + | wc -l)"
+done
+```
+
+**Why the integration row's 76 is not the 80 named in the paragraph above, since the two look like the same
+number and are not.** The paragraph counts the tier's test *sources* — what the build's include patterns
+claim — and the table counts the report files a run *produced*. Four of the 80 are the abstract base classes
+`AbstractPostgresIT`, `AbstractLocalStackIT`, `AbstractPostgresAndLocalStackIT` and
+`AbstractSignOnSourceAttributionIT`, which hold container lifecycle for their subclasses and declare no test
+of their own, so they run as part of every subclass and produce no report file of their own. The unit tier has
+no such base class, which is why its two figures are both 449 and why the equality is what tells
+`GateVerificationTest` the run was unscoped.
+
+**The count is of `<testcase>` elements, not of the `tests` attribute, and the difference is real.** The
+attribute on `<testsuite>` counts *distinct* testcase names, so where two nests of one class each declare a
+method of the same name it counts one. Across this suite that undercounts by **150** — 148 in the unit tier
+and 2 in the integration tier. The element count is what the runners' own console totals report, so it is the
+figure a reader of the build log sees, and it is therefore the figure published above and the figure both
+mechanisms below derive.
+
+**Two mechanisms keep the table from drifting again, and they cover different halves of it.**
+
+`e2e/GateVerificationTest` reconciles the **unit** row inside the build. By the time the integration tier
+runs, `target/surefire-reports/` is complete, so the class count and the test count are both readable — and
+the class count is what tells the test whether the run was unscoped: it is compared against the number of
+concrete unit test sources the runner's own include patterns discover. When the two agree the run was
+complete and the published row must match exactly; when they do not the run was narrowed with `-Dtest`, and
+the row is reported as PENDING rather than failed, because a scoped run measures a subset by design.
+
+The **integration** row cannot be reconciled from inside the same run, and saying so is more useful than
+pretending otherwise: `GateVerificationTest` is itself one of the classes in that tier, so its own report
+does not exist while it executes and neither do those of the classes after it. That row is therefore
+reconciled where both directories are complete — the CI workflow's *Reconcile the published test totals*
+step, which runs after `verify`, derives all four figures with the command above and **fails** on any
+mismatch. Locally, the same command run after `./mvnw -B clean verify` gives the same answer.
 
 **The prior delivery's measured shape, cited for context and attributed as its own.** The delivery that
 preceded this one recorded **888 tests passing — 729 unit plus 159 integration and end-to-end** — at **81.5%
@@ -1015,31 +1469,56 @@ of its own and not a variant of any of the other three. [architecture.md](archit
 count and names the fourth, and `e2e/GateVerificationTest` asserts that it does, so the two pages cannot
 drift apart. The same discovery is what added the fifth golden-backed width under Gate 1.
 
-### The three alternate-index equivalents, and where the third one's predicate lives
+### The three alternate-index equivalents: which finder declares each, and which call path reaches it
 
-The `File I/O` row above names three alternate indexes. Two of them are reached by a repository finder
-and one is not, which is a design decision rather than an omission and is worth naming here because a
-reader auditing the row will look for three finders and find two:
+The `File I/O` row above names three alternate indexes. All three have a non-unique B-tree equivalent in
+`V2`, and all three have a repository finder that is measured against that index. **None of the three is
+reached by a production call path**, and that is stated plainly here because it is the kind of claim a
+reader audits and because an earlier revision of this page asserted the opposite for two of them:
 
-| Alternate index | B-tree equivalent in `V2` | Reached by |
-| --- | --- | --- |
-| `CARDAIX` on `CARD-ACCT-ID` | `idx_card_card_acct_id` | `CardRepository.findByCardAcctId` |
-| `CXACAIX` on `XREF-ACCT-ID` | `idx_card_cross_reference_xref_acct_id` | `CardCrossReferenceRepository.findByXrefAcctId` |
-| The `TRANSACT` timestamp index on `TRAN-PROC-TS` | `idx_transaction_tran_proc_ts` | **no repository finder** — the reporting window is applied over the unloaded sequential file, which is where the legacy `INCLUDE COND` applied it. DL-199. |
+| Alternate index | B-tree equivalent in `V2` | Finder that declares it | Reached by a production call path |
+| --- | --- | --- | --- |
+| `CARDAIX` on `CARD-ACCT-ID`, `KEYS(11 16)` | `idx_card_card_acct_id` | `CardRepository.findByCardAcctIdOrderByCardNumAsc(String, Limit)` | **No.** The card-list screen pages through `Pageable` instead |
+| `CXACAIX` on `XREF-ACCT-ID`, `KEYS(11 25)` | `idx_card_cross_reference_xref_acct_id` | `CardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)` | **No.** Every online path resolves a single cross-reference by its own key |
+| The `TRANSACT` timestamp index on `TRAN-PROC-TS`, `KEYS(26 304)` | `idx_transaction_tran_proc_ts` | `TransactionRepository.findByProcessingTimestampWindow(String, String, Limit)` | **No.** The reporting window is applied over the unloaded sequential generation, which is where the legacy `INCLUDE COND` applied it — DL-199, DL-294 |
 
-The index is nevertheless created, is a non-unique B-tree, and is demonstrably indexable: on a
-purpose-built selective set of 3,000 posted rows spread across 100 processing dates and `ANALYZE`d, the
-window's **bare lower bound is taken as an index condition** and the ten-character **prefix upper bound
-is applied as a filter** — `Bitmap Index Scan on idx_transaction_tran_proc_ts, Index Cond:
-((tran_proc_ts)::text >= …), Filter: (SUBSTRING(tran_proc_ts FROM 1 FOR 10) <= …)`, then a sort on
-`tran_card_num` alone. Whether the planner picks a plain or a bitmap index scan is a cost decision that
-varies with the selectivity of the window; both take the index. The shape is what matters, and it is
-the reason the upper bound is a prefix rather than a whole-column comparison: **a whole-column upper
-bound silently drops an end-date row that carries a time** — reproduced deliberately, 31 rows selected
-with the prefix bound against 0 with the naive one — and it is also why the lower bound is left bare,
-since wrapping it would make the predicate unindexable. The twenty-six-blank "not yet processed"
-sentinel is excluded by the lower bound alone. If a repository-level date-range finder is ever added
-for the report job, it must keep exactly this shape.
+**Why each finder is kept rather than deleted.** The plan names the three alternate indexes as two derived
+finders plus one date-range query, so the finders are the declared translation of a named legacy artefact
+and deleting them would drop a mapped item. Each is therefore kept under a constraint that makes an
+unbounded or non-deterministic use impossible: both card-side finders **require an explicit `Limit` and
+carry a deterministic base-key ordering** in the method name, so no caller can obtain an unordered or
+unbounded result, and the date-range finder requires a `Limit` too. Their Javadoc says they have no
+production caller. This is recorded in [decision-log.md](decision-log.md) entry DL-296.
+
+**What actually filters the report, and why that is not a contradiction.** The report job does not query the
+live table. Its filter-and-order step reads the immutable backup generation the preceding unload step wrote,
+applies the inclusive date window to each 350-byte image as it streams past, and orders the admitted images
+once — so the archive's row set and the report's row set are the same set even under concurrent writes. That
+is the legacy sequencing reproduced: `app/proc/TRANREPT.prc` names the just-written backup generation as its
+sort input. DL-294 records it.
+
+**The date-range finder is nevertheless measured, and the measured shape is the indexable one.** On a
+purpose-built selective set of 3,000 posted rows spread across 100 processing dates and `ANALYZE`d, **both
+bounds are bare column comparisons and both are taken as index conditions**, no function of the column
+appears anywhere in the plan, and **no predicate survives as a row filter at all** — the plan carries no
+`Filter:` line. `TransactionRepositoryIT.bothBoundsDriveTheShippedIndex` first proves the statement it
+explains selects exactly what the shipped query selects, in exactly the same order, so the plan is evidence
+about the shipped predicate rather than about a lookalike.
+
+The upper bound is **exclusive and one day after the window's inclusive end date**, which is what makes it
+a bare comparison while still admitting an end-date row that carries a time. The day arithmetic lives in one
+place, `TransactionRepository.exclusiveUpperBoundOf`, so every caller states the window in the inclusive
+terms the legacy inclusion condition states it in. The lower bound is left bare for the same reason, and the
+twenty-six-blank "not yet processed" sentinel is excluded by the lower bound alone.
+
+**The superseded form is retained as a measured counter-example, not as documentation of what ships.** An
+earlier revision wrapped the upper bound in a ten-character prefix, which cannot be an index condition and
+was applied to rows the server had already read.
+`TransactionRepositoryIT.theSupersededPrefixFormLeavesItsUpperBoundAsAFilter` reproduces it and shows it
+selecting **exactly the same rows in the same order** as the shipped form while leaving a `Filter:` line in
+its plan. That equivalence of results is precisely why a review of results rather than of plans passed it,
+and it is why the two tests are kept side by side. The defect was never a whole-table scan — the bare lower
+bound always reached the index — it was a wider index range than necessary. DL-294 records the change.
 
 ---
 
@@ -1056,16 +1535,28 @@ for the report job, it must keep exactly this shape.
 | --- | --- | --- | :---: |
 | End-to-end verification | golden fixtures at 40, 80, 100, 133 and 430 bytes under `src/test/resources/fixtures/expected/` | `e2e/BatchPipelineE2ETest`, plus `batch/CategoryBalanceReportJobConfigIT` for the 40-byte line | **PASS (measured)** |
 | Interface contract verification | seven sign-on message texts; the seventeen-card job image with its four slots and transmitted sentinel; a real SQS FIFO queue | `e2e/OnlineTransactionE2ETest`, plus `service/JobSubmissionServiceIT` | **PASS (measured)** |
-| Performance baseline | Micrometer timers at `/actuator/prometheus`; `support/RunScopedPerformanceRecorder`; the figures in this page's *Measured runs* table | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md` | **PASS (measured)** — twelve dated rows, each with its machine and its fixture volumes |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, whose generated `target/gate-evidence/gate3-*.md` files are where every quotable figure comes from; the Micrometer timers at `/actuator/prometheus` corroborate them. Transcribed into this page's *Measured runs* table | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md` | **PASS (measured)** — eighteen dated rows, each with its machine and its fixture volumes, the newest three from the recorded run |
 | Unsafe code audit | the fixed grep list scoped to `src/main/java/**` | the commands and raw output under Gate 6 | **PASS (measured)** — every count zero |
-| Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 95.60% |
+| Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 96.05% |
 | Zero critical/high CVEs | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0 over compile, runtime and test scope | `./mvnw -B clean verify`; report published below | **PASS (measured)** — zero unsuppressed critical, zero unsuppressed high |
 | Traceability 100% | [traceability-matrix.md](traceability-matrix.md) | `e2e/GateVerificationTest` row-count assertion at **544** | **PASS (measured)** |
+| Final-boundary criteria, each held by an executed suite | ten criteria covering bounded provider calls and pinned retry, resource trust and proven capability, durable publication integrity under an ambiguous upload, bounded cross-system coordination, trace continuity across the durable and notification boundaries, provider-log containment, truthful terminal and refused-request telemetry, the boundary panel inventory, collector trust and sampling, and durable attributable evidence | `e2e/GateVerificationTest` resolves each criterion to a suite under `src/test/java` and checks that one of the two tiers actually executes it | **PASS (measured)** — 10 of 10 held |
 
 The run also emits its own machine-readable copy of this checklist to
 `target/gate-evidence/gate8-sign-off.md`, one row per item with the artefact, the state and the evidence
 narrative. A row that named an absent artefact would be emitted as MISSING and would fail the assertion that
 writes the table, so the checklist cannot record a pass it did not establish.
+
+**Why the tenth row exists.** The nine rows above it are the seven items the plan's Gate 8 enumerates plus
+the two it adds for the named artefacts and the schema, and not one of them is about the boundary where this
+module talks to something outside itself. A review that found every outbound call unbounded, every ambiguous
+upload uncompensated, the trace collector unauthenticated and half the boundary telemetry unwatched would
+have read this checklist with every row satisfied — a checklist that cannot express a class of failure
+reports a pass straight through it. The tenth row does not restate those behaviours: each named suite asserts
+them in detail, and duplicating that here would give two places to edit and one of them would drift. What it
+holds is the property the checklist could not see — that each criterion has a guard, and that the guard is a
+suite the build runs rather than a file the build merely compiles. A deleted suite turns the row MISSING and
+names the criterion it belonged to. Recorded in [decision-log.md](decision-log.md) DL-315.
 
 ### Dependency vulnerability scan
 
@@ -1075,8 +1566,9 @@ The executed result, from the recorded run:
 | --- | --- |
 | Scanner | `dependency-check-maven` 12.1.3, bound to `verify` |
 | Report | `target/dependency-check-report.html`, with `.json` and `.xml` beside it |
-| Scan completed | 2026-08-09T06:23:15Z, in the recorded run, which is where the figures below were read from; every later full verify the same day scanned the same dependency set against the same data and returned the same outcome |
-| Vulnerability data state | NVD API last checked 2026-08-09T02:18:48Z, last modified 2026-08-09T02:16:34Z |
+| Tree scanned | the module as it stands in the revision that carries this page; the scan reads `target/` artefacts of that build rather than a named commit |
+| Scan completed | **2026-08-10T06:32:58Z**, the report date carried inside `dependency-check-report.json` itself, in the recorded run, which is where the figures below were read from; every other full verify over this tree scanned the same dependency set against the same data and returned the same outcome |
+| Vulnerability data state | NVD API last checked 2026-08-10T03:23:14Z, last modified 2026-08-10T03:16:40Z |
 | Dependencies scanned | 168 |
 | **Unsuppressed critical** | **0** |
 | **Unsuppressed high** | **0** |

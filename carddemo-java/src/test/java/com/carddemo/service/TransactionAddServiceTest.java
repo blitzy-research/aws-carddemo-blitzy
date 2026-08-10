@@ -40,11 +40,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
@@ -504,13 +500,16 @@ final class TransactionAddServiceTest {
     }
 
     /**
-     * Stubs the descending single-row browse of the transaction master.
+     * Stubs the descending single-row read of the transaction master.
+     *
+     * <p>A single-row finder rather than a descending page of size one: a page carries a total the
+     * provider produces with a second statement over the whole master, and nothing reads it (DL-296).
      *
      * @param highestKey the identifier the highest existing row carries, or {@code null} for an empty
      *                   master, which is the end-of-file arm at line 689
      */
     private void highestTransactionIs(final String highestKey) {
-        when(transactionRepository.findAll(any(Pageable.class))).thenReturn(pageOf(highestKey));
+        when(transactionRepository.findFirstByOrderByTranIdDesc()).thenReturn(highestRow(highestKey));
     }
 
     private void insertSucceeds() {
@@ -519,26 +518,15 @@ final class TransactionAddServiceTest {
     }
 
     /**
-     * Builds the single-row page the descending browse returns.
+     * Builds what the descending single-row read returns.
      *
      * @param  highestKey the identifier of the highest existing row, or {@code null} for an empty master
-     * @return a page holding that one row, or an empty page
+     * @return that one row, or an empty result which is the end-of-file arm
      */
-    private static Page<Transaction> pageOf(final String highestKey) {
+    private static Optional<Transaction> highestRow(final String highestKey) {
         return highestKey == null
-                ? new PageImpl<>(List.of(), PageRequest.of(0, 1), 0)
-                : pageOfRecord(TestDataFactory.transaction().id(highestKey).build());
-    }
-
-    /**
-     * Builds the single-row page the descending browse returns, from a fully populated record.
-     *
-     * @param  row the highest-keyed record
-     * @return a page holding exactly that row
-     */
-    private static Page<Transaction> pageOfRecord(final Transaction row) {
-        final List<Transaction> rows = List.of(row);
-        return new PageImpl<>(rows, PageRequest.of(0, 1), rows.size());
+                ? Optional.empty()
+                : Optional.of(TestDataFactory.transaction().id(highestKey).build());
     }
 
     private void catalogueTitlesAvailable() {
@@ -1165,7 +1153,8 @@ final class TransactionAddServiceTest {
                             .isNotEqualTo(SensitiveValues.fingerprint(candidates.get(1).getXrefCardNum())),
                     () -> assertThat(SensitiveValues.fingerprint(stored.getTranCardNum()))
                             .isNotEqualTo(SensitiveValues.fingerprint(candidates.get(2).getXrefCardNum())));
-            verify(cardCrossReferenceRepository, never()).findByXrefAcctId(anyString());
+            verify(cardCrossReferenceRepository, never())
+                    .findByXrefAcctIdOrderByXrefCardNumAsc(anyString(), any());
         }
 
         @Test
@@ -1397,16 +1386,23 @@ final class TransactionAddServiceTest {
 
             service.processTransactionAdd(confirmedTurn());
 
-            final ArgumentCaptor<Pageable> browse = ArgumentCaptor.forClass(Pageable.class);
-            verify(transactionRepository).findAll(browse.capture());
+            // The bound and the direction are now in the finder's NAME rather than in a Pageable
+            // argument, so there is nothing to capture: "First" is the one record a backward read
+            // consumes and "OrderByTranIdDesc" is the high end of the key sequence. What replaced a
+            // descending page of size one is a single-row read, because a page also counts the whole
+            // master and nothing reads the figure (DL-296).
+            verify(transactionRepository).findFirstByOrderByTranIdDesc();
             assertAll(
-                    () -> assertThat(browse.getValue().getPageNumber()).isZero(),
-                    () -> assertThat(browse.getValue().getPageSize())
-                            .as("a backward read consumes exactly one record")
-                            .isEqualTo(1),
-                    () -> assertThat(browse.getValue().getSort())
-                            .isEqualTo(Sort.by(Sort.Direction.DESC, "tranId")));
+                    () -> assertThat(TransactionRepository.class
+                            .getDeclaredMethod("findFirstByOrderByTranIdDesc").getReturnType())
+                            .as("a single row, so no total exists to discard")
+                            .isEqualTo(Optional.class),
+                    () -> assertThat(TransactionRepository.class
+                            .getDeclaredMethod("findFirstByOrderByTranIdDesc").getParameterCount())
+                            .as("and nothing to pass, so no caller can widen it back into a page")
+                            .isZero());
             verify(transactionRepository, never()).findMaxId();
+            verify(transactionRepository, never()).findAll(any(Pageable.class));
         }
 
         @Test
@@ -1486,7 +1482,7 @@ final class TransactionAddServiceTest {
             final TransactionAddService.TransactionAddResult result =
                     service.processTransactionAdd(confirmedTurn());
 
-            verify(transactionRepository, times(1)).findAll(any(Pageable.class));
+            verify(transactionRepository, times(1)).findFirstByOrderByTranIdDesc();
             assertThat(result.errorFlag()).isFalse();
         }
 
@@ -1497,7 +1493,7 @@ final class TransactionAddServiceTest {
             accountResolves();
             datesAnswer(acceptedBlock());
             boundaryRunsInline();
-            when(transactionRepository.findAll(any(Pageable.class)))
+            when(transactionRepository.findFirstByOrderByTranIdDesc())
                     .thenThrow(new DataAccessResourceFailureException("browse refused"));
 
             final TransactionAddService.TransactionAddResult result =
@@ -1528,7 +1524,7 @@ final class TransactionAddServiceTest {
                     () -> assertThat(result.message()).isEqualTo(MSG_TRAN_ID_ALREADY_EXISTS),
                     () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
                     () -> assertThat(result.transactionAdded()).isFalse());
-            verify(transactionRepository, times(2)).findAll(any(Pageable.class));
+            verify(transactionRepository, times(2)).findFirstByOrderByTranIdDesc();
             verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
         }
 
@@ -2049,7 +2045,7 @@ final class TransactionAddServiceTest {
             order.verify(transactionBoundary).<Transaction>execute(any());
             order.verify(transactionRepository)
                     .lockIdentifierAllocation(TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
-            order.verify(transactionRepository).findAll(any(Pageable.class));
+            order.verify(transactionRepository).findFirstByOrderByTranIdDesc();
             order.verify(transactionRepository).existsById(FIRST_IDENTIFIER);
             order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
             order.verifyNoMoreInteractions();
@@ -2312,7 +2308,7 @@ final class TransactionAddServiceTest {
                     .processingTimestamp("2022-06-11 08:15:00.000000")
                     .build();
             accountResolves();
-            when(transactionRepository.findAll(any(Pageable.class))).thenReturn(pageOfRecord(last));
+            when(transactionRepository.findFirstByOrderByTranIdDesc()).thenReturn(Optional.of(last));
             datesAnswer(acceptedBlock());
 
             final TransactionAddService.TransactionAddResult result = service.processTransactionAdd(

@@ -21,11 +21,14 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 
 import java.net.URI;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -557,6 +560,150 @@ class AwsResourceNamingRulesTest {
                                     null, ENDPOINT_PROPERTY))
                     .withMessageContaining(ENDPOINT_PROPERTY)
                     .withMessageContaining("endpoint override");
+        }
+    }
+    @Nested
+    @DisplayName("Account ownership of a resource identifier")
+    class AccountOwnership {
+
+        /** Key the expectation is configured under, named in every diagnostic. */
+        private static final String ACCOUNT_PROPERTY = "carddemo.aws.expected-account-id";
+
+        /** The account a deployment declares it owns. */
+        private static final String OWNED = "000000000000";
+
+        /** A twelve-digit account that is not the declared one. */
+        private static final String FOREIGN = "999999999999";
+
+        /** The region a deployment configured. */
+        private static final String REGION = "us-east-1";
+
+        /** Constructs the fixture. */
+        AccountOwnership() {
+        }
+
+        @Test
+        @DisplayName("accepts a twelve-digit account identifier and returns it unchanged")
+        void acceptsATwelveDigitAccount() {
+            assertThat(AwsResourceNamingRules.requireAccountIdentifier(OWNED, ACCOUNT_PROPERTY))
+                    .isEqualTo(OWNED);
+        }
+
+        @ParameterizedTest(name = "[{index}] {0}")
+        @ValueSource(strings = {"", "0", "00000000000", "0000000000000", "00000000000a",
+            "0000 0000000", "-00000000000"})
+        @DisplayName("refuses anything that is not exactly twelve digits, naming the key rather than "
+                + "the value")
+        void refusesAnythingButTwelveDigits(final String candidate) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() ->
+                            AwsResourceNamingRules.requireAccountIdentifier(candidate,
+                                    ACCOUNT_PROPERTY))
+                    .withMessageContaining(ACCOUNT_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("refuses a null account identifier rather than reporting it as malformed")
+        void refusesANullAccount() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() ->
+                            AwsResourceNamingRules.requireAccountIdentifier(null, ACCOUNT_PROPERTY));
+        }
+
+        @Test
+        @DisplayName("accepts a resource identifier of the right service, region and account, and "
+                + "answers with its resource segment")
+        void acceptsAnOwnedResource() {
+            assertThat(AwsResourceNamingRules.requireResourceOwnedByAccount(
+                    identifier("aws", "sqs", REGION, OWNED, "JOBS.fifo"), "sqs", REGION, OWNED,
+                    ACCOUNT_PROPERTY))
+                    .isEqualTo("JOBS.fifo");
+        }
+
+        @Test
+        @DisplayName("accepts a region segment differing only in case, because a region name is not "
+                + "case-sensitive to the services that resolve it")
+        void acceptsARegionDifferingInCase() {
+            assertThat(AwsResourceNamingRules.requireResourceOwnedByAccount(
+                    identifier("aws", "sns", REGION.toUpperCase(java.util.Locale.ROOT), OWNED,
+                            "topic"), "sns", REGION, OWNED, ACCOUNT_PROPERTY))
+                    .isEqualTo("topic");
+        }
+
+        @Test
+        @DisplayName("refuses an identifier owned by another account, and says why that matters "
+                + "without repeating either account")
+        void refusesAForeignAccount() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> AwsResourceNamingRules.requireResourceOwnedByAccount(
+                            identifier("aws", "sqs", REGION, FOREIGN, "JOBS.fifo"), "sqs", REGION,
+                            OWNED, ACCOUNT_PROPERTY))
+                    .withMessageContaining(ACCOUNT_PROPERTY)
+                    .withMessageContaining("owned by an account other than")
+                    .satisfies(refused -> assertThat(refused.getMessage())
+                            .doesNotContain(FOREIGN)
+                            .doesNotContain(OWNED));
+        }
+
+        @ParameterizedTest(name = "[{index}] {0}")
+        @MethodSource("untrustedIdentifiers")
+        @DisplayName("refuses an identifier that is not one of this service's, in this region, with a "
+                + "readable account")
+        void refusesAnUntrustedIdentifier(final String description, final String candidate) {
+            assertThat(description).isNotBlank();
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> AwsResourceNamingRules.requireResourceOwnedByAccount(
+                            candidate, "sqs", REGION, OWNED, ACCOUNT_PROPERTY))
+                    .withMessageContaining(ACCOUNT_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("refuses a null identifier, service, region or expectation rather than deciding "
+                + "ownership from an absent value")
+        void refusesNullArguments() {
+            final String owned = identifier("aws", "sqs", REGION, OWNED, "JOBS.fifo");
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
+                    AwsResourceNamingRules.requireResourceOwnedByAccount(null, "sqs", REGION, OWNED,
+                            ACCOUNT_PROPERTY));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
+                    AwsResourceNamingRules.requireResourceOwnedByAccount(owned, null, REGION, OWNED,
+                            ACCOUNT_PROPERTY));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
+                    AwsResourceNamingRules.requireResourceOwnedByAccount(owned, "sqs", null, OWNED,
+                            ACCOUNT_PROPERTY));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
+                    AwsResourceNamingRules.requireResourceOwnedByAccount(owned, "sqs", REGION, null,
+                            ACCOUNT_PROPERTY));
+        }
+
+        /**
+         * @return one untrusted identifier per property the rule establishes
+         */
+        static Stream<Arguments> untrustedIdentifiers() {
+            return Stream.of(
+                    Arguments.of("a bare name, which carries no account at all", "JOBS.fifo"),
+                    Arguments.of("too few segments", "arn:aws:sqs:" + REGION + ":" + OWNED),
+                    Arguments.of("an unrecognised partition",
+                            identifier("elsewhere", "sqs", REGION, OWNED, "JOBS.fifo")),
+                    Arguments.of("another service",
+                            identifier("aws", "sns", REGION, OWNED, "JOBS.fifo")),
+                    Arguments.of("another region",
+                            identifier("aws", "sqs", "eu-west-2", OWNED, "JOBS.fifo")),
+                    Arguments.of("an account that is not twelve digits",
+                            identifier("aws", "sqs", REGION, "0000", "JOBS.fifo")));
+        }
+
+        /**
+         * @param  partition the partition segment
+         * @param  service   the service segment
+         * @param  region    the region segment
+         * @param  account   the account segment
+         * @param  name      the resource segment
+         * @return the composed identifier
+         */
+        private static String identifier(final String partition, final String service,
+                final String region, final String account, final String name) {
+            return "arn:" + partition + ":" + service + ":" + region + ":" + account + ":" + name;
         }
     }
 }

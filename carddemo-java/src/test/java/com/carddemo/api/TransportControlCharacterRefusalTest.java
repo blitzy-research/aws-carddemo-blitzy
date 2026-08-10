@@ -32,6 +32,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -107,7 +109,11 @@ class TransportControlCharacterRefusalTest {
     private static final ApplicationContextRunner DEPLOYED_READER = new ApplicationContextRunner()
             .withInitializer(new ConfigDataApplicationContextInitializer())
             .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class))
-            .withUserConfiguration(WebMvcConfig.class);
+            .withUserConfiguration(WebMvcConfig.class)
+            // WebMvcConfig's body-limit registration now counts a refusal, so this slice needs a
+            // registry. Supplied here because the runner registers no metrics auto-configuration,
+            // whereas the running application always has one.
+            .withBean(MeterRegistry.class, SimpleMeterRegistry::new);
 
     /** The description a caller submits, carrying a line terminator in the middle of legitimate text. */
     private static final String SPLIT_DESCRIPTION = "VALID\nPOISON";

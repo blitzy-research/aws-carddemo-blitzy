@@ -16,14 +16,25 @@
  */
 package com.carddemo.config;
 
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.config.MeterFilter;
 
+import io.opentelemetry.sdk.common.CompletableResultCode;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
+import io.opentelemetry.sdk.trace.samplers.Sampler;
+
+import java.util.Collection;
+import java.util.Objects;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -237,6 +248,29 @@ public final class ObservabilityConfig {
     public static final String OBSERVATION_ACTIVE_METER_NAME = "carddemo.batch.job.observed.active";
 
     /**
+     * Counter carrying how many spans this deployment handed to its trace collector, and how many it lost.
+     *
+     * <p>It exists because the transports that would otherwise report an export failure are switched off,
+     * and they are switched off because both compose their failure text out of the <em>collector's</em>
+     * response - the HTTP status line and the response body verbatim, or the transport exception's own
+     * message. The collector is a remote party this deployment authenticates but does not author, and its
+     * output would land in the machine-facing appender, which is the stream that leaves the process. Rather
+     * than let a remote party choose content in this deployment's log, the failure becomes a number this
+     * module composes: bounded to one meter and two series, alertable, and carrying nothing anyone else
+     * wrote. {@code src/main/resources/logback-spring.xml} names the two categories and cites this constant.
+     */
+    public static final String TRACING_EXPORT_METER_NAME = "carddemo.tracing.export";
+
+    /** Tag key separating an accepted export from a lost one. */
+    public static final String EXPORT_OUTCOME_TAG_KEY = "outcome";
+
+    /** Outcome tag: the collector accepted the batch. */
+    public static final String EXPORT_OUTCOME_SUCCEEDED = "succeeded";
+
+    /** Outcome tag: the batch was lost, for any reason the transport reported or did not. */
+    public static final String EXPORT_OUTCOME_FAILED = "failed";
+
+    /**
      * The configured application name, or an empty string when the deployment configures none. Never
      * {@code null}.
      */
@@ -347,6 +381,181 @@ public final class ObservabilityConfig {
         }
         LOG.debug("Tagging every meter with {}=\"{}\"", APPLICATION_TAG_KEY, tagValue);
         return registry -> registry.config().commonTags(APPLICATION_TAG_KEY, tagValue);
+    }
+
+    /**
+     * Decides which traces this deployment records, and refuses to let a caller decide it instead.
+     *
+     * <h2>The decision this replaces</h2>
+     *
+     * <p>The framework's own sampler is {@code parentBased(traceIdRatioBased(probability))}, and the
+     * one-argument {@code parentBased} form leaves its <em>remote-parent-sampled</em> arm at
+     * {@code alwaysOn()}. A trace context arrives on the wire, in a request header, from whoever chose to
+     * send it - so any caller presenting a {@code traceparent} whose sampled flag is set had every span of
+     * that request recorded and exported, whatever the configured ratio said. In production the configured
+     * ratio is one request in ten and the arriving header decided the other nine, which makes the ratio a
+     * suggestion rather than a control. Two things follow from that, and both are load-bearing. It is a
+     * cost channel: an unauthenticated caller could hold the sampled flag on every request and drive
+     * exporter volume, collector storage and log-correlation fan-out at will, and the header is read by the
+     * tracing filter before any credential is examined. And it is a fidelity problem in the other
+     * direction: a baseline gathered from a population a caller selected is not a sample of this
+     * deployment's traffic.
+     *
+     * <h2>What is applied instead</h2>
+     *
+     * <p>The remote arms are replaced and the local arms are deliberately not. A <strong>remote</strong>
+     * parent that says "sampled" is now put through the same ratio as a trace this deployment starts
+     * itself, so the header no longer decides; a remote parent that says "not sampled" is still honoured as
+     * off, because a caller asking for less is asking for something it is entitled to and inventing traces
+     * it did not ask for would be the same defect facing the other way. A <strong>local</strong> parent -
+     * one of this application's own spans - keeps the framework's behaviour of following its decision
+     * exactly, and that is what keeps a single trace whole: a span that sampled itself into a trace must
+     * not have its children discarded halfway down, or the exported trace would be a fragment presented as
+     * a whole.
+     *
+     * <p>The ratio sampler is deterministic on the trace identifier, so applying it to an inherited trace
+     * identifier is consistent: every service that samples that trace at the same ratio reaches the same
+     * verdict about it, and this deployment reaches the same verdict on every span of it. The alternative
+     * the review offered - linking to the remote trace rather than inheriting it - was rejected because it
+     * would break the one property that makes distributed tracing useful, a single identifier spanning the
+     * request, for a caller-volume problem this closes without breaking anything.
+     *
+     * <p>The probability is read from the same property the framework reads, so a profile continues to own
+     * the figure and this method owns only the policy applied to it. The bean is declared unconditionally
+     * rather than behind the tracing condition: nothing consumes a sampler when tracing is off, so an
+     * unconditional bean costs one object and gives the policy one shape in every profile, which is what
+     * lets it be asserted without standing up a tracing stack.
+     *
+     * @param  probability the configured head-sampling ratio; the placeholder default mirrors the
+     *                     framework's own so a context that reads none of the shipped documents still
+     *                     builds, and every shipped profile states the figure explicitly
+     * @return a sampler that honours a local parent and re-decides an untrusted remote one
+     */
+    @Bean
+    public Sampler traceSampler(
+            @Value("${management.tracing.sampling.probability:0.1}") final double probability) {
+        final Sampler localRatio = Sampler.traceIdRatioBased(probability);
+        LOG.debug("Head sampling at ratio {}; a remote parent's sampled flag is re-decided locally",
+                Double.valueOf(probability));
+        return Sampler.parentBasedBuilder(localRatio)
+                .setRemoteParentSampled(localRatio)
+                .setRemoteParentNotSampled(Sampler.alwaysOff())
+                .build();
+    }
+
+    /**
+     * Wraps whatever span exporter the framework auto-configured so that a lost export is counted.
+     *
+     * <h2>Why a post-processor and not a bean</h2>
+     *
+     * <p>The section above on an absent collector is the reason: this class declares no exporter, because
+     * the auto-configuration's condition reads the property a profile sets and a hand-declared bean would
+     * move that decision here. Post-processing preserves it exactly. When export is switched off there is
+     * no exporter bean to process and this contributes nothing; when it is on, the delivered exporter is
+     * the one that runs and only its outcome is observed. Nothing is intercepted, nothing is retried and no
+     * span is inspected, so the decorator cannot change what is exported or when.
+     *
+     * <p>The registry is taken as a provider rather than as a value. A post-processor is created before the
+     * ordinary singletons, so a post-processor that <em>depended</em> on the registry would pull the
+     * registry into existence ahead of the post-processors that are supposed to see it. Resolving it
+     * lazily, on the first export, avoids that entirely; and a context with no registry at all simply
+     * counts nothing rather than failing, which is the right behaviour for telemetry about telemetry.
+     *
+     * @param  registries the registry to count against, resolved on first use
+     * @return a post-processor that decorates the span exporter, if there is one
+     */
+    @Bean
+    public static BeanPostProcessor spanExportOutcomeCounter(
+            final ObjectProvider<MeterRegistry> registries) {
+        Objects.requireNonNull(registries, "registries must not be null");
+        return new BeanPostProcessor() {
+
+            @Override
+            public Object postProcessAfterInitialization(final Object bean, final String beanName) {
+                if (bean instanceof SpanExporter exporter && !(bean instanceof CountingSpanExporter)) {
+                    return new CountingSpanExporter(exporter, registries);
+                }
+                return bean;
+            }
+        };
+    }
+
+    /**
+     * A span exporter that counts the spans its delegate accepted and the spans it lost.
+     *
+     * <p>Counts <strong>spans</strong> rather than batches, because "how many spans did this deployment
+     * lose" is the question an operator has and "how many batches failed" is a question about the
+     * transport's chunking. One meter, two series, and the increment is the batch's own size, so the two
+     * series always add up to what was offered.
+     *
+     * <p>Every other method of the contract delegates unchanged. Flushing and shutting down are lifecycle
+     * operations rather than exports, and counting them would put lifecycle events into a series an
+     * operator reads as traffic.
+     */
+    static final class CountingSpanExporter implements SpanExporter {
+
+        /** The auto-configured exporter this decorates. */
+        private final SpanExporter delegate;
+
+        /** Where the outcome is counted, resolved on first use. */
+        private final ObjectProvider<MeterRegistry> registries;
+
+        /**
+         * Decorates one exporter.
+         *
+         * @param delegate   the exporter to observe
+         * @param registries the registry to count against
+         */
+        CountingSpanExporter(final SpanExporter delegate,
+                final ObjectProvider<MeterRegistry> registries) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
+            this.registries = Objects.requireNonNull(registries, "registries must not be null");
+        }
+
+        @Override
+        public CompletableResultCode export(final Collection<SpanData> spans) {
+            final int offered = spans == null ? 0 : spans.size();
+            final CompletableResultCode outcome = this.delegate.export(spans);
+            return outcome.whenComplete(() -> count(outcome.isSuccess(), offered));
+        }
+
+        @Override
+        public CompletableResultCode flush() {
+            return this.delegate.flush();
+        }
+
+        @Override
+        public CompletableResultCode shutdown() {
+            return this.delegate.shutdown();
+        }
+
+        /**
+         * Records one export outcome.
+         *
+         * @param succeeded whether the collector accepted the batch
+         * @param spans     how many spans the batch carried
+         */
+        private void count(final boolean succeeded, final int spans) {
+            final MeterRegistry registry = this.registries.getIfAvailable();
+            if (registry == null || spans == 0) {
+                return;
+            }
+            Counter.builder(TRACING_EXPORT_METER_NAME)
+                    .description("Spans handed to the trace collector, by whether it accepted them")
+                    .tag(EXPORT_OUTCOME_TAG_KEY,
+                            succeeded ? EXPORT_OUTCOME_SUCCEEDED : EXPORT_OUTCOME_FAILED)
+                    .register(registry)
+                    .increment(spans);
+        }
+
+        /**
+         * Exposes the delegate so a test can prove the delivered exporter is the one that runs.
+         *
+         * @return the exporter this decorates
+         */
+        SpanExporter delegate() {
+            return this.delegate;
+        }
     }
 
 }

@@ -653,7 +653,7 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
      * Restores one account to exactly the amounts and dates the delivered fixture carries for it.
      *
      * <p>This is what makes the refusal in
-     * {@link #theSeededStateRefusesAnOverLimitRecordAndTheGenerationIsByteExact()} a refusal from
+     * {@link #theRejectGenerationIsByteExactAndTheCascadeOrderIsPreserved()} a refusal from
      * <em>seeded</em> state rather than from a state this specification invented: the credit limit, the
      * expiration date and both cycle accumulators come from the fixture image, decoded by the shared
      * test factory rather than by the module's own codec. Both accumulators are zero across all fifty

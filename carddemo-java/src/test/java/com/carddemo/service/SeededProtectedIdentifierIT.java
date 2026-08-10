@@ -16,6 +16,7 @@
  */
 package com.carddemo.service;
 
+import com.carddemo.support.SensitiveValues;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -362,12 +363,19 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         @Test
         @DisplayName("is the one value the test profile declares, and it is what this test uses")
         void theConfiguredKeyIsTheDocumentedFixtureKey() {
-            assertThat(CONFIGURED_KEY)
+            // Compared as FINGERPRINTS. An isEqualTo failure prints both operands, and both operands
+            // here are AES-256 key material - the very value the fifty seeded envelopes are sealed
+            // under. Equal values fingerprint equally and unequal values do not, so the comparison
+            // loses no strength; what it loses is the ability to publish the key to a build log at
+            // the moment a rotation goes wrong.
+            assertThat(SensitiveValues.fingerprint(CONFIGURED_KEY))
                     .describedAs("%s declares %s; the fifty seeded envelopes in"
                             + " V3__seed_reference_data.sql were sealed under this exact value and"
                             + " cannot be regenerated, so rotating one without resealing the other"
-                            + " leaves the seed unreadable", TEST_PROFILE_DOCUMENT, KEY_PROPERTY)
-                    .isEqualTo(DOCUMENTED_FIXTURE_KEY);
+                            + " leaves the seed unreadable. Configured %s, documented %s",
+                            TEST_PROFILE_DOCUMENT, KEY_PROPERTY, SensitiveValues.describe(CONFIGURED_KEY),
+                            SensitiveValues.describe(DOCUMENTED_FIXTURE_KEY))
+                    .isEqualTo(SensitiveValues.fingerprint(DOCUMENTED_FIXTURE_KEY));
         }
 
         @Test
@@ -430,21 +438,31 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         void everyStoredIdentifierMeasuresThePredictedLength() {
             final int predicted = SensitiveFieldCodec.envelopeLengthFor(BOUND_PAYLOAD_WIDTH);
             for (final SeededCustomer row : SEEDED) {
-                assertThat(row.storedIdentifier())
+                // The LENGTH is asserted, never the envelope. hasSize prints the whole subject on
+                // failure, and the subject is a sealed identifier.
+                assertThat(row.storedIdentifier().length())
                         .describedAs("customer %s: a different length means the literal was altered,"
-                                + " truncated by a wrapped line, or sealed over the wrong payload",
-                                row.custId())
-                        .hasSize(predicted);
+                                + " truncated by a wrapped line, or sealed over the wrong payload."
+                                + " Stored %s", row.custId(),
+                                SensitiveValues.describe(row.storedIdentifier()))
+                        .isEqualTo(predicted);
             }
         }
 
         @Test
         @DisplayName("is fifty different envelopes, never one value repeated")
         void theStoredIdentifiersAreAllDistinct() {
-            assertThat(SEEDED).extracting(SeededCustomer::storedIdentifier)
+            // Distinctness proven over FINGERPRINTS. doesNotHaveDuplicates names the duplicated
+            // member in its failure, which would have printed a sealed envelope - and printed it
+            // twice, since a duplicate is by definition two of them.
+            final List<String> sealed = SEEDED.stream()
+                    .map(SeededCustomer::storedIdentifier)
+                    .toList();
+            assertThat(SensitiveValues.fingerprints(sealed))
                     .describedAs("a repeated envelope would give two customers the same identifier,"
                             + " and a fresh initialisation vector per call makes repetition impossible"
                             + " unless a row was filled by copying its neighbour")
+                    .hasSize(SEEDED_CUSTOMERS)
                     .doesNotHaveDuplicates();
         }
 
@@ -468,11 +486,17 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         void everyStoredIdentifierOpensToItsFixtureValue() {
             for (final SeededCustomer row : SEEDED) {
                 final String expected = fixtureIdentifier(row);
-                assertThat(SERVICE.reveal(IDENTIFIER_FIELD, row.storedIdentifier()))
-                        .describedAs("customer %s must open to %s[%d] offset %d width %d",
-                                row.custId(), FIXTURE_FILE, row.ordinal(),
-                                IDENTIFIER_OFFSET, IDENTIFIER_WIDTH)
-                        .isEqualTo(expected);
+                final String revealed = SERVICE.reveal(IDENTIFIER_FIELD, row.storedIdentifier());
+                // Fingerprints again, and here the value at stake is the DECRYPTED national
+                // identifier - the one thing this whole file exists to keep sealed. A failing
+                // isEqualTo on the cleartext would have printed both the value that was recovered and
+                // the fixture value it should have matched.
+                assertThat(SensitiveValues.fingerprint(revealed))
+                        .describedAs("customer %s must open to %s[%d] offset %d width %d; opened to %s,"
+                                + " fixture holds %s", row.custId(), FIXTURE_FILE, row.ordinal(),
+                                IDENTIFIER_OFFSET, IDENTIFIER_WIDTH, SensitiveValues.describe(revealed),
+                                SensitiveValues.describe(expected))
+                        .isEqualTo(SensitiveValues.fingerprint(expected));
             }
         }
 
@@ -483,10 +507,14 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
             for (final SeededCustomer row : SEEDED) {
                 recovered.add(SERVICE.reveal(IDENTIFIER_FIELD, row.storedIdentifier()));
             }
-            assertThat(recovered).hasSize(SEEDED_CUSTOMERS).doesNotHaveDuplicates();
-            assertThat(recovered).allSatisfy(value -> assertThat(value)
-                    .describedAs("the legacy field is %d characters wide", IDENTIFIER_WIDTH)
-                    .hasSize(IDENTIFIER_WIDTH));
+            assertThat(SensitiveValues.fingerprints(recovered))
+                    .describedAs("fifty rows must open to fifty different identifiers")
+                    .hasSize(SEEDED_CUSTOMERS)
+                    .doesNotHaveDuplicates();
+            assertThat(recovered).allSatisfy(value -> assertThat(value.length())
+                    .describedAs("the legacy field is %d characters wide; opened to %s",
+                            IDENTIFIER_WIDTH, SensitiveValues.describe(value))
+                    .isEqualTo(IDENTIFIER_WIDTH));
         }
 
         @Test
@@ -525,11 +553,17 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         void everySeededRowConstructsAsADomainEntity() {
             for (final SeededCustomer row : SEEDED) {
                 final Customer customer = row.toEntity(row.storedIdentifier());
-                assertThat(customer.getGovtIssuedId())
-                        .describedAs("customer %s must survive its own entity's guard", row.custId())
-                        .isEqualTo(row.storedIdentifier());
-                assertThat(SERVICE.reveal(IDENTIFIER_FIELD, customer.getGovtIssuedId()))
-                        .isEqualTo(fixtureIdentifier(row));
+                assertThat(SensitiveValues.fingerprint(customer.getGovtIssuedId()))
+                        .describedAs("customer %s must survive its own entity's guard; entity holds %s,"
+                                + " seed holds %s", row.custId(),
+                                SensitiveValues.describe(customer.getGovtIssuedId()),
+                                SensitiveValues.describe(row.storedIdentifier()))
+                        .isEqualTo(SensitiveValues.fingerprint(row.storedIdentifier()));
+                assertThat(SensitiveValues.fingerprint(
+                                SERVICE.reveal(IDENTIFIER_FIELD, customer.getGovtIssuedId())))
+                        .describedAs("and the entity's own value must still open to the fixture's, which"
+                                + " is compared by fingerprint because both sides are cleartext")
+                        .isEqualTo(SensitiveValues.fingerprint(fixtureIdentifier(row)));
             }
         }
 

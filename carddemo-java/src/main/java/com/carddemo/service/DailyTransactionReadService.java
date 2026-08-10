@@ -84,7 +84,7 @@ import com.carddemo.util.SensitiveLogRedactor;
  *
  * <p><strong>The read loop re-verifies its last record, and that is reproduced.</strong> In
  * {@code MAIN-PARA} the verification block at lines 170 to 184 sits <em>outside</em> the
- * {@code IF END-OF-DAILY-TRANS-FILE = 'N'} test at line 167, which guards only the record display at
+ * end-of-file test at line 167, which guards only the record display at
  * line 168. A COBOL {@code READ INTO} leaves its receiving item unchanged at end of file, so on the
  * end-of-file iteration the block runs once more against the record area as the previous read left
  * it, verifying the last record a second time. That is what the program does, so it is what this
@@ -886,7 +886,7 @@ public class DailyTransactionReadService {
     }
 
     /**
-     * {@code DISPLAY DALYTRAN-RECORD} - line 168.
+     * The record diagnostic at line 168, which writes the daily-transaction image.
      *
      * <p>The legacy statement writes the whole record area, including the full card number, amount,
      * merchant details, description and timestamps, to the console. Reproducing those values in an

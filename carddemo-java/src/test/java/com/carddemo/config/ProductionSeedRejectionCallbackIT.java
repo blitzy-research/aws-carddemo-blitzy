@@ -28,6 +28,7 @@ import java.sql.Statement;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
+import org.flywaydb.core.api.MigrationVersion;
 import org.flywaydb.core.api.callback.Callback;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -74,7 +75,7 @@ import com.carddemo.support.AbstractPostgresIT;
  *
  * <h2>And the case that must NOT be refused</h2>
  *
- * <p>A correctly migrated production database - the schema location alone, at the schema-only ceiling -
+ * <p>A correctly migrated production database - the schema location alone, with no seed location -
  * must start, and must keep starting on every restart. That assertion is as load-bearing as the three
  * refusals: a control that refused a clean deployment would be worse than no control, and the third
  * signal in particular is the one most capable of a false positive, so it is exercised against a schema
@@ -170,7 +171,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
 
         assertThatExceptionOfType(FlywayException.class)
                 .as("the seeds were applied before this run existed, so no location list and no version "
-                        + "ceiling this run resolves can undo them. Only an inspection of the database "
+                        + "location list this run resolves can undo them. Only an inspection of the database "
                         + "itself can see it, and it must refuse rather than report success")
                 .isThrownBy(() -> productionMigration().migrate())
                 .withMessageContaining(ProductionSeedRejectionCallback.HISTORY_TABLE)
@@ -270,40 +271,38 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
 
     @Test
     @DisplayName("the migration tool's own validation does NOT reject a seeded database at all, with "
-            + "or without the ceiling, which is exactly why this control has to exist")
+            + "or without a version ceiling, which is exactly why this control has to exist")
     void flywayValidationDoesNotRejectASeededDatabaseAtAll() throws SQLException {
         createProbeDatabase();
         seedingMigration().migrate();
 
         Flyway withoutTheCallback = Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.MIGRATION_LOCATION)
-                .target(FlywayConfig.SCHEMA_ONLY_TARGET)
+                .locations(FlywayConfig.SCHEMA_LOCATION)
                 .load();
 
         assertThatNoException()
                 .as("MEASURED, NOT ASSUMED, and it is the opposite of what a reader would expect. With "
                         + "the callback removed, versions 3 and 4 are applied and unresolvable from the "
-                        + "schema location - yet the migration REPORTS SUCCESS. The version ceiling is "
-                        + "what does it: an applied version above the target is not a validation "
-                        + "failure, so the two configuration controls between them make the tool's own "
-                        + "validation blind to precisely the state they cannot prevent. Nothing except "
-                        + "an inspection of the database sees it, which is what makes this control "
-                        + "indispensable rather than defence in depth")
+                        + "location list this run reads - yet the migration REPORTS SUCCESS. Version 11 "
+                        + "of the migration tool ignores FUTURE migrations by default: an applied "
+                        + "version newer than anything the resolved locations carry is not a validation "
+                        + "failure. So the configuration control cannot see the one state it cannot "
+                        + "prevent, and nothing except an inspection of the DATABASE sees it - which is "
+                        + "what makes this control indispensable rather than defence in depth")
                 .isThrownBy(withoutTheCallback::migrate);
 
         assertThatNoException()
-                .as("and removing the ceiling as well does not help either, which is the measurement "
-                        + "that settles it. Version 11 of the migration tool ignores FUTURE migrations "
-                        + "by default - an applied version newer than anything the location list "
-                        + "resolves is not a validation failure - so neither of the two configuration "
-                        + "controls, nor their absence, makes the tool notice. Any claim that "
-                        + "validate-on-migrate is a line of defence against an already-seeded database "
-                        + "would be false, and this assertion is here so that no such claim can be "
-                        + "written into the profile documents unchallenged")
+                .as("and imposing a version ceiling as well does not help either, which is the "
+                        + "measurement that settles it. An applied version ABOVE the target is not a "
+                        + "validation failure any more than a future one is, so neither posture makes "
+                        + "the tool notice. Any claim that validate-on-migrate is a line of defence "
+                        + "against an already-seeded database would be false, and this assertion is here "
+                        + "so that no such claim can be written into the profile documents unchallenged")
                 .isThrownBy(() -> Flyway.configure()
                         .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                        .locations(FlywayConfig.MIGRATION_LOCATION)
+                        .locations(FlywayConfig.SCHEMA_LOCATION)
+                        .target(MigrationVersion.fromVersion("2"))
                         .load()
                         .migrate());
     }
@@ -316,8 +315,8 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
 
         Flyway refusing = Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.MIGRATION_LOCATION)
-                .target(FlywayConfig.SCHEMA_ONLY_TARGET)
+                .locations(FlywayConfig.SCHEMA_LOCATION)
+                .target(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
                 .table("carddemo_history")
                 .callbacks(new ProductionSeedRejectionCallback())
                 .load();
@@ -343,7 +342,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
         productionContext().run(started -> assertThat(started)
                 .as("THE CONTROL ASSERTION FOR EVERYTHING BELOW. This exact wiring must be capable of "
                         + "starting, or a failed refresh later would prove only that the wiring is "
-                        + "broken. A never-seeded database migrates to the schema-only ceiling and the "
+                        + "broken. A never-seeded database migrates from the schema location and the "
                         + "context refreshes")
                 .hasNotFailed());
 
@@ -430,8 +429,8 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.username=" + databaseUser(),
                         "spring.datasource.password=" + databasePassword(),
                         "spring.flyway.enabled=false",
-                        "spring.flyway.locations=" + FlywayConfig.MIGRATION_LOCATION,
-                        "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET)
+                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.target=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
                 .run(refused -> assertThat(refused)
                         .as("switching migrations off is itself refused, before any bean is created, "
                                 + "so a deployment cannot reach a state where the migration-lifecycle "
@@ -470,15 +469,15 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.username=" + databaseUser(),
                         "spring.datasource.password=" + databasePassword(),
                         "spring.flyway.enabled=true",
-                        "spring.flyway.locations=" + FlywayConfig.MIGRATION_LOCATION,
-                        "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET);
+                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.target=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
     }
 
     /**
      * Builds a context runner carrying the three auto-configurations a production deployment initializes
      * around this database - the data source, the migration tool and the persistence provider - with the
      * refusal registered as a {@link Callback} bean exactly as {@link FlywayConfig} registers it under
-     * the production profile, and with the production profile's own schema location and ceiling.
+     * the production profile, and with the production profile's own schema location and open target.
      *
      * <p>Registering it as a bean rather than handing it to {@code Flyway.configure()} is deliberate:
      * it exercises the wiring as well as the control, since a callback bean is only honoured because
@@ -498,8 +497,8 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.url=" + probeJdbcUrl(),
                         "spring.datasource.username=" + databaseUser(),
                         "spring.datasource.password=" + databasePassword(),
-                        "spring.flyway.locations=" + FlywayConfig.MIGRATION_LOCATION,
-                        "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET,
+                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.target=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
                         "spring.flyway.validate-on-migrate=true",
                         "spring.flyway.clean-disabled=true",
                         "spring.jpa.hibernate.ddl-auto=none",
@@ -520,7 +519,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
     }
 
     /**
-     * Builds the migration a seeding profile performs: both delivered locations and no ceiling.
+     * Builds the migration a seeding profile performs: both delivered locations and no target.
      *
      * <p>No callback is registered, because the control under test is registered for the production
      * profile alone and registering it here would refuse the very state these tests need to create.
@@ -530,23 +529,25 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
     private static Flyway seedingMigration() {
         return Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.MIGRATION_LOCATION)
-                .target(FlywayConfig.SEEDING_TARGET)
+                .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
                 .load();
     }
 
     /**
-     * Builds the migration a production deployment performs: the one shared location, the schema-only
-     * ceiling that holds the two seeds out of it, and the refusal registered exactly as
-     * {@link FlywayConfig} registers it for production.
+     * Builds the migration a production deployment performs: the schema location alone, which is what
+     * holds the two seeds out of it, and the refusal registered exactly as {@link FlywayConfig}
+     * registers it for production.
+     *
+     * <p>No {@code target} is set, and that is the delivered posture rather than an omission: the
+     * exclusion is the absent seed location, so every version the schema location carries applies. See
+     * docs/decision-log.md DL-298.
      *
      * @return a loaded migration, not yet run
      */
     private static Flyway productionMigration() {
         return Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.MIGRATION_LOCATION)
-                .target(FlywayConfig.SCHEMA_ONLY_TARGET)
+                .locations(FlywayConfig.SCHEMA_LOCATION)
                 .callbacks(new ProductionSeedRejectionCallback())
                 .load();
     }

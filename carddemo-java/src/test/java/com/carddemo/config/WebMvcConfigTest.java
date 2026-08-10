@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +30,18 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.DisplayName;
+import org.springframework.boot.autoconfigure.security.SecurityProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.core.Ordered;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -187,7 +197,11 @@ class WebMvcConfigTest {
                     HttpMessageConvertersAutoConfiguration.class))
                     .withPropertyValues(
                             WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
-                            WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB");
+                            WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB")
+                    // The body-limit filter now counts a refusal, so it needs a registry. Supplied
+                    // explicitly here because this slice registers no metrics auto-configuration, whereas
+                    // the running application always has one.
+                    .withBean(MeterRegistry.class, SimpleMeterRegistry::new);
 
     /**
      * The configuration under test, held through the interface the framework invokes it through.
@@ -228,7 +242,7 @@ class WebMvcConfigTest {
         @DisplayName("a body at the configured size is copied intact for MVC")
         void aBodyAtTheConfiguredSizeIsCopiedIntact() throws Exception {
             final WebMvcConfig.RequestBodyLimitFilter filter =
-                    new WebMvcConfig.RequestBodyLimitFilter("8B");
+                    new WebMvcConfig.RequestBodyLimitFilter("8B", new SimpleMeterRegistry());
             final MockHttpServletRequest request =
                     new MockHttpServletRequest("POST", "/api/body-probe");
             request.setContent("12345678".getBytes(StandardCharsets.US_ASCII));
@@ -246,7 +260,7 @@ class WebMvcConfigTest {
         @DisplayName("a declared body above the ceiling is refused without reading or echoing it")
         void aDeclaredBodyAboveTheCeilingIsRefused() throws Exception {
             final WebMvcConfig.RequestBodyLimitFilter filter =
-                    new WebMvcConfig.RequestBodyLimitFilter("8B");
+                    new WebMvcConfig.RequestBodyLimitFilter("8B", new SimpleMeterRegistry());
             final MockHttpServletRequest request =
                     new MockHttpServletRequest("POST", "/api/body-probe");
             request.setContent("sensitive".getBytes(StandardCharsets.US_ASCII));
@@ -265,7 +279,7 @@ class WebMvcConfigTest {
         @DisplayName("a chunked body above the ceiling is refused after only one excess byte")
         void aChunkedBodyAboveTheCeilingIsRefused() throws Exception {
             final WebMvcConfig.RequestBodyLimitFilter filter =
-                    new WebMvcConfig.RequestBodyLimitFilter("8B");
+                    new WebMvcConfig.RequestBodyLimitFilter("8B", new SimpleMeterRegistry());
             final MockHttpServletRequest request =
                     new MockHttpServletRequest("POST", "/api/body-probe") {
                         @Override
@@ -291,7 +305,7 @@ class WebMvcConfigTest {
                     .withBean(BodyProbeController.class)
                     .run(context -> {
                         final MockMvc client = MockMvcBuilders.webAppContextSetup(context)
-                                .addFilters(new WebMvcConfig.RequestBodyLimitFilter("64KB"))
+                                .addFilters(new WebMvcConfig.RequestBodyLimitFilter("64KB", new SimpleMeterRegistry()))
                                 .build();
                         final String oversized =
                                 "{\"value\":\"" + "x".repeat(64 * 1_024) + "\"}";
@@ -305,6 +319,219 @@ class WebMvcConfigTest {
                                 .as("the request-body filter must reject before controller invocation")
                                 .isZero();
                     });
+        }
+    }
+
+    /**
+     * A refused body is visible: it is behind observation, behind authentication, counted and logged.
+     *
+     * <h2>What was actually wrong, and why position is the fix rather than an addition</h2>
+     *
+     * <p>Registered at highest precedence the filter ran ahead of the whole chain, so a refusal happened
+     * outside every observation. The caller received 413 and the deployment received nothing: no entry in
+     * the request timer, no span, no correlation identifiers in scope, and no log line. Because the route
+     * needs no credential to reach, that made an anonymously reachable refusal path completely
+     * unobservable - which is a monitoring gap, not a telemetry nicety. It also read and buffered an
+     * anonymous body before anything had established that the caller was entitled to send one.
+     *
+     * <p>The position assertions below are therefore the substance of this class, and they are expressed
+     * against the framework's own two constants rather than against the number this module happens to
+     * use. A test that asserted the literal would keep passing if Boot moved either filter, which is
+     * exactly the change that would silently undo the fix.
+     */
+    @Nested
+    @DisplayName("A refused body is observable")
+    class RefusedBodiesAreObservable {
+
+        @Test
+        @DisplayName("the filter is registered behind the server observation filter, which is what puts "
+                + "the 413 inside a request timing and a span at all")
+        void theFilterSitsBehindTheServerObservationFilter() {
+            final FilterRegistrationBean<WebMvcConfig.RequestBodyLimitFilter> registration =
+                    new WebMvcConfig().requestBodyLimitFilter("64KB", new SimpleMeterRegistry());
+
+            assertThat(registration.getOrder())
+                    .as("Boot registers its server observation filter one step behind highest precedence, "
+                            + "so anything at or before that point is refused outside every observation")
+                    .isGreaterThan(Ordered.HIGHEST_PRECEDENCE + 1);
+        }
+
+        @Test
+        @DisplayName("and behind the security chain, so an unauthenticated request to a protected route "
+                + "is answered before this filter allocates anything for it")
+        void theFilterSitsBehindTheSecurityChain() {
+            final FilterRegistrationBean<WebMvcConfig.RequestBodyLimitFilter> registration =
+                    new WebMvcConfig().requestBodyLimitFilter("64KB", new SimpleMeterRegistry());
+
+            assertThat(registration.getOrder())
+                    .as("derived from the framework's own default rather than written as a literal, so a "
+                            + "change to it moves this filter with it instead of reordering the two")
+                    .isEqualTo(SecurityProperties.DEFAULT_FILTER_ORDER + 1)
+                    .isGreaterThan(SecurityProperties.DEFAULT_FILTER_ORDER);
+        }
+
+        @Test
+        @DisplayName("a declared oversized body is counted, naming how the excess was detected and the "
+                + "method, so a probing scan is distinguishable from one large upload")
+        void aDeclaredRefusalIsCounted() throws Exception {
+            final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            final WebMvcConfig.RequestBodyLimitFilter filter =
+                    new WebMvcConfig.RequestBodyLimitFilter("8B", registry);
+            final MockHttpServletRequest request =
+                    new MockHttpServletRequest("POST", "/api/body-probe");
+            request.setContent("sensitive".getBytes(StandardCharsets.US_ASCII));
+
+            filter.doFilter(request, new MockHttpServletResponse(),
+                    (ignoredRequest, ignoredResponse) -> {
+                        throw new AssertionError("an oversized request reached the chain");
+                    });
+
+            assertThat(refused(registry, WebMvcConfig.REASON_DECLARED_LENGTH, "POST"))
+                    .as("a refusal that is not counted is indistinguishable from a request nobody made")
+                    .isEqualTo(1.0d);
+            assertThat(refused(registry, WebMvcConfig.REASON_STREAMED_LENGTH, "POST"))
+                    .as("the two detections are separate facts: one is a header the caller declared, the "
+                            + "other is what the caller actually sent")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("a chunked oversized body is counted under the other reason, because the excess was "
+                + "found by reading rather than by trusting a header")
+        void aStreamedRefusalIsCountedSeparately() throws Exception {
+            final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            final WebMvcConfig.RequestBodyLimitFilter filter =
+                    new WebMvcConfig.RequestBodyLimitFilter("8B", registry);
+            final MockHttpServletRequest request =
+                    new MockHttpServletRequest("PUT", "/api/body-probe") {
+                        @Override
+                        public long getContentLengthLong() {
+                            return -1L;
+                        }
+                    };
+            request.setContent("1234567890".getBytes(StandardCharsets.US_ASCII));
+
+            filter.doFilter(request, new MockHttpServletResponse(),
+                    (ignoredRequest, ignoredResponse) -> {
+                        throw new AssertionError("an oversized request reached the chain");
+                    });
+
+            assertThat(refused(registry, WebMvcConfig.REASON_STREAMED_LENGTH, "PUT"))
+                    .isEqualTo(1.0d);
+        }
+
+        @Test
+        @DisplayName("an invented method cannot fork the metric series, because a caller controls the "
+                + "method and a tag value a caller controls is a way to grow the series without bound")
+        void anInventedMethodIsFolded() throws Exception {
+            final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            final WebMvcConfig.RequestBodyLimitFilter filter =
+                    new WebMvcConfig.RequestBodyLimitFilter("8B", registry);
+            final MockHttpServletRequest request =
+                    new MockHttpServletRequest("WHATEVER-9134", "/api/body-probe");
+            request.setContent("sensitive".getBytes(StandardCharsets.US_ASCII));
+
+            filter.doFilter(request, new MockHttpServletResponse(),
+                    (ignoredRequest, ignoredResponse) -> {
+                        throw new AssertionError("an oversized request reached the chain");
+                    });
+
+            assertThat(refused(registry, WebMvcConfig.REASON_DECLARED_LENGTH, "OTHER"))
+                    .isEqualTo(1.0d);
+            assertThat(registry.find(WebMvcConfig.REQUEST_REFUSED_METER_NAME).counters())
+                    .as("exactly one series, whatever the caller called the method")
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("the diagnostic carries no unsanitised caller content, so a request line cannot "
+                + "forge a second log record or occupy the log by being long")
+        void theDiagnosticIsBounded() throws Exception {
+            final Logger configLogger = (Logger) LoggerFactory.getLogger(WebMvcConfig.class);
+            final Level originalLevel = configLogger.getLevel();
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.setContext(configLogger.getLoggerContext());
+            recorder.start();
+            configLogger.addAppender(recorder);
+            configLogger.setLevel(Level.WARN);
+            try {
+                final WebMvcConfig.RequestBodyLimitFilter filter =
+                        new WebMvcConfig.RequestBodyLimitFilter("8B", new SimpleMeterRegistry());
+                final String forged = "/api/probe\r\nWARN forged record injected \u0000"
+                        + "x".repeat(400);
+                final MockHttpServletRequest request = new MockHttpServletRequest("POST", forged);
+                request.setContent("sensitive".getBytes(StandardCharsets.US_ASCII));
+
+                filter.doFilter(request, new MockHttpServletResponse(),
+                        (ignoredRequest, ignoredResponse) -> {
+                            throw new AssertionError("an oversized request reached the chain");
+                        });
+
+                assertThat(recorder.list).singleElement().satisfies(event -> {
+                    final String rendered = event.getFormattedMessage();
+                    assertThat(event.getLevel())
+                            .as("one warning, because a refusal is an operator's business and a caller "
+                                    + "must not be able to raise it to an error")
+                            .isEqualTo(Level.WARN);
+                    assertThat(rendered)
+                            .as("no line break and no control character may survive into a record, or a "
+                                    + "caller writes records of their own choosing")
+                            .doesNotContain("\r", "\n", "\u0000")
+                            .doesNotContain("forged record injected")
+                            .doesNotContain("sensitive")
+                            .contains("limitBytes=8")
+                            .contains("method=POST")
+                            .contains("reason=" + WebMvcConfig.REASON_DECLARED_LENGTH);
+                    assertThat(rendered.length())
+                            .as("bounded, because a caller chooses the length of a request line and would "
+                                    + "otherwise choose how much of the log to occupy")
+                            .isLessThan(300);
+                });
+            } finally {
+                configLogger.detachAppender(recorder);
+                recorder.stop();
+                configLogger.setLevel(originalLevel);
+            }
+        }
+
+        @Test
+        @DisplayName("the answer a caller receives is unchanged, so recording the refusal has moved no "
+                + "external contract")
+        void theAnswerIsUnchanged() throws Exception {
+            final WebMvcConfig.RequestBodyLimitFilter filter =
+                    new WebMvcConfig.RequestBodyLimitFilter("8B", new SimpleMeterRegistry());
+            final MockHttpServletRequest request =
+                    new MockHttpServletRequest("POST", "/api/body-probe");
+            request.setContent("sensitive".getBytes(StandardCharsets.US_ASCII));
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            filter.doFilter(request, response, (ignoredRequest, ignoredResponse) -> {
+                throw new AssertionError("an oversized request reached the chain");
+            });
+
+            assertThat(response.getStatus()).isEqualTo(413);
+            assertThat(response.getContentType())
+                    .as("the media type is JSON; the container appends the charset the filter also sets")
+                    .startsWith(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(response.getCharacterEncoding())
+                    .isEqualTo(StandardCharsets.UTF_8.name());
+            assertThat(response.getContentAsString())
+                    .isEqualTo("{\"message\":\"Request could not be processed\",\"fieldErrors\":[]}");
+        }
+
+        /**
+         * @param  registry the registry to read
+         * @param  reason   the {@link WebMvcConfig#TAG_REASON} value
+         * @param  method   the {@link WebMvcConfig#TAG_METHOD} value
+         * @return how many refusals were counted for that pair, zero when none
+         */
+        private double refused(final SimpleMeterRegistry registry, final String reason,
+                final String method) {
+            final Counter counter = registry.find(WebMvcConfig.REQUEST_REFUSED_METER_NAME)
+                    .tag(WebMvcConfig.TAG_REASON, reason)
+                    .tag(WebMvcConfig.TAG_METHOD, method)
+                    .counter();
+            return counter == null ? 0.0d : counter.count();
         }
     }
 
@@ -749,6 +976,7 @@ class WebMvcConfigTest {
                     .withPropertyValues(
                             WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
                             WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB")
+                    .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                     .run(context -> assertThat(context)
                             .as("with no auto-configuration registered, the only thing that could put an "
                                     + "MVC configuration-support bean in this context is WebMvcConfig "
@@ -769,6 +997,7 @@ class WebMvcConfigTest {
                     .withPropertyValues(
                             WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
                             WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB")
+                    .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                     .run(context -> assertThat(context)
                             .as("WebMvcConfig must contribute no object mapper, no builder customiser and "
                                     + "no message converter of its own. Any of those would re-derive the "

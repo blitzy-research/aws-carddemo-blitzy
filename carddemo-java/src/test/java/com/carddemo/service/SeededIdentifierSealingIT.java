@@ -220,8 +220,7 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     private static void migrate() {
         Flyway.configure()
                 .dataSource(seededJdbcUrl, databaseUser(), databasePassword())
-                .locations(FlywayConfig.MIGRATION_LOCATION)
-                .target(FlywayConfig.SEEDING_TARGET)
+                .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
                 .callbacks(new SeededIdentifierSealingCallback(ENCRYPTION))
                 .load()
                 .migrate();
@@ -417,8 +416,7 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
                         + "is content; only opening them sees the problem")
                 .isThrownBy(() -> Flyway.configure()
                         .dataSource(seededJdbcUrl, databaseUser(), databasePassword())
-                        .locations(FlywayConfig.MIGRATION_LOCATION)
-                        .target(FlywayConfig.SEEDING_TARGET)
+                        .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
                         .callbacks(new SeededIdentifierSealingCallback(
                                 new SensitiveFieldEncryptionService(FOREIGN_KEY)))
                         .load()

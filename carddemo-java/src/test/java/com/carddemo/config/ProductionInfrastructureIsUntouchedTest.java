@@ -125,6 +125,14 @@ final class ProductionInfrastructureIsUntouchedTest {
         }
         variables.put("CARDDEMO_SQS_QUEUE", "JOBS.fifo");
         variables.put("AWS_REGION", "eu-west-2");
+        // The trace collector address is the third variable whose content is checked and not merely
+        // counted, so the generic filler above will not do: under this profile the address must be an
+        // approved, authenticated, non-loopback OTLP traces endpoint. See docs/decision-log.md DL-311.
+        variables.put("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://collector.internal:4318/v1/traces");
+        // The fourth such variable, and the generic filler fails it three ways at once: it is a value
+        // somebody typed, it contains the word "token", and a management credential must now look generated.
+        // Thirty-two bytes of mixed characters stand in for what a deployment would generate.
+        variables.put("CARDDEMO_MANAGEMENT_TOKEN", "7Qf2ZmXk9Lv3Rb8TpWn5Yc1Hd6Js4Gu0");
         return variables;
     }
 

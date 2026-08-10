@@ -22,6 +22,7 @@ import io.awspring.cloud.autoconfigure.sqs.SqsAsyncClientCustomizer;
 import io.awspring.cloud.sns.core.CachingTopicArnResolver;
 import io.awspring.cloud.sns.core.TopicArnResolver;
 import io.awspring.cloud.sns.core.TopicsListingTopicArnResolver;
+import java.time.Duration;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,8 @@ import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.retries.DefaultRetryStrategy;
+import software.amazon.awssdk.retries.api.BackoffStrategy;
+import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.sns.SnsClient;
 
 /**
@@ -101,8 +104,62 @@ import software.amazon.awssdk.services.sns.SnsClient;
  *
  * <p>{@link #singleAttemptSqsClientCustomizer()} removes the retry so that one card write is one
  * attempt, matching the legacy write exactly. Removing a retry is the <em>absence</em> of a figure
- * rather than the choice of one, which is what keeps it a parity statement: no attempt count, no
- * backoff interval, no time-out, no pool size and no queue capacity is set anywhere in this class.
+ * rather than the choice of one, which is what keeps that part a parity statement.
+ *
+ * <h2>Why every call is nevertheless bounded, and why a bound is not a performance target</h2>
+ *
+ * <p>An attempt count of one says how many times a call is made. It says nothing about how long one
+ * call may take, and the transport's own inactivity time-outs do not close that gap: a peer that
+ * answers a byte at a time, or accepts a connection and then answers nothing further while keeping the
+ * socket alive, is never inactive and is never abandoned. Left unbounded that is not a slow call, it is
+ * a lost thread, and each of the three clients loses a different one. A queue publish runs on the
+ * report-request thread inside the deployment-wide submission guard, so a hung publish holds a request
+ * thread <em>and</em> a database transaction holding the advisory lock that every other replica's
+ * submission waits on. An object-store call runs inside the generation publication lock, so a hung
+ * upload pins one connection and blocks every later publication of that base. A notification runs on
+ * the single-slot notifier, so a hung publish stops every subsequent job-completion notice.
+ *
+ * <p>Each client is therefore given an explicit total budget and an explicit per-attempt budget, and
+ * the values are <strong>ceilings, not targets</strong>. They encode no expectation about latency,
+ * they are not derived from any measurement, they must not be read as a service level and they must not
+ * be "tuned" towards one - {@code docs/gate-evidence.md} Gate 3 is where measured figures live, and it
+ * records that no legacy baseline exists to compare against. What the ceilings do encode is the answer
+ * to one question per client: how long may this call occupy the resource it holds before the caller is
+ * told it failed? A budget expiring is reported exactly as a refusal is, so on the queue path the
+ * legacy behaviour is preserved rather than altered - the operator learns the write did not happen,
+ * which is what the writing program's own error path did, and which is what an unbounded wait denies
+ * them.
+ *
+ * <p><strong>Waiting for a connection is bounded by the same two figures, and deliberately not by a
+ * third.</strong> Connection acquisition and any wait in the pending-acquire queue happen <em>inside</em>
+ * one attempt - the per-attempt budget is enforced around the whole attempt, transport included - so an
+ * attempt that spends its entire budget waiting for a connection is abandoned exactly as one that spends
+ * it waiting for bytes, and the total budget then bounds the sum of every attempt plus its backoff. The
+ * alternative would be an acquisition time-out on the transport itself, which cannot be set without
+ * building or replacing the HTTP client, and replacing it would take over the transport the cloud
+ * integration owns - the same objection that keeps this class customizing rather than publishing clients
+ * of its own. Two figures per client that provably bound acquisition are preferable to a third that
+ * arrives with a transport this module would then have to own.
+ *
+ * <p>The legacy estate bounded the same calls, and did so outside the program: an online transaction
+ * ran under the region's transaction time-out and a batch step under the job's own limit, so no legacy
+ * write could wait for ever either. Reproducing a bound is therefore closer to the source than omitting
+ * one; what the source does not supply is the figure, which is why the figures here are stated as
+ * ceilings with their reasoning rather than as parity claims.
+ *
+ * <h2>Why each retry strategy is pinned rather than left ambient</h2>
+ *
+ * <p>An unpinned strategy is not "the default", it is whichever mode the host environment resolves -
+ * the {@code AWS_RETRY_MODE} variable, the matching system property and the shared configuration file
+ * all select one, and none of them is visible to this application. Two of the three clients cannot
+ * tolerate that. The notification client publishes a job-completion notice, and a retried publish that
+ * the service had already accepted delivers the notice twice, so a subscriber counting completions
+ * counts one job as two; it is therefore pinned to a single attempt, which is the same shape as the
+ * queue and for a related reason. The object-store client performs operations that are safe to repeat -
+ * a listing is read-only, a versioned delete names its version, and an upload writes a key this module
+ * allocated one past the highest generation, so a repeat overwrites only its own bytes - so it is
+ * pinned to a small, fixed, <em>deterministic</em> schedule: a fixed delay without jitter, so two runs
+ * of the same failure behave identically and a test can assert the schedule rather than sample it.
  *
  * <h2>Why a failed publish stops the rest of the submission</h2>
  *
@@ -203,6 +260,8 @@ import software.amazon.awssdk.services.sns.SnsClient;
  * than a convention.
  *
  * <p>The reasoning for one write being one attempt is recorded in {@code docs/decision-log.md} DL-095;
+ * the call budgets and the pinned retry strategies, including why each figure is a ceiling rather than a
+ * target and why the object store is the one client that repeats an operation, are DL-301;
  * the choice to aim the three clients from this module's own namespace by customizing them rather than
  * publishing clients of this class's own is DL-130; and the naming of the four resources is DL-092.
  */
@@ -225,6 +284,66 @@ public class AwsConfig {
 
     /** Names the notification client in diagnostics. */
     private static final String NOTIFICATION_CLIENT = "notification";
+
+    /*
+     * THE NINE FIGURES BELOW ARE PACKAGE-PRIVATE ON PURPOSE. Each one is a ceiling this class chose,
+     * and a ceiling that only the class can see is a ceiling nothing can hold it to: a test able to
+     * read the applied configuration but not the intended figure can assert only that SOMETHING was
+     * set, which is satisfied by a wrong value as readily as by the right one. Published to the
+     * package, the same test asserts the exact figure reached the client, so a change to any of them is
+     * a change a reader sees rather than a change that silently widens a bound. They carry no secret
+     * and no address; each is a duration or a count.
+     */
+
+    /**
+     * Total budget for one object-store call, from the first attempt to the last.
+     *
+     * <p>The longest object-store call this module makes is the upload of one completed batch
+     * generation, streamed from a local file, so the ceiling has to admit a whole statement, report or
+     * archive generation rather than a small request. It is a ceiling on how long the generation
+     * publication lock may be held by a single unresponsive call, and nothing else: see the class
+     * comment for why that is not a latency expectation.</p>
+     */
+    static final Duration OBJECT_STORE_CALL_BUDGET = Duration.ofMinutes(2L);
+
+    /** Per-attempt budget for one object-store call, so one stalled attempt cannot consume the total. */
+    static final Duration OBJECT_STORE_ATTEMPT_BUDGET = Duration.ofSeconds(45L);
+
+    /**
+     * Total budget for one card publish.
+     *
+     * <p>Deliberately short. One card is eighty bytes, the publish holds a request thread and the
+     * database transaction carrying the deployment-wide submission lock, and a submission is seventeen
+     * of them in sequence - so the ceiling bounds the whole submission to a duration an operator waiting
+     * on the report screen can be answered within, and bounds the lock every other replica queues
+     * behind.</p>
+     */
+    static final Duration QUEUE_CALL_BUDGET = Duration.ofSeconds(10L);
+
+    /**
+     * Per-attempt budget for one card publish.
+     *
+     * <p>Stated even though the queue makes exactly one attempt. The two settings bound different
+     * things - the total bounds the operation, the per-attempt bounds one request on the wire - and
+     * leaving the second unset would make the single-attempt strategy the only thing standing between a
+     * drip-feeding peer and an unbounded wait.</p>
+     */
+    static final Duration QUEUE_ATTEMPT_BUDGET = Duration.ofSeconds(8L);
+
+    /** Total budget for one job-completion notification, which carries a bounded payload of its own. */
+    static final Duration NOTIFICATION_CALL_BUDGET = Duration.ofSeconds(10L);
+
+    /** Per-attempt budget for one job-completion notification. */
+    static final Duration NOTIFICATION_ATTEMPT_BUDGET = Duration.ofSeconds(8L);
+
+    /** Attempts an object-store operation is repeated for, counting the first. */
+    static final int OBJECT_STORE_MAX_ATTEMPTS = 3;
+
+    /** Fixed, jitter-free delay between object-store attempts, so the schedule is reproducible. */
+    static final Duration OBJECT_STORE_RETRY_DELAY = Duration.ofMillis(200L);
+
+    /** Fixed, jitter-free delay applied when the object store reports throttling. */
+    static final Duration OBJECT_STORE_THROTTLE_DELAY = Duration.ofMillis(500L);
 
     /**
      * The bound settings the three customizers below aim their clients by.
@@ -267,42 +386,66 @@ public class AwsConfig {
      * is not created, its addressing style stays whatever the integration's own settings declare, and
      * the key an object is written under is composed by the job that writes it.</p>
      *
-     * @return a customizer that applies the region, and the endpoint redirection when one is
-     *         configured, to the object-store client builder; never {@code null}
+     * <p>It is the one client of the three that repeats a failed operation, because it is the one whose
+     * operations can be repeated safely: a listing changes nothing, a delete names the exact version it
+     * removes, and an upload writes a key this module allocated one past the highest generation the base
+     * holds, so a second attempt can only overwrite the bytes the first attempt wrote. The schedule is
+     * pinned rather than left to the host, and it is jitter-free so that it is reproducible.</p>
+     *
+     * @return a customizer that applies the region, the endpoint redirection when one is configured, the
+     *         two call budgets and the pinned deterministic retry schedule to the object-store client
+     *         builder; never {@code null}
      */
     @Bean
     public S3ClientCustomizer batchStagingS3ClientCustomizer() {
-        return builder -> aimClient(builder, OBJECT_STORE_CLIENT);
+        return builder -> aimClient(builder, OBJECT_STORE_CLIENT, OBJECT_STORE_CALL_BUDGET,
+                OBJECT_STORE_ATTEMPT_BUDGET, deterministicObjectStoreRetryStrategy());
+    }
+
+    /**
+     * The fixed, jitter-free retry schedule the object-store client is pinned to.
+     *
+     * <p>Built here rather than held as a constant because a strategy carries a circuit breaker with
+     * state of its own, and one instance per client builder keeps that state where the client is. The
+     * schedule itself is entirely determined by the three constants above: a fixed delay without jitter
+     * for a retryable failure, a longer fixed delay without jitter for a throttled one, and a small
+     * attempt ceiling counting the first attempt. Nothing here samples a clock or a random source, so
+     * two runs of the same failure produce the same schedule and a test can assert it.</p>
+     *
+     * @return a standard strategy with a pinned attempt ceiling and pinned jitter-free backoff
+     */
+    private static RetryStrategy deterministicObjectStoreRetryStrategy() {
+        return DefaultRetryStrategy.standardStrategyBuilder()
+                .maxAttempts(OBJECT_STORE_MAX_ATTEMPTS)
+                .backoffStrategy(BackoffStrategy.fixedDelayWithoutJitter(OBJECT_STORE_RETRY_DELAY))
+                .throttlingBackoffStrategy(
+                        BackoffStrategy.fixedDelayWithoutJitter(OBJECT_STORE_THROTTLE_DELAY))
+                .build();
     }
 
     /**
      * Aims the queue client at the region and, when one is configured, at the emulator, and reduces it
      * to the single publish attempt the legacy queue write made.
      *
-     * <p>The strategy is installed by copying the override configuration the integration has already
-     * applied to the builder and adding the no-retry strategy to that copy. The convenience form that
-     * accepts a consumer of a fresh configuration builder would look equivalent and is not: it
-     * constructs a new configuration from nothing and then replaces the existing one wholesale,
-     * discarding the client identification the messaging library sets for its own telemetry while still
-     * satisfying an attempt-count assertion. Extending the current configuration preserves everything
-     * the library established and changes only the attempt count.</p>
+     * <p>The single attempt is the parity statement, developed in the class comment: one legacy
+     * transient-data-queue write was one write, and a queue that accepted a card on a later attempt would
+     * turn a failure the legacy program reported into a success it never had.</p>
      *
-     * <p>The customizer is applied after the integration has finished configuring the builder, so it is
-     * the last writer of every property it touches; and every property it touches is set to one
-     * definite value, so the result does not depend on the order customizers happen to run in.</p>
+     * <p>The two budgets alongside it are not a parity statement and are not a target. They bound how
+     * long one card publish may hold the report-request thread and the database transaction carrying the
+     * deployment-wide submission lock before the caller is told the write failed - which is the outcome
+     * the legacy error path produced, and which an unbounded wait denies the operator. See the class
+     * comment for why a single attempt does not bound a call, and {@link #aimClient} for how all three
+     * settings are written onto the builder without discarding what the integration established.</p>
      *
-     * @return a customizer that applies the region, the endpoint redirection when one is configured,
-     *         and the single-attempt strategy to the queue client builder; never {@code null}
+     * @return a customizer that applies the region, the endpoint redirection when one is configured, the
+     *         two call budgets and the single-attempt strategy to the queue client builder; never
+     *         {@code null}
      */
     @Bean
     public SqsAsyncClientCustomizer singleAttemptSqsClientCustomizer() {
-        return builder -> {
-            aimClient(builder, QUEUE_CLIENT);
-            builder.overrideConfiguration(builder.overrideConfiguration()
-                    .toBuilder()
-                    .retryStrategy(DefaultRetryStrategy.doNotRetry())
-                    .build());
-        };
+        return builder -> aimClient(builder, QUEUE_CLIENT, QUEUE_CALL_BUDGET, QUEUE_ATTEMPT_BUDGET,
+                DefaultRetryStrategy.doNotRetry());
     }
 
     /**
@@ -313,12 +456,21 @@ public class AwsConfig {
      * created, and no subscription is registered: this module publishes job-completion and operational
      * messages and consumes none.</p>
      *
-     * @return a customizer that applies the region, and the endpoint redirection when one is
-     *         configured, to the notification client builder; never {@code null}
+     * <p>It is pinned to one attempt, and that is a correctness decision rather than a parity one. A
+     * completion notice records that a named job execution ended with a named status; a retry of a
+     * publish the service had already accepted delivers the same notice twice, and a subscriber has no
+     * way to tell the second copy from a second run. The channel is defined non-fatal end to end - the
+     * job's verdict is already final and a lost notice loses a notice - so declining to retry trades a
+     * duplicate for a loss in the direction the channel is already documented to trade it.</p>
+     *
+     * @return a customizer that applies the region, the endpoint redirection when one is configured, the
+     *         call budgets and the single-attempt strategy to the notification client builder; never
+     *         {@code null}
      */
     @Bean
     public SnsClientCustomizer jobNotificationSnsClientCustomizer() {
-        return builder -> aimClient(builder, NOTIFICATION_CLIENT);
+        return builder -> aimClient(builder, NOTIFICATION_CLIENT, NOTIFICATION_CALL_BUDGET,
+                NOTIFICATION_ATTEMPT_BUDGET, DefaultRetryStrategy.doNotRetry());
     }
 
     /**
@@ -367,12 +519,41 @@ public class AwsConfig {
      * logged that the client was "resolving the endpoint of region ..." with no such enforcement behind
      * it, which asserted a posture the process was not holding.
      *
-     * @param builder    the client builder the integration has finished configuring
-     * @param clientName the client's name for diagnostics
+     * <h2>Why the budgets and the strategy are applied here too</h2>
+     *
+     * <p>All three clients need bounding and all three need a pinned strategy, and applying them in one
+     * place is what makes the three sets of figures comparable and the omission of one impossible.
+     * Each client still supplies its <em>own</em> figures, because the three calls hold different
+     * resources for different lengths of time; what is shared is the mechanism, not the value.</p>
+     *
+     * <p>The override configuration is extended rather than replaced. The convenience form that accepts
+     * a consumer of a fresh configuration builder would look equivalent and is not: it constructs a new
+     * configuration from nothing and then replaces the existing one wholesale, discarding the client
+     * identification and the observation wiring the integration has already established while still
+     * satisfying an assertion about the settings this method writes. Copying the current configuration
+     * and adding to the copy preserves everything the integration set and changes only the three
+     * properties named here. Because the customizer runs after the integration has finished, this is the
+     * last writer of each of those three, so the result does not depend on customizer ordering.</p>
+     *
+     * @param builder        the client builder the integration has finished configuring
+     * @param clientName     the client's name for diagnostics
+     * @param callBudget     ceiling on one whole call, attempts included
+     * @param attemptBudget  ceiling on one attempt of that call
+     * @param retryStrategy  the pinned strategy, so the attempt count does not come from the host
      * @see ProductionConfigurationValidator#validateNativeSdkEndpointChannels
      */
-    private void aimClient(final AwsClientBuilder<?, ?> builder, final String clientName) {
+    private void aimClient(final AwsClientBuilder<?, ?> builder, final String clientName,
+            final Duration callBudget, final Duration attemptBudget,
+            final RetryStrategy retryStrategy) {
         builder.region(Region.of(this.awsProperties.region()));
+        builder.overrideConfiguration(builder.overrideConfiguration()
+                .toBuilder()
+                .apiCallTimeout(callBudget)
+                .apiCallAttemptTimeout(attemptBudget)
+                .retryStrategy(retryStrategy)
+                .build());
+        LOG.debug("{} client bounded: callBudget={} attemptBudget={} retryStrategy={}",
+                clientName, callBudget, attemptBudget, retryStrategy.getClass().getSimpleName());
         this.awsProperties.endpointOverrideUri().ifPresentOrElse(
                 redirection -> {
                     builder.endpointOverride(redirection);

@@ -717,29 +717,45 @@ public class TransactionControllerIT extends AbstractPostgresIT {
     }
 
     /**
-     * Builds the continuation a client echoes from a page it was served.
+     * Builds the browse state a client echoes from a page it was served.
+     *
+     * <p>The whole of it is published by the turn that served the page, so a client never assembles
+     * cross-turn state of its own. It carries the two boundary keys, the direction the page was
+     * assembled in, the page label and whether a further page follows - and <strong>no transaction
+     * identifier of a displayed row</strong>. The next turn establishes a marked row's identifier by
+     * re-reading the page these keys name; see {@code docs/decision-log.md} DL-299.</p>
      *
      * @param  served the body of the page being echoed
-     * @return the continuation payload, carrying the two cursors, the indicator, the forward indicator
-     *     and the positional identifier list exactly as the previous turn published them
+     * @return the paging payload in the shape the request accepts inbound
      */
-    private static Map<String, Object> continuationFrom(final JsonNode served) {
-        final JsonNode published = served.get("continuation");
+    private static Map<String, Object> pagingStateFrom(final JsonNode served) {
+        final JsonNode published = served.get("pageMetadata");
         assertThat(published)
-                .as("the continuation a client echoes is published by the turn that served the page, so "
-                        + "a client never has to assemble cross-turn state of its own")
+                .as("the browse state a client echoes is published by the turn that served the page")
                 .isNotNull();
-        final Map<String, Object> continuation = new LinkedHashMap<>();
-        continuation.put("previousCursorKey", textOf(published, "previousCursorKey"));
-        continuation.put("nextCursorKey", textOf(published, "nextCursorKey"));
-        continuation.put("displayedPageNumber", textOf(published, "displayedPageNumber"));
-        continuation.put("nextPageAvailable", published.get("nextPageAvailable").asBoolean());
-        final List<String> identifiers = new ArrayList<>();
-        for (final JsonNode identifier : published.get("displayedTransactionIds")) {
-            identifiers.add(identifier.asText());
-        }
-        continuation.put("displayedTransactionIds", identifiers);
-        return continuation;
+        final Map<String, Object> paging = new LinkedHashMap<>();
+        paging.put("previousCursorKey", textOf(published, "previousCursorKey"));
+        paging.put("nextCursorKey", textOf(published, "nextCursorKey"));
+        paging.put("direction", textOf(published, "direction"));
+        paging.put("displayedPageNumber", textOf(published, "displayedPageNumber"));
+        paging.put("nextPageIndicated", published.get("hasMorePages").asBoolean());
+        return paging;
+    }
+
+    /**
+     * The same browse state with one byte of its forward boundary key altered.
+     *
+     * @param  served the body of the page being echoed
+     * @return the paging payload, naming a position the served page did not begin at
+     */
+    private static Map<String, Object> pagingStateWithATamperedForwardKey(final JsonNode served) {
+        final Map<String, Object> paging = pagingStateFrom(served);
+        final String issued = (String) paging.get("previousCursorKey");
+        assertThat(issued).as("the served page names its own first slot").isNotNull();
+        final char lastByte = issued.charAt(issued.length() - 1);
+        final char altered = lastByte == '9' ? '8' : (char) (lastByte + 1);
+        paging.put("previousCursorKey", issued.substring(0, issued.length() - 1) + altered);
+        return paging;
     }
 
     /**
@@ -1050,7 +1066,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
-            forward.put("continuation", continuationFrom(firstPage));
+            forward.put("pageMetadata", pagingStateFrom(firstPage));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             assertThat(publishedIdentifiers(secondPage))
@@ -1103,12 +1119,12 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final JsonNode firstPage = bodyOf(postList(listBody("ENTER")));
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
-            forward.put("continuation", continuationFrom(firstPage));
+            forward.put("pageMetadata", pagingStateFrom(firstPage));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
-            backward.put("continuation", continuationFrom(secondPage));
+            backward.put("pageMetadata", pagingStateFrom(secondPage));
             final JsonNode backwardPage = bodyOf(postList(backward));
 
             assertThat(publishedIdentifiers(backwardPage))
@@ -1135,12 +1151,12 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final JsonNode firstPage = bodyOf(postList(listBody("ENTER")));
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
-            forward.put("continuation", continuationFrom(firstPage));
+            forward.put("pageMetadata", pagingStateFrom(firstPage));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
-            backward.put("continuation", continuationFrom(secondPage));
+            backward.put("pageMetadata", pagingStateFrom(secondPage));
             final List<String> published = publishedIdentifiers(bodyOf(postList(backward)));
 
             assertThat(published.get(0))
@@ -1169,12 +1185,12 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final JsonNode firstPage = bodyOf(postList(listBody("ENTER")));
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
-            forward.put("continuation", continuationFrom(firstPage));
+            forward.put("pageMetadata", pagingStateFrom(firstPage));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
-            backward.put("continuation", continuationFrom(secondPage));
+            backward.put("pageMetadata", pagingStateFrom(secondPage));
             final JsonNode backwardPage = bodyOf(postList(backward));
 
             assertThat(textOf(backwardPage, "displayedPageNumber"))
@@ -1242,7 +1258,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
-            backward.put("continuation", continuationFrom(firstPage));
+            backward.put("pageMetadata", pagingStateFrom(firstPage));
             final JsonNode refused = bodyOf(postList(backward));
 
             assertThat(textOf(refused, "message"))
@@ -1270,7 +1286,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
-            forward.put("continuation", continuationFrom(lastPage));
+            forward.put("pageMetadata", pagingStateFrom(lastPage));
             final JsonNode refused = bodyOf(postList(forward));
 
             assertThat(textOf(refused, "message"))
@@ -1346,12 +1362,12 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final JsonNode firstPage = bodyOf(postList(listBody("ENTER")));
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
-            forward.put("continuation", continuationFrom(firstPage));
+            forward.put("pageMetadata", pagingStateFrom(firstPage));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
-            backward.put("continuation", continuationFrom(secondPage));
+            backward.put("pageMetadata", pagingStateFrom(secondPage));
             final JsonNode backwardPage = bodyOf(postList(backward));
 
             assertThat(textOf(backwardPage, "message"))
@@ -1480,12 +1496,12 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final JsonNode firstPage = bodyOf(postList(listBody("ENTER")));
             final Map<String, Object> toSecond = listBody("PFK08");
             toSecond.put("navigationContext", reEntry());
-            toSecond.put("continuation", continuationFrom(firstPage));
+            toSecond.put("pageMetadata", pagingStateFrom(firstPage));
             final JsonNode secondPage = bodyOf(postList(toSecond));
 
             final Map<String, Object> toThird = listBody("PFK08");
             toThird.put("navigationContext", reEntry());
-            toThird.put("continuation", continuationFrom(secondPage));
+            toThird.put("pageMetadata", pagingStateFrom(secondPage));
             return bodyOf(postList(toThird));
         }
     }
@@ -1527,7 +1543,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
-            selection.put("continuation", continuationFrom(page));
+            selection.put("pageMetadata", pagingStateFrom(page));
             selection.put("rowSelectors", selectorsWith(7, "S"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1554,7 +1570,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
-            selection.put("continuation", continuationFrom(page));
+            selection.put("pageMetadata", pagingStateFrom(page));
             selection.put("rowSelectors", selectorsWith(2, "s"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1577,7 +1593,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
-            selection.put("continuation", continuationFrom(page));
+            selection.put("pageMetadata", pagingStateFrom(page));
             selection.put("rowSelectors", selectorsWithBoth(3, 9, "S"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1604,7 +1620,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
-            selection.put("continuation", continuationFrom(page));
+            selection.put("pageMetadata", pagingStateFrom(page));
             selection.put("rowSelectors", selectorsWith(4, "X"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1639,7 +1655,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
-            selection.put("continuation", continuationFrom(page));
+            selection.put("pageMetadata", pagingStateFrom(page));
             selection.put("rowSelectors", selectorsWithBoth(3, 9, "X"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1664,7 +1680,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
-            selection.put("continuation", continuationFrom(page));
+            selection.put("pageMetadata", pagingStateFrom(page));
             selection.put("rowSelectors", selectorsWith(4, "X"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1681,38 +1697,94 @@ public class TransactionControllerIT extends AbstractPostgresIT {
         }
 
         /**
-         * The positional identifier list a page publishes has one entry per slot, always ten of them.
+         * A page publishes its two boundary keys and its direction, and no identifier list at all.
          *
          * @throws Exception if the boundary cannot be reached
          */
         @Test
-        @DisplayName("the published continuation carries one identifier slot per screen row, always ten")
-        void thePublishedContinuationCarriesOneSlotPerRow() throws Exception {
+        @DisplayName("a page publishes the two boundary keys and the direction, and no identifier list "
+                + "for the next turn to be told to trust")
+        void aPagePublishesItsBoundaryKeysAndNoIdentifierList() throws Exception {
             final List<Transaction> ordered = writeOrderedFixture();
 
-            final JsonNode published =
-                    bodyOf(postList(listBody("ENTER"))).get("continuation");
+            final JsonNode body = bodyOf(postList(listBody("ENTER")));
+            final JsonNode published = body.get("pageMetadata");
 
-            final List<String> identifiers = new ArrayList<>();
-            for (final JsonNode identifier : published.get("displayedTransactionIds")) {
-                identifiers.add(identifier.asText());
-            }
-            assertThat(identifiers)
-                    .as("the next turn resolves a marked slot by indexing this list with the slot, so it "
-                            + "has one entry per row slot and the entries sit at their own slots")
-                    .hasSize(PageMetadata.TRANSACTION_LIST_PAGE_SIZE)
-                    .containsExactlyElementsOf(identifiersOf(ordered, 1, 10));
+            assertThat(body.has("continuation"))
+                    .as("a submission body is not a trusted echo channel, so no continuation object "
+                            + "carrying displayed identifiers is published for one to be echoed back")
+                    .isFalse();
+            assertThat(body.toString())
+                    .as("and no member anywhere in the response is an identifier list")
+                    .doesNotContain("displayedTransactionIds");
+            assertThat(textOf(published, "previousCursorKey"))
+                    .as("the forward key names the first presented slot, which is where an upward fill "
+                            + "began and therefore what reproduces the page")
+                    .isEqualTo(ordered.get(0).getTranId());
+            assertThat(textOf(published, "nextCursorKey"))
+                    .as("the backward key names the tenth presented slot, which is where a downward "
+                            + "fill would have begun")
+                    .isEqualTo(ordered.get(9).getTranId());
+            assertThat(textOf(published, "direction"))
+                    .as("the direction says which of the two keys reproduces this page")
+                    .isEqualTo("FORWARD");
         }
 
         /**
-         * A short page publishes a blank in every slot the browse did not fill, rather than a shorter
-         * list - which is what keeps a later slot's index correct.
+         * A cursor altered by one byte resolves the row at the position it names, never the row the
+         * served page displayed in that slot.
          *
          * @throws Exception if the boundary cannot be reached
          */
         @Test
-        @DisplayName("a short page still publishes ten identifier slots, blank where no row landed")
-        void aShortPageStillPublishesTenIdentifierSlots() throws Exception {
+        @DisplayName("a boundary key altered by one byte resolves the row at the position it names, "
+                + "which is what proves the identifier is re-read rather than accepted")
+        void aTamperedBoundaryKeyResolvesTheRowAtThePositionItNames() throws Exception {
+            final List<Transaction> ordered = writeOrderedFixture();
+            final JsonNode page = bodyOf(postList(listBody("ENTER")));
+
+            final Map<String, Object> honest = listBody("ENTER");
+            honest.put("navigationContext", reEntry());
+            honest.put("pageMetadata", pagingStateFrom(page));
+            honest.put("rowSelectors", selectorsWith(1, "S"));
+
+            final Map<String, Object> tampered = listBody("ENTER");
+            tampered.put("navigationContext", reEntry());
+            tampered.put("pageMetadata", pagingStateWithATamperedForwardKey(page));
+            tampered.put("rowSelectors", selectorsWith(1, "S"));
+
+            final String honestly = textOf(bodyOf(postList(honest)), "selectedTransactionId");
+            final String afterTamper = textOf(bodyOf(postList(tampered)), "selectedTransactionId");
+
+            assertThat(honestly)
+                    .as("an honest echo resolves the row the marked slot displayed")
+                    .isEqualTo(ordered.get(0).getTranId());
+            assertThat(afterTamper)
+                    .as("a cursor naming the second row's position resolves the second row, because the "
+                            + "identifier is whatever the server's own read finds there")
+                    .isEqualTo(ordered.get(1).getTranId());
+            assertThat(afterTamper).isNotEqualTo(honestly);
+        }
+
+        /**
+         * A short forward page names its only row at the forward boundary and leaves the backward one
+         * unset, which is the legacy assignment reproduced and the reason each direction reads its own
+         * key.
+         *
+         * <p>{@code app/cbl/COTRN00C.cbl} writes the first-row key only in the clause for slot one at
+         * lines 392-393 and the last-row key only in the clause for slot ten at lines 438-439. A forward
+         * fill always reaches slot one and reaches slot ten only on a full page, so the backward key of a
+         * short forward page is unset; a reverse fill always reaches slot ten, so the backward key of a
+         * short <em>backward</em> page is always set. Re-reading a forward page from its forward key and
+         * a backward page from its backward key therefore always reads the key that is present, and a
+         * page carrying neither selects nothing rather than guessing.</p>
+         *
+         * @throws Exception if the boundary cannot be reached
+         */
+        @Test
+        @DisplayName("a short forward page names its only row at the forward boundary, leaves the "
+                + "backward one unset, and a mark on an unfilled slot selects nothing")
+        void aShortPageNamesItsOnlyRowAtBothBoundaries() throws Exception {
             final List<Transaction> single = List.of(TestDataFactory.transaction()
                     .id(reservedIdentifier(1))
                     .cardNumber(SEEDED_CARD_NUMBER)
@@ -1725,16 +1797,29 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             assertThat(publishedIdentifiers(body))
                     .as("one row was available, so one row is published and the page is not padded")
                     .containsExactly(single.get(0).getTranId());
-            final List<String> slots = new ArrayList<>();
-            for (final JsonNode identifier
-                    : body.get("continuation").get("displayedTransactionIds")) {
-                slots.add(identifier.asText());
-            }
-            assertThat(slots)
-                    .as("the identifier list is indexed by slot, so it keeps all ten positions with a "
-                            + "blank in each one the browse did not fill")
-                    .hasSize(PageMetadata.TRANSACTION_LIST_PAGE_SIZE)
-                    .containsExactly(single.get(0).getTranId(), "", "", "", "", "", "", "", "", "");
+            assertThat(textOf(body.get("pageMetadata"), "previousCursorKey"))
+                    .as("the forward fill reached slot one, so the forward key names that row and the "
+                            + "page is reproducible from it")
+                    .isEqualTo(single.get(0).getTranId());
+            assertThat(textOf(body.get("pageMetadata"), "nextCursorKey"))
+                    .as("the fill never reached slot ten, and only the tenth slot's clause assigns the "
+                            + "backward key, so it stays unset exactly as the legacy leaves it")
+                    .isNull();
+
+            final Map<String, Object> markOnAnUnfilledSlot = listBody("ENTER");
+            markOnAnUnfilledSlot.put("navigationContext", reEntry());
+            markOnAnUnfilledSlot.put("pageMetadata", pagingStateFrom(body));
+            markOnAnUnfilledSlot.put("rowSelectors", selectorsWith(4, "S"));
+
+            final JsonNode marked = bodyOf(postList(markOnAnUnfilledSlot));
+
+            assertThat(textOf(marked, "selectedTransactionId"))
+                    .as("the fill never reached the fourth slot, so it displayed no row and marking it "
+                            + "names none")
+                    .isEmpty();
+            assertThat(textOf(marked, "nextRoute"))
+                    .as("nothing was nominated, so the turn re-arms on its own screen")
+                    .isNotEqualTo(NavigationService.Route.TRANSACTION_VIEW.getRouteValue());
         }
     }
 
@@ -1773,7 +1858,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final JsonNode page = bodyOf(postList(listBody("ENTER")));
             final Map<String, Object> resubmitted = listBody("ENTER");
             resubmitted.put("navigationContext", reEntry());
-            resubmitted.put("continuation", continuationFrom(page));
+            resubmitted.put("pageMetadata", pagingStateFrom(page));
             resubmitted.put("rowSelectors", selectorsWith(4, "X"));
 
             final JsonNode row = bodyOf(postList(resubmitted)).get("rows").get(0);

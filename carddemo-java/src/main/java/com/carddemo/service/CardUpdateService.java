@@ -38,7 +38,6 @@ import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
-import com.carddemo.repository.RecordWriter;
 import com.carddemo.util.CobolStringUtils;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.PfKeyTranslator;
@@ -434,12 +433,6 @@ public final class CardUpdateService {
      */
     private static final String RAW_STATUS_READ_FAILURE = "30";
 
-    /** The record type name the not-found failure carries. */
-    private static final String RECORD_TYPE_CARD = "Card";
-
-    /** The entity name the conflict exception carries; deliberately not the customer record. */
-    private static final String ENTITY_NAME_CARD = "Card";
-
     // ----------------------------------------------------------------------------------------------
     // Screen field identities. The response property name and the legacy BMS field name are carried
     // as a pair so a reader can trace either direction, and the decorator records both.
@@ -537,8 +530,6 @@ public final class CardUpdateService {
 
     private final OnlineTransactionBoundary transactionBoundary;
 
-    private final RecordWriter recordWriter;
-
     private final Clock clock;
 
     /**
@@ -554,7 +545,6 @@ public final class CardUpdateService {
      * @param navigationService the dispatch graph replacing the transfer at lines 473 to 476 and the
      *                          re-arm at lines 554 to 558; mandatory
      * @param transactionBoundary the independent card-rewrite transaction; mandatory
-     * @param recordWriter the immediate flush primitive for the legacy rewrite response; mandatory
      * @param clock the clock the header's date and time read, replacing
      *              {@code FUNCTION CURRENT-DATE} at lines 1055 and 1062; mandatory
      * @throws NullPointerException if any collaborator is {@code null}
@@ -564,7 +554,6 @@ public final class CardUpdateService {
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
             final OnlineTransactionBoundary transactionBoundary,
-            final RecordWriter recordWriter,
             final Clock clock) {
         this.cardRepository =
                 Objects.requireNonNull(cardRepository, "cardRepository must not be null");
@@ -575,7 +564,6 @@ public final class CardUpdateService {
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
         this.transactionBoundary = Objects.requireNonNull(transactionBoundary,
                 "transactionBoundary must not be null");
-        this.recordWriter = Objects.requireNonNull(recordWriter, "recordWriter must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -730,7 +718,7 @@ public final class CardUpdateService {
      * left empty from one they filled in wrongly: the blank state writes a marker into the field and
      * colours it, the not-OK state only colours it.
      *
-     * <p>The initial state is blank, not not-OK, because {@code INITIALIZE WS-MISC-STORAGE} at line 375
+     * <p>The initial state is blank, not not-OK, because the clearing of WS-MISC-STORAGE at line 375
      * sets every alphanumeric flag to spaces and the blank condition name is declared over a space.
      */
     public enum EditFlag {
@@ -1272,7 +1260,7 @@ public final class CardUpdateService {
      *                             Carried separately because the legacy has no such error: it coerces an
      *                             undecodable key to the enter key at lines 422 to 424 and says nothing.
      *                             Overloading the input flag with it would let the edit driver's
-     *                             {@code SET INPUT-OK} at line 643 silently discard the report
+     *                             the setting of INPUT-OK at line 643 silently discard the report
      * @param reEntry {@code true} when the turn ran as a re-submission, which is the gate that makes
      *                decoration conditional
      * @param changeDetected {@code true} when the write path found the stored record no longer matched
@@ -1343,8 +1331,8 @@ public final class CardUpdateService {
      * all fields of <em>this</em> object rather than of the service, so two concurrent turns cannot see
      * each other's state.
      *
-     * <p>Field initial values reproduce {@code INITIALIZE CC-WORK-AREA WS-MISC-STORAGE WS-COMMAREA} at
-     * lines 374 to 376 followed by {@code SET WS-RETURN-MSG-OFF TO TRUE} at line 384. That matters for
+     * <p>Field initial values reproduce the clearing of CC-WORK-AREA, WS-MISC-STORAGE and WS-COMMAREA at
+     * lines 374 to 376 followed by the setting of WS-RETURN-MSG-OFF at line 384. That matters for
      * the six edit flags in particular: {@code INITIALIZE} sets an alphanumeric field to spaces and the
      * blank condition name is declared over a space, so every flag starts <em>blank</em> rather than
      * not-OK, and the cursor-positioning evaluation at lines 1211 to 1235 reads those blank states on a
@@ -1573,7 +1561,7 @@ public final class CardUpdateService {
 
         /**
          * Raises the summary message only when none has been raised, reproducing the
-         * {@code IF WS-RETURN-MSG-OFF} gate that wraps every one of the fifteen assignments.
+         * WS-RETURN-MSG-OFF gate that wraps every one of the fifteen assignments.
          *
          * @param message the text to raise
          */
@@ -1617,7 +1605,7 @@ public final class CardUpdateService {
         final TurnState state = new TurnState();
         mainPara(state, input);
 
-        // EXEC CICS RETURN TRANSID(LIT-THISTRANID) at lines 554 to 558. The transfer arm has already
+        // Lines 554 to 558 re-arm this transaction on return. The transfer arm has already
         // ended the turn, and re-arming is idempotent, so this reproduces the unconditional return
         // without overriding a transfer.
         commonReturn(state);
@@ -1646,7 +1634,7 @@ public final class CardUpdateService {
      * the client echoed; decodes and gates the attention key at lines 406 to 424; and then runs the
      * five-arm dispatch at lines 429 to 543.
      *
-     * <p><strong>Clause order is the contract.</strong> The dispatch is an {@code EVALUATE TRUE}, which
+     * <p><strong>Clause order is the contract.</strong> The dispatch is a multi-way selection, which
      * stops at the first arm whose condition holds, so the arms are tested here in exactly the order the
      * source declares them. Several arms overlap - a turn can satisfy both the third and the fifth - and
      * reordering them would change which one runs.
@@ -1655,10 +1643,10 @@ public final class CardUpdateService {
      * @param input the transmitted screen
      */
     private void mainPara(final TurnState state, final CardUpdateScreenInput input) {
-        // MOVE LIT-THISTRANID TO WS-TRANID, line 380.
+        // Line 380 carries LIT-THISTRANID into WS-TRANID.
         state.transactionId = LEGACY_TRANSACTION_ID;
 
-        // SET WS-RETURN-MSG-OFF TO TRUE, line 384.
+        // Line 384 sets WS-RETURN-MSG-OFF.
         state.returnMessage = "";
 
         // Lines 388 to 401. A turn carrying no state at all, or one arriving fresh from the menu, resets
@@ -1682,7 +1670,7 @@ public final class CardUpdateService {
                     : input.carriedImage();
         }
 
-        // PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT, lines 406 to 407. The two paragraphs of
+        // Lines 406 to 407 run the YYYY-STORE-PFKEY range through YYYY-STORE-PFKEY-EXIT. The two paragraphs of
         // app/cpy/CSSTRPFY.cpy are credited to the module's key translator and are not duplicated here;
         // this member is one of that copybook's five includers. The copybook declares twenty-eight
         // clauses and no catch-all, which is why an unrecognised identifier yields no key at all.
@@ -1693,7 +1681,7 @@ public final class CardUpdateService {
         // key; a decode failure produces the fixed-width invalid-key message.
         gateAttentionKey(state);
 
-        // EVALUATE TRUE, lines 429 to 543, in declared clause order.
+        // Lines 429 to 543 hold a multi-way selection, in declared clause order.
         if (exitArmApplies(state)) {
             dispatchExit(state);
             return;
@@ -1734,7 +1722,7 @@ public final class CardUpdateService {
     }
 
     /**
-     * The call site of {@code PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT} at lines 406 to 407 -
+     * The call site of the YYYY-STORE-PFKEY range at lines 406 to 407 -
      * an inline block of {@code 0000-MAIN}, not a paragraph of this member.
      *
      * <p>The two paragraphs it performs live in {@code app/cpy/CSSTRPFY.cpy} at lines 17 and 80 and are
@@ -1775,7 +1763,7 @@ public final class CardUpdateService {
                 : PfKeyTranslator.translate(rawIdentifier);
         if (decoded.isEmpty()) {
             // The decode failure is reported on its own flag and NOT by setting INPUT-ERROR. The edit
-            // driver's SET INPUT-OK TO TRUE at line 643 is unconditional, so a report parked on the
+            // driver's setting of INPUT-OK at line 643 is unconditional, so a report parked on the
             // input flag would be silently discarded before the turn ends. The returned error flag is
             // the union of the input flag and this one, so the report reaches the caller either way.
             state.attentionKeyUnmapped = true;
@@ -1800,7 +1788,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void gateAttentionKey(final TurnState state) {
-        // SET PFK-INVALID TO TRUE, line 413.
+        // Line 413 sets PFK-INVALID.
         state.attentionKeyState = AttentionKeyState.INVALID;
 
         final boolean permitted = state.keyAction == KeyAction.ENTER
@@ -1813,7 +1801,7 @@ public final class CardUpdateService {
             state.attentionKeyState = AttentionKeyState.VALID;
         }
 
-        // IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE, lines 422 to 424.
+        // Lines 422 to 424 coerce a key that was not admitted to the enter key.
         if (!state.attentionKeyState.permitted()) {
             state.keyAction = KeyAction.ENTER;
         }
@@ -1855,7 +1843,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void dispatchExit(final TurnState state) {
-        // SET CCARD-AID-PFK03 TO TRUE, line 440.
+        // Line 440 sets CCARD-AID-PFK03.
         state.keyAction = KeyAction.PFK03;
 
         final ScreenNavigationState echoed = state.navigationContext;
@@ -1875,28 +1863,28 @@ public final class CardUpdateService {
                 LEGACY_CARD_LIST_MAPSET.equals(trimmedOrNull(echoed.lastMapset()));
 
         state.navigationContext = new ScreenNavigationState(
-                // MOVE LIT-THISTRANID TO CDEMO-FROM-TRANID, line 456.
+                // Line 456 carries LIT-THISTRANID into CDEMO-FROM-TRANID.
                 LEGACY_TRANSACTION_ID,
-                // MOVE LIT-THISPGM TO CDEMO-FROM-PROGRAM, line 457.
+                // Line 457 carries LIT-THISPGM into CDEMO-FROM-PROGRAM.
                 LEGACY_PROGRAM_NAME,
                 destinationTransactionId,
                 state.route.getLegacyProgramName(),
                 echoed.userId(),
-                // SET CDEMO-USRTYP-USER TO TRUE, line 464.
+                // Line 464 sets CDEMO-USRTYP-USER.
                 UserType.USER.getCode(),
-                // SET CDEMO-PGM-ENTER TO TRUE, line 465.
+                // Line 465 sets CDEMO-PGM-ENTER.
                 ScreenNavigationState.ProgramContext.ENTER,
                 echoed.customerId(),
                 echoed.customerFirstName(),
                 echoed.customerMiddleName(),
                 echoed.customerLastName(),
-                // MOVE ZEROS TO CDEMO-ACCT-ID CDEMO-CARD-NUM, lines 459 to 462.
+                // Lines 459 to 462 zero CDEMO-ACCT-ID and CDEMO-CARD-NUM.
                 cameFromCardList ? zeroFill(ACCOUNT_ID_WIDTH) : echoed.accountId(),
                 echoed.accountStatus(),
                 cameFromCardList ? zeroFill(CARD_NUMBER_WIDTH) : echoed.cardNumber(),
-                // MOVE LIT-THISMAP TO CDEMO-LAST-MAP, line 467.
+                // Line 467 carries LIT-THISMAP into CDEMO-LAST-MAP.
                 LEGACY_MAP_NAME,
-                // MOVE LIT-THISMAPSET TO CDEMO-LAST-MAPSET, line 466.
+                // Line 466 carries LIT-THISMAPSET into CDEMO-LAST-MAPSET.
                 LEGACY_MAPSET_NAME.trim());
 
         state.reEntry = false;
@@ -1953,16 +1941,16 @@ public final class CardUpdateService {
      */
     private void dispatchArrivalFromCardList(final TurnState state,
             final CardUpdateScreenInput input) {
-        // SET CDEMO-PGM-REENTER TO TRUE, line 486.
+        // Line 486 sets CDEMO-PGM-REENTER.
         state.reEntry = true;
         state.navigationContext = state.navigationContext.withReEntry();
 
-        // SET INPUT-OK, FLG-ACCTFILTER-ISVALID, FLG-CARDFILTER-ISVALID, lines 487 to 489.
+        // Lines 487 to 489 set INPUT-OK, FLG-ACCTFILTER-ISVALID, FLG-CARDFILTER-ISVALID.
         state.inputState = InputState.OK;
         state.accountFilterFlag = EditFlag.IS_VALID;
         state.cardFilterFlag = EditFlag.IS_VALID;
 
-        // MOVE CDEMO-ACCT-ID TO CC-ACCT-ID-N and CDEMO-CARD-NUM TO CC-CARD-NUM-N, lines 490 to 491.
+        // Lines 490 to 491 carry CDEMO-ACCT-ID into CC-ACCT-ID-N and CDEMO-CARD-NUM into CC-CARD-NUM-N.
         state.workAreaAccountId = state.navigationContext.accountId();
         state.workAreaCardNumber = state.navigationContext.cardNumber();
         state.newAccountId = state.workAreaAccountId;
@@ -1970,7 +1958,7 @@ public final class CardUpdateService {
 
         readData(state);
 
-        // SET CCUP-SHOW-DETAILS TO TRUE, line 494.
+        // Line 494 sets CCUP-SHOW-DETAILS.
         if (state.foundCardsForAccount()) {
             state.changeAction = ChangeAction.SHOW_DETAILS;
         }
@@ -2005,12 +1993,12 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void dispatchFreshEntry(final TurnState state) {
-        // INITIALIZE WS-THIS-PROGCOMMAREA, line 506.
+        // Line 506 clears WS-THIS-PROGCOMMAREA.
         clearProgramWorkArea(state);
 
         sendMap(state);
 
-        // SET CDEMO-PGM-REENTER TO TRUE and SET CCUP-DETAILS-NOT-FETCHED TO TRUE, lines 509 to 510.
+        // Lines 509 to 510 set CDEMO-PGM-REENTER and CCUP-DETAILS-NOT-FETCHED.
         state.reEntry = true;
         state.navigationContext = state.navigationContext.withReEntry();
         state.changeAction = ChangeAction.DETAILS_NOT_FETCHED;
@@ -2029,18 +2017,18 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void dispatchCompletedOrFailed(final TurnState state) {
-        // INITIALIZE WS-THIS-PROGCOMMAREA WS-MISC-STORAGE CDEMO-ACCT-ID CDEMO-CARD-NUM, lines 519 to 522.
+        // Lines 519 to 522 clear WS-THIS-PROGCOMMAREA, WS-MISC-STORAGE, CDEMO-ACCT-ID and CDEMO-CARD-NUM.
         clearProgramWorkArea(state);
         clearMiscellaneousStorage(state);
         state.navigationContext = withClearedBusinessKeys(state.navigationContext);
 
-        // SET CDEMO-PGM-ENTER TO TRUE, line 523.
+        // Line 523 sets CDEMO-PGM-ENTER.
         state.navigationContext = state.navigationContext.withFirstEntry();
         state.reEntry = false;
 
         sendMap(state);
 
-        // SET CDEMO-PGM-REENTER TO TRUE and SET CCUP-DETAILS-NOT-FETCHED TO TRUE, lines 526 to 527.
+        // Lines 526 to 527 set CDEMO-PGM-REENTER and CCUP-DETAILS-NOT-FETCHED.
         state.reEntry = true;
         state.navigationContext = state.navigationContext.withReEntry();
         state.changeAction = ChangeAction.DETAILS_NOT_FETCHED;
@@ -2081,7 +2069,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void commonReturn(final TurnState state) {
-        // MOVE WS-RETURN-MSG TO CCARD-ERROR-MSG, line 547.
+        // Line 547 carries WS-RETURN-MSG into CCARD-ERROR-MSG.
         state.transactionId = LEGACY_TRANSACTION_ID;
         if (!state.turnEnded || state.screen == null) {
             // No dispatch arm reached the send paragraph. The legacy cannot be in this state, because
@@ -2162,7 +2150,7 @@ public final class CardUpdateService {
      * @param input the transmitted screen
      */
     private void receiveMap(final TurnState state, final CardUpdateScreenInput input) {
-        // INITIALIZE CCUP-NEW-DETAILS, line 586.
+        // Line 586 clears CCUP-NEW-DETAILS.
         state.newAccountId = null;
         state.newCardNumber = null;
         state.newEmbossedName = null;
@@ -2187,7 +2175,7 @@ public final class CardUpdateService {
         // Lines 614 to 619.
         state.newActiveStatus = normaliseReceivedField(input.activeStatus());
 
-        // MOVE EXPDAYI OF CCRDUPAI TO CCUP-NEW-EXPDAY, line 621: unconditional, no marker test.
+        // Line 621 carries EXPDAYI OF CCRDUPAI into CCUP-NEW-EXPDAY: unconditional, no marker test.
         state.newExpiryDay = input.expiryDay();
 
         // Lines 623 to 628.
@@ -2252,14 +2240,14 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void editMapInputs(final TurnState state) {
-        // SET INPUT-OK TO TRUE, line 643.
+        // Line 643 sets INPUT-OK.
         state.inputState = InputState.OK;
 
         if (state.changeAction.detailsNotFetched()) {
             editAccount(state);
             editCard(state);
 
-            // MOVE LOW-VALUES TO CCUP-NEW-CARDDATA, line 653.
+            // Line 653 carries LOW-VALUES into CCUP-NEW-CARDDATA.
             state.newEmbossedName = null;
             state.newExpiryYear = null;
             state.newExpiryMonth = null;
@@ -2272,7 +2260,7 @@ public final class CardUpdateService {
                 state.returnMessage = MSG_NO_INPUT_RECEIVED;
             }
 
-            // GO TO 1200-EDIT-MAP-INPUTS-EXIT, line 661.
+            // Line 661 leaves by way of 1200-EDIT-MAP-INPUTS-EXIT.
             editMapInputsExit();
             return;
         }
@@ -2303,7 +2291,7 @@ public final class CardUpdateService {
             return;
         }
 
-        // SET CCUP-CHANGES-NOT-OK TO TRUE, line 696.
+        // Line 696 sets CCUP-CHANGES-NOT-OK.
         state.changeAction = ChangeAction.CHANGES_NOT_OK;
 
         // Lines 698 to 708, in declared order.
@@ -2427,7 +2415,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void editAccount(final TurnState state) {
-        // SET FLG-ACCTFILTER-NOT-OK TO TRUE, line 722.
+        // Line 722 sets FLG-ACCTFILTER-NOT-OK.
         state.accountFilterFlag = EditFlag.NOT_OK;
 
         // Lines 725 to 727.
@@ -2435,20 +2423,20 @@ public final class CardUpdateService {
             state.inputState = InputState.ERROR;
             state.accountFilterFlag = EditFlag.BLANK;
             state.raiseSummaryMessage(MSG_ACCOUNT_NOT_PROVIDED);
-            // MOVE ZEROES TO CDEMO-ACCT-ID and LOW-VALUES TO CCUP-NEW-ACCTID, lines 733 to 734.
+            // Lines 733 to 734 carry ZEROES into CDEMO-ACCT-ID and LOW-VALUES into CCUP-NEW-ACCTID.
             state.newAccountId = null;
-            // GO TO 1210-EDIT-ACCOUNT-EXIT, line 735.
+            // Line 735 leaves by way of 1210-EDIT-ACCOUNT-EXIT.
             editAccountExit();
             return;
         }
 
-        // IF CC-ACCT-ID IS NOT NUMERIC, line 740.
+        // Line 740 tests CC-ACCT-ID for non-numeric content.
         if (!numericFixedField(state.workAreaAccountId, ACCOUNT_ID_WIDTH)) {
             state.inputState = InputState.ERROR;
             state.accountFilterFlag = EditFlag.NOT_OK;
             state.raiseSummaryMessage(MSG_ACCOUNT_FILTER_ELEVEN_DIGITS);
             state.newAccountId = null;
-            // GO TO 1210-EDIT-ACCOUNT-EXIT, line 750.
+            // Line 750 leaves by way of 1210-EDIT-ACCOUNT-EXIT.
             editAccountExit();
             return;
         }
@@ -2480,7 +2468,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void editCard(final TurnState state) {
-        // SET FLG-CARDFILTER-NOT-OK TO TRUE, line 765.
+        // Line 765 sets FLG-CARDFILTER-NOT-OK.
         state.cardFilterFlag = EditFlag.NOT_OK;
 
         // Lines 768 to 770.
@@ -2488,20 +2476,20 @@ public final class CardUpdateService {
             state.inputState = InputState.ERROR;
             state.cardFilterFlag = EditFlag.BLANK;
             state.raiseSummaryMessage(MSG_CARD_NOT_PROVIDED);
-            // MOVE ZEROES TO CDEMO-CARD-NUM CCUP-NEW-CARDID, lines 777 to 778.
+            // Lines 777 to 778 zero CDEMO-CARD-NUM and CCUP-NEW-CARDID.
             state.newCardNumber = null;
-            // GO TO 1220-EDIT-CARD-EXIT, line 779.
+            // Line 779 leaves by way of 1220-EDIT-CARD-EXIT.
             editCardExit();
             return;
         }
 
-        // IF CC-CARD-NUM IS NOT NUMERIC, line 784.
+        // Line 784 tests CC-CARD-NUM for non-numeric content.
         if (!numericFixedField(state.workAreaCardNumber, CARD_NUMBER_WIDTH)) {
             state.inputState = InputState.ERROR;
             state.cardFilterFlag = EditFlag.NOT_OK;
             state.raiseSummaryMessage(MSG_CARD_FILTER_SIXTEEN_DIGITS);
             state.newCardNumber = null;
-            // GO TO 1220-EDIT-CARD-EXIT, line 794.
+            // Line 794 leaves by way of 1220-EDIT-CARD-EXIT.
             editCardExit();
             return;
         }
@@ -2546,7 +2534,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void editName(final TurnState state) {
-        // SET FLG-CARDNAME-NOT-OK TO TRUE, line 808.
+        // Line 808 sets FLG-CARDNAME-NOT-OK.
         state.cardNameFlag = EditFlag.NOT_OK;
 
         // Lines 811 to 813.
@@ -2554,7 +2542,7 @@ public final class CardUpdateService {
             state.inputState = InputState.ERROR;
             state.cardNameFlag = EditFlag.BLANK;
             state.raiseSummaryMessage(MSG_NAME_NOT_PROVIDED);
-            // GO TO 1230-EDIT-NAME-EXIT, line 819.
+            // Line 819 leaves by way of 1230-EDIT-NAME-EXIT.
             editNameExit();
             return;
         }
@@ -2564,12 +2552,12 @@ public final class CardUpdateService {
             state.inputState = InputState.ERROR;
             state.cardNameFlag = EditFlag.NOT_OK;
             state.raiseSummaryMessage(MSG_NAME_MUST_BE_ALPHA);
-            // GO TO 1230-EDIT-NAME-EXIT, line 836.
+            // Line 836 leaves by way of 1230-EDIT-NAME-EXIT.
             editNameExit();
             return;
         }
 
-        // SET FLG-CARDNAME-ISVALID TO TRUE, line 839.
+        // Line 839 sets FLG-CARDNAME-ISVALID.
         state.cardNameFlag = EditFlag.IS_VALID;
         editNameExit();
     }
@@ -2600,7 +2588,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void editCardStatus(final TurnState state) {
-        // SET FLG-CARDSTATUS-NOT-OK TO TRUE, line 847.
+        // Line 847 sets FLG-CARDSTATUS-NOT-OK.
         state.cardStatusFlag = EditFlag.NOT_OK;
 
         // Lines 850 to 852.
@@ -2608,12 +2596,12 @@ public final class CardUpdateService {
             state.inputState = InputState.ERROR;
             state.cardStatusFlag = EditFlag.BLANK;
             state.raiseSummaryMessage(MSG_STATUS_MUST_BE_YES_NO);
-            // GO TO 1240-EDIT-CARDSTATUS-EXIT, line 858.
+            // Line 858 leaves by way of 1240-EDIT-CARDSTATUS-EXIT.
             editCardStatusExit();
             return;
         }
 
-        // MOVE CCUP-NEW-CRDSTCD TO FLG-YES-NO-CHECK, line 861; IF FLG-YES-NO-VALID, line 863. The two
+        // Line 861 carries CCUP-NEW-CRDSTCD into FLG-YES-NO-CHECK, and line 863 tests the yes-or-no validity condition. The two
         // accepted characters are the card-status enum's own codes, so the screen edit and the stored
         // column agree by construction rather than by coincidence.
         final String submitted = state.newActiveStatus.trim();
@@ -2626,7 +2614,7 @@ public final class CardUpdateService {
         state.inputState = InputState.ERROR;
         state.cardStatusFlag = EditFlag.NOT_OK;
         state.raiseSummaryMessage(MSG_STATUS_MUST_BE_YES_NO);
-        // GO TO 1240-EDIT-CARDSTATUS-EXIT, line 871.
+        // Line 871 leaves by way of 1240-EDIT-CARDSTATUS-EXIT.
         editCardStatusExit();
     }
 
@@ -2655,7 +2643,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void editExpiryMonth(final TurnState state) {
-        // SET FLG-CARDEXPMON-NOT-OK TO TRUE, line 880.
+        // Line 880 sets FLG-CARDEXPMON-NOT-OK.
         state.expiryMonthFlag = EditFlag.NOT_OK;
 
         // Lines 883 to 885.
@@ -2663,12 +2651,12 @@ public final class CardUpdateService {
             state.inputState = InputState.ERROR;
             state.expiryMonthFlag = EditFlag.BLANK;
             state.raiseSummaryMessage(MSG_EXPIRY_MONTH_NOT_VALID);
-            // GO TO 1250-EDIT-EXPIRY-MON-EXIT, line 891.
+            // Line 891 leaves by way of 1250-EDIT-EXPIRY-MON-EXIT.
             editExpiryMonthExit();
             return;
         }
 
-        // MOVE CCUP-NEW-EXPMON TO CARD-MONTH-CHECK, line 896; IF VALID-MONTH, line 898.
+        // Line 896 carries CCUP-NEW-EXPMON into CARD-MONTH-CHECK, and line 898 tests the valid-month condition.
         if (withinFixedFieldRange(state.newExpiryMonth, EXPIRY_MONTH_WIDTH, EXPIRY_MONTH_MINIMUM,
                 EXPIRY_MONTH_MAXIMUM)) {
             state.expiryMonthFlag = EditFlag.IS_VALID;
@@ -2679,7 +2667,7 @@ public final class CardUpdateService {
         state.inputState = InputState.ERROR;
         state.expiryMonthFlag = EditFlag.NOT_OK;
         state.raiseSummaryMessage(MSG_EXPIRY_MONTH_NOT_VALID);
-        // GO TO 1250-EDIT-EXPIRY-MON-EXIT, line 906.
+        // Line 906 leaves by way of 1250-EDIT-EXPIRY-MON-EXIT.
         editExpiryMonthExit();
     }
 
@@ -2699,7 +2687,7 @@ public final class CardUpdateService {
      *
      * <p>The same shape as the month edit over the four-character field, with one structural difference
      * that is reproduced rather than tidied: this paragraph tests for a value <em>before</em> assuming
-     * not-OK. The not-supplied test is at lines 916 to 925 and the {@code SET FLG-CARDEXPYEAR-NOT-OK}
+     * not-OK. The not-supplied test is at lines 916 to 925 and the setting of FLG-CARDEXPYEAR-NOT-OK
      * comes afterwards at line 930, whereas every sibling edit sets its assumption first. The effect is
      * identical because the not-supplied branch sets the blank flag and leaves, but the ordering is
      * different and is kept.
@@ -2717,15 +2705,15 @@ public final class CardUpdateService {
             state.inputState = InputState.ERROR;
             state.expiryYearFlag = EditFlag.BLANK;
             state.raiseSummaryMessage(MSG_EXPIRY_YEAR_NOT_VALID);
-            // GO TO 1260-EDIT-EXPIRY-YEAR-EXIT, line 924.
+            // Line 924 leaves by way of 1260-EDIT-EXPIRY-YEAR-EXIT.
             editExpiryYearExit();
             return;
         }
 
-        // SET FLG-CARDEXPYEAR-NOT-OK TO TRUE, line 930.
+        // Line 930 sets FLG-CARDEXPYEAR-NOT-OK.
         state.expiryYearFlag = EditFlag.NOT_OK;
 
-        // MOVE CCUP-NEW-EXPYEAR TO CARD-YEAR-CHECK, line 932; IF VALID-YEAR, line 934.
+        // Line 932 carries CCUP-NEW-EXPYEAR into CARD-YEAR-CHECK, and line 934 tests the valid-year condition.
         if (withinFixedFieldRange(state.newExpiryYear, EXPIRY_YEAR_WIDTH, EXPIRY_YEAR_MINIMUM,
                 EXPIRY_YEAR_MAXIMUM)) {
             state.expiryYearFlag = EditFlag.IS_VALID;
@@ -2736,7 +2724,7 @@ public final class CardUpdateService {
         state.inputState = InputState.ERROR;
         state.expiryYearFlag = EditFlag.NOT_OK;
         state.raiseSummaryMessage(MSG_EXPIRY_YEAR_NOT_VALID);
-        // GO TO 1260-EDIT-EXPIRY-YEAR-EXIT, line 942.
+        // Line 942 leaves by way of 1260-EDIT-EXPIRY-YEAR-EXIT.
         editExpiryYearExit();
     }
 
@@ -2864,7 +2852,7 @@ public final class CardUpdateService {
     /**
      * The action decision at line 948.
      *
-     * <p>An {@code EVALUATE TRUE} of eight clauses at lines 949 to 1027. The subject is the literal true
+     * <p>A multi-way selection of eight clauses at lines 949 to 1027. The subject is the literal true
      * value and every clause is an independent boolean, so this is a cascade rather than a selection on a
      * value, and the cascade order is reproduced exactly: the evaluation stops at the first clause that
      * holds, and several of these clauses overlap. The two confirmation clauses at lines 988 and 1006 are
@@ -3130,7 +3118,7 @@ public final class CardUpdateService {
             activeStatus = state.newActiveStatus;
             expiryMonth = state.newExpiryMonth;
             expiryYear = state.newExpiryYear;
-            // MOVE CCUP-OLD-EXPDAY TO EXPDAYO, line 1123, replacing the commented-out line 1122.
+            // Line 1123 carries CCUP-OLD-EXPDAY into EXPDAYO, replacing the commented-out line 1122.
             expiryDay = state.carriedImage.expiryDay();
         } else {
             // WHEN OTHER, lines 1126 to 1130. STRUCTURALLY REQUIRED AND UNREACHABLE. The three clauses
@@ -3213,7 +3201,7 @@ public final class CardUpdateService {
             state.infoMessage = INFO_PROMPT_FOR_SEARCH_KEYS;
         }
 
-        // MOVE WS-INFO-MSG TO INFOMSGO and WS-RETURN-MSG TO ERRMSGO, lines 1161 and 1163.
+        // Lines 1161 and 1163 carry WS-INFO-MSG into INFOMSGO and WS-RETURN-MSG into ERRMSGO.
         state.screen = new ScreenFields(state.screen.accountId(), state.screen.cardNumber(),
                 state.screen.embossedName(), state.screen.activeStatus(),
                 state.screen.expiryMonth(), state.screen.expiryYear(), state.screen.expiryDay(),
@@ -3490,7 +3478,7 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void readData(final TurnState state) {
-        // INITIALIZE CCUP-OLD-DETAILS and seed the two keys, lines 1345 to 1347.
+        // Lines 1345 to 1347 clear CCUP-OLD-DETAILS and seed the two keys.
         state.carriedImage = new CarriedCardImage(state.workAreaAccountId, state.workAreaCardNumber,
                 null, null, null, null, null, null);
 
@@ -3499,7 +3487,7 @@ public final class CardUpdateService {
         if (state.foundCardsForAccount() && state.cardRecord != null) {
             final Card record = state.cardRecord;
 
-            // INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER, lines 1356 to 1358. In
+            // Lines 1356 to 1358 fold CARD-EMBOSSED-NAME to upper case through the 26-character table. In
             // place, on the working-storage copy - which is this turn's own state, NOT the stored row.
             state.foldedRecordEmbossedName =
                     CobolStringUtils.asciiUpperFold(record.getCardEmbossedName());
@@ -3578,7 +3566,7 @@ public final class CardUpdateService {
      * entry rather than a silent improvement.
      *
      * <p><strong>An inverted gate, reproduced.</strong> On the catch-all arm the
-     * {@code IF WS-RETURN-MSG-OFF} test at lines 1404 to 1406 wraps a <em>flag</em> assignment, while the
+     * WS-RETURN-MSG-OFF test at lines 1404 to 1406 wraps a <em>flag</em> assignment, while the
      * message itself is moved <em>unconditionally</em> at line 1411. Every other message site in this
      * member is the other way round. So this one arm can overwrite a message another edit raised first,
      * and it only marks the account filter when no message had been raised. Both behaviours are
@@ -3587,13 +3575,13 @@ public final class CardUpdateService {
      * @param state the turn's working storage
      */
     private void getCardByAcctCard(final TurnState state) {
-        // MOVE CC-CARD-NUM TO WS-CARD-RID-CARDNUM, line 1380.
+        // Line 1380 carries CC-CARD-NUM into WS-CARD-RID-CARDNUM.
         state.recordIdentificationCardNumber = state.workAreaCardNumber;
 
         final Optional<Card> found = readCardRecord(state, OPERATION_READ);
 
         if (found.isPresent()) {
-            // WHEN DFHRESP(NORMAL), lines 1393 to 1394.
+            // The NORMAL-response arm, lines 1393 to 1394.
             state.cardRecord = found.get();
             state.infoMessage = INFO_DETAILS_SHOWN;
             getCardByAcctCardExit();
@@ -3601,7 +3589,7 @@ public final class CardUpdateService {
         }
 
         if (state.rawFileStatus == null) {
-            // WHEN DFHRESP(NOTFND), lines 1395 to 1401.
+            // The NOTFND-response arm, lines 1395 to 1401.
             state.rawFileStatus = RecordNotFoundException.STATUS_RECORD_NOT_FOUND;
             state.inputState = InputState.ERROR;
             state.accountFilterFlag = EditFlag.NOT_OK;
@@ -3621,7 +3609,7 @@ public final class CardUpdateService {
         state.errorResourceName = resolveReadResourceName(state);
         state.errorResponseCode = state.rawFileStatus;
         state.errorReasonCode = "";
-        // MOVE WS-FILE-ERROR-MESSAGE TO WS-RETURN-MSG, line 1411: unconditional.
+        // Line 1411 carries WS-FILE-ERROR-MESSAGE into WS-RETURN-MSG: unconditional.
         state.returnMessage = assembleFileErrorMessage(state);
         getCardByAcctCardExit();
     }
@@ -3786,7 +3774,7 @@ public final class CardUpdateService {
         while (reEnterWritePath) {
             reEnterWritePath = false;
 
-            // MOVE CC-CARD-NUM TO WS-CARD-RID-CARDNUM, line 1425.
+            // Line 1425 carries CC-CARD-NUM into WS-CARD-RID-CARDNUM.
             state.recordIdentificationCardNumber = state.workAreaCardNumber;
 
             // EXEC CICS READ ... UPDATE, lines 1427 to 1436.
@@ -3797,7 +3785,7 @@ public final class CardUpdateService {
                 state.inputState = InputState.ERROR;
                 state.raiseSummaryMessage(MSG_COULD_NOT_LOCK_FOR_UPDATE);
                 state.writeOutcome = WriteOutcome.LOCK_NOT_ACQUIRED;
-                // GO TO 9200-WRITE-PROCESSING-EXIT, line 1448.
+                // Line 1448 leaves by way of 9200-WRITE-PROCESSING-EXIT.
                 writeProcessingExit();
                 return;
             }
@@ -3805,10 +3793,10 @@ public final class CardUpdateService {
             final Card lockedRecord = locked.get();
             state.cardRecord = lockedRecord;
 
-            // PERFORM 9300-CHECK-CHANGE-IN-REC THRU ...-EXIT, lines 1453 to 1454.
+            // Lines 1453 to 1454 run the 9300-CHECK-CHANGE-IN-REC range through its exit.
             final boolean jumpedToWriteExit = checkChangeInRec(state, lockedRecord);
             if (jumpedToWriteExit) {
-                // GO TO 9200-WRITE-PROCESSING-EXIT, line 1518.
+                // Line 1518 leaves by way of 9200-WRITE-PROCESSING-EXIT.
                 state.writeOutcome = WriteOutcome.RECORD_CHANGED_BEFORE_UPDATE;
                 reEnterWritePath = writePathReEntersAfterJump(state);
                 continue;
@@ -3880,7 +3868,7 @@ public final class CardUpdateService {
      * outside the state machine that has to report it.
      *
      * <p>Neither failure path raises. Lines 1487 to 1490 test the response code and answer any non-normal
-     * one with the single statement {@code SET LOCKED-BUT-UPDATE-FAILED TO TRUE}, after which the paragraph
+     * one whose single statement sets LOCKED-BUT-UPDATE-FAILED, after which the paragraph
      * falls through its own exit and the turn composes a screen carrying that outcome. A row-version
      * disagreement and any other write failure are two ways of reaching the same non-normal response, so
      * both are recorded on the turn and both leave the transaction marked for rollback.
@@ -3889,7 +3877,7 @@ public final class CardUpdateService {
      * @param lockedRecord the row read for update
      */
     private void rewriteCardRecord(final TurnState state, final Card lockedRecord) {
-        // MOVE CC-ACCT-ID-N TO CARD-UPDATE-ACCT-ID, line 1463.
+        // Line 1463 carries CC-ACCT-ID-N into CARD-UPDATE-ACCT-ID.
         if (!isBlank(state.workAreaAccountId)) {
             lockedRecord.setCardAcctId(state.workAreaAccountId.trim());
         }
@@ -3897,19 +3885,19 @@ public final class CardUpdateService {
         // Lines 1464 to 1465 source the verification code from a field the member never writes. The
         // stored value is kept; see this method's owning paragraph for the full reasoning.
 
-        // MOVE CCUP-NEW-CRDNAME TO CARD-UPDATE-EMBOSSED-NAME, line 1466: the submitted text, VERBATIM
+        // Line 1466 carries CCUP-NEW-CRDNAME into CARD-UPDATE-EMBOSSED-NAME: the submitted text, VERBATIM
         // and NOT folded. The two folds in this member act on the working-storage copy of the fetched
         // record and never on the value being written, so a name typed in lower case is stored in lower
         // case. That is coherent rather than accidental: because the change comparison folds both sides,
         // a difference that is only one of letter case is never a change and so is never written at all.
         lockedRecord.setCardEmbossedName(state.newEmbossedName);
 
-        // STRING CCUP-NEW-EXPYEAR '-' CCUP-NEW-EXPMON '-' CCUP-NEW-EXPDAY DELIMITED BY SIZE INTO
-        // CARD-UPDATE-EXPIRAION-DATE, lines 1467 to 1474.
+        // Lines 1467 to 1474 compose CARD-UPDATE-EXPIRAION-DATE by joining the new expiry year,
+        // month and day with a hyphen between the parts, each carried at its declared width.
         lockedRecord.setCardExpirationDate(state.newExpiryYear + EXPIRATION_DATE_SEPARATOR
                 + state.newExpiryMonth + EXPIRATION_DATE_SEPARATOR + state.newExpiryDay);
 
-        // MOVE CCUP-NEW-CRDSTCD TO CARD-UPDATE-ACTIVE-STATUS, line 1475.
+        // Line 1475 carries CCUP-NEW-CRDSTCD into CARD-UPDATE-ACTIVE-STATUS.
         lockedRecord.setCardActiveStatus(state.newActiveStatus);
 
         try {
@@ -3924,7 +3912,7 @@ public final class CardUpdateService {
         } catch (final OptimisticLockingFailureException conflict) {
             // The row version disagreed, which is one of the ways the provider reports what lines 1487 to
             // 1490 report as a non-normal response code. The legacy answer to any such response is a single
-            // statement - SET LOCKED-BUT-UPDATE-FAILED TO TRUE - after which the paragraph falls through
+            // statement - which sets LOCKED-BUT-UPDATE-FAILED - after which the paragraph falls through
             // its own exit and the turn goes on to compose a screen. It does not abend, does not abandon
             // the conversation, and does not answer the operator with anything other than that screen.
             //
@@ -3932,14 +3920,20 @@ public final class CardUpdateService {
             // failure. Raising it instead would replace the recoverable screen the route promises with a
             // conflict body, which is an outcome the legacy screen has no way to produce: the operator
             // would lose the keyed changes and the message telling them the record moved, and would be
-            // given a transport-level error in their place. The transaction is marked for rollback because
-            // it cannot continue; the state machine reads the outcome and composes the notice.
+            // given a transport-level error in their place. The state machine reads the outcome and
+            // composes the notice.
+            //
+            // NOTHING is marked for rollback here, and nothing needs to be. The rewrite ran inside an
+            // independent boundary that has already rolled back by the time this handler is entered -
+            // which the comment above the call states - so this method runs with no unit of work at all.
+            // A rollback marking used to be issued here and could not have had any effect: it resolved
+            // to the primitive's own no-transaction branch every time, and a reader was left believing
+            // the arm depended on it.
             LOG.warn("Card update refused by row version: rule=optimistic-lock resource={} outcome={}"
                     + " failureChain={}", LEGACY_CARD_FILE_NAME.trim(),
                     WriteOutcome.UPDATE_FAILED_AFTER_LOCK, FailureDiagnostics.failureChainOf(conflict));
             state.writeOutcome = WriteOutcome.UPDATE_FAILED_AFTER_LOCK;
             state.returnMessage = OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED;
-            this.recordWriter.markRollbackOnly();
         } catch (final RuntimeException failure) {
             // Lines 1488 to 1492: a write that did not succeed for any other reason is reported on the
             // screen, exactly as the source reports it, and the turn continues.
@@ -3951,7 +3945,6 @@ public final class CardUpdateService {
             state.rawFileStatus = RAW_STATUS_READ_FAILURE;
             state.writeOutcome = WriteOutcome.UPDATE_FAILED_AFTER_LOCK;
             state.returnMessage = OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED;
-            this.recordWriter.markRollbackOnly();
         }
     }
 
@@ -3988,7 +3981,7 @@ public final class CardUpdateService {
      * is not gated - and refresh the carried image with the locked values, so the operator is shown what
      * the record now holds. Line 1518 then takes the backward jump.
      *
-     * <p>Line 1519 reads {@code END-IF EXIT}, running the two tokens together on one line where every
+     * <p>Line 1519 runs the scope terminator and the exit statement together on one line where every
      * sibling paragraph puts the {@code EXIT} on its own. Harmless, and recorded as a source anomaly.
      *
      * @param state the turn's working storage
@@ -3997,7 +3990,7 @@ public final class CardUpdateService {
      *         it fell through to its own exit at line 1521
      */
     private boolean checkChangeInRec(final TurnState state, final Card lockedRecord) {
-        // INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER, lines 1499 to 1501. In place on
+        // Lines 1499 to 1501 fold CARD-EMBOSSED-NAME to upper case through the same table. In place on
         // the working-storage copy, and before the comparison reads it. The stored row is not mutated:
         // the source folds CARD-RECORD, which the read filled with INTO, while the rewrite writes the
         // separately built CARD-UPDATE-RECORD, so the fold never reaches the file.
@@ -4023,7 +4016,7 @@ public final class CardUpdateService {
             return false;
         }
 
-        // SET DATA-WAS-CHANGED-BEFORE-UPDATE TO TRUE, line 1511: not gated, unlike almost every other
+        // Line 1511 sets DATA-WAS-CHANGED-BEFORE-UPDATE: not gated, unlike almost every other
         // message assignment in the member.
         state.returnMessage = OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE;
 
@@ -4044,7 +4037,7 @@ public final class CardUpdateService {
                 + " outcome={}", LEGACY_CARD_FILE_NAME.trim(),
                 WriteOutcome.RECORD_CHANGED_BEFORE_UPDATE);
 
-        // GO TO 9200-WRITE-PROCESSING-EXIT, line 1518: the backward jump.
+        // Line 1518 leaves by way of 9200-WRITE-PROCESSING-EXIT: the backward jump.
         return true;
     }
 
@@ -4150,7 +4143,7 @@ public final class CardUpdateService {
     // ==============================================================================================
 
     /**
-     * {@code INITIALIZE WS-THIS-PROGCOMMAREA}, lines 506 and 519: clears this program's own work area.
+     * The clearing of WS-THIS-PROGCOMMAREA, lines 506 and 519: this program's own work area.
      *
      * @param state the turn's working storage
      */
@@ -4170,7 +4163,7 @@ public final class CardUpdateService {
     }
 
     /**
-     * {@code INITIALIZE WS-MISC-STORAGE}, line 520: clears the flags, the messages and the work-area keys.
+     * The clearing of WS-MISC-STORAGE, line 520: the flags, the messages and the work-area keys.
      *
      * <p>Every alphanumeric flag returns to spaces, which is the blank state, not the not-OK state.
      *
@@ -4199,8 +4192,8 @@ public final class CardUpdateService {
     }
 
     /**
-     * {@code MOVE ZEROES TO CDEMO-ACCT-ID CDEMO-CARD-NUM} with
-     * {@code MOVE LOW-VALUES TO CDEMO-ACCT-STATUS}, lines 1015 to 1017 and 521 to 522.
+     * Zeroes CDEMO-ACCT-ID and CDEMO-CARD-NUM and clears CDEMO-ACCT-STATUS,
+     * reproducing lines 1015 to 1017 and 521 to 522.
      *
      * @param context the state to copy
      * @return a copy with both business keys zeroed and the account status cleared
@@ -4226,7 +4219,7 @@ public final class CardUpdateService {
     }
 
     /**
-     * Renders {@code MOVE ZEROES} into an unsigned numeric field of the given width.
+     * Renders a zero fill into an unsigned numeric field of the given width.
      *
      * @param width the declared field width
      * @return that many zero characters
@@ -4295,13 +4288,13 @@ public final class CardUpdateService {
     private static CardUpdateResult toResult(final TurnState state) {
         final ScreenInputState workArea = new ScreenInputState(
                 state.keyAction,
-                // MOVE LIT-THISPGM TO CCARD-NEXT-PROG, line 570.
+                // Line 570 carries LIT-THISPGM into CCARD-NEXT-PROG.
                 LEGACY_PROGRAM_NAME,
-                // MOVE LIT-THISMAPSET TO CCARD-NEXT-MAPSET, lines 571 and 1326.
+                // Lines 571 and 1326 carry LIT-THISMAPSET into CCARD-NEXT-MAPSET.
                 LEGACY_MAPSET_NAME.trim(),
-                // MOVE LIT-THISMAP TO CCARD-NEXT-MAP, lines 572 and 1327.
+                // Lines 572 and 1327 carry LIT-THISMAP into CCARD-NEXT-MAP.
                 LEGACY_MAP_NAME,
-                // MOVE WS-RETURN-MSG TO CCARD-ERROR-MSG, lines 547 and 569.
+                // Lines 547 and 569 carry WS-RETURN-MSG into CCARD-ERROR-MSG.
                 state.returnMessage,
                 state.returnMessage,
                 state.workAreaAccountId,
@@ -4327,7 +4320,7 @@ public final class CardUpdateService {
                 state.focusField,
                 // INPUT-ERROR, plus the translation-layer report of an attention identifier that did
                 // not decode. The two are unioned here rather than merged into the input flag itself,
-                // because SET INPUT-OK TO TRUE at line 643 would otherwise discard the report before
+                // because the setting of INPUT-OK at line 643 would otherwise discard the report before
                 // the turn ends - see the CardUpdateResult component Javadoc.
                 state.inputState.inputError() || state.attentionKeyUnmapped,
                 state.attentionKeyUnmapped,

@@ -83,37 +83,60 @@
 # the credential; the credential is a fixture and is meant to be readable. The defect is publishing
 # the service that trusts it beyond the machine it was chosen for.
 #
-# So the exposure and the credential are treated as one decision. Loopback is the default, and
-# widening it is a deliberate act with an obligation attached.
+# So the exposure and the credential are treated as one decision, and the decision is that THIS STACK
+# IS REACHABLE FROM THIS MACHINE ONLY. Loopback is not merely the default here; it is the condition
+# every credential above was chosen under, and there is no supported way to publish the stack past it.
 #
-# INTENTIONAL NON-LOOPBACK EXPOSURE - what it costs
+# THERE IS NO WIDENING RECIPE HERE ANY MORE, AND ITS REMOVAL IS THE FIX FOR A REAL DEFECT
 #
-# Each service takes a *_BIND_ADDRESS override, so a stack can be reached from elsewhere when there
-# is a reason to: a colleague inspecting a reproduction, a dashboard on a second machine, a probe from
-# a container network. Widening ANY of them means the fixture credentials are no longer addressing a
-# private machine, and the overrides below must be supplied with generated values rather than left to
-# default:
+# An earlier revision of this file carried one. It set the app service's bind override to the wildcard
+# address alongside generated values for POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD and
+# CARDDEMO_JWT_SECRET, and presented the pairing as what made the wide bind safe. It was not safe, for
+# a reason that is a property of this
+# file rather than a matter of judgement: THE APP SERVICE'S environment BLOCK BELOW NEVER PASSED
+# CARDDEMO_JWT_SECRET OR CARDDEMO_MANAGEMENT_TOKEN INTO THE CONTAINER. Verified by reading the
+# resolved configuration - `docker compose config` shows the app service's environment and neither
+# name appears in it - so an operator who followed the recipe exported a generated signing secret into
+# their own shell while the container went on minting and accepting tokens signed with the committed
+# literal in src/main/resources/application-local.yml. The procedure read as though the exposure had
+# been paid for, and nothing had been paid.
 #
-#   POSTGRES_PASSWORD          - a generated value, not the fixture
-#   GRAFANA_ADMIN_PASSWORD     - a generated value, not `admin`
-#   CARDDEMO_JWT_SECRET        - a generated signing secret; the committed local default is published
-#                                in src/main/resources/application-local.yml and anyone can sign with
-#                                it. This is the one whose absence is exploitable rather than merely
-#                                untidy, because a forged token carries authority.
+# CORRECTING THE FORWARDING WOULD NOT HAVE MADE IT SAFE EITHER, which is why the recipe is gone rather
+# than repaired. A stack published on a routable address still answers over cleartext HTTP, so a
+# bearer token can be lifted off the wire and replayed until it expires; still accepts the ten seeded
+# sign-on identities whose password the estate README documents in full; and still exposes, beside the
+# application, a LocalStack endpoint that authenticates nobody, a Prometheus that authenticates
+# nobody, a Jaeger UI that authenticates nobody, and a Grafana whose administrator password is two
+# words in this file. Four of the six services have no credential to rotate.
 #
-#   APP_BIND_ADDRESS=0.0.0.0 \
-#   POSTGRES_PASSWORD="$(openssl rand -hex 24)" \
-#   GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 24)" \
-#   CARDDEMO_JWT_SECRET="$(openssl rand -hex 48)" \
-#   docker compose up -d --build
+# REACHING IT FROM ANOTHER MACHINE - the two supported answers
 #
-# Nothing here can enforce that pairing - Compose has no conditional - so it is stated at the point of
-# the decision and asserted by a test: LocalValidationStackExposureTest fails if any mapping in this
-# file loses its loopback default.
+#   1. Forward the port over an encrypted, authenticated channel. The listener stays loopback-bound
+#      and SSH provides both properties this stack does not have:
+#
+#        ssh -L 8080:127.0.0.1:8080 <host>      # then use http://localhost:8080 on your own machine
+#
+#      Any port above can be forwarded the same way - 3000 for Grafana, 9090 for Prometheus, 16686
+#      for Jaeger - and each stays reachable only through the tunnel.
+#
+#   2. Deploy the `prod` profile. A service that must genuinely answer other hosts is a production
+#      deployment: application-prod.yml requires transport security and resolves all thirteen of its
+#      secrets from the environment with no fallback, refusing to start without them. That is the
+#      posture for a routable address, and this profile is not it.
+#
+# The *_BIND_ADDRESS overrides remain in the mappings below for one legitimate purpose - selecting a
+# different LOOPBACK ALIAS, such as 127.0.0.2, so two stacks can hold the same port number on one
+# host. Setting any of them to a routable address is unsupported. Compose has no conditional and
+# cannot refuse it, so the boundary is asserted by a test instead: LocalValidationStackExposureTest
+# fails the build if any mapping loses its loopback default, if this file or a runbook regains a
+# non-loopback bind recipe, or if the app service starts claiming to forward an application credential
+# it does not forward.
 #
 # THE DIAGNOSTIC SERVICES ARE GATED BY REACHABILITY, NOT BY START-UP, and that distinction is
-# deliberate. Jaeger, Prometheus and Grafana each take their own *_BIND_ADDRESS, so reaching any of
-# them from another machine is an opt-in exactly as it is for the database and the application. They
+# deliberate. Jaeger, Prometheus and Grafana bind the loopback interface exactly as the database and
+# the application do, so each is reachable from this machine and from a tunnel into it and from
+# nowhere else - which is the whole of their access control, since none of the three authenticates a
+# reader and Grafana's administrator password is in this file. They
 # are NOT put behind a Compose profile that would stop them starting, because the performance baseline
 # is read from the meter set Prometheus scrapes: a stack whose default `up` produced no scrape would
 # make that baseline unobtainable by the documented command, and the baseline is a delivered gate
@@ -474,9 +497,10 @@ services:
   # NO HEALTHCHECK IS DECLARED HERE ON PURPOSE: the image already defines one against
   # /actuator/health/liveness, compose honours it, and `docker compose ps` reports it. A second
   # definition would be a second thing to keep in step with the actuator path - and with the
-  # transport, since the image's probe switches to TLS on SERVER_SSL_ENABLED rather than assuming
-  # plaintext. The liveness group is deliberate: it consults nothing outside this process, so the
-  # probe cannot be held open by another service in this stack.
+  # transport, which the image's probe establishes by ATTEMPTING BOTH plaintext and TLS and passing on
+  # whichever the server answers, so no file has to declare it twice. The liveness group is
+  # deliberate: it consults nothing outside this process, so the probe cannot be held open by another
+  # service in this stack.
   app:
     build:
       context: .
@@ -526,6 +550,21 @@ services:
       # setting to the value the profile defaults to, which for a datasource host means localhost
       # inside a container.
       SPRING_PROFILES_ACTIVE: local
+      # THE ONE SETTING THAT DELIBERATELY WIDENS A BIND, AND IT WIDENS IT INSIDE THIS CONTAINER ONLY.
+      #
+      # application-local.yml binds the listener to 127.0.0.1 by default, because a host-run local
+      # process must not publish an unencrypted service carrying a committed signing secret to every
+      # interface of a developer's machine. That default is correct there and wrong here: Docker
+      # forwards a published port to the CONTAINER'S OWN interface, not to its loopback, so a
+      # container-internal loopback bind answers the probe and nothing else - the mapping below would
+      # connect and be refused, and `docker compose up` would produce a healthy container reachable by
+      # no one.
+      #
+      # The pair is what makes it safe rather than either half: wide INSIDE the network namespace,
+      # loopback on the HOST side of the mapping below. Nothing outside this machine gains reach from
+      # this line. LocalValidationStackExposureTest asserts both halves together, so removing either
+      # fails the build rather than producing a stack that is unreachable or one that is over-exposed.
+      SERVER_ADDRESS: 0.0.0.0
       # Container-internal addressing throughout - service names, and the ports the containers
       # listen on. That is why 5432 and 4566 are literal here while the published ports above are
       # parameterised: an isolated stack moves its host ports and this block must not follow.
@@ -563,6 +602,21 @@ services:
       CARDDEMO_BATCH_STAGING_DIRECTORY: /var/lib/carddemo/batch
       # OTLP over HTTP into the collector, again by container-internal port.
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      # PASS-THROUGH, NOT A VALUE. Written with no right-hand side, which is Compose's form for
+      # "forward this from the invoking environment if it is set, and set nothing if it is not". So
+      # this file still declares NO signing secret and NO credential of its own - the reasoning at the
+      # top of the file stands - while a developer who would rather this stack did not sign with the
+      # committed fixture can export a generated value and have it reach the process that binds it.
+      # Without this line such an override resolved only in Compose's own interpolation, never entered
+      # the container, and the local profile went on signing with its committed default while the
+      # operator believed otherwise. It buys no widening: the listener stays loopback-bound and the
+      # answers for reaching this stack from another machine remain the two given at the top.
+      #
+      # The name is local-scoped, and it is deliberately NOT the production signing-secret variable -
+      # which is not forwarded here - so a deployment secret that happens to be exported on this
+      # machine cannot reach this stack. ConfigurationProfileBaselineTest enforces that separation
+      # across every shipped non-production document.
+      CARDDEMO_LOCAL_JWT_SECRET:
       TZ: UTC
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"

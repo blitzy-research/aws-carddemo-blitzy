@@ -179,9 +179,12 @@ silently drop are handled explicitly:
 
 - **`CBTRN01C`** is a complete 491-line, 18-paragraph batch program that **no JCL member, no
   cataloged procedure and no CICS definition invokes**. It is migrated anyway, as
-  `DailyTransactionReadJobConfig` — a fully defined Spring Batch job that is deliberately **not
-  wired into the default pipeline** and is exercised only by tests. Its absence from the pipeline is
-  a faithful reproduction of the legacy wiring, not an omission.
+  `DailyTransactionReadJobConfig` — a fully defined Spring Batch job that is deliberately **part of no
+  default sequence**, yet **registered in `BatchJobCatalog` as one of the nine launchable jobs** and so
+  startable by name through the administrator-only batch-control endpoint, as well as being exercised by
+  tests. Both halves are deliberate: translating it honours completeness, and leaving it out of every
+  sequence faithfully reproduces the legacy wiring. Launchable but unsequenced is not the same as
+  test-only, and the distinction matters to anyone auditing either the pipeline or the job registry.
 - **`app/cpy/UNUSED1Y.cpy`** has zero `COPY` references anywhere in the estate and is the **single
   artifact deliberately not migrated**. Translating it would create dead Java code. The decision is
   recorded in [`../docs/decision-log.md`](../docs/decision-log.md) rather than left as a gap.
@@ -224,6 +227,27 @@ The wrapper uses `distributionType=only-script`, so there is no `maven-wrapper.j
 nothing to keep in sync; the first invocation downloads the pinned distribution, checks its digest and
 caches it. Every later invocation is offline with respect to the build tool itself.
 
+Three properties of that first invocation are worth stating, because all three are enforced rather
+than assumed and each fails the build closed rather than continuing:
+
+* **The digest is mandatory.** A missing or malformed `distributionSha256Sum` stops the launcher
+  before it fetches anything, rather than downgrading to an unverified install. So is a mismatch.
+* **The transport is fixed.** The distribution URL — and any `MVNW_REPOURL` override of it — must be
+  `https` and must not embed credentials. `MVNW_USERNAME` and `MVNW_PASSWORD` are offered only to the
+  host the URL names, and never over a redirect that leaves `https`.
+* **The cache is validated, and installed under a lock.** A cached distribution is used only when its
+  launcher, its `lib` directory and a marker naming that exact distribution are all present; an
+  incomplete one is set aside and rebuilt. Concurrent first invocations serialise, so one build
+  installing the distribution while another waits is safe rather than a race. Set
+  `MVNW_LOCK_TIMEOUT_SECONDS` to change how long a waiter waits; the default is 300.
+
+**Host requirement, by launcher.** `mvnw` needs a POSIX shell and, on a machine with neither `wget`
+nor `curl`, the JDK it is about to build with — it downloads, digests and unpacks with the JDK rather
+than asking for a tool to be installed. `mvnw.cmd` needs **Windows PowerShell 5.1**, which ships with
+every supported version of Windows, or **PowerShell 7** as `pwsh.exe`; it resolves the interpreter
+from `%SystemRoot%` before `PATH` and fails with a diagnostic that names the dependency when neither
+is present. Neither launcher installs or downloads a JDK: the JDK comes from `JAVA_HOME` or `PATH`.
+
 If your shell is non-interactive or non-login and `java` is not already on `PATH`, export `JAVA_HOME`
 before invoking the wrapper — the wrapper resolves the JDK through `JAVA_HOME` first:
 
@@ -237,13 +261,29 @@ cd carddemo-java && ./mvnw -version
 ## Technology stack — exact versions, do not bump
 
 Every version below is a **measurement, not a preference**. Each was read back out of an executed
-Maven resolution — 231 artifacts resolved during analysis, and `javac [debug parameters release 25]`
-compiling clean under `-Xlint:all -Werror`. **No coordinate in [`pom.xml`](pom.xml) uses `latest`,
-`RELEASE`, or an unpinned range.** Reproduce a version check yourself with:
+Maven resolution rather than recalled, and the module compiles clean under `-Xlint:all -Werror` as
+`javac [debug parameters release 25]`. **No coordinate in [`pom.xml`](pom.xml) uses `latest`, `RELEASE`,
+or an unpinned range.**
+
+Reproduce the check yourself — but reach for the command that matches what you are checking, because
+**no single command reports all four kinds of version**, and `dependency:list` in particular reports
+neither the toolchain, nor the plugins, nor the server images:
 
 ```bash
-cd carddemo-java && ./mvnw -B dependency:list
+cd carddemo-java
+java -version && ./mvnw -v                              # toolchain: the JDK, and the Maven the wrapper provisions
+./mvnw -B dependency:list                               # the resolved library graph, coordinate by coordinate
+./mvnw -B help:effective-pom | grep -A2 artifactId      # plugin versions, as the build actually resolves them
+docker compose config | grep image:                     # the server images, pinned by digest
 ```
+
+Two figures are sometimes quoted for "how many artifacts" and they count different things, so neither
+substitutes for the other. **231** was the resolved-artifact count of a one-off probe taken during
+analysis against an earlier revision of this POM; it is a historical datum and is not re-measured here.
+The figure the build reports today is the **168 dependencies** the supply-chain scan enumerates across
+the compile, runtime and test graph, recorded under Gate 8 in
+[`../docs/gate-evidence.md`](../docs/gate-evidence.md). Read the current graph from `dependency:list`
+rather than from either number.
 
 | Technology | Version |
 |---|---|
@@ -282,23 +322,38 @@ Five further plugins resolve from the Spring Boot parent's default lifecycle bin
 deliberately not declared: `maven-resources-plugin`, `maven-jar-plugin`, `maven-install-plugin`,
 `maven-deploy-plugin` and `maven-clean-plugin`.
 
-### Three versions sit deliberately above the Spring Boot 3.5.16 floor
+### Twelve versions sit deliberately above the managed floor as security remediation
 
-The Spring Boot bill of materials manages transitive versions, and three of them are pinned **upward**
-in [`pom.xml`](pom.xml) as CVE remediation. They are what clears the critical and high findings the
-supply-chain gate scans for — which is the **compile and runtime graph**, not the test and build graph;
-see [Gate 8](#gate-8--integration-sign-off) for that boundary and the two HIGH findings outside it. Do
-**not** revert them to the managed value:
+[`pom.xml`](pom.xml) carries a delimited **Security remediation overrides** block, and every managed-version
+property inside it is an override the supply-chain gate requires. There are **twelve**. Each one states, in
+the comment above it, which coordinate it governs, how that coordinate reaches the classpath, and the
+finding the value clears. Do **not** revert any of them to the managed value:
 
-| Coordinate | Pinned here | Spring Boot 3.5.16 managed value |
+| Property | Pinned here | Governs |
 |---|---|---|
-| `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.57 | 10.1.55 |
-| `com.fasterxml.jackson.core:jackson-databind` | 2.21.5 | 2.21.4 |
-| `org.postgresql:postgresql` | 42.7.13 | 42.7.11 |
+| `tomcat.version` | 10.1.57 | the embedded servlet container, reached through the web starter |
+| `netty.version` | 4.2.16.Final | the asynchronous transport of the object-storage client |
+| `postgresql.version` | 42.7.13 | the database driver |
+| `log4j2.version` | 2.26.1 | the logging bridge pulled in transitively |
+| `opentelemetry-semconv.version` | 1.43.0 | the semantic-conventions artifact used by the tracing bridge |
+| `commons-lang3.version` | 3.20.0 | a transitive utility library |
+| `commons-compress.version` | 1.28.0 | the archive library, reached only in test scope |
+| `jackson-bom.version` | 2.21.5 | the whole Jackson family, including the databind artifact |
+| `tools-jackson.version` | 3.2.1 | the third-line Jackson the logging encoder is built against |
+| `docker-java.version` | 3.7.1 | the container-engine client of the container testing library |
+| `httpcomponents-core5.version` | 5.4.3 | the HTTP core of the non-shaded container transport |
+| `immutables.version` | 2.10.1 | the annotation-only companion that transport requires |
+
+An earlier revision of this section said **three**, and named the three most visible of them. It was
+correct when it was written; the block grew as the scan found more, and a hand-maintained count in a second
+document is exactly the thing that does not grow with it. The count and the property list are now asserted
+against that block by `config/DocumentedSourceCountsTest`, so a thirteenth override either updates this
+table or fails the build. Recorded in [`../docs/decision-log.md`](../docs/decision-log.md) DL-316.
 
 Each override is a `<properties>` entry rather than a `<dependency>` version, so it applies uniformly
 to every transitive path and disappears automatically when a future Spring Boot 3.x release raises its
-own floor past it.
+own floor past it. The scan they satisfy covers the **whole build graph** including test scope — see
+[Gate 8](#gate-8--integration-sign-off) for what is carried by written determination rather than fixed.
 
 ### Two version decisions that look like mistakes and are not
 
@@ -460,10 +515,15 @@ docker build --build-arg APP_VERSION --build-arg SOURCE_REVISION \
   `/actuator/health/liveness` and marks the container healthy on the first HTTP 200. The probe asks for
   the **liveness group, not the aggregate**, and the distinction is the whole point: liveness contains
   only this process's own state, so the probe makes no external call and its duration cannot become a
-  function of four other services under a five-second timeout. The probe also reads
-  `SERVER_SSL_ENABLED` — the same relaxed-binding form Spring Boot itself binds to `server.ssl.enabled`
-  — and speaks TLS through `openssl s_client` when it is on, so a TLS-enabled process is not reported
-  unhealthy by a plaintext request. One switch, read by both the server and its probe.
+  function of four other services under a five-second timeout. The probe **observes** the transport
+  rather than being configured with it: it attempts plaintext over bash's `/dev/tcp` and TLS through
+  `openssl s_client`, and passes when **either** returns a 200 status line, so a TLS-enabled process is
+  never reported unhealthy by a plaintext request. `SERVER_SSL_ENABLED` is honoured as a **hint** that
+  orders the two attempts — set it and the TLS attempt goes first, costing one connection instead of
+  two — and never as the switch that decides them. That distinction is the fix for a real defect:
+  [`application-prod.yml`](src/main/resources/application-prod.yml) enables transport security as a
+  literal in YAML and exports no variable, so a probe that branched on the variable alone fell through
+  to plaintext and reported every prod container unhealthy for its whole life.
 - The entrypoint is **exec form**, so the JVM is PID 1 and receives `SIGTERM` directly and graceful
   shutdown actually drains in-flight work. Spring allows 30 seconds per shutdown phase and Compose
   grants 35 seconds before SIGKILL, so the orchestrator cannot cut the drain short at Docker's
@@ -525,9 +585,10 @@ local generations behind, and `down -v` is what clears them.
 
 [`docker-compose.yml`](docker-compose.yml) defines six services and **no Compose profiles**, so a
 plain `up -d` starts everything. Every published port is overridable through an environment variable
-so parallel stacks do not collide, and every one is **bound to `127.0.0.1` by default** — see
-[Reaching the stack from another machine](#reaching-the-stack-from-another-machine) before widening
-that.
+so parallel stacks do not collide, and every one is **bound to `127.0.0.1`** — publishing the stack on a
+routable address is unsupported, and
+[Reaching the stack from another machine](#reaching-the-stack-from-another-machine) gives the two ways
+that are.
 
 Each image the stack does not build itself is pinned by digest as well as by tag, in the same
 `tag@sha256:…` form the two `Dockerfile` bases and the CI actions use. The tag below is the readable
@@ -572,28 +633,44 @@ build if any service loses its bounded driver or hard-codes either ceiling.
 
 #### Reaching the stack from another machine
 
-The stack is full of throwaway values on purpose: a database password readable in the Compose file, a
-dashboard password of `admin`, and a token signing secret committed in `application-local.yml` so that
-`spring-boot:run` works with no environment prepared. They are fixtures, and what makes them fixtures
-is that nothing off this machine can reach the service that trusts them.
+**The local stack is reachable from this machine only, and there is no supported way to publish it
+past that.** It is full of throwaway values on purpose: a database password readable in the Compose
+file, a dashboard password of `admin`, and a token signing secret committed in `application-local.yml`
+so that `spring-boot:run` works with no environment prepared. They are fixtures, and what makes them
+fixtures is that nothing off this machine can reach the service that trusts them.
 
-Widening any binding removes that. On a reachable stack the committed signing secret becomes a
-published signing key, and a peer can mint a token bearing the administrator authority and call the
-batch-control endpoints with it. So widening the binding and replacing the credentials are one
-decision, and both halves must be supplied together:
+An earlier revision of this section documented a widening procedure — a wildcard bind paired with
+generated values for `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` and `CARDDEMO_JWT_SECRET` — and
+**that procedure did not work.** The `app` service's `environment:` block forwards neither
+`CARDDEMO_JWT_SECRET` nor `CARDDEMO_MANAGEMENT_TOKEN` into the container; `docker compose config` shows
+the resolved environment and neither name is in it. An operator who followed it exported a generated
+signing secret into their own shell while the container went on minting and accepting tokens signed
+with the committed literal — the exposure was widened and nothing was paid for it. Correcting the
+forwarding would not have rescued the procedure either: a published stack still answers over cleartext
+HTTP, still accepts the ten seeded identities whose password the estate README documents, and still
+exposes a LocalStack endpoint, a Prometheus and a Jaeger UI that authenticate nobody beside it. Four of
+the six services have no credential to rotate.
+
+**Two ways to reach it, both of which keep the listener where it is:**
 
 ```bash
-APP_BIND_ADDRESS=0.0.0.0 \
-POSTGRES_PASSWORD="$(openssl rand -hex 24)" \
-GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 24)" \
-CARDDEMO_JWT_SECRET="$(openssl rand -hex 48)" \
-docker compose up -d --build
+# 1. Forward the port over an encrypted, authenticated channel. Run this on YOUR machine;
+#    the stack stays loopback-bound on the host and SSH supplies both properties it lacks.
+ssh -L 8080:127.0.0.1:8080 <host>        # then use http://localhost:8080 locally
+ssh -L 3000:127.0.0.1:3000 <host>        # Grafana; 9090 Prometheus, 16686 Jaeger, likewise
 ```
 
-Each service takes its own `*_BIND_ADDRESS`, so widening one leaves the rest on loopback. Compose has
-no conditional and cannot enforce the pairing, so `LocalValidationStackExposureTest` fails the build if
-any mapping in the file loses its loopback default, and the obligation is stated beside the secret it
-protects.
+2. **Deploy the `prod` profile.** A service that must genuinely answer other hosts is a production
+   deployment: [`application-prod.yml`](src/main/resources/application-prod.yml) requires transport
+   security and resolves all thirteen of its secrets from the environment with **no fallback**,
+   refusing to start without them. That is the posture for a routable address, and `local` is not it.
+
+The `*_BIND_ADDRESS` overrides remain in the Compose mappings for one legitimate purpose: selecting a
+different **loopback alias**, such as `127.0.0.2`, so two stacks can hold the same port number on one
+host. Compose has no conditional and cannot refuse a routable value, so the boundary is asserted
+instead — `LocalValidationStackExposureTest` fails the build if any mapping loses its loopback default,
+if this file or any other runbook regains a non-loopback bind recipe, or if the `app` service starts
+claiming to forward an application credential it does not forward.
 
 Health is asserted rather than assumed. `postgres` reports through `pg_isready`; the application waits
 on it because Flyway applies migrations during start-up and must not race `initdb`. The `localstack`
@@ -688,22 +765,37 @@ process fails to bind:
 
 ```bash
 docker compose stop app                                # frees host port 8080
-./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local \
+  -Dspring-boot.run.arguments=--server.address=127.0.0.1
 ```
 
 …or leave the container running and put your own process on another port:
 
 ```bash
-./mvnw spring-boot:run -Dspring-boot.run.profiles=local -Dspring-boot.run.arguments=--server.port=18080
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local \
+  -Dspring-boot.run.arguments=--server.address=127.0.0.1,--server.port=18080
 ```
 
 Or run the packaged artifact, with the same choice of port:
 
 ```bash
 ./mvnw -B clean package -DskipTests
-SPRING_PROFILES_ACTIVE=local java -jar target/carddemo-java-1.0.0.jar               # binds 8080
-SPRING_PROFILES_ACTIVE=local java -jar target/carddemo-java-1.0.0.jar --server.port=18080
+SPRING_PROFILES_ACTIVE=local java -jar target/carddemo-java-1.0.0.jar \
+  --server.address=127.0.0.1                                            # binds 127.0.0.1:8080
+SPRING_PROFILES_ACTIVE=local java -jar target/carddemo-java-1.0.0.jar \
+  --server.address=127.0.0.1 --server.port=18080
 ```
+
+**Why every host-run command names the address.** `application-local.yml` defaults `server.address` to
+`127.0.0.1`, so these commands are loopback-bound whether or not the argument is present — it is written
+out because the argument is the thing a reader copies, and because the shared baseline declares no
+address at all, which means the embedded server's own default is *every* interface. This profile carries a
+committed signing secret, a committed operator credential, cleartext HTTP, anonymous metric scraping and
+ten seeded sign-on identities; on a wildcard bind, all of that is published to anything that can route to
+the machine. The container is the one place the bind is widened, and Compose does it there with
+`SERVER_ADDRESS: 0.0.0.0` because a published port does not reach a container's loopback — while the host
+side of that mapping stays `127.0.0.1`. See
+[Reaching the stack from another machine](#reaching-the-stack-from-another-machine).
 
 **Which observability services can still see a host-run process.** Jaeger can: the application exports
 traces *outward* to the OTLP endpoint, so a host process reaches `localhost:4318` and its traces appear
@@ -818,13 +910,13 @@ this surface does not own.
 
 A defaulted secret violates "no hardcoded credentials" just as surely as a literal one does, so
 `application-prod.yml` resolves each of these from the environment **with no fallback**. A missing
-variable **fails startup** rather than silently binding a placeholder. The list is **thirteen** entries and
+variable **fails startup** rather than silently binding a placeholder. The list is **fourteen** entries and
 is the complete set of no-fallback references in that file — check it against the file rather than trusting
-the table:
+the table, which `config/DocumentedSourceCountsTest` now does on every build:
 
 ```bash
 cd carddemo-java
-# 14 lines: the 13 below, plus ${VARIABLE} from an explanatory comment
+# 15 lines: the 14 below, plus ${VARIABLE} from an explanatory comment
 grep -oE '\$\{[A-Z_0-9]+\}' src/main/resources/application-prod.yml | sort -u | wc -l
 ```
 
@@ -841,16 +933,19 @@ further down deliberately do carry defaults:
 | `CARDDEMO_MANAGEMENT_TOKEN` | Bearer credential the management filter chain requires for the `ROLE_MONITORING` rules that guard the Actuator path |
 | `CARDDEMO_SQS_QUEUE` | FIFO queue name for the job-submission bridge; the required value is `JOBS.fifo` |
 | `AWS_REGION` | Region for the S3, SQS and SNS clients |
+| `CARDDEMO_AWS_ACCOUNT_ID` | Account the queue, topic and bucket must belong to; an outbound locator owned by any other account is refused rather than trusted |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTLP trace collector endpoint |
 | `CARDDEMO_TLS_KEYSTORE` | Keystore location |
 | `CARDDEMO_TLS_KEYSTORE_PASSWORD` | Keystore password |
 | `CARDDEMO_TLS_KEYSTORE_TYPE` | Keystore type |
 | `CARDDEMO_TLS_KEY_ALIAS` | Key alias inside the keystore |
 
-Five further variables are non-secret and therefore *do* carry a default — `CARDDEMO_JWT_EXPIRATION`,
-`CARDDEMO_S3_BUCKET`, `CARDDEMO_SNS_TOPIC`, `CARDDEMO_SQS_MESSAGE_GROUP_ID` and
-`CARDDEMO_TRACING_SAMPLE_RATE`. Each names a resource or a sampling decision rather than a credential, so a
-default is a convenience rather than a hidden secret. AWS credentials in `prod` come from the standard AWS
+Six further variables are non-secret and therefore *do* carry a default — `CARDDEMO_JWT_EXPIRATION`,
+`CARDDEMO_S3_BUCKET`, `CARDDEMO_SNS_TOPIC`, `CARDDEMO_SQS_MESSAGE_GROUP_ID`,
+`CARDDEMO_TRACING_SAMPLE_RATE` and `CARDDEMO_TRUSTED_PROXIES`. Each names a resource, a sampling decision
+or a network boundary rather than a credential, so a default is a convenience rather than a hidden secret.
+An earlier revision counted five and omitted the proxy list; both figures are now measured against the
+profile by `config/DocumentedSourceCountsTest` rather than maintained by hand. AWS credentials in `prod` come from the standard AWS
 provider chain rather than from configuration at all.
 
 **No production value for any of the variables above appears in this repository**, and none is defaulted
@@ -944,9 +1039,24 @@ The shared batch-boundary listener builds one terminal snapshot and hands it to
 `JobCompletionNotificationService` is the **only** SNS producer, so one completed execution has one
 external publication path. Its bounded payload carries the schema version, event type, stable job
 name, job-instance and execution identifiers, batch status, a closed-vocabulary exit code, step count,
-and start and end times — never parameters, execution context, exit descriptions, exceptions, record
-data or credentials. Readiness verifies the pre-provisioned topic rather than creating one on first
-use, and a refused notification is logged without changing the job's own outcome.
+and start and end **instants in UTC** — never parameters, execution context, exit descriptions,
+exceptions, record data or credentials. Readiness verifies the pre-provisioned topic rather than
+creating one on first use, and a refused notification is logged without changing the job's own outcome.
+
+The channel is permitted to lose notifications, so every notification it loses is counted on
+`carddemo.job.completion.shed`, tagged `reason` with `QUEUE_FULL`, `NOTIFIER_CLOSED` or `SHUTDOWN`.
+Read against the delivery count published by `carddemo.job.completion.publish`, that answers the only
+question a shedding channel owes an operator: what fraction of what happened was announced.
+
+A retry of one report submission is idempotent for exactly as long as the queue service can make it so.
+The `Idempotency-Key` header carries a token this service mints, which is opaque to callers and carries
+the instant it was minted under an authentication code, and it is honoured for **five minutes** — the
+horizon over which the queue collapses a repeated deduplication identifier. Echo the returned token to
+complete an interrupted submission; a token this service did not issue, or one older than that window,
+is answered `400` with nothing published, and is counted on
+`carddemo.online.reportrequest.retrytoken.refused` tagged `reason` with `expired` or `not-issued-here`.
+Submitting without the header is a deliberate new request, which is what the legacy screen did
+unconditionally.
 
 The queue is the one place where a CICS resource attribute is a genuine external contract. The estate
 contains **exactly one** transient-data-queue write across 19,254 lines of COBOL, and the queue it
@@ -1159,14 +1269,18 @@ evidence, the artefact the evidence lands in, and the part of the outcome that i
 rather than of the machine that ran it. This section documents each gate's *mechanism and current
 coverage* — including, gate by gate, what is proven today and what is still outstanding. For anything that
 is a per-run measurement, run the command and read the result rather than reading a status out of either
-file. Two things genuinely remain outstanding and are marked as such throughout: the 40-byte golden fixture,
-and golden coverage of four of the five reject reason codes.
+file. **One thing genuinely remains outstanding and is marked as such throughout: golden coverage of four
+of the five reject reason codes.** The fifth contractual output width — the 40-byte category-balance report
+line — is **no longer among the gaps**: it now carries a committed golden of its own,
+`expected/category-balance-report.txt`, and that file is the verdict oracle of the job's own integration
+test. Earlier revisions of this manual described that fixture as pending or absent; those statements were
+true of an absent file and are false of a present one, so they are withdrawn rather than softened.
 
 | Gate | What it proves | How to run it | Coverage today |
 |---|---|---|---|
-| 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for the four widths this gate names** — all four goldens compared as byte arrays from one seeded pipeline pass; the fifth 40-byte width has no golden by design and is verified in-job. Four of the five reject reason codes are still uncovered by a golden record |
+| 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for all five contractual widths** — the four this gate names are compared as byte arrays from one seeded pipeline pass, and the fifth 40-byte width is compared as a byte array against its own committed golden from a dedicated job run in `batch/CategoryBalanceReportJobConfigIT`. Four of the five reject reason codes are still uncovered by a golden record |
 | 2 | Zero-warning build | `./mvnw -B clean verify` | **complete** — enforced by the compiler |
-| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — six measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. Measurements, never thresholds |
+| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **fifteen** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes, and the most recent three attributed to the source revision they were taken at. Measurements, never thresholds |
 | 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted, by name rather than by directory listing |
 | 5 | Interface contract verification | `./mvnw -B verify` (against a real queue and a real port) | **complete** — the card image drained back out of a real queue, and the sign-on texts and routing asserted against a booted context on a random port |
 | 6 | Unsafe and low-level code audit | the scoped grep list below | **complete** — mechanically re-runnable |
@@ -1186,50 +1300,61 @@ is executed is worse than one described narrowly:
 | `expected/transaction-report.txt` | `e2e/BatchPipelineE2ETest`, and `support/ExpectedOutputFixtureContractTest` | **End to end, from the same run.** The report the run produced is compared byte for byte. The contract test additionally classifies every one of the 519 committed records by its own structure and re-emits it through the production formatter that owns that record type; the classification is asserted total, so an unrecognised record fails rather than being skipped, and page and grand totals are checked against sums it computes for itself — including the legacy end-of-file double-count, pinned as the contract it is rather than "corrected". |
 | `expected/statement.txt` | `e2e/BatchPipelineE2ETest`, and `support/ExpectedOutputFixtureContractTest` | **End to end, from the same run.** The text statement the run produced is compared byte for byte. The contract test independently re-emits all 1,262 records through the production templates and checks every statement's total expenditure against the sum of its own detail amounts. |
 | `expected/statement-html.txt` | `e2e/BatchPipelineE2ETest`, and `support/ExpectedHtmlStatementFixtureContractTest` | **End to end, from the same run.** The HTML statement the run produced is compared byte for byte. The contract test independently asserts fifty concatenated documents in strict write order, including the malformed literals reproduced rather than repaired. |
+| `expected/category-balance-report.txt` | `batch/CategoryBalanceReportJobConfigIT`, and `support/ExpectedHtmlStatementFixtureContractTest` for the oracle's own shape | **From a dedicated job run, not from the pipeline pass.** The category-balance job is the one emitter the primary pipeline does not drive, so its golden is compared from its own run: the integration test fixes the reported population completely — the fifty delivered category-balance rows plus three it adds and one it rewrites in place, 53 records in all — runs the delivered job against a real PostgreSQL server, and compares the bytes it wrote to a real local dataset against the committed file. The same test asserts the three-key ascending ordering and the edited-balance formatting; the fixture contract test holds the oracle to the same shape rules as the other four. |
 
 In every case **the expected side is the committed fixture bytes and nothing else** — no snapshotting,
 no regeneration, and no expected value produced by calling the code under test.
 
-**What Gate 1 proves, and the two things it still does not:**
+**What Gate 1 proves, and the one thing it still does not:**
 
-`e2e/BatchPipelineE2ETest` stages the committed input, runs posting → interest → backup → consolidation →
-statement in the plan's own order against a Testcontainers PostgreSQL instance seeded from the fixtures and
-a real object store, and compares **all four** artefacts the one run produced against their goldens as byte
-arrays, writing the comparison to `target/gate-evidence/gate1-byte-equivalence.md` — one row per contract,
-naming the input, the expected file, the width, the expected and actual record and byte counts, and the
-match status. It also asserts that no artefact carries a record separator, that the landing dataset is left
-exactly as staged, and it launches the extract job no legacy stream invokes. `./mvnw -B clean verify`
-discharges that. The per-record tests in the table above remain, because they localise a failure to a
-single record where the pipeline test localises it to a stream.
+`e2e/BatchPipelineE2ETest` stages the committed input and runs **six jobs in one pass**, in the launch
+order the test asserts exactly rather than approximately — `postTransactionJob`, then
+`interestCalculationJob`, then `backupTransactionJob`, then `combineTransactionsJob`, then
+`transactionReportJob`, then `createStatementJob` — against a Testcontainers PostgreSQL instance seeded
+from the fixtures and a real object store. It then compares **all four** of the artefacts that one run
+produced against their goldens as byte arrays, writing the comparison to
+`target/gate-evidence/gate1-byte-equivalence.md` — one row per contract, naming the input, the expected
+file, the width, the expected and actual record and byte counts, and the match status. It also asserts
+that no artefact carries a record separator and that the landing dataset is left exactly as staged.
 
-Two gaps remain, and neither is closed by the run above:
+**A seventh job runs, and it is deliberately not part of that sequence.** `dailyTransactionReadJob` — the
+extract job no legacy stream invokes — is launched separately, after the pipeline, precisely because it is
+not a pipeline member: `CBTRN01C` is a complete program that no job stream, procedure or CICS definition
+calls, so it is delivered and exercised without being wired into the default pipeline. `./mvnw -B clean
+verify` discharges all of that. The per-record tests in the table above remain, because they localise a
+failure to a single record where the pipeline test localises it to a stream.
+
+One gap remains, and it is not closed by the run above:
 
 - **Four of the five reject reason codes.** `daily-reject.txt` carries 38 records and every one of them
   is the over-limit code `0102`; the other four codes are defined and unit-tested, but no golden record
   exercises them. Cases for them are **outstanding**, and the end-to-end suite measures that as a fact
   rather than assuming it.
-- **The fifth output width has no golden.** No 40-byte golden file exists, and none is planned: Gate 1
-  names four expected outputs, so minting a fifth would assert a baseline the gate does not define. The
-  width, the edited-balance formatting and the three-key ascending ordering are asserted in-job by
-  `batch/CategoryBalanceReportJobConfigIT` — see the table below.
 
-Five output widths are contractual. Four have a golden file whose every line is exactly that wide; the
-fifth does not yet, and is marked so rather than omitted:
+Five output widths are contractual, and **every one of the five now has a committed golden** whose bytes
+divide exactly by that width. Four are compared from the single pipeline pass; the fifth is compared from
+the emitting job's own run, because that job is not a pipeline member:
 
 | Width | What it is | Golden file | Evidence |
 |---|---|---|---|
-| **80 bytes** | statement text record | `expected/statement.txt` (1,262 lines) | golden-file comparison |
-| **100 bytes** | statement HTML record | `expected/statement-html.txt` (6,632 lines) | golden-file comparison |
-| **133 bytes**, fixed-length blocked | transaction report line | `expected/transaction-report.txt` (519 lines) | golden-file comparison |
-| **430 bytes** | daily-transaction reject record — the 350-byte source image, then a 4-digit reason code, then a 76-character description | `expected/daily-reject.txt` (38 lines) | golden-file comparison |
-| **40 bytes** | category-balance report line — account, type and category identifiers, an edited balance, then filler — declared by `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` | **none yet** | width asserted in-job by `CategoryBalanceReportJobConfigIT`; a golden fixture for it is **pending** |
+| **80 bytes** | statement text record | `expected/statement.txt` (100,960 bytes = 1,262 records) | golden-file comparison, from the pipeline pass |
+| **100 bytes** | statement HTML record | `expected/statement-html.txt` (663,200 bytes = 6,632 records) | golden-file comparison, from the pipeline pass |
+| **133 bytes**, fixed-length blocked | transaction report line | `expected/transaction-report.txt` (69,027 bytes = 519 records) | golden-file comparison, from the pipeline pass |
+| **430 bytes** | daily-transaction reject record — the 350-byte source image, then a 4-digit reason code, then a 76-character description | `expected/daily-reject.txt` (16,340 bytes = 38 records) | golden-file comparison, from the pipeline pass |
+| **40 bytes** | category-balance report line — account, type and category identifiers, an edited balance, then filler — declared by `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` | `expected/category-balance-report.txt` (2,120 bytes = 53 records) | golden-file comparison, from a dedicated run of the emitting job in `batch/CategoryBalanceReportJobConfigIT`, which also asserts the ordering and the edited-balance formatting |
 
-Measure the four that exist, rather than trusting the table:
+Measure all five yourself rather than trusting the table. **Count bytes, not lines**: none of the five
+carries a record separator — that is itself an asserted property — so a line-oriented tool sees one
+enormous line and tells you nothing. Divide by the declared width instead, and check that the remainder
+is zero:
 
 ```bash
 cd carddemo-java/src/test/resources/fixtures/expected
-for f in statement.txt statement-html.txt transaction-report.txt daily-reject.txt; do
-  printf '%-24s %s\n' "$f" "$(awk '{print length($0)}' "$f" | sort -u | tr '\n' ' ')"
+for spec in statement.txt:80 statement-html.txt:100 transaction-report.txt:133 \
+            daily-reject.txt:430 category-balance-report.txt:40; do
+  file=${spec%:*}; width=${spec#*:}; bytes=$(wc -c < "$file")
+  printf '%-28s %7d bytes / %3d = %5d records, remainder %d\n' \
+    "$file" "$bytes" "$width" "$((bytes / width))" "$((bytes % width))"
 done
 ```
 
@@ -1390,8 +1515,11 @@ jcmd "$PID" GC.heap_info
 #   garbage-first heap   total reserved 31424512K, committed 1163264K, used 733817K
 ```
 
-`jcmd` is a JDK tool, so if it is not on `PATH` invoke it as `"$JAVA_HOME/bin/jcmd"`, the same way the
-build wrapper resolves its JDK.
+`jcmd` is a JDK tool, so if it is not on `PATH` invoke it as `"$JAVA_HOME/bin/jcmd"` — the same variable
+the build wrapper reads. The wrapper supplies **Maven** and nothing else: it downloads and verifies the
+pinned Maven distribution, then selects an already-installed JDK through `JAVA_HOME`, or through whatever
+`java` is on `PATH` when that is unset. It cannot provide a JDK, so a machine whose default `java` is
+older than 25 needs `JAVA_HOME` pointed at a Java 25 JDK before the build, rather than `<release>` lowered.
 
 The container's resident set size is deliberately **not** the figure to record: it counts page cache and
 the JVM's own reservations, so it describes the process rather than the workload.
@@ -1399,9 +1527,11 @@ the JVM's own reservations, so it describes the process rather than the workload
 **Step 7 — write the figures down with their conditions.** Elapsed time, peak heap and records per second
 mean nothing without the fixture volumes, the heap bounds from step 1, the profile, and the commit they
 were taken at. [`../docs/gate-evidence.md`](../docs/gate-evidence.md) is the page they belong on, and its
-Gate 3 section carries the measured-runs table to add a row to. **No baseline has been recorded there
-yet**, so this gate is a mechanism plus an empty table rather than a produced number, and the row you add
-is the first.
+Gate 3 section carries the measured-runs table to add a row to. **Fifteen rows are recorded there**, each
+dated and attributed to a named machine — so the row you add joins a baseline rather than starting one,
+and the rows already present are the comparison you read yours against. They differ from each other by
+nearly half again at the same volume on the same host, which is the first thing to know before quoting
+any of them.
 
 The measurement itself is not read off a dashboard panel, and that distinction matters enough to state
 here. `support/RunScopedPerformanceRecorder`, driven from `InterestCalculationJobIT`, measures one run:
@@ -1533,10 +1663,13 @@ design requires. Test sources are excluded for the same kind of reason — asser
 use casts that production code does not.
 
 The zero-reflection count is **not hygiene, it is architecture**. It is what forbids any bean-mapping
-or annotation-driven mapping library, and therefore what requires all **eleven** record mappers to
-slice fixed-width images with explicit `String.substring` offsets over the verified layouts. It is also
-why no annotation processor appears in the dependency set at all. Change the reflection budget and you
-have changed the mapper design.
+or annotation-driven mapping library, and therefore what requires every record mapper to slice
+fixed-width images with explicit `String.substring` offsets over the verified layouts. **The module
+carries twelve `*RecordMapper` classes over eleven persisted record layouts**: one per layout, plus
+`StatementWorkRecordMapper`, which maps the statement work area and has no table behind it — the
+migration plan's count of eleven is a count of layouts, not of classes, and both figures are correct
+about different things. It is also why no annotation processor appears in the dependency set at all.
+Change the reflection budget and you have changed the mapper design.
 
 Because `-Xlint:all -Werror` promotes unchecked operations to errors, the practical count for unchecked
 casts is zero; the small budget exists only for an unavoidable generic gap in a third-party API, and
@@ -1559,21 +1692,26 @@ untested classes at zero. **Line coverage is the gated metric.** Branch, method 
 coverage are reported for information and are not gated — asserting a branch threshold with no legacy
 baseline would be inventing a requirement.
 
-For context on the achievable shape, the **prior-delivery documents are internally inconsistent**:
-they report 888 tests in total, but separately list 729 unit, 134 integration and 33 end-to-end tests,
-which add up to 896 rather than 888. Neither total is treated as a current measurement or silently
-"corrected" by choosing one side of the discrepancy. Current test and coverage figures must be read
-from the Maven reports and [`../docs/gate-evidence.md`](../docs/gate-evidence.md), which are produced
-from an actual run.
+For context on the achievable shape, the prior delivery recorded **888 tests — 729 unit plus 159
+integration and end-to-end**. That is the only form of its breakdown published anywhere in this
+documentation set: its own documents also carry a second breakdown that does not sum to its total, and
+[`../docs/decision-log.md`](../docs/decision-log.md) DL-256 records the discrepancy rather than
+reproducing it. Neither figure is a current measurement.
+
+**Current test figures are published in exactly one place**, with the scope definition that makes them
+readable: [`../docs/gate-evidence.md`](../docs/gate-evidence.md), under *How this document counts tests*.
+This file deliberately does not restate them — a count copied into a second document cannot hear that the
+first one changed, which is the failure mode recorded in
+[`../docs/decision-log.md`](../docs/decision-log.md) DL-316.
 
 ### Gate 8 — integration sign-off
 
 | Checklist item | Satisfying artifact | Check | Status |
 |---|---|---|---|
-| End-to-end verification | golden fixtures at 80, 100, 133 and 430 bytes, driven through one seeded pipeline pass; the fifth 40-byte width has no golden and is verified in-job | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte line | **met** — posting, accrual, consolidation and statement run against a Testcontainers PostgreSQL instance seeded from the fixtures, and all four goldens are compared as byte arrays from that one run. The comparison report is written to `target/gate-evidence/gate1-byte-equivalence.md` |
+| End-to-end verification | golden fixtures at **all five** contractual widths — 40, 80, 100, 133 and 430 bytes; four driven through one seeded pipeline pass, the 40-byte one through a dedicated run of the job that emits it | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte golden | **met** — the six-job pipeline runs against a Testcontainers PostgreSQL instance seeded from the fixtures and all four of its goldens are compared as byte arrays from that one run, with the comparison written to `target/gate-evidence/gate1-byte-equivalence.md`; the fifth golden is compared as a byte array against a real dataset the category-balance job wrote after reading a real server |
 | Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `service/JobSubmissionServiceIT`, and `e2e/OnlineTransactionE2ETest` driving the submission endpoint over HTTP and draining the queue | **met** for the queue contract |
 | Interface contract verification | the seven sign-on literals and the admin/user routing rule | `e2e/OnlineTransactionE2ETest` — a booted context on a random port with a real datasource — backed by `api/AuthControllerIT` and `api/AuthControllerTest` at the narrower boundaries | **met** — the five direct texts compared character for character, the two shared texts at their full padded width, and the destination asserted for all ten delivered identities, because the legacy branch is an `ELSE` rather than a second equality test |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — six measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **fifteen** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over, and the three most recent additionally attributed to the source revision they were taken at. They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
 | Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
 | Zero **unsuppressed** critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included, reading exactly one analyst determination from [`owasp-suppressions.xml`](owasp-suppressions.xml) | `./mvnw -B clean verify`; `GateVerificationTest` asserts the determination's scope and reads both halves of the report | **met as stated, and the statement is the narrower one** — zero *unsuppressed* qualifying findings, plus **one** scoped HIGH determination that is part of the audited result rather than a silence. Set out below. Not "zero findings" |
@@ -1762,7 +1900,7 @@ These are checkable by inspection, which is the point:
 | Composite-key classes | **3** | category balance, disclosure group, transaction category |
 | Enums | **9** | user type, account status, card status, transaction source, key action, file status, reject reason, date format, report period |
 | Spring Data repositories | **11** | including the two derived finders that replace the online alternate indexes |
-| Service implementations | **36** | every concrete `*Service.java` in the `service` package: the translation-bearing services, one per program or program family, plus the focused support services. The package holds 71 files in total; service-owned records, enums and interfaces are not `*Service.java` and are not counted here |
+| Service implementations | **36** | every concrete `*Service.java` in the `service` package, and the arithmetic closes: **26** translation-bearing services, one per program or program family and exactly the set the migration plan names, plus **10** focused support services — concurrency tokens, credential digesting, field encryption, sign-on state, page tokens, batch launch and staging, job-completion notification and field-error translation. The package holds **72** files in all: those 36, plus **36** service-owned records, commands, outcomes, ports and view types, which are not `*Service.java` and are not counted here |
 | Batch job configurations | **9** | plus eight step components and the shared step template |
 | Hand-written record mappers | **12** | every `*RecordMapper.java` in `util`: one per verified record layout plus the statement work-area mapper, all explicit offsets, no reflection |
 | Request/response DTO files | **32** | every file in `api/dto`, derived from the 17 symbolic maps plus the shared transport types they need |
@@ -1772,6 +1910,7 @@ Count any of them yourself rather than trusting the table:
 ```bash
 cd carddemo-java
 ls src/main/java/com/carddemo/service/*Service.java | wc -l      # 36
+ls src/main/java/com/carddemo/service/*.java | wc -l              # 72 — the package total
 ls src/main/java/com/carddemo/util/*RecordMapper.java | wc -l     # 12
 ls src/main/java/com/carddemo/api/dto/ | wc -l                    # 32
 ```
@@ -1842,7 +1981,9 @@ fails byte equivalence. The complete record is in
 
 ### Data and identifiers
 
-- **No reflection-based or annotation-driven record mapping.** All eleven mappers use explicit offsets.
+- **No reflection-based or annotation-driven record mapping.** All **twelve** mappers use explicit
+  offsets — one per persisted record layout, of which there are eleven, plus `StatementWorkRecordMapper`
+  for the statement job's transient work record.
   This is the same constraint as the zero-reflection audit count, seen from the other side.
 - **No templating engine for statement output.** Literal constants only, emitted in source order at
   exact width — including a malformed truncated markup tag that must be reproduced as-is.
@@ -1936,7 +2077,7 @@ carddemo-java/
 └── src/test/resources/
     ├── application-test.yml
     ├── fixtures/input/       the nine ASCII datasets, plus the user-security seed
-    └── fixtures/expected/    golden output at 80, 100, 133 and 430 bytes (no 40-byte file yet)
+    └── fixtures/expected/    golden output at 40, 80, 100, 133 and 430 bytes, all separator-free
 ```
 
 There is no `docker/` directory, no `LICENSE` copy and no `NOTICE` copy inside the module — see
@@ -1963,7 +2104,7 @@ repository root.
 | [`../docs/traceability-matrix.md`](../docs/traceability-matrix.md) | **544 rows** — every procedure unit mapped to its Java class, method and covering test, citing both provenance identifiers |
 | [`../docs/decision-log.md`](../docs/decision-log.md) | Every divergence between COBOL semantics and idiomatic Java, and the source anomaly register — 31 entries as it stands, of which the migration plan named the first fourteen plus a fifteenth observation — with both provenance identifiers in its own Provenance section |
 | [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | Per gate: the command that produces the evidence, the artefact it lands in, and the standing result. Carries the Gate 6 audit counts and the measured-runs table for the Gate 3 figures |
-| [`../docs/presentation/index.html`](../docs/presentation/index.html) | The migration summary deck: the estate, the mapping, the load-bearing translation decisions and the gate outcomes |
+| [`../docs/presentation/index.html`](../docs/presentation/index.html) | The migration summary deck, in six slides: what was migrated, what each construct became, the shape of the target module, the load-bearing translation decisions, **the acceptance-criteria model — what each of the eight gates verifies and the obligation it discharges** — and where the detail lives. It deliberately does **not** carry gate results: every run outcome is deferred to [`../docs/gate-evidence.md`](../docs/gate-evidence.md), which the deck names as the single authority for them |
 | [`../docs/project-guide.md`](../docs/project-guide.md) | The prior delivery's completion record — the authoritative source for the historical test and coverage figures quoted under Gate 7 |
 | [`../docs/technical-specifications.md`](../docs/technical-specifications.md) | The migration's technical specification |
 
@@ -2030,7 +2171,7 @@ permissions, and it:
 | Symptom | Cause and fix |
 |---|---|
 | `docker compose up` fails binding a port | Something already owns one of the eight published ports: 8080 (app), 5432 (PostgreSQL), 4566 (LocalStack), 9090 (Prometheus), 3000 (Grafana), or Jaeger's 16686 (UI), 4317 (OTLP gRPC) and 4318 (OTLP HTTP). The two OTLP ports are the ones most often already taken, because any other collector on the machine wants them too. Every port is overridable: `APP_PORT=18080 POSTGRES_PORT=15432 JAEGER_OTLP_GRPC_PORT=14317 JAEGER_OTLP_HTTP_PORT=14318 docker compose up -d`. |
-| A colleague or another host cannot reach the stack | Working as intended: every port binds `127.0.0.1`. See [Reaching the stack from another machine](#reaching-the-stack-from-another-machine) — widen the one service you need with its `*_BIND_ADDRESS` **and** supply generated credentials, because the committed local signing secret would otherwise let any peer mint an administrator token. |
+| A colleague or another host cannot reach the stack | Working as intended, and it is a security control rather than an inconvenience: every port binds `127.0.0.1` and the profile behind them carries a committed signing secret, cleartext transport and ten seeded identities. Forward the port over SSH — `ssh -L 8080:127.0.0.1:8080 <host>` — or deploy the `prod` profile. See [Reaching the stack from another machine](#reaching-the-stack-from-another-machine); rotating a credential does **not** make a published local stack safe. |
 | `docker compose up` reports it cannot find an image digest | The pinned digest is not in the local store and the registry was not reachable. Pull the tag once (`docker pull postgres:16.14-bookworm`), confirm the digest matches with `docker image inspect <tag> --format '{{index .RepoDigests 0}}'`, and if upstream has genuinely republished the tag, update the digest in `docker-compose.yml` as a deliberate, reviewable change rather than dropping the pin. |
 | App exits during start-up with a Flyway error | PostgreSQL was not ready. Check with `docker compose exec postgres pg_isready -U carddemo -d carddemo`, then `docker compose logs postgres`. Compose already gates the app on the health check, so this normally means the database container itself is unhealthy. |
 | `QueueDoesNotExist`, or an S3 bucket that is not there | The LocalStack bootstrap hook did not complete. Check `curl -s http://localhost:4566/_localstack/health`, then `docker compose logs localstack` and look for the bootstrap lines. `docker compose restart localstack` re-runs the hook. |
@@ -2104,7 +2245,7 @@ so a reviewer can check it rather than take it on trust.
 | 3 | **Layered separation with a strict downward dependency direction** | The package map above, enforced by `PackageLayeringTest` with a zero upward-edge budget and no exemption table; API adapters own every transport conversion, job launch crosses through `BatchJobLaunchService`, and fixed-width mapping stays isolated in `util`. |
 | 4 | **Constructor injection and immutability, without code generation** | Every collaborator arrives through a constructor; DTOs are records or final classes; no Lombok and no annotation processor of any kind. |
 | 5 | **No production secret in source, and none defaulted** | `application-prod.yml` resolves every secret from the environment with **no fallback**, so a missing secret fails startup, and stored credentials are BCrypt hashes. Non-production throwaway values do exist in the tree — in `docker-compose.yml`, in the local and test overlays, and as a sample password in the read-only estate and in test constants — and they are inventoried under [Where local and test values actually live](#where-local-and-test-values-actually-live) rather than glossed over. |
-| 6 | **Versioned, forward-only schema evolution** | Flyway `V1`–`V4` flat in one `db/migration` location, with production pinned to schema version `2`, `clean` disabled and `validate-on-migrate` on. |
+| 6 | **Versioned, forward-only schema evolution** | Flyway `V1`–`V4` flat in one `db/migration` location, with production pinned to schema version `2` and `validate-on-migrate` on everywhere. `clean` is **disabled by the shared baseline and by `prod`**, and deliberately re-enabled by the profiles whose database is disposable — `local`, so a developer can drop and re-apply a migration they are editing, and both copies of `test`, whose database is a per-run container. The concession is taken in those overlays rather than inherited, so it cannot reach production by omission. |
 | 7 | **A test pyramid with an enforced floor** | Unit tests over mappers, validators and services; integration tests against real containers; end-to-end tests over the full pipeline. JaCoCo fails the build below 80% line coverage; branch coverage is reported, not gated. |
 | 8 | **Supply-chain hygiene** | `dependency-check-maven` bound to `verify` and **executed**, failing at CVSS 7.0 on the **compile, runtime and test** graph (`skipTestScope` is `false`), with reports emitted in three formats and uploaded by CI. The enforced invariant is zero **unsuppressed** critical or high findings plus **one** scoped, evidenced, self-expiring determination, disclosed with its three-state vocabulary under [Gate 8](#gate-8--integration-sign-off) rather than left implicit. An earlier revision of this row described a compile-and-runtime-only scan and two HIGH findings in an excluded test graph; both statements are withdrawn — the transport that carried them was replaced, not excluded. |
 | 9 | **Observability as a first-class concern** | Actuator health and metrics, Micrometer timers on every endpoint and every batch step, Prometheus and Grafana provisioned in the stack, OTLP tracing wired to Jaeger, structured JSON logging with correlation identifiers. |

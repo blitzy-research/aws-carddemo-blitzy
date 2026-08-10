@@ -434,8 +434,8 @@ class AbstractCobolStepParityTest {
                     .withMessage("VSAM unavailable");
 
             // The parity point is that the observable close family is skipped, not driven. The abend
-            // routine ends with CALL 'CEE3ABD' [app/cbl/CBACT01C.cbl:L173], which does not return, so
-            // PERFORM 9000-ACCTFILE-CLOSE at line 83 is never reached once a guarded operation abends.
+            // routine ends with the CEE3ABD call [app/cbl/CBACT01C.cbl:L173], which does not return, so
+            // 9000-ACCTFILE-CLOSE at line 83 is never reached once a guarded operation abends.
             // What the template does instead is the non-observable handle release, which exists only
             // because this JVM outlives the failed step where the mainframe enclave did not.
             assertThat(step.calls).containsExactly("open", "release");

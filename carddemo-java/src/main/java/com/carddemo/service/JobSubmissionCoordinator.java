@@ -37,16 +37,38 @@ public interface JobSubmissionCoordinator {
     /**
      * Runs one complete card-stream publication as the only such publication in the deployment.
      *
+     * <p><strong>Waiting for the boundary is bounded, and an expired wait is not fatal.</strong> An
+     * implementation may block a caller while another submission holds the boundary, but must not block
+     * without limit: the caller is an online request thread, and an unbounded wait makes one stuck holder
+     * able to consume every request thread and every pooled connection behind it. A wait that expires
+     * raises {@link CoordinationFailure}, which the calling service reports as a refused submission
+     * carrying zero cards published - the migrated form of the legacy queue's ignore-on-error contract.
+     *
+     * <p><strong>Releasing the boundary is not evidence about the submission.</strong> Once the supplied
+     * work has published cards, those messages exist and no coordination operation can retract them. An
+     * implementation that fails to release its boundary afterwards must therefore report that fault as an
+     * operational alert and <em>return the outcome the work produced</em>. It must not raise
+     * {@link CoordinationFailure}, because a caller reading that would report zero cards published for a
+     * job stream that is queued and about to run, and the natural response - resubmitting - runs the job
+     * twice.
+     *
      * @param  submission the validated publication work; must not be {@code null}
      * @return the publication outcome; never {@code null}
-     * @throws CoordinationFailure when the shared coordination boundary cannot be acquired or
-     *                            completed
+     * @throws CoordinationFailure when the shared coordination boundary cannot be acquired, or fails
+     *                            before the supplied work produced an outcome
      */
     JobSubmissionService.SubmissionResult serialize(
             Supplier<JobSubmissionService.SubmissionResult> submission);
 
     /**
-     * Reports failure to acquire or complete the deployment-wide serialization boundary.
+     * Reports that the deployment-wide serialization boundary could not be established, and that
+     * consequently <strong>no card reached the queue</strong>.
+     *
+     * <p>The second half of that sentence is the load-bearing half. This exception is a caller's licence
+     * to report zero cards published, so it is raised only while that remains true: a boundary that could
+     * not be acquired, or that failed before the guarded work produced an outcome. A boundary that could
+     * not be <em>released</em> after the work completed is reported by its implementation as an
+     * operational alert instead, because the messages exist either way.
      */
     final class CoordinationFailure extends RuntimeException {
         @Serial

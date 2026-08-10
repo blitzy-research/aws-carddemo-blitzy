@@ -382,6 +382,12 @@ final class TransactionListServiceTest {
     /** The blank a screen field holds when nothing is displayed in it. */
     private static final String BLANK = "";
 
+    /**
+     * A complete sixteen-character transaction identifier, used as the value a caller types into a
+     * one-byte selector position when attempting to name a row rather than mark one.
+     */
+    private static final String FORGED_IDENTIFIER = "0000000000000099";
+
     // ------------------------------------------------------------------------------------------
     // Independent oracle: record field values
     // ------------------------------------------------------------------------------------------
@@ -574,6 +580,23 @@ final class TransactionListServiceTest {
     }
 
     /**
+     * The same cluster with its fourth key absent, so that a submission naming that key cannot be
+     * satisfied by echoing it back and must resolve to the next key that exists.
+     *
+     * @return twenty-four rows in ascending key order
+     */
+    private static List<Transaction> clusterWithoutTheFourthKey() {
+        return List.of(
+                transaction(ID_01), transaction(ID_02), transaction(ID_03),
+                transaction(ID_05), transaction(ID_06), transaction(ID_07), transaction(ID_08),
+                transaction(ID_09), transaction(ID_10), transaction(ID_11), transaction(ID_12),
+                transaction(ID_13), transaction(ID_14), transaction(ID_15), transaction(ID_16),
+                transaction(ID_17), transaction(ID_18), transaction(ID_19), transaction(ID_20),
+                transaction(ID_21), transaction(ID_22), transaction(ID_23), transaction(ID_24),
+                transaction(ID_25));
+    }
+
+    /**
      * The twenty-five-row cluster the multi-turn tests walk, in ascending key order.
      *
      * @return twenty-five transactions whose identifiers are the declared literals
@@ -740,7 +763,7 @@ final class TransactionListServiceTest {
      * @return the command a first entry into this screen carries
      */
     private static TransactionListService.TransactionListCommand firstEntry() {
-        return firstEntryWith(null, List.of(), List.of());
+        return firstEntryWith(null, List.of());
     }
 
     /**
@@ -748,19 +771,17 @@ final class TransactionListServiceTest {
      * discarding them: the map is never received on this path, and the output group redefines the input
      * group, so line 114 blanks both.
      *
-     * @param filter       the filter field the caller submitted
-     * @param selectors    the row selectors the caller submitted
-     * @param displayedIds the row identifiers the caller echoed
+     * @param filter    the filter field the caller submitted
+     * @param selectors the row selectors the caller submitted
      * @return the command
      */
     private static TransactionListService.TransactionListCommand firstEntryWith(final String filter,
-            final List<String> selectors, final List<String> displayedIds) {
+            final List<String> selectors) {
         return new TransactionListService.TransactionListCommand(
                 KeyAction.ENTER,
                 ScreenNavigationState.empty().withFirstEntry(),
                 filter,
                 selectors,
-                displayedIds,
                 null,
                 false,
                 0);
@@ -784,31 +805,84 @@ final class TransactionListServiceTest {
                 ScreenNavigationState.empty().withReEntry(),
                 null,
                 List.of(),
-                List.of(),
                 new BrowseWindow.CursorRequest(previousCursorKey, nextCursorKey, null),
                 nextPageAvailable,
                 currentPageNumber);
     }
 
     /**
-     * A re-entry on the enter key carrying submitted screen fields.
+     * A re-entry on the enter key carrying submitted screen fields and the forward-assembled page the
+     * submission is continuing.
      *
-     * @param filter       the filter field
-     * @param selectors    the row selectors
-     * @param displayedIds the echoed row identifiers
+     * <p>The third argument is the <em>first</em> boundary key of the page being resubmitted, which is
+     * the identifier of that page's top row and the value the previous response published as the
+     * backward cursor. It is what the service re-reads the marked row's identifier from: no identifier
+     * list crosses this boundary, so a page cannot be described to the service except by naming where it
+     * starts. A {@code null} names no page, which is the shape of a submission that has nothing to
+     * continue.
+     *
+     * @param filter                the filter field
+     * @param selectors             the row selectors
+     * @param displayedPageFirstKey the first boundary key of the page being resubmitted, or {@code null}
      * @return the command
      */
     private static TransactionListService.TransactionListCommand submittedEnter(final String filter,
-            final List<String> selectors, final List<String> displayedIds) {
+            final List<String> selectors, final String displayedPageFirstKey) {
         return new TransactionListService.TransactionListCommand(
                 KeyAction.ENTER,
                 ScreenNavigationState.empty().withReEntry(),
                 filter,
                 selectors,
-                displayedIds,
-                null,
+                new BrowseWindow.CursorRequest(displayedPageFirstKey, null,
+                        BrowseWindow.PagingDirection.FORWARD),
                 false,
                 0);
+    }
+
+    /**
+     * An enter-key submission that marks one row of a page named by <strong>both</strong> boundary keys
+     * and by the direction that page was assembled in.
+     *
+     * <p>The direction is what decides which of the two keys names the page's fill origin, so a
+     * submission that carries only one of them cannot express a page a reverse fill produced. Nothing
+     * here carries a transaction identifier: the marked slot is a position and the service establishes
+     * the identifier itself.</p>
+     *
+     * @param selectors        the ten selector positions, in row order
+     * @param previousCursorKey the key reported for the first presented slot
+     * @param nextCursorKey    the key reported for the tenth presented slot
+     * @param direction        the direction the page being resubmitted was assembled in
+     * @return the command for that turn
+     */
+    private static TransactionListService.TransactionListCommand markedOnPage(
+            final List<String> selectors, final String previousCursorKey,
+            final String nextCursorKey, final BrowseWindow.PagingDirection direction) {
+        return new TransactionListService.TransactionListCommand(
+                KeyAction.ENTER,
+                ScreenNavigationState.empty().withReEntry(),
+                null,
+                selectors,
+                new BrowseWindow.CursorRequest(previousCursorKey, nextCursorKey, direction),
+                false,
+                1);
+    }
+
+    /**
+     * Ten selector positions carrying {@code mark} at {@code slot} and a space everywhere else.
+     *
+     * <p>Written as an explicit ten-element list rather than a compacted one, because which slot holds
+     * the mark is the whole input of a selection turn: a compacted list would silently move it.</p>
+     *
+     * @param slot the one-based presented slot the mark occupies
+     * @param mark the selector byte the operator typed
+     * @return the ten positions in row order
+     */
+    private static List<String> markAtSlot(final int slot, final String mark) {
+        final List<String> positions = new ArrayList<>(EXPECTED_PAGE_SIZE);
+        for (int row = 1; row <= EXPECTED_PAGE_SIZE; row++) {
+            positions.add(row == slot ? mark : " ");
+        }
+        return List.copyOf(positions);
     }
 
     /**
@@ -825,7 +899,6 @@ final class TransactionListServiceTest {
                 keyAction,
                 ScreenNavigationState.empty().withReEntry(),
                 null,
-                List.of(),
                 List.of(),
                 new BrowseWindow.CursorRequest(reported.previousCursorKey(),
                         reported.nextCursorKey(), reported.direction()),
@@ -1205,7 +1278,7 @@ final class TransactionListServiceTest {
             stubOrderedCluster(twentyFiveRowCluster());
 
             final TransactionListService.TransactionListResult result =
-                    service.listTransactions(submittedEnter(ID_05, List.of(), List.of()));
+                    service.listTransactions(submittedEnter(ID_05, List.of(), null));
 
             final ArgumentCaptor<String> boundCaptor = ArgumentCaptor.forClass(String.class);
             verify(transactionScanRepository)
@@ -1678,7 +1751,6 @@ final class TransactionListServiceTest {
                             ScreenNavigationState.empty().withReEntry(),
                             null,
                             List.of(),
-                            List.of(),
                             new BrowseWindow.CursorRequest(ID_11, ID_20,
                                     BrowseWindow.PagingDirection.BACKWARD),
                             true,
@@ -1728,16 +1800,21 @@ final class TransactionListServiceTest {
         @DisplayName("a row selected for viewing transfers to the route the navigation service resolves,"
                 + " in either letter case, and issues no read at all")
         void aRowSelectedForViewingTransfersToTheResolvedRoute(final String rowAction) {
+            stubOrderedCluster(twentyFiveRowCluster());
             when(navigationService.resolveNominatedDestination(any(), any()))
                     .thenReturn(NavigationService.Route.TRANSACTION_VIEW);
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter(null, List.of(rowAction), List.of(ID_03)));
+                    submittedEnter(null, List.of(rowAction), ID_03));
 
             final ArgumentCaptor<ConversationState> carriedCaptor =
                     ArgumentCaptor.forClass(ConversationState.class);
             verify(navigationService).resolveNominatedDestination(carriedCaptor.capture(), any());
-            verifyNoInteractions(transactionScanRepository);
+            // Exactly one read, and it is the re-read of the page the cursor names: the identifier the
+            // hand-off carries is established here rather than taken from anything the caller echoed.
+            verify(transactionScanRepository)
+                    .findByTranIdGreaterThanEqualOrderByTranIdAsc(eq(ID_03), any());
+            verifyNoMoreInteractions(transactionScanRepository);
 
             assertAll(
                     () -> assertThat(result.route())
@@ -1762,7 +1839,7 @@ final class TransactionListServiceTest {
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
                     new TransactionListService.TransactionListCommand(KeyAction.ENTER, null, null,
-                            List.of(), List.of(), null, false, 0));
+                            List.of(), null, false, 0));
 
             final ArgumentCaptor<ConversationState> carriedCaptor =
                     ArgumentCaptor.forClass(ConversationState.class);
@@ -1790,8 +1867,7 @@ final class TransactionListServiceTest {
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
                     new TransactionListService.TransactionListCommand(KeyAction.ENTER,
-                            ScreenNavigationState.empty(), null, List.of(), List.of(), null, false,
-                            0));
+                            ScreenNavigationState.empty(), null, List.of(), null, false, 0));
 
             verifyNoInteractions(transactionScanRepository);
 
@@ -1816,8 +1892,7 @@ final class TransactionListServiceTest {
             stubOrderedCluster(twentyFiveRowCluster());
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter(null, List.of(" ", " ", "X", " ", "S"),
-                            List.of(ID_01, ID_02, ID_03, ID_04, ID_05)));
+                    submittedEnter(null, List.of(" ", " ", "X", " ", "S"), ID_01));
 
             verifyNoInteractions(navigationService);
 
@@ -1841,7 +1916,7 @@ final class TransactionListServiceTest {
             stubOrderedCluster(twentyFiveRowCluster());
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter(null, List.of("X"), List.of(ID_01)));
+                    submittedEnter(null, List.of("X"), ID_01));
 
             assertAll(
                     () -> assertThat(result.message()).isEqualTo(EXPECTED_INVALID_SELECTION),
@@ -1860,7 +1935,7 @@ final class TransactionListServiceTest {
             stubOrderedCluster(twentyFiveRowCluster());
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter(null, List.of("S"), List.of()));
+                    submittedEnter(null, List.of("S"), null));
 
             verifyNoInteractions(navigationService);
 
@@ -1878,7 +1953,7 @@ final class TransactionListServiceTest {
             stubLowEndPage(rowsFor(EXPECTED_FIRST_PAGE));
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter("ABC", List.of(), List.of()));
+                    submittedEnter("ABC", List.of(), null));
 
             verify(transactionScanRepository)
                     .findByTranIdGreaterThanEqualOrderByTranIdAsc(eq(LOW_END_BOUND), any());
@@ -1907,7 +1982,7 @@ final class TransactionListServiceTest {
             stubOrderedCluster(twentyFiveRowCluster());
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter(ID_05, List.of(), List.of()));
+                    submittedEnter(ID_05, List.of(), null));
 
             final ArgumentCaptor<String> boundCaptor = ArgumentCaptor.forClass(String.class);
             verify(transactionScanRepository)
@@ -1928,7 +2003,7 @@ final class TransactionListServiceTest {
             stubOrderedCluster(twentyFiveRowCluster());
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter(blankFilter, List.of(), List.of()));
+                    submittedEnter(blankFilter, List.of(), null));
 
             final ArgumentCaptor<String> boundCaptor = ArgumentCaptor.forClass(String.class);
             verify(transactionScanRepository)
@@ -1949,7 +2024,7 @@ final class TransactionListServiceTest {
             stubOrderedCluster(twentyFiveRowCluster());
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    firstEntryWith("ABC", List.of("X"), List.of(ID_03)));
+                    firstEntryWith("ABC", List.of("X")));
 
             verifyNoInteractions(navigationService);
 
@@ -1962,6 +2037,226 @@ final class TransactionListServiceTest {
                     () -> assertThat(result.transactionIdFilterEcho()).isEqualTo(BLANK),
                     () -> assertThat(result.selectedTransactionId()).isEqualTo(BLANK),
                     () -> assertThat(result.reEntry()).isTrue());
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Paragraph PROCESS-ENTER-KEY line 146, selection dispatch lines 151-184. The legacy pairs the
+    // marked selector with the identifier the terminal echoed beside it; a submission body is not a
+    // trusted echo channel, so the identifier is re-read from the page the cursor names instead.
+    // See docs/decision-log.md DL-299.
+    // ------------------------------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("Continuation authenticity: a marked row's identifier is re-read, never accepted")
+    final class ContinuationAuthenticity {
+
+        @Test
+        @DisplayName("a cursor altered by one byte to name an absent key resolves the next key that"
+                + " exists, which is what proves the identifier is read rather than echoed")
+        void aTamperedCursorResolvesWhatTheStoreHoldsRatherThanWhatItNames() {
+            // The cluster deliberately omits the key the tampered cursor names, so an implementation
+            // that echoed the caller's value and one that re-read the store give different answers.
+            stubOrderedCluster(clusterWithoutTheFourthKey());
+            when(navigationService.resolveNominatedDestination(any(), any()))
+                    .thenReturn(NavigationService.Route.TRANSACTION_VIEW);
+
+            final TransactionListService.TransactionListResult result = service.listTransactions(
+                    markedOnPage(markAtSlot(1, "S"), ID_04, ID_13,
+                            BrowseWindow.PagingDirection.FORWARD));
+
+            verify(transactionScanRepository)
+                    .findByTranIdGreaterThanEqualOrderByTranIdAsc(eq(ID_04), any());
+            verifyNoMoreInteractions(transactionScanRepository);
+
+            assertAll(
+                    () -> assertThat(result.selectedTransactionId())
+                            .as("the key the caller named does not exist, so it cannot be handed off")
+                            .isNotEqualTo(ID_04),
+                    () -> assertThat(result.selectedTransactionId()).isEqualTo(ID_05),
+                    () -> assertThat(result.route())
+                            .isEqualTo(NavigationService.Route.TRANSACTION_VIEW));
+        }
+
+        @Test
+        @DisplayName("a full identifier typed into a one-byte selector position is a row action and"
+                + " never a row name, so it is reported invalid and does not become the selection")
+        void aForgedIdentifierInASelectorPositionIsNotARowName() {
+            stubOrderedCluster(twentyFiveRowCluster());
+
+            final TransactionListService.TransactionListResult result = service.listTransactions(
+                    markedOnPage(markAtSlot(1, FORGED_IDENTIFIER), ID_01, ID_10,
+                            BrowseWindow.PagingDirection.FORWARD));
+
+            verifyNoInteractions(navigationService);
+
+            assertAll(
+                    () -> assertThat(result.selectedTransactionId())
+                            .as("the smuggled value never reaches the selection")
+                            .isNotEqualTo(FORGED_IDENTIFIER),
+                    () -> assertThat(result.selectedTransactionId())
+                            .as("what reaches it is the identifier the marked slot's own row carries")
+                            .isEqualTo(ID_01),
+                    () -> assertThat(result.message()).isEqualTo(EXPECTED_INVALID_SELECTION),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).bmsFieldId())
+                            .isEqualTo(EXPECTED_FIRST_SELECTOR_FIELD),
+                    () -> assertThat(result.route())
+                            .as("the turn re-arms on its own transaction rather than transferring")
+                            .isEqualTo(NavigationService.Route.TRANSACTION_LIST));
+        }
+
+        @Test
+        @DisplayName("a cursor this conversation was never issued reaches exactly the row the filter"
+                + " the caller already controls reaches, so it confers nothing further")
+        void aCursorNeverIssuedConfersNothingTheFilterDoesNotAlreadyConfer() {
+            stubOrderedCluster(twentyFiveRowCluster());
+            when(navigationService.resolveNominatedDestination(any(), any()))
+                    .thenReturn(NavigationService.Route.TRANSACTION_VIEW);
+
+            final TransactionListService.TransactionListResult viaForgedCursor =
+                    service.listTransactions(markedOnPage(markAtSlot(1, "S"), ID_17, ID_25,
+                            BrowseWindow.PagingDirection.FORWARD));
+            final TransactionListService.TransactionListResult viaOwnFilter =
+                    service.listTransactions(submittedEnter(ID_17, List.of(), null));
+
+            assertAll(
+                    () -> assertThat(viaForgedCursor.selectedTransactionId()).isEqualTo(ID_17),
+                    () -> assertThat(identifiersOf(viaOwnFilter))
+                            .as("the filter is an unrestricted input already, and it lands on the very"
+                                    + " same row, so the forged cursor is not an escalation")
+                            .first().isEqualTo(ID_17));
+        }
+
+        @Test
+        @DisplayName("replaying a cursor resolves whatever occupies that position now, because no page"
+                + " is remembered between turns")
+        void aReplayedCursorResolvesWhatOccupiesThatPositionNow() {
+            when(navigationService.resolveNominatedDestination(any(), any()))
+                    .thenReturn(NavigationService.Route.TRANSACTION_VIEW);
+            final TransactionListService.TransactionListCommand replayed =
+                    markedOnPage(markAtSlot(1, "S"), ID_04, ID_13,
+                            BrowseWindow.PagingDirection.FORWARD);
+
+            // One stub, two consecutive answers: the first turn sees the fourth key, the second sees
+            // the store after it was removed. Both pages are written out so the change is visible.
+            when(transactionScanRepository
+                    .findByTranIdGreaterThanEqualOrderByTranIdAsc(eq(ID_04), any()))
+                    .thenReturn(rowsFor(List.of(ID_04, ID_05, ID_06, ID_07, ID_08, ID_09, ID_10,
+                            ID_11, ID_12, ID_13)))
+                    .thenReturn(rowsFor(List.of(ID_05, ID_06, ID_07, ID_08, ID_09, ID_10, ID_11,
+                            ID_12, ID_13, ID_14)));
+
+            final String whenTheRowExisted =
+                    service.listTransactions(replayed).selectedTransactionId();
+            final String afterItWasRemoved =
+                    service.listTransactions(replayed).selectedTransactionId();
+
+            assertAll(
+                    () -> assertThat(whenTheRowExisted).isEqualTo(ID_04),
+                    () -> assertThat(afterItWasRemoved)
+                            .as("the identical submission resolves differently, which is only possible"
+                                    + " if the store is consulted on every turn")
+                            .isEqualTo(ID_05),
+                    () -> assertThat(afterItWasRemoved).isNotEqualTo(whenTheRowExisted));
+        }
+
+        @Test
+        @DisplayName("a short backward page is re-read from its tenth slot upward, so each bottom"
+                + " aligned slot resolves its own row and a slot the fill never reached resolves none")
+        void aShortBackwardPageIsReReadFromItsTenthSlotUpward() {
+            stubOrderedCluster(twentyFiveRowCluster());
+            when(navigationService.resolveNominatedDestination(any(), any()))
+                    .thenReturn(NavigationService.Route.TRANSACTION_VIEW);
+
+            // Exactly the two boundary keys and the direction that aShortBackwardPageIsBottomAligned
+            // observes a four-row backward page report: rows ID_01 to ID_04 occupying slots 7 to 10.
+            final String tenthSlot = service.listTransactions(
+                    markedOnPage(markAtSlot(10, "S"), ID_05, ID_04,
+                            BrowseWindow.PagingDirection.BACKWARD)).selectedTransactionId();
+            final String seventhSlot = service.listTransactions(
+                    markedOnPage(markAtSlot(7, "S"), ID_05, ID_04,
+                            BrowseWindow.PagingDirection.BACKWARD)).selectedTransactionId();
+            final String sixthSlot = service.listTransactions(
+                    markedOnPage(markAtSlot(6, "S"), ID_05, ID_04,
+                            BrowseWindow.PagingDirection.BACKWARD)).selectedTransactionId();
+
+            assertAll(
+                    () -> assertThat(tenthSlot).isEqualTo(ID_04),
+                    () -> assertThat(seventhSlot).isEqualTo(ID_01),
+                    () -> assertThat(sixthSlot)
+                            .as("the reverse fill never reached the sixth slot, so it displayed no row"
+                                    + " and marking it selects nothing")
+                            .isEqualTo(BLANK));
+        }
+
+        @Test
+        @DisplayName("the direction decides which read reproduces the page: the same two boundary keys"
+                + " and the same marked slot resolve different rows forward and backward")
+        void theDirectionDecidesWhichReadReproducesThePage() {
+            stubOrderedCluster(twentyFiveRowCluster());
+            when(navigationService.resolveNominatedDestination(any(), any()))
+                    .thenReturn(NavigationService.Route.TRANSACTION_VIEW);
+
+            final String readBackward = service.listTransactions(
+                    markedOnPage(markAtSlot(10, "S"), ID_05, ID_04,
+                            BrowseWindow.PagingDirection.BACKWARD)).selectedTransactionId();
+            final String readForward = service.listTransactions(
+                    markedOnPage(markAtSlot(10, "S"), ID_05, ID_04,
+                            BrowseWindow.PagingDirection.FORWARD)).selectedTransactionId();
+
+            assertAll(
+                    () -> assertThat(readBackward)
+                            .as("a reverse fill puts its first read in the tenth slot")
+                            .isEqualTo(ID_04),
+                    () -> assertThat(readForward)
+                            .as("a forward fill puts its tenth read there instead")
+                            .isEqualTo(ID_14),
+                    () -> assertThat(readForward).isNotEqualTo(readBackward));
+        }
+
+        @Test
+        @DisplayName("a marked slot on a page named by no boundary key selects nothing, which is the"
+                + " same outcome the legacy reaches when the echoed identifier arrives blank")
+        void aMarkedSlotWithNoBoundaryKeySelectsNothing() {
+            stubOrderedCluster(twentyFiveRowCluster());
+
+            final TransactionListService.TransactionListResult result = service.listTransactions(
+                    markedOnPage(markAtSlot(1, "S"), null, null,
+                            BrowseWindow.PagingDirection.FORWARD));
+
+            verifyNoInteractions(navigationService);
+
+            assertAll(
+                    () -> assertThat(result.selectedTransactionId()).isEqualTo(BLANK),
+                    () -> assertThat(result.route())
+                            .isEqualTo(NavigationService.Route.TRANSACTION_LIST),
+                    () -> assertThat(result.rows()).hasSize(EXPECTED_PAGE_SIZE));
+        }
+
+        @Test
+        @DisplayName("a re-read that fails reports the look-up failure and opens no browse, because a"
+                + " browse opened past the guard would never be closed")
+        void aReReadThatFailsReportsTheLookUpFailureAndOpensNoBrowse() {
+            when(transactionScanRepository
+                    .findByTranIdGreaterThanEqualOrderByTranIdAsc(eq(ID_01), any()))
+                    .thenThrow(new QueryTimeoutException("re-read timed out"));
+
+            final TransactionListService.TransactionListResult result = service.listTransactions(
+                    markedOnPage(markAtSlot(1, "S"), ID_01, ID_10,
+                            BrowseWindow.PagingDirection.FORWARD));
+
+            verify(transactionScanRepository)
+                    .findByTranIdGreaterThanEqualOrderByTranIdAsc(eq(ID_01), any());
+            verifyNoMoreInteractions(transactionScanRepository);
+            verifyNoInteractions(navigationService);
+
+            assertAll(
+                    () -> assertThat(result.error()).isTrue(),
+                    () -> assertThat(result.rows()).isEmpty(),
+                    () -> assertThat(result.selectedTransactionId()).isEqualTo(BLANK),
+                    () -> assertThat(result.route())
+                            .isEqualTo(NavigationService.Route.TRANSACTION_LIST));
         }
     }
 
@@ -2111,7 +2406,7 @@ final class TransactionListServiceTest {
                     eq(ID_ABOVE_EVERY_STORED_KEY), any())).thenReturn(List.of());
 
             final TransactionListService.TransactionListResult result = service.listTransactions(
-                    submittedEnter(ID_ABOVE_EVERY_STORED_KEY, List.of(), List.of()));
+                    submittedEnter(ID_ABOVE_EVERY_STORED_KEY, List.of(), null));
 
             assertAll(
                     () -> assertThat(result.rows()).isEmpty(),
@@ -2165,8 +2460,7 @@ final class TransactionListServiceTest {
         @DisplayName("the command refuses an absent attention key, because two paging guards branch on it")
         void theCommandRefusesAnAbsentAttentionKey() {
             assertThatThrownBy(() -> new TransactionListService.TransactionListCommand(null,
-                    ScreenNavigationState.empty().withReEntry(), null, List.of(), List.of(), null,
-                    false, 0))
+                    ScreenNavigationState.empty().withReEntry(), null, List.of(), null, false, 0))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessageContaining("keyAction");
         }
@@ -2177,24 +2471,23 @@ final class TransactionListServiceTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionListService.TransactionListCommand(
                             KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(), null,
-                            List.of(), List.of(), null, false, -1))
+                            List.of(), null, false, -1))
                     .withMessageContaining("currentPageNumber");
         }
 
         @Test
-        @DisplayName("the command accepts a page number of zero and normalises its three optional"
+        @DisplayName("the command accepts a page number of zero and normalises its two optional"
                 + " aggregates and its cursor, so nothing downstream has to test for absence")
         void theCommandAcceptsAZeroPageNumberAndNormalisesItsOptionalAggregates() {
             final TransactionListService.TransactionListCommand command =
                     new TransactionListService.TransactionListCommand(KeyAction.ENTER, null, null,
-                            null, null, null, false, 0);
+                            null, null, false, 0);
 
             assertAll(
                     () -> assertThat(command.currentPageNumber()).isZero(),
                     () -> assertThat(command.navigationContext())
                             .isEqualTo(ScreenNavigationState.empty()),
                     () -> assertThat(command.rowSelectors()).isEmpty(),
-                    () -> assertThat(command.displayedTransactionIds()).isEmpty(),
                     () -> assertThat(command.pageCursor()).isNotNull(),
                     () -> assertThat(command.pageCursor().previousCursorKey()).isNull(),
                     () -> assertThat(command.pageCursor().nextCursorKey()).isNull(),
@@ -2281,7 +2574,7 @@ final class TransactionListServiceTest {
             stubLowEndPage(List.of(transaction(ID_01)));
 
             final TransactionListService.TransactionListCommand command =
-                    submittedEnter(ID_05, List.of("S"), List.of(ID_03));
+                    submittedEnter(ID_05, List.of("S"), ID_03);
             final TransactionListService.TransactionListResult result =
                     service.listTransactions(firstEntry());
             final TransactionListService.TransactionListRow row = result.rows().get(0);

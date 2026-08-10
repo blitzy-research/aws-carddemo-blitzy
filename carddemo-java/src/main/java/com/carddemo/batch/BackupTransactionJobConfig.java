@@ -19,7 +19,6 @@ package com.carddemo.batch;
 import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig.ConditionCodeGate;
-import com.carddemo.batch.step.GenerationPublicationLock;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
@@ -30,23 +29,28 @@ import com.carddemo.util.BatchCancellation;
 import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.TransactionRecordMapper;
-import io.awspring.cloud.s3.S3Operations;
 
-import software.amazon.awssdk.services.s3.S3Client;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.observation.ObservationRegistry;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +64,7 @@ import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -333,7 +338,7 @@ public final class BackupTransactionJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = BatchJobCatalog.BACKUP_TRANSACTION_JOB_NAME;
+    public static final String JOB_NAME = BatchJobCatalog.BACKUP_TRANSACTION_JOB;
 
     /** The stable name of the unload step, which archives the master before anything is cleared. */
     public static final String ARCHIVE_STEP_NAME = "backupTransactionArchiveStep";
@@ -405,6 +410,53 @@ public final class BackupTransactionJobConfig {
 
     private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
+    /**
+     * Logical base the archived-identifier manifest of one execution is composed under, so a manifest
+     * and the generation it describes are named from the same execution and cannot be paired wrongly.
+     *
+     * <p>An internal artefact of this job and not a dataset the estate declares: nothing outside this
+     * class reads it, it is removed as soon as the reset step has consumed it, and its shape - one
+     * identifier per line - carries no external contract.
+     */
+    private static final String ARCHIVE_MANIFEST_BASE = ARCHIVE_DATASET_BASE + ".KEYS";
+
+    /**
+     * Job-execution context key under which the archive step publishes the manifest the reset step
+     * must consume.
+     *
+     * <p>The job context rather than the step context, because the two steps are separate units of
+     * work and a step context is not visible to a later step.
+     */
+    static final String ARCHIVED_MANIFEST_CONTEXT_KEY =
+            "carddemo.backupTransaction.archivedKeyManifest";
+
+    /**
+     * Job-execution context key under which the archive step publishes how many identifiers its
+     * manifest carries, so the reset step can refuse a manifest that does not describe the archive it
+     * is paired with.
+     */
+    static final String ARCHIVED_RECORD_COUNT_CONTEXT_KEY =
+            "carddemo.backupTransaction.archivedRecordCount";
+
+    /**
+     * Identifiers the reset step names in one delete statement.
+     *
+     * <p>The same stride the archive reads at, so the removal walks the manifest in pages of the size
+     * the archive walked the master in and neither side holds the whole identifier set. It bounds a
+     * statement's parameter list and is not a throughput, latency or capacity figure: this module
+     * asserts none.
+     */
+    private static final int RESET_DELETE_BATCH_SIZE = KEYSET_PAGE_SIZE;
+
+    /**
+     * Width of one transaction identifier, in characters, as the cluster re-definition in
+     * {@code app/jcl/TRANBKP.jcl} states it and the record layout corroborates.
+     *
+     * <p>Declared here only so a manifest line whose width is not this value is refused rather than
+     * used as a key; the layout itself belongs to the mapping utility.
+     */
+    private static final int TRANSACTION_KEY_LENGTH = 16;
+
     /** The repository the framework records job and step executions in. */
     private final JobRepository jobRepository;
 
@@ -423,7 +475,17 @@ public final class BackupTransactionJobConfig {
     /** Bounded sequential-read view kept separate from the frozen online repository surface. */
     private final TransactionScanRepository transactionScanRepository;
 
-    /** Shared durable generation store, including measured retention enforcement. */
+    /**
+     * The one durable generation store, injected rather than constructed.
+     *
+     * <p>It was built here from its own collaborators, which made this job the only publisher holding a
+     * <em>second</em> instance of a registered component. That matters beyond tidiness: the store
+     * serializes upload-then-retention per base through a publication lock, and this job's archive base is
+     * published by the transaction-report job's unload step as well - so the two publishers have to be
+     * going through one store, holding one view of that base, rather than through two objects that only
+     * happen to have been given the same bucket and the same lock. Injecting it also means a change to how
+     * the store is assembled reaches every publisher at once instead of leaving this one behind.
+     */
     private final StagedGenerationStore generationStore;
 
     /** The settings bean the destination bucket and its region are read from. */
@@ -431,6 +493,20 @@ public final class BackupTransactionJobConfig {
 
     /** The registry both step timers are recorded on. */
     private final MeterRegistry meterRegistry;
+
+    /**
+     * The application observation registry both steps are observed into.
+     *
+     * <p>Injected and applied by hand, which every other job configuration in this module gets for free.
+     * The framework's observability post-processor hands the registry to <em>step beans</em>, and this is
+     * the one configuration that composes its steps privately rather than publishing them - a deliberate
+     * choice, because nine configurations sharing one context would otherwise put a couple of dozen
+     * same-typed beans in it. The consequence, until it was made explicit here, was that both steps of
+     * this job kept the no-op registry: they produced no step observation and no span, so the archive
+     * step - the one step in the estate that writes to the object store - was the only step whose work
+     * was invisible to tracing. The registry is therefore applied on each builder below.</p>
+     */
+    private final ObservationRegistry observationRegistry;
 
     /** The clock the batch timestamps are read from, injected so a test can fix it. */
     private final Clock clock;
@@ -454,16 +530,17 @@ public final class BackupTransactionJobConfig {
      *                       set exactly as the legacy member could be
      * @param transactionRepository the transaction master
      * @param transactionScanRepository bounded sequential-read view of the transaction master
-     * @param objectStore the object-store client used by the durable generation store
-     * @param versionedObjectStore the version-aware object-store client the generation store uses for
-     *                             its rollback and retention deletes, which must remove object versions
-     *                             on a versioned bucket rather than mask them behind a delete marker
-     * @param publicationLock the per-base publication lock the generation store serializes with; this
-     *                        job shares its archive base with the transaction-report job's unload step,
-     *                        so the lock is what keeps the two from interleaving their retention passes
+     * @param generationStore the one registered durable generation store, shared with every other
+     *                        publisher of a generation base. It owns the object-store clients, the
+     *                        per-base publication lock that keeps this job's archive base from
+     *                        interleaving its retention pass with the transaction-report job's unload
+     *                        step, and the two measured retention depths
      * @param awsProperties the already-registered settings bean carrying the destination bucket and
      *                      the region; this class never registers it a second time
      * @param meterRegistry the registry both step timers are recorded on
+     * @param observationRegistry the application observation registry both steps are observed into,
+     *                            applied here by hand because this configuration composes its steps
+     *                            privately and so is never reached by the framework's step post-processor
      * @param clock the clock the batch timestamp in the object name is read from
      */
     public BackupTransactionJobConfig(final JobRepository jobRepository,
@@ -474,11 +551,10 @@ public final class BackupTransactionJobConfig {
                     final JobParametersIncrementer runIncrementer,
             final TransactionRepository transactionRepository,
             final TransactionScanRepository transactionScanRepository,
-            final S3Operations objectStore,
-            final S3Client versionedObjectStore,
-            final GenerationPublicationLock publicationLock,
+            final StagedGenerationStore generationStore,
             final AwsProperties awsProperties,
             final MeterRegistry meterRegistry,
+            final ObservationRegistry observationRegistry,
             final Clock clock,
             @Value("${carddemo.batch.backup-transaction.staging-directory:${"
                     + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
@@ -492,11 +568,12 @@ public final class BackupTransactionJobConfig {
         this.transactionScanRepository = Objects.requireNonNull(
                 transactionScanRepository, "transactionScanRepository");
         this.awsProperties = Objects.requireNonNull(awsProperties, "awsProperties");
-        this.generationStore = new StagedGenerationStore(
-                Objects.requireNonNull(objectStore, "objectStore"),
-                Objects.requireNonNull(versionedObjectStore, "versionedObjectStore"),
-                this.awsProperties.s3().batchStagingBucket(),
-                Objects.requireNonNull(publicationLock, "publicationLock"));
+        // The registry is assigned before the store is used, because both step builders are observed
+        // against it. The generation store itself is the shared application bean rather than one this
+        // configuration constructs, so its collaborators are not parameters here.
+        this.observationRegistry =
+                Objects.requireNonNull(observationRegistry, "observationRegistry");
+        this.generationStore = Objects.requireNonNull(generationStore, "generationStore");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.stagingDirectory = Path.of(requireStagingDirectory(stagingDirectory))
@@ -530,6 +607,15 @@ public final class BackupTransactionJobConfig {
                 jobExecutionId);
     }
 
+    /**
+     * @param jobExecutionId the execution whose archived-identifier manifest is being named
+     * @return the local path that execution's manifest is composed at, beside its generation
+     */
+    private Path archiveManifestPath(final long jobExecutionId) {
+        return StagedGenerationStore.generationPath(this.stagingDirectory, ARCHIVE_MANIFEST_BASE,
+                jobExecutionId);
+    }
+
     // ----------------------------------------------------------------------------------------
     // The job
     // ----------------------------------------------------------------------------------------
@@ -551,11 +637,19 @@ public final class BackupTransactionJobConfig {
      * named policy precisely so that this selection is visible in one place and cannot be loosened by
      * accident.
      *
-     * <p><strong>Why the steps are not published as beans.</strong> Nine job configurations share one
-     * context, so publishing every step would put a couple of dozen same-typed beans in it and make
-     * any by-type resolution ambiguous. The steps are composed here instead, which leaves this class
-     * with exactly one bean and no ambiguity, and costs nothing: the framework locates a step through
-     * the job that owns it, so a test can still run either step of this job on its own.
+     * <p><strong>Why the steps are not published as beans, and the one thing that costs.</strong> Nine
+     * job configurations share one context, so publishing every step would put a couple of dozen
+     * same-typed beans in it and make any by-type resolution ambiguous. The steps are composed here
+     * instead, which leaves this class with exactly one bean and no ambiguity: the framework locates a
+     * step through the job that owns it, so a test can still run either step of this job on its own.
+     *
+     * <p>It costs exactly one thing, and it is paid explicitly rather than silently. The framework's
+     * observability post-processor hands the observation registry to step <em>beans</em>, so a privately
+     * composed step is never reached by it and keeps the no-op registry - which is how both steps of this
+     * job came to produce no step observation and no span at all, leaving the archive step, the one step
+     * in the estate that writes to the object store, untraced. Each builder therefore applies the
+     * injected registry itself. Nothing else about the private composition changes. See
+     * {@code docs/decision-log.md} entry DL-305.
      *
      * @return the job, named {@link #JOB_NAME}, carrying the shared boundary diagnostic and the
      *         shared parameter incrementer that every job configuration in this module attaches
@@ -594,8 +688,9 @@ public final class BackupTransactionJobConfig {
     private Step archiveTransactionMasterStep() {
         final Tasklet archive = new TransactionArchiveTasklet(this.transactionScanRepository,
                 this.generationStore, this.awsProperties, this.meterRegistry, this.clock,
-                this::archiveGenerationPath);
+                this::archiveGenerationPath, this::archiveManifestPath);
         return new StepBuilder(ARCHIVE_STEP_NAME, this.jobRepository)
+                .observationRegistry(this.observationRegistry)
                 .tasklet(timed(ARCHIVE_STEP_NAME, archive), this.transactionManager)
                 .build();
     }
@@ -611,6 +706,7 @@ public final class BackupTransactionJobConfig {
     private Step resetTransactionMasterStep() {
         final Tasklet reset = new TransactionMasterResetTasklet(this.transactionRepository);
         return new StepBuilder(RESET_STEP_NAME, this.jobRepository)
+                .observationRegistry(this.observationRegistry)
                 .tasklet(timed(RESET_STEP_NAME, reset), this.transactionManager)
                 .build();
     }
@@ -699,10 +795,17 @@ public final class BackupTransactionJobConfig {
         /** Resolves the local path this execution's archive is composed at, from its execution id. */
         private final LongFunction<Path> generationPathResolver;
 
+        /**
+         * Resolves the local path this execution's archived-identifier manifest is composed at, from the
+         * same execution id, so a manifest and its generation are always named as one pair.
+         */
+        private final LongFunction<Path> manifestPathResolver;
+
         TransactionArchiveTasklet(final TransactionScanRepository transactionScanRepository,
                 final StagedGenerationStore generationStore, final AwsProperties awsProperties,
                 final MeterRegistry meterRegistry, final Clock clock,
-                final LongFunction<Path> generationPathResolver) {
+                final LongFunction<Path> generationPathResolver,
+                final LongFunction<Path> manifestPathResolver) {
             this.transactionScanRepository = Objects.requireNonNull(
                     transactionScanRepository, "transactionScanRepository");
             this.generationStore = Objects.requireNonNull(generationStore, "generationStore");
@@ -711,6 +814,8 @@ public final class BackupTransactionJobConfig {
             this.clock = Objects.requireNonNull(clock, "clock");
             this.generationPathResolver =
                     Objects.requireNonNull(generationPathResolver, "generationPathResolver");
+            this.manifestPathResolver =
+                    Objects.requireNonNull(manifestPathResolver, "manifestPathResolver");
         }
 
         @Override
@@ -719,7 +824,8 @@ public final class BackupTransactionJobConfig {
             final long generationNumber = generationNumberOf(chunkContext);
             final TransactionArchiveProgram unload = new TransactionArchiveProgram(
                     this.transactionScanRepository, this.generationStore, generationNumber,
-                    this.generationPathResolver.apply(generationNumber), this.meterRegistry,
+                    this.generationPathResolver.apply(generationNumber),
+                    this.manifestPathResolver.apply(generationNumber), this.meterRegistry,
                     this.clock);
 
             final AbstractCobolStep.ExecutionSummary summary;
@@ -729,11 +835,35 @@ public final class BackupTransactionJobConfig {
                 throw BatchCancellation.interrupted(stopped);
             }
 
+            // Published to the JOB context, because the row set the reset step may remove is exactly
+            // this manifest and a step context is invisible to a later step. Written only after the run
+            // completed, so a failed archive leaves no manifest for the reset step to act on and the
+            // gate has nothing to permit.
+            publishArchivedRowSet(chunkContext, unload.archivedKeyManifest(),
+                    unload.archivedKeyCount());
+
             LOGGER.info("ARCHIVED {} TRANSACTION RECORD(S) ({} BYTE(S)) AS OBJECT {} IN BUCKET {}"
                     + " OF REGION {}", summary.recordsRead(), unload.archivedByteCount(),
                     unload.objectKey(), this.awsProperties.s3().batchStagingBucket(),
                     this.awsProperties.region());
             return RepeatStatus.FINISHED;
+        }
+
+        /**
+         * Records the archived row set on the job execution, so the gated step that follows deletes that
+         * set and nothing else.
+         *
+         * @param chunkContext the framework's chunk context for the running step
+         * @param manifest     the sealed manifest naming every archived identifier
+         * @param archivedKeys how many identifiers it names
+         */
+        private static void publishArchivedRowSet(final ChunkContext chunkContext, final Path manifest,
+                final long archivedKeys) {
+            Objects.requireNonNull(chunkContext, "chunkContext");
+            final ExecutionContext jobContext = chunkContext.getStepContext().getStepExecution()
+                    .getJobExecution().getExecutionContext();
+            jobContext.putString(ARCHIVED_MANIFEST_CONTEXT_KEY, manifest.toString());
+            jobContext.putLong(ARCHIVED_RECORD_COUNT_CONTEXT_KEY, archivedKeys);
         }
 
         /**
@@ -813,10 +943,28 @@ public final class BackupTransactionJobConfig {
         /** The object name this execution writes, fixed when the output is opened. */
         private String objectKey;
 
+        /** The local path the completed identifier manifest is sealed at. */
+        private final Path completedManifest;
+
+        /**
+         * The manifest being composed, one archived identifier per line, straight to its working file.
+         *
+         * <p>A stream and not a collection, for the same reason the generation is one: the identifier
+         * set is as large as the master, so capturing it must cost one buffer rather than one copy of
+         * the whole key sequence.
+         */
+        private BufferedWriter manifest;
+
+        /** The working file the composed manifest occupies until it is sealed. */
+        private Path workingManifest;
+
+        /** How many identifiers this execution has captured, counted as they are captured. */
+        private long archivedKeys;
+
         TransactionArchiveProgram(final TransactionScanRepository transactionScanRepository,
                 final StagedGenerationStore generationStore, final long generationNumber,
-                final Path completedGeneration, final MeterRegistry meterRegistry,
-                final Clock clock) {
+                final Path completedGeneration, final Path completedManifest,
+                final MeterRegistry meterRegistry, final Clock clock) {
             super(LEGACY_MEMBER_NAME, meterRegistry, clock);
             this.transactionScanRepository = Objects.requireNonNull(
                     transactionScanRepository, "transactionScanRepository");
@@ -824,6 +972,7 @@ public final class BackupTransactionJobConfig {
             this.generationNumber = generationNumber;
             this.completedGeneration =
                     Objects.requireNonNull(completedGeneration, "completedGeneration");
+            this.completedManifest = Objects.requireNonNull(completedManifest, "completedManifest");
         }
 
         /**
@@ -859,6 +1008,12 @@ public final class BackupTransactionJobConfig {
                         StagedGenerationStore.workingPath(this.completedGeneration);
                 this.archivedBytes = 0L;
                 this.generation = openWorkingGeneration(this.workingGeneration);
+                // The identifier manifest is composed beside the generation and from the same records,
+                // so what the reset step deletes is exactly what this step archived. Opened with the
+                // output because a manifest without its generation describes nothing.
+                this.workingManifest = StagedGenerationStore.workingPath(this.completedManifest);
+                this.archivedKeys = 0L;
+                this.manifest = openWorkingManifest(this.workingManifest);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -900,15 +1055,44 @@ public final class BackupTransactionJobConfig {
                     throw new IllegalStateException("archive record encoded to " + image.length
                             + " bytes, expected " + ARCHIVE_RECORD_LENGTH);
                 }
+                final String archivedKey = requireArchivableKey(record.getTranId());
                 try {
                     this.generation.write(image);
+                    // Captured from the record that was just archived, in the same guarded write, so
+                    // the manifest cannot name a record the generation does not carry and cannot omit
+                    // one it does.
+                    this.manifest.write(archivedKey);
+                    this.manifest.newLine();
                 } catch (final IOException failure) {
                     throw new UncheckedIOException("the transaction archive generation could not be"
                             + " written", failure);
                 }
                 this.archivedBytes += image.length;
+                this.archivedKeys++;
                 return FileStatus.SUCCESS.getCode();
             });
+        }
+
+        /**
+         * Refuses an identifier the manifest could not name unambiguously.
+         *
+         * <p>The manifest is line-oriented, so an identifier of another width, or one carrying a line
+         * break, would either name a different row on the way back or split into two names. The width
+         * is the cluster's own key width, so a record that fails this test is not a record the legacy
+         * cluster could have held either.
+         *
+         * @param  tranId                the identifier of the record being archived
+         * @throws IllegalStateException if it is absent, of another width, or not a single line
+         * @return that identifier
+         */
+        private static String requireArchivableKey(final String tranId) {
+            if (tranId == null || tranId.length() != TRANSACTION_KEY_LENGTH
+                    || tranId.chars().anyMatch(character -> character == '\n' || character == '\r')) {
+                throw new IllegalStateException("a record reached the archive whose identifier is not"
+                        + " exactly " + TRANSACTION_KEY_LENGTH + " characters on one line, so the"
+                        + " archived-identifier manifest could not name it");
+            }
+            return tranId;
         }
 
         /**
@@ -933,10 +1117,17 @@ public final class BackupTransactionJobConfig {
             });
             closeResource(OUTPUT_DEFINITION_NAME, () -> {
                 closeWorkingGeneration();
+                closeWorkingManifest();
                 requireWholeRecordStride(this.archivedBytes);
                 StagedGenerationStore.completeWorkingFile(this.workingGeneration,
                         this.completedGeneration);
                 this.workingGeneration = null;
+                // Sealed BEFORE the generation is published and kept afterwards: the reset step deletes
+                // the rows this manifest names, so it must survive the publication that discards the
+                // local generation, and the reset step is what removes it.
+                StagedGenerationStore.completeWorkingFile(this.workingManifest,
+                        this.completedManifest);
+                this.workingManifest = null;
                 this.objectKey = this.generationStore.publishFile(ARCHIVE_DATASET_BASE,
                         this.completedGeneration,
                         StagedGenerationStore.STANDARD_RETENTION_LIMIT).objectKey();
@@ -979,6 +1170,43 @@ public final class BackupTransactionJobConfig {
             } catch (final IOException failure) {
                 throw new UncheckedIOException("the transaction archive generation could not be"
                         + " opened for writing", failure);
+            }
+        }
+
+        /**
+         * Opens the working file the identifier manifest is composed in.
+         *
+         * @param  working              the working path
+         * @return an owner-only buffered writer over it
+         * @throws UncheckedIOException if it cannot be created
+         */
+        private static BufferedWriter openWorkingManifest(final Path working) {
+            try {
+                // Owner-only from the first byte and never through a link, exactly as the generation is:
+                // the manifest names every transaction identifier the master held.
+                return SecureStagedFiles.newWriter(working, StandardCharsets.US_ASCII);
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("the archived-identifier manifest could not be opened"
+                        + " for writing", failure);
+            }
+        }
+
+        /**
+         * Flushes and closes the manifest writer, so the file is whole before it is sealed.
+         *
+         * @throws UncheckedIOException if the writer cannot be closed
+         */
+        private void closeWorkingManifest() {
+            final BufferedWriter open = this.manifest;
+            this.manifest = null;
+            if (open == null) {
+                return;
+            }
+            try {
+                open.close();
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("the archived-identifier manifest could not be closed",
+                        failure);
             }
         }
 
@@ -1028,6 +1256,38 @@ public final class BackupTransactionJobConfig {
         protected void releaseResources() {
             this.readPosition = null;
             releaseWorkingGenerationQuietly();
+            releaseWorkingManifestQuietly();
+        }
+
+        /**
+         * Hands back the manifest writer and its file after a failure, without raising.
+         *
+         * <p>A partly captured manifest is worse than none: it names some of the archived rows and the
+         * reset step would delete exactly those, so it is removed rather than left where a later step
+         * might treat it as complete. Neither the close nor the removal may raise, because a failure is
+         * already on its way out.
+         */
+        private void releaseWorkingManifestQuietly() {
+            final BufferedWriter open = this.manifest;
+            this.manifest = null;
+            if (open != null) {
+                try {
+                    open.close();
+                } catch (final IOException failure) {
+                    LOGGER.debug("The partly captured archived-identifier manifest could not be"
+                            + " closed; failureType={}", failure.getClass().getSimpleName());
+                }
+            }
+            final Path working = this.workingManifest;
+            this.workingManifest = null;
+            if (working != null) {
+                try {
+                    Files.deleteIfExists(working);
+                } catch (final IOException failure) {
+                    LOGGER.debug("The partly captured archived-identifier manifest could not be"
+                            + " removed; failureType={}", failure.getClass().getSimpleName());
+                }
+            }
         }
 
         /**
@@ -1074,6 +1334,19 @@ public final class BackupTransactionJobConfig {
         }
 
         /**
+         * @return the sealed manifest naming every identifier this execution archived, which is the
+         *         only row set the reset step may remove
+         */
+        Path archivedKeyManifest() {
+            return this.completedManifest;
+        }
+
+        /** @return how many identifiers this execution captured into that manifest */
+        long archivedKeyCount() {
+            return this.archivedKeys;
+        }
+
+        /**
          * @return how many fixed records the composed generation holds, being its size divided by
          *         {@link #ARCHIVE_RECORD_STRIDE}
          */
@@ -1088,18 +1361,37 @@ public final class BackupTransactionJobConfig {
     // ----------------------------------------------------------------------------------------
 
     /**
-     * Clears the transaction master so the next cycle starts from an empty one.
+     * Clears the rows the archive step archived - <strong>and only those</strong> - so the next cycle
+     * starts from a master holding nothing that has been backed up.
      *
-     * <p>Expressed as one bulk removal through the repository - no assembled statement text, no
-     * native query, and nothing that creates, drops or alters a table or an index. It is idempotent:
-     * clearing a master that already holds nothing removes nothing and reports nothing wrong, which
-     * is what the legacy step's condition-code resets existed to achieve for a first run and for a
-     * re-run after a partial failure. A genuine failure is still allowed to surface, matching a
-     * legacy code the resets did not mask.
+     * <h2>&#9733; Why this deletes a captured row set rather than the whole table</h2>
      *
-     * <p>The count is read before the removal purely so the diagnostic can state what was cleared;
-     * both statements run inside the step's own unit of work, so the count cannot describe a
-     * different state from the one that was cleared.
+     * <p>The archive and the reset are two separate units of work, because the legacy job stream is two
+     * steps with a condition-code gate between them. An unconditional whole-table removal is therefore
+     * <strong>not</strong> equivalent to clearing what was archived: a transaction committed after the
+     * archive's read position passed - by an online payment turn, a posting run or an interest run - was
+     * never written to the generation, and a whole-table removal would delete it with no copy of it
+     * anywhere. The legacy step could not lose a record that way, because the region's files were closed
+     * for the backup window; nothing closes a relational table.
+     *
+     * <p>So the archive step captures the identifier of every record it wrote into a manifest sealed
+     * beside the generation, and this step removes exactly the identifiers that manifest names, in
+     * bounded pages of {@value #RESET_DELETE_BATCH_SIZE}. A row committed between the two steps is not
+     * in the manifest, is therefore not deleted, and is archived by the next cycle. Nothing here reads
+     * the table's row count, and nothing here removes a row the generation does not carry.
+     *
+     * <p><strong>What is idempotent and what is refused.</strong> Naming an identifier that is already
+     * gone removes nothing and is not an error, so a re-run after a partial failure completes - which is
+     * what the legacy step's condition-code resets existed to achieve. A <em>missing</em> manifest is a
+     * different matter and is refused: without it this step cannot know which rows were archived, and
+     * the safe answer to "which rows may I delete" is never "all of them". A genuine store failure is
+     * still allowed to surface, matching a legacy code the resets did not mask.
+     *
+     * <p>Expressed as bulk removals through the repository - no assembled statement text, no native
+     * query, and nothing that creates, drops or alters a table or an index. Every removal runs inside
+     * this step's own unit of work, so the identifiers reported are the identifiers committed.
+     *
+     * <p>Recorded as {@code DL-292} in {@code docs/decision-log.md}.
      */
     private static final class TransactionMasterResetTasklet implements Tasklet {
 
@@ -1117,19 +1409,136 @@ public final class BackupTransactionJobConfig {
                 if (chunkContext != null) {
                     BatchCancellation.checkpoint(BatchCancellation.requestedBy(chunkContext));
                 }
-                final long held = this.transactionRepository.count();
-                this.transactionRepository.deleteAllInBatch();
+                final Path manifest = archivedKeyManifestOf(chunkContext);
+                final long removed = deleteArchivedRows(manifest,
+                        BatchCancellation.requestedBy(chunkContext));
+                discardManifest(manifest);
 
-                if (held == 0L) {
-                    LOGGER.info("TRANSACTION MASTER HELD NO RECORD TO CLEAR; NOTHING TO DELETE IS"
-                            + " NOT AN ERROR");
+                if (removed == 0L) {
+                    LOGGER.info("THE ARCHIVE NAMED NO RECORD TO CLEAR; NOTHING TO DELETE IS NOT AN"
+                            + " ERROR");
                 } else {
-                    LOGGER.info("CLEARED {} RECORD(S) FROM THE TRANSACTION MASTER", held);
+                    LOGGER.info("CLEARED {} ARCHIVED RECORD(S) FROM THE TRANSACTION MASTER; ANY RECORD"
+                            + " COMMITTED AFTER THE ARCHIVE WAS TAKEN IS LEFT FOR THE NEXT CYCLE",
+                            removed);
                 }
             } catch (final CancellationException stopped) {
                 throw BatchCancellation.interrupted(stopped);
             }
             return RepeatStatus.FINISHED;
+        }
+
+        /**
+         * Reads the manifest the archive step published on the job execution.
+         *
+         * @param  chunkContext          the framework's chunk context for the running step
+         * @return the sealed manifest naming every archived identifier
+         * @throws IllegalStateException if no manifest was published, or the file it names is absent
+         */
+        private static Path archivedKeyManifestOf(final ChunkContext chunkContext) {
+            if (chunkContext == null) {
+                throw new IllegalStateException("the reset step ran without a chunk context, so the"
+                        + " archived-identifier manifest could not be located; no row set is deleted"
+                        + " without it");
+            }
+            final ExecutionContext jobContext = chunkContext.getStepContext().getStepExecution()
+                    .getJobExecution().getExecutionContext();
+            final String published = jobContext.containsKey(ARCHIVED_MANIFEST_CONTEXT_KEY)
+                    ? jobContext.getString(ARCHIVED_MANIFEST_CONTEXT_KEY)
+                    : null;
+            if (published == null || published.isBlank()) {
+                throw new IllegalStateException("step '" + ARCHIVE_STEP_NAME + "' published no"
+                        + " archived-identifier manifest, so the rows that were archived cannot be"
+                        + " identified; the master is left untouched rather than cleared wholesale");
+            }
+            final Path manifest = Path.of(published);
+            if (!Files.isRegularFile(manifest)) {
+                throw new IllegalStateException("the archived-identifier manifest step '"
+                        + ARCHIVE_STEP_NAME + "' published is no longer present, so the rows that were"
+                        + " archived cannot be identified; the master is left untouched rather than"
+                        + " cleared wholesale");
+            }
+            return manifest;
+        }
+
+        /**
+         * Removes the rows the manifest names, one bounded page of identifiers per statement.
+         *
+         * @param  manifest             the sealed manifest to walk
+         * @param  cancellation         the stop signal the step was launched with, checked once per page
+         * @return how many identifiers were named for removal
+         * @throws UncheckedIOException if the manifest cannot be read
+         */
+        private long deleteArchivedRows(final Path manifest, final BooleanSupplier cancellation) {
+            long named = 0L;
+            final List<String> page = new ArrayList<>(RESET_DELETE_BATCH_SIZE);
+            try (BufferedReader lines = Files.newBufferedReader(manifest, StandardCharsets.US_ASCII)) {
+                String line = lines.readLine();
+                while (line != null) {
+                    page.add(requireManifestKey(line));
+                    if (page.size() == RESET_DELETE_BATCH_SIZE) {
+                        BatchCancellation.checkpoint(cancellation);
+                        named += deletePage(page);
+                    }
+                    line = lines.readLine();
+                }
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("the archived-identifier manifest could not be read, so"
+                        + " the archived rows could not be cleared", failure);
+            }
+            if (!page.isEmpty()) {
+                BatchCancellation.checkpoint(cancellation);
+                named += deletePage(page);
+            }
+            return named;
+        }
+
+        /**
+         * Removes one page of named identifiers and empties the page.
+         *
+         * @param  page the identifiers to remove; emptied before returning
+         * @return how many identifiers the page named
+         */
+        private long deletePage(final List<String> page) {
+            final long named = page.size();
+            this.transactionRepository.deleteAllByIdInBatch(List.copyOf(page));
+            page.clear();
+            return named;
+        }
+
+        /**
+         * Refuses a manifest line that is not one whole transaction identifier.
+         *
+         * @param  line                  one line of the manifest
+         * @return that line as an identifier
+         * @throws IllegalStateException if it is not exactly the cluster's key width
+         */
+        private static String requireManifestKey(final String line) {
+            if (line.length() != TRANSACTION_KEY_LENGTH) {
+                throw new IllegalStateException("the archived-identifier manifest holds a line of "
+                        + line.length() + " characters where a " + TRANSACTION_KEY_LENGTH
+                        + "-character identifier was expected, so it cannot be used to select the rows"
+                        + " to clear");
+            }
+            return line;
+        }
+
+        /**
+         * Removes the manifest once the rows it names are gone.
+         *
+         * <p>A failure to remove it is reported and not raised: the rows are already cleared and the run
+         * succeeded, and a manifest left behind is a stale file rather than a wrong outcome - the next
+         * execution publishes its own under its own execution identifier.
+         *
+         * @param manifest the consumed manifest
+         */
+        private static void discardManifest(final Path manifest) {
+            try {
+                Files.deleteIfExists(manifest);
+            } catch (final IOException failure) {
+                LOGGER.warn("The consumed archived-identifier manifest could not be removed from the"
+                        + " local staging root; failureType={}", failure.getClass().getSimpleName());
+            }
         }
     }
 }

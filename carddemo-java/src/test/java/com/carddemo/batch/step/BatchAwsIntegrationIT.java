@@ -31,6 +31,7 @@ import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Template;
 import io.awspring.cloud.sns.core.SnsOperations;
 import io.awspring.cloud.sns.core.SnsTemplate;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 
 import java.nio.charset.StandardCharsets;
@@ -137,7 +138,7 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
             // the store hands it the right bases and publishes inside it.
             final StagedGenerationStore store =
                     new StagedGenerationStore(operations, s3Client(), bucket,
-                            (bases, publication) -> publication.run());
+                            (bases, publication) -> publication.run(), ObservationRegistry.create());
 
             for (long executionId = 1; executionId <= 7; executionId++) {
                 final JobExecution execution = completedJob(executionId);
@@ -223,7 +224,7 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
             final SnsOperations notifications = new SnsTemplate(snsClient(), converter);
             final JobCompletionNotificationService service =
                     new JobCompletionNotificationService(notifications, topicArn,
-                            ObservationRegistry.create());
+                            ObservationRegistry.create(), new SimpleMeterRegistry());
             final JobCompletionNotificationPublisher publisher =
                     new JobCompletionNotificationPublisher(event ->
                             service.onApplicationEvent((JobCompletionEvent) event));
@@ -235,6 +236,8 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
             // by the framework, so the isolation this needs is the isolation the class already has.
             final JobExecutionListener listener = new BatchConfig().batchJobBoundaryListener(
                     providerOf(null), providerOf(publisher),
+                    providerOf(new SimpleMeterRegistry()),
+                    providerOf(ObservationRegistry.create()),
                     this.stagingDirectory.toString());
             final JobExecution execution = completedJob(22);
             final StepExecution step = execution.createStepExecution("completedStep");
@@ -285,7 +288,20 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
     private static <T> ObjectProvider<T> providerOf(final T value) {
         final ObjectProvider<T> provider = mock();
         when(provider.getIfAvailable()).thenReturn(value);
+        // The defaulting accessor is stubbed too: the listener resolves its observation registry through
+        // it, and a provider answering only the plain accessor would hand over a null registry.
+        when(provider.getIfAvailable(BatchAwsIntegrationIT.<T>anySupplier())).thenReturn(value);
         return provider;
+    }
+
+    /**
+     * A matcher for the default supplier the listener passes to its provider.
+     *
+     * @param  <T> the provided type
+     * @return a matcher accepting any supplier of that type
+     */
+    private static <T> java.util.function.Supplier<T> anySupplier() {
+        return org.mockito.ArgumentMatchers.any();
     }
 
     private static String receiveOne(final String queueUrl) {

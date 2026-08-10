@@ -92,7 +92,7 @@
 #   THE AGREEMENT IS ON THE KEY SET, AND IT IS ASSERTED RATHER THAN COUNTED. An earlier revision
 #   claimed a leaf total here; a number in a comment cannot survive an edit to either file, and that
 #   one had already stopped being true of both. ConfigurationProfileBaselineTest compares the two key
-#   sets mechanically and permits exactly the two documented divergences below, so this paragraph can
+#   sets mechanically and permits exactly the documented divergences below, so this paragraph can
 #   no longer drift out of agreement with the files it describes.
 #
 #     DIVERGENCE 1  application-local.yml declares spring.datasource.url, .username and .password;
@@ -107,6 +107,19 @@
 #                   default of enabled; a suite run has no collector, so export is switched off HERE
 #                   at the one key that actually switches it off. See the trace-export section below
 #                   for why the sampling probability the two files both declare cannot do that job.
+#     DIVERGENCE 4  application-local.yml declares server.address and this overlay does not. Local is
+#                   the only profile a PERSON starts by hand - `spring-boot:run` or `java -jar` - on a
+#                   machine other hosts may be able to route to, while carrying a committed signing
+#                   secret, a committed operator credential, cleartext transport and ten seeded
+#                   sign-on identities; binding the embedded server's default of EVERY interface
+#                   published all of that. It therefore defaults to 127.0.0.1 there, and
+#                   docker-compose.yml overrides it to 0.0.0.0 inside the container, where the
+#                   published mapping is itself loopback-bound. A suite run creates its server
+#                   programmatically on an ephemeral port for the life of one test class, and the copy
+#                   of this overlay under src/test/resources takes precedence during that run, so a
+#                   value written here would govern nothing the suite does. Registered as a divergence
+#                   rather than mirrored, because a setting nothing reads is worse than an asymmetry
+#                   that is explained.
 #
 #     spring.datasource.driver-class-name       engine pinned; address registered by the base class
 #     spring.jpa.*                              provider behaviour; authors no schema
@@ -332,16 +345,19 @@ spring:
   # cannot reach a production migration however this file is edited.
   flyway:
     enabled: true
-    # See docs/decision-log.md DL-127.
+    # See docs/decision-log.md DL-298.
     #
-    # THE ONE DELIVERED LOCATION, restated in full rather than inherited so this document reads on its
-    # own. All four scripts are physically flat in this single directory and no child directory exists,
-    # so the location is identical in every profile and carries no part of the production separation.
-    locations: classpath:db/migration
-    # THE CEILING IS LIFTED, AND IT IS THE ONLY SETTING THAT MAKES THE SEEDS EXECUTABLE. The shared
-    # baseline pins target at "2", which stops a migration after the indexes; lifting it here is what
-    # applies V3 and V4 so the fixtures have rows to assert against. Production keeps the ceiling at 2
-    # and FlywayConfig refuses to start it at any higher value.
+    # BOTH DELIVERED LOCATIONS, restated in full rather than inherited so this document reads on its
+    # own. THE SECOND ENTRY IS THE ONLY SETTING THAT MAKES THE SEEDS EXECUTABLE: the shared baseline
+    # declares the schema location alone, which is the production posture, and adding the seed location
+    # here is what applies V3 and V4 so the fixtures have rows to assert against.
+    #
+    # NEVER REPLACE THESE TWO WITH THEIR PARENT classpath:db/migration - it is scanned recursively, so
+    # it resolves the same scripts under different recorded names, and FlywayConfig refuses it.
+    locations:
+      - classpath:db/migration/schema
+      - classpath:db/migration/seed
+    # Restated for completeness rather than as a control; no profile carries a numeric ceiling now.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -438,9 +454,13 @@ spring:
 # CROSS-FILE CONTRACTS - two paths are resolved literally by sibling files and NEITHER the paths nor
 # their reachability may be narrowed by this overlay:
 #
-#   /actuator/health      the health-check target of carddemo-java/Dockerfile. If it stops answering,
-#                         the container never reports healthy and anything waiting on it never
-#                         starts.
+#   /actuator/health      the endpoint whose GROUPS the two callers actually address, and publishing it
+#                         is what makes them reachable. carddemo-java/Dockerfile's HEALTHCHECK asks for
+#                         /actuator/health/liveness - the group, not the aggregate, because liveness
+#                         consults nothing outside the process - and a Compose dependent or a CI gate
+#                         waits on /actuator/health/readiness. Narrowing the endpoint away takes both
+#                         groups with it, at which point the container never reports healthy and
+#                         anything waiting on it never starts.
 #   /actuator/prometheus  the scrape target of config/prometheus/prometheus.yml and the surface every
 #                         panel of config/grafana/dashboards/carddemo-overview.json reads. It is also
 #                         where the performance baseline is measured: the per-endpoint and per-step
@@ -610,15 +630,22 @@ carddemo:
     # for anything else. It signs tokens for a process addressing containers it started itself, it is
     # never deployed, and it is worth nothing outside this suite. It must not be reused. The default
     # matches the twin's literal, so the effective value is the same whichever file is in force.
-    # Production declares this same key as an environment reference with NO fallback, so a missing
-    # secret aborts start-up there rather than binding a placeholder.
+    # Production declares the SAME PROPERTY under its OWN variable, CARDDEMO_JWT_SECRET, as a bare
+    # environment reference with NO fallback, so a missing secret aborts start-up there rather than
+    # binding a placeholder.
+    #
+    # THE VARIABLE READ HERE IS TEST-SCOPED, AND DELIBERATELY NOT PRODUCTION'S. This overlay used to
+    # read ${CARDDEMO_JWT_SECRET} itself, which meant any machine already exporting a deployment
+    # signing secret injected it into the suite silently - the placeholder resolved, the tail was
+    # ignored, and the tests signed with a production credential while reporting nothing. Placeholder
+    # resolution is by exact key, so a test-scoped name removes the path rather than narrowing it.
     #
     # The lifetime is short because a test never needs a long-lived token, and a short lifetime keeps
     # any expiry-handling path exercisable within a single run. The issuer is restated rather than
     # inherited so that a token minted under this profile is identifiable as such.
     jwt:
       issuer: carddemo-java
-      secret: ${CARDDEMO_JWT_SECRET:test-only-signing-secret-not-used-outside-tests-0123456789}
+      secret: ${CARDDEMO_TEST_JWT_SECRET:test-only-signing-secret-not-used-outside-tests-0123456789}
       expiration: ${CARDDEMO_JWT_EXPIRATION:PT15M}
     # THE ONE NON-PRODUCTION FIXTURE KEY. Base64 of exactly 32 bytes, as AES-256 requires; anything
     # else is rejected at start-up by the service that binds it, naming this property. FIXED rather
@@ -681,9 +708,13 @@ carddemo:
     # needs a configured credential to contrast against - an unconfigured surface refuses everyone and
     # would prove nothing about the authority rule.
     #
-    # Overridable by CARDDEMO_MANAGEMENT_TOKEN so a build agent can supply its own inert value. The
-    # setting is bound with an EMPTY default in the baseline, and empty is FAIL-CLOSED: no identity can
-    # hold the authority, so the surface admits nobody beyond the three probe paths. Production binds
-    # this to a bare environment reference with no fallback and is refused start-up without it.
+    # Overridable by CARDDEMO_TEST_MANAGEMENT_TOKEN so a build agent can supply its own inert value.
+    # The setting is bound with an EMPTY default in the baseline, and empty is FAIL-CLOSED: no identity
+    # can hold the authority, so the surface admits nobody beyond the three probe paths. Production
+    # binds CARDDEMO_MANAGEMENT_TOKEN - a DIFFERENT variable - to a bare reference with no fallback and
+    # is refused start-up without it.
+    #
+    # Test-scoped for the same reason as the signing secret above: read under production's name, an
+    # operator credential already exported for a deployment would have bound here without a word.
     management:
-      token: ${CARDDEMO_MANAGEMENT_TOKEN:test-only-management-token-not-used-outside-tests}
+      token: ${CARDDEMO_TEST_MANAGEMENT_TOKEN:test-only-management-token-not-used-outside-tests}

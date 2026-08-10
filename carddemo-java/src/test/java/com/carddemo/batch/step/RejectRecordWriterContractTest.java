@@ -105,9 +105,22 @@ class RejectRecordWriterContractTest {
      */
     private static DailyTransaction transaction(final String transactionId, final BigDecimal amount,
             final String source) {
-        return new DailyTransaction(transactionId, "01", "0005", source, "Grocery purchase", amount,
-                "000000123", "Corner Store", "Seattle", "98101     ", "4111111111111111",
-                "2022-01-01 10:00:00.000000", "2022-01-02 03:00:00.000000");
+        // Mapped from this class's own 350-byte oracle rather than constructed field by field, so the
+        // record carries the provenance a reject record is contracted on: the exact bytes it was read
+        // from. A record built in memory has no such image and the item type refuses it, which is the
+        // point - the reject dataset's leading segment is the input, not a re-encoding of it.
+        return DailyTransactionRecordMapper.fromRecord(
+                sourceImage(transactionId, amount, source));
+    }
+
+    /**
+     * Builds a record from a caller-supplied image, for a case whose bytes are the subject of the test.
+     *
+     * @param  image the exact 350-byte record image
+     * @return the record, carrying that image as its provenance
+     */
+    private static DailyTransaction transactionFrom(final String image) {
+        return DailyTransactionRecordMapper.fromRecord(image);
     }
 
     /**
@@ -463,6 +476,57 @@ class RejectRecordWriterContractTest {
         }
 
         @Test
+        @DisplayName("carries a NEGATIVE ZERO amount through as the byte the input held, never "
+                + "normalised to the positive-zero overpunch")
+        void carriesANegativeZeroThrough() {
+            // The one case a BigDecimal cannot express. The input's final amount byte is '}' - negative
+            // zero - and a prefix regenerated from the parsed entity would emit '{'. The reject dataset
+            // is contracted on the bytes that were read, so '}' must survive.
+            String negativeZeroImage = sourceImage("0000000000000006", PURCHASE_AMOUNT, POS_SOURCE)
+                    .substring(0, 132) + "0000000000}"
+                    + sourceImage("0000000000000006", PURCHASE_AMOUNT, POS_SOURCE).substring(143);
+            DailyTransaction source = transactionFrom(negativeZeroImage);
+
+            assertThat(source.getDalytranAmt()).isEqualByComparingTo("0.00");
+            assertThat(source.isDalytranAmtNegativeZero()).isTrue();
+
+            byte[] image = RejectRecordWriter.rejectRecordImageBytes(
+                    new RejectedTransaction(source, RejectReason.INVALID_CARD_NUMBER));
+            String emitted = new String(Arrays.copyOfRange(image, 0, SOURCE_WIDTH),
+                    StandardCharsets.US_ASCII);
+
+            assertThat(emitted).isEqualTo(negativeZeroImage);
+            assertThat(emitted.substring(132, 143))
+                    .as("the amount field keeps the negative-zero overpunch it arrived with")
+                    .isEqualTo("0000000000}");
+        }
+
+        @Test
+        @DisplayName("carries a NON-SPACE filler run through as the bytes the input held, because "
+                + "uninitialised FILLER has no canonical value")
+        void carriesNonSpaceFillerThrough() {
+            // The copybook declares FILLER X(20) with no VALUE clause, so a resource may hold any byte
+            // there and the estate's own fixtures disagree about it. A prefix regenerated from the entity
+            // emits the mapper's chosen space run and loses whatever the input carried.
+            String zeroFilledImage = sourceImage("0000000000000007", PURCHASE_AMOUNT, POS_SOURCE)
+                    .substring(0, 330) + "0".repeat(20);
+            DailyTransaction source = transactionFrom(zeroFilledImage);
+
+            byte[] image = RejectRecordWriter.rejectRecordImageBytes(
+                    new RejectedTransaction(source, RejectReason.OVERLIMIT_TRANSACTION));
+            String emitted = new String(Arrays.copyOfRange(image, 0, SOURCE_WIDTH),
+                    StandardCharsets.US_ASCII);
+
+            assertThat(emitted).isEqualTo(zeroFilledImage);
+            assertThat(emitted.substring(330, 350))
+                    .as("the filler run is the input's bytes, not the mapper's default spaces")
+                    .isEqualTo("0".repeat(20));
+            assertThat(DailyTransactionRecordMapper.toRecord(source).substring(330, 350))
+                    .as("a re-encoding would have replaced them, which is why the image travels")
+                    .isEqualTo(" ".repeat(20));
+        }
+
+        @Test
         @DisplayName("carries a negative amount and its trailing spaces through unchanged")
         void carriesANegativeAmountThrough() {
             DailyTransaction source = transaction("0000000000000003", RETURN_AMOUNT,
@@ -619,7 +683,6 @@ class RejectRecordWriterContractTest {
 
             assertThat(Files.readAllBytes(target))
                     .hasSize(8 * RejectRecordWriter.REJECT_RECORD_LENGTH);
-            assertThat(writer.recordsWritten()).isEqualTo(8L);
         }
 
         @Test
@@ -636,7 +699,6 @@ class RejectRecordWriterContractTest {
             writer.close();
 
             assertThat(Files.readAllBytes(target)).isEmpty();
-            assertThat(writer.recordsWritten()).isZero();
         }
 
         @Test
@@ -735,24 +797,53 @@ class RejectRecordWriterContractTest {
         }
 
         @Test
-        @DisplayName("counts only what the current execution wrote, resetting when the stream opens")
-        void countsOnlyTheCurrentExecution(@TempDir final Path directory) throws Exception {
+        @DisplayName("each execution rewrites the dataset while the meter accumulates across executions, "
+                + "so neither figure is asked to be the other")
+        void eachExecutionRewritesTheDatasetWhileTheMeterAccumulates(@TempDir final Path directory)
+                throws Exception {
+
             Path target = directory.resolve("dalyrejs-count.dat");
             ExecutionContext context = new ExecutionContext();
-            RejectRecordWriter writer = new RejectRecordWriter(new FileSystemResource(target),
-                    new SimpleMeterRegistry());
+            SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            RejectRecordWriter writer = new RejectRecordWriter(new FileSystemResource(target), registry);
 
             writer.open(context);
-            assertThat(writer.recordsWritten()).isZero();
             writer.write(Chunk.of(rejected(RejectReason.INVALID_CARD_NUMBER),
                     rejected(RejectReason.OVERLIMIT_TRANSACTION)));
-            assertThat(writer.recordsWritten()).isEqualTo(2L);
             writer.update(context);
             writer.close();
 
-            writer.open(context);
-            assertThat(writer.recordsWritten()).isZero();
+            assertThat(Files.readAllBytes(target))
+                    .hasSize(2 * RejectRecordWriter.REJECT_RECORD_LENGTH);
+            assertThat(recordsMetered(registry)).isEqualTo(2.0d);
+
+            // A second, separate execution over the same destination - a fresh execution context, so
+            // nothing is being restarted - starts the dataset again rather than appending to it, because
+            // the legacy allocation creates a new generation each run. The meter, by contrast, is
+            // monotonic and keeps the earlier execution's records. The step's own write count is what the
+            // job reads for its return-code rule; this class publishes no third figure competing with
+            // either of these two.
+            ExecutionContext secondExecution = new ExecutionContext();
+            writer.open(secondExecution);
+            writer.write(Chunk.of(rejected(RejectReason.ACCOUNT_NOT_FOUND_ON_READ)));
+            writer.update(secondExecution);
             writer.close();
+
+            assertThat(Files.readAllBytes(target))
+                    .hasSize(RejectRecordWriter.REJECT_RECORD_LENGTH);
+            assertThat(recordsMetered(registry)).isEqualTo(3.0d);
+        }
+
+        /**
+         * Reads the monotonic reject-record meter.
+         *
+         * @param  registry the registry the writer registered its meters with
+         * @return the meter's tally, or zero when it has never been incremented
+         */
+        private double recordsMetered(final SimpleMeterRegistry registry) {
+            final io.micrometer.core.instrument.Counter counter =
+                    registry.find("carddemo.batch.reject.records").counter();
+            return (counter == null) ? 0.0d : counter.count();
         }
 
         @Test
@@ -794,7 +885,6 @@ class RejectRecordWriterContractTest {
             assertThat(String.valueOf(thrown.getMessage()))
                     .doesNotContain("0100")
                     .doesNotContain("INVALID CARD NUMBER");
-            assertThat(writer.recordsWritten()).isZero();
             assertThat(registry.find("carddemo.batch.reject.write").tag("outcome", "FAILED").timer())
                     .isNotNull();
             assertThat(registry.find("carddemo.batch.reject.write").tag("outcome", "WRITTEN")
@@ -903,6 +993,39 @@ class RejectRecordWriterContractTest {
             assertThatThrownBy(() -> new RejectedTransaction(
                     transaction("0000000000000001", PURCHASE_AMOUNT, POS_SOURCE), null))
                     .isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> new RejectedTransaction(
+                    transaction("0000000000000001", PURCHASE_AMOUNT, POS_SOURCE),
+                    RejectReason.INVALID_CARD_NUMBER, null))
+                    .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("refuses a record that carries no source image, rather than regenerating one")
+        void refusesARecordWithNoSourceImage() {
+            // Built field by field, so it was never read from a resource and carries no image. The item
+            // type refuses it: a regenerated prefix normalises the uninitialised filler run and the
+            // amount's overpunched sign byte, and the reject dataset is contracted on neither being
+            // normalised.
+            DailyTransaction inMemory = new DailyTransaction("0000000000000001", "01", "0005",
+                    POS_SOURCE, "Grocery purchase", PURCHASE_AMOUNT, "000000123", "Corner Store",
+                    "Seattle", "98101     ", "4111111111111111", "2022-01-01 10:00:00.000000",
+                    "2022-01-02 03:00:00.000000");
+
+            assertThat(inMemory.getSourceRecordImage()).isNull();
+            assertThatThrownBy(() -> new RejectedTransaction(inMemory,
+                    RejectReason.INVALID_CARD_NUMBER))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("carries no source image");
+        }
+
+        @Test
+        @DisplayName("refuses a source image that is not exactly 350 encoded bytes")
+        void refusesAMisSizedSourceImage() {
+            DailyTransaction source = transaction("0000000000000001", PURCHASE_AMOUNT, POS_SOURCE);
+
+            assertThatThrownBy(() -> new RejectedTransaction(source,
+                    RejectReason.INVALID_CARD_NUMBER, "too short"))
+                    .isInstanceOf(IllegalStateException.class);
         }
 
         @Test
@@ -936,6 +1059,7 @@ class RejectRecordWriterContractTest {
 
             assertThat(item.sourceRecord()).isSameAs(source);
             assertThat(item.reason()).isEqualTo(RejectReason.TRANSACTION_AFTER_ACCOUNT_EXPIRATION);
+            assertThat(item.sourceImage()).isEqualTo(source.getSourceRecordImage());
             assertThat(item).isEqualTo(new RejectedTransaction(source,
                     RejectReason.TRANSACTION_AFTER_ACCOUNT_EXPIRATION));
             assertThat(item).hasSameHashCodeAs(new RejectedTransaction(source,

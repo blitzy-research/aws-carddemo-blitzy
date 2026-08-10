@@ -88,7 +88,6 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -497,12 +496,17 @@ final class PostTransactionJobConfigTest {
         @Test
         @DisplayName("an abend the delegate itself raises is not wrapped a second time")
         void anAbendFromTheDelegateIsNotRewrapped() {
-            @SuppressWarnings("unchecked")
-            final ItemStreamReader<DailyTransaction> delegate = mock(ItemStreamReader.class);
             final AbendException alreadyDiagnosed = new AbendException(AbendException.BATCH_ABEND_CODE,
                     TransactionPostingService.PROGRAM_NAME, "STATUS 31 OPEN INPUT DALYTRAN",
                     "ERROR OPENING DALYTRAN - FILE STATUS IS: 31");
-            doThrow(alreadyDiagnosed).when(delegate).open(any(ExecutionContext.class));
+            // A TYPED FAKE, not a raw mock. `mock(ItemStreamReader.class)` returns the raw type, so
+            // assigning it to a parameterised reference is an unchecked conversion - and the only way to
+            // keep that quiet under -Xlint:all -Werror was the @SuppressWarnings this line used to
+            // carry. Gate 2 requires zero suppressed warnings, so the suppression cannot simply be
+            // moved somewhere quieter; the conversion itself has to go. A fake that declares the type
+            // parameter has nothing to convert, and it says what it does more plainly than a stubbing
+            // call did: open throws, and nothing else is reachable.
+            final ItemStreamReader<DailyTransaction> delegate = new FailingOnOpenReader(alreadyDiagnosed);
 
             final ItemStreamReader<DailyTransaction> bound =
                     PostTransactionJobConfig.diagnosingReader(delegate, postingService);
@@ -912,5 +916,50 @@ final class PostTransactionJobConfigTest {
      * shared listener has its own suite. What matters here is only that the job accepts one.
      */
     private static final class NoOpJobBoundaryListener implements JobExecutionListener {
+    }
+
+    /**
+     * A reader that fails on {@code open} with a pre-supplied failure, and is never read from.
+     *
+     * <h2>Why a declared type rather than a mock</h2>
+     *
+     * <p>{@code mock(ItemStreamReader.class)} yields the raw type, so binding it to
+     * {@code ItemStreamReader<DailyTransaction>} is an unchecked conversion. Under {@code -Xlint:all}
+     * with {@code -Werror} that ends the build, and the only way to keep it quiet was a
+     * {@code @SuppressWarnings("unchecked")} - which Gate 2 forbids, since it requires zero
+     * <em>suppressed</em> warnings as well as zero warnings. Moving the suppression somewhere less
+     * conspicuous would satisfy neither; declaring the type parameter removes the conversion outright.
+     *
+     * <p>{@code read} is unreachable in the case that uses this: the diagnosing wrapper under test calls
+     * {@code open} first and that call throws. It is implemented to fail loudly rather than to return
+     * {@code null}, so a future edit that reaches it is told so instead of quietly reading an empty
+     * dataset. The remaining {@link org.springframework.batch.item.ItemStream} methods are defaulted by
+     * the interface and are deliberately not overridden - the fake declares exactly the one behaviour
+     * the test depends on.
+     */
+    private static final class FailingOnOpenReader implements ItemStreamReader<DailyTransaction> {
+
+        /** The failure {@code open} raises, already carrying the program's own diagnosis. */
+        private final RuntimeException failure;
+
+        /**
+         * Creates the reader.
+         *
+         * @param failure the failure {@code open} must raise, unchanged
+         */
+        FailingOnOpenReader(final RuntimeException failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public void open(final ExecutionContext executionContext) {
+            throw this.failure;
+        }
+
+        @Override
+        public DailyTransaction read() {
+            throw new AssertionError("the reader was opened successfully and then read, which the case "
+                    + "using this fake cannot reach: open() always throws");
+        }
     }
 }

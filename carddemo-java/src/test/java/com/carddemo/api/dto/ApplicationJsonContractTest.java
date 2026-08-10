@@ -27,10 +27,11 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.support.SensitiveValues;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.core.StreamWriteFeature;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -136,7 +137,11 @@ class ApplicationJsonContractTest {
     private static final ApplicationContextRunner DEPLOYED_CONTEXT = new ApplicationContextRunner()
             .withInitializer(new ConfigDataApplicationContextInitializer())
             .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class))
-            .withUserConfiguration(WebMvcConfig.class);
+            .withUserConfiguration(WebMvcConfig.class)
+            // WebMvcConfig's body-limit registration now counts a refusal, so this slice needs a
+            // registry. Supplied here because the runner registers no metrics auto-configuration,
+            // whereas the running application always has one.
+            .withBean(MeterRegistry.class, SimpleMeterRegistry::new);
 
     /** Summary line used wherever a response needs one. */
     private static final String SUMMARY = "Account update rejected - correct the marked fields";

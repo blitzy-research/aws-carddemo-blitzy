@@ -168,7 +168,9 @@ public class BillPaymentController {
      * Tag naming whether the operator had confirmed when the turn ended.
      *
      * <p>Bounded by construction: the value is the name of a two-constant enumeration the service
-     * publishes, so it cannot become a high-cardinality label however the request varies.
+     * publishes, or the {@link #CONFIRMATION_UNRESOLVED} stand-in on a turn that raised before reaching
+     * one, so the tag admits three values and cannot become a high-cardinality label however the
+     * request varies.
      */
     private static final String TAG_CONFIRMATION = "confirmation";
 
@@ -179,7 +181,9 @@ public class BillPaymentController {
      * affirmative answer only selects the settlement path; every step on that path can still fail, so
      * a confirmed turn that settled and a confirmed turn that was refused are operationally different
      * events and a single tag would merge them. The value is a rendered boolean, so the two tags
-     * together admit at most four series.
+     * together admit at most four combinations, and with the outcome tag the timer carries five
+     * reachable series: the four a completed turn can produce, and the single seeded triple a raising
+     * turn records.
      */
     private static final String TAG_PAYMENT_ACCEPTED = "paymentAccepted";
 
@@ -190,6 +194,13 @@ public class BillPaymentController {
 
     private static final String OUTCOME_FAILED = "failed";
 
+    /**
+     * Confirmation-tag value for a turn that raised before the service returned a confirmation state.
+     *
+     * <p>A named stand-in rather than either enumeration constant, because a turn that reached no
+     * outcome confirmed nothing and denied nothing, and recording it as one or the other would put a
+     * fabricated state into the series that operators read.
+     */
     private static final String CONFIRMATION_UNRESOLVED = "UNRESOLVED";
 
     /**
@@ -333,21 +344,25 @@ public class BillPaymentController {
     }
 
     /**
-     * Records the elapsed time of one turn, tagged by the two facts that distinguish its outcomes.
+     * Records the elapsed time of one turn, tagged by the three facts that distinguish its outcomes.
      *
      * <p>Tagged rather than counted as one aggregate because the operationally interesting question is
      * the shape of the mix: a rise in unconfirmed turns and a rise in confirmed-but-refused turns mean
-     * different things and call for different responses. Both tag values come straight off the returned
-     * outcome - one is the name of a two-constant enumeration and the other a rendered boolean - so the
-     * label set is bounded at four series and no request value can widen it.
+     * different things and call for different responses. Every tag value is either read off the returned
+     * outcome - the name of a two-constant enumeration and a rendered boolean - or is one of the two
+     * named seed values a raising turn leaves in place, so the label set is bounded at five reachable
+     * series and no request value can widen it.
      *
-     * <p>The sample is stopped only on the path that produced an outcome. A turn that raised a conflict
-     * instead of returning one records nothing here, which is deliberate: every tag this timer carries
-     * is read from an outcome, so there is no honest value to record for a turn that reached none, and
-     * the request itself is already timed by the server's own request metrics.
+     * <p>Every turn is recorded, including one that raised. The call sits in the caller's {@code
+     * finally} arm, so a conflict propagating out of the boundary still stops the sample, and the three
+     * values seeded before the attempt - the failed outcome, the unresolved confirmation and a negative
+     * settlement - are what it carries. That is the point of seeding them: the alternative is a timer
+     * that silently omits precisely the turns an operator most wants to see.
      *
      * @param sample the timing sample started at the head of the turn
-     * @param result the outcome the turn reached
+     * @param outcome whether the boundary call completed or raised
+     * @param confirmation the confirmation state the turn ended in, or the unresolved stand-in
+     * @param paymentAccepted the rendered boolean saying whether the balance was actually settled
      */
     private void recordTurn(final Timer.Sample sample, final String outcome,
             final String confirmation, final String paymentAccepted) {

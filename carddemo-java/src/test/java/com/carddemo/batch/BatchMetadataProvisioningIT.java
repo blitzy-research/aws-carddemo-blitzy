@@ -26,8 +26,6 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
-import javax.sql.DataSource;
-
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -320,7 +318,7 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
      *
      * @return a usable data source
      */
-    private static DataSource containerDataSource() {
+    private static javax.sql.DataSource containerDataSource() {
         return new SimpleDriverDataSource(
                 new org.postgresql.Driver(), jdbcUrl(), databaseUser(), databasePassword());
     }
@@ -336,7 +334,7 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
      * @throws Exception when the repository cannot be initialised
      */
     private static JobRepository jobRepository() throws Exception {
-        DataSource dataSource = containerDataSource();
+        javax.sql.DataSource dataSource = containerDataSource();
         JobRepositoryFactoryBean factory = new JobRepositoryFactoryBean();
         factory.setDataSource(dataSource);
         factory.setTransactionManager(new DataSourceTransactionManager(dataSource));

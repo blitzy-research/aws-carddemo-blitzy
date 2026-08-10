@@ -792,23 +792,23 @@ class DailyTransactionRecordMapperRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("re-emits a negative zero amount as a positive zero, losing the sign exactly "
-                + "as the codec documents")
-        void reEmitsANegativeZeroAmountAsAPositiveZero() {
+        @DisplayName("re-emits a negative zero amount as a negative zero, the sign travelling beside "
+                + "the amount rather than inside it")
+        void reEmitsANegativeZeroAmountAsANegativeZero() {
             final String negativeZeroImage =
                     "0".repeat(DailyTransactionRecordMapper.DALYTRAN_AMT_LENGTH - 1) + "}";
             final String image =
                     recordImage("0000000000000001", POINT_OF_SALE_SOURCE, negativeZeroImage);
 
-            final String reEmitted = DailyTransactionRecordMapper.toRecord(
-                    DailyTransactionRecordMapper.fromRecord(image));
+            final DailyTransaction decoded = DailyTransactionRecordMapper.fromRecord(image);
+            final String reEmitted = DailyTransactionRecordMapper.toRecord(decoded);
 
+            assertThat(decoded.isDalytranAmtNegativeZero()).isTrue();
             assertThat(reEmitted.substring(DailyTransactionRecordMapper.DALYTRAN_AMT_OFFSET,
                     DailyTransactionRecordMapper.DALYTRAN_AMT_OFFSET
                             + DailyTransactionRecordMapper.DALYTRAN_AMT_LENGTH))
-                    .isEqualTo("0".repeat(DailyTransactionRecordMapper.DALYTRAN_AMT_LENGTH - 1)
-                            + "{");
-            assertThat(reEmitted).isNotEqualTo(image);
+                    .isEqualTo(negativeZeroImage);
+            assertThat(reEmitted).isEqualTo(image);
         }
 
         @ParameterizedTest(name = "low-order digit {0}")

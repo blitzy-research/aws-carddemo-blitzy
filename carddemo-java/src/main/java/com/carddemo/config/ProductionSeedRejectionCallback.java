@@ -40,10 +40,9 @@ import org.slf4j.LoggerFactory;
  * <h2>The gap this closes, which no configuration value can</h2>
  *
  * <p>{@link FlywayConfig} holds configuration controls that between them make a seed script
- * unapplicable by a production deployment: the resolved location list must be exactly
- * {@value FlywayConfig#MIGRATION_LOCATION} - the one flat location all four scripts share - and the
- * resolved version ceiling must be exactly
- * {@value FlywayConfig#SCHEMA_ONLY_TARGET}, which is below every seed version. All of them act on
+ * unresolvable by a production deployment: the resolved location list must be exactly
+ * {@value FlywayConfig#SCHEMA_LOCATION}, so the sibling {@value FlywayConfig#SEED_LOCATION} is never
+ * scanned, and their shared parent is refused because scanning is recursive. All of them act on
  * <em>this process's</em> configuration, and all of them are therefore blind to the one path that
  * matters most in practice: a database that was seeded <strong>before this process existed</strong>.
  *
@@ -97,7 +96,7 @@ import org.slf4j.LoggerFactory;
  * assumed.</strong> An already-seeded database opened under the production scope is <em>not</em>
  * rejected by {@code validate-on-migrate}: Flyway 11 ignores FUTURE migrations by default, so applied
  * versions 3 and 4 that the schema location cannot resolve are not a validation failure, and the
- * migration reports success over them - with the version ceiling set and without it alike. That is
+ * migration reports success over them. That is
  * asserted in {@code ProductionSeedRejectionCallbackIT}, and it is why this class is indispensable
  * rather than belt-and-braces: it is the only thing in the module, or in the migration tool, that sees
  * this state at all.
@@ -161,11 +160,13 @@ final class ProductionSeedRejectionCallback implements Callback {
      * three hundred unposted daily transactions.
      */
     static final List<SeededVolume> SEEDED_VOLUMES = List.of(
-            new SeededVolume("customer", 50L),
-            new SeededVolume("disclosure_group", 51L),
-            new SeededVolume("transaction_category", 18L),
-            new SeededVolume("transaction_type", 7L),
-            new SeededVolume("daily_transaction", 300L));
+            new SeededVolume("customer", 50L, "SELECT count(*) FROM customer"),
+            new SeededVolume("disclosure_group", 51L, "SELECT count(*) FROM disclosure_group"),
+            new SeededVolume("transaction_category", 18L,
+                    "SELECT count(*) FROM transaction_category"),
+            new SeededVolume("transaction_type", 7L, "SELECT count(*) FROM transaction_type"),
+            new SeededVolume("daily_transaction", 300L,
+                    "SELECT count(*) FROM daily_transaction"));
 
     /** Reads the versions of every successfully applied migration. A complete literal statement. */
     private static final String SELECT_APPLIED_VERSIONS =
@@ -176,14 +177,6 @@ final class ProductionSeedRejectionCallback implements Callback {
             "SELECT count(*) FROM user_security WHERE sec_usr_id IN ("
                     + "'ADMIN001', 'ADMIN002', 'ADMIN003', 'ADMIN004', 'ADMIN005', "
                     + "'USER0001', 'USER0002', 'USER0003', 'USER0004', 'USER0005')";
-
-    /** Counts the rows of each seeded table. One complete literal statement per table. */
-    private static final List<String> COUNT_SEEDED_VOLUMES = List.of(
-            "SELECT count(*) FROM customer",
-            "SELECT count(*) FROM disclosure_group",
-            "SELECT count(*) FROM transaction_category",
-            "SELECT count(*) FROM transaction_type",
-            "SELECT count(*) FROM daily_transaction");
 
     /** Asks whether one table exists in the connection's own schema. Bound, never concatenated. */
     private static final String TABLE_EXISTS =
@@ -390,12 +383,11 @@ final class ProductionSeedRejectionCallback implements Callback {
      * @throws FlywayException when every seeded volume matches
      */
     private void rejectSeededReferenceVolumes(final Connection connection) throws SQLException {
-        for (int index = 0; index < SEEDED_VOLUMES.size(); index++) {
-            final SeededVolume expected = SEEDED_VOLUMES.get(index);
+        for (final SeededVolume expected : SEEDED_VOLUMES) {
             if (!tableExists(connection, expected.table())) {
                 return;
             }
-            if (scalar(connection, COUNT_SEEDED_VOLUMES.get(index)) != expected.rowCount()) {
+            if (scalar(connection, expected.countStatement()) != expected.rowCount()) {
                 return;
             }
         }
@@ -472,11 +464,26 @@ final class ProductionSeedRejectionCallback implements Callback {
     }
 
     /**
-     * One table and the exact number of rows the reference seed puts in it.
+     * One table, the exact number of rows the reference seed puts in it, and the complete literal
+     * statement that counts them.
      *
-     * @param table    the unqualified table name
-     * @param rowCount the seeded row count
+     * <p><strong>All three travel together deliberately.</strong> The three were three parallel lists
+     * addressed by a shared index, so a table's name, its expected count and the statement that read it
+     * were bound to one another by position alone - and inserting, removing or reordering one entry of one
+     * list silently paired a table with another table's count. The failure mode is the worst kind for this
+     * class: the check would still run, still pass, and still be reported as a seed-detection control while
+     * comparing the wrong two numbers. As one record per table the pairing is structural and a reordering
+     * cannot separate them.
+     *
+     * <p>The statement is a complete literal held here rather than composed from {@link #table()}. Nothing
+     * about the seed detection needs dynamic SQL, and the audited property is that this class concatenates
+     * no identifier into a statement - which a statement built from a field, however trusted the field,
+     * would give up.
+     *
+     * @param table          the unqualified table name
+     * @param rowCount       the seeded row count
+     * @param countStatement the complete literal statement that counts this table's rows
      */
-    record SeededVolume(String table, long rowCount) {
+    record SeededVolume(String table, long rowCount, String countStatement) {
     }
 }

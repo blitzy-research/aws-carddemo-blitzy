@@ -159,8 +159,8 @@ class TransactionListRequestTest {
      * Builds an inbound paging request over the two fixture boundary keys and the retained values named.
      *
      * @param direction the way the browse should walk
-     * @param retainedPageNumber the retained page number the continuation carried, possibly null
-     * @param nextPageIndicated the retained further-pages flag the continuation carried
+     * @param retainedPageNumber the retained page number the paging state carried, possibly null
+     * @param nextPageIndicated the retained further-pages flag the paging state carried
      * @return the request
      */
     private static PageMetadata.PageCursorRequest cursor(PageMetadata.PagingDirection direction,
@@ -190,7 +190,7 @@ class TransactionListRequestTest {
     private static TransactionListRequest populated() {
         return new TransactionListRequest(FILTER_AT_FULL_WIDTH, INDICATOR_AT_FULL_WIDTH,
                 rowsMarkedAt(6), KeyAction.PFK08, navigation(),
-                cursor(PageMetadata.PagingDirection.FORWARD));
+                cursor(PageMetadata.PagingDirection.FORWARD, INDICATOR_AT_FULL_WIDTH, false));
     }
 
     @Nested
@@ -544,7 +544,7 @@ class TransactionListRequestTest {
             String oneTooWide = "9".repeat(TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH + 1);
 
             assertThat(soleViolationPathOf(indicatedBy(oneTooWide)))
-                    .isEqualTo("continuation.displayedPageNumber");
+                    .isEqualTo("displayedPageNumber");
         }
 
         private TransactionListRequest indicatedBy(String indicator) {
@@ -679,7 +679,7 @@ class TransactionListRequestTest {
                     widest + "x", null, PageMetadata.PagingDirection.FORWARD, null, false))))
                     .as("without the cascade this width would be declared and never evaluated, and an"
                             + " arbitrarily wide echoed key would reach a query unmeasured")
-                    .isEqualTo("continuation.previousCursorKey");
+                    .isEqualTo("pageMetadata.previousCursorKey");
         }
 
         @Test
@@ -941,7 +941,7 @@ class TransactionListRequestTest {
                     .isEqualTo("transactionIdFilter");
             assertThat(soleViolationPathOf(new TransactionListRequest(null,
                     "9".repeat(indicatorWidth + 1), null, KeyAction.ENTER, null, null)))
-                    .isEqualTo("continuation.displayedPageNumber");
+                    .isEqualTo("displayedPageNumber");
             assertThat(soleViolationPathOf(withSelectors(
                     List.of(MARKED.repeat(selectorWidth + 1)))))
                     .as("the bound applies to each entry of the sequence, not to the sequence")
@@ -1061,12 +1061,13 @@ class TransactionListRequestTest {
 
             JsonNode tree = mapper.readTree(mapper.writeValueAsString(populated()));
 
-            assertThat(tree.size()).isEqualTo(5);
+            assertThat(tree.size()).isEqualTo(6);
             assertThat(tree.has("transactionIdFilter")).isTrue();
+            assertThat(tree.has("displayedPageNumber")).isTrue();
             assertThat(tree.has("rowSelectors")).isTrue();
             assertThat(tree.has("keyAction")).isTrue();
             assertThat(tree.has("navigationContext")).isTrue();
-            assertThat(tree.has("continuation")).isTrue();
+            assertThat(tree.has("pageMetadata")).isTrue();
         }
 
         @Test
@@ -1133,8 +1134,8 @@ class TransactionListRequestTest {
             assertThat(rendered)
                     .as("withheld whole, so this type's safety is not a property of another type's"
                             + " rendering staying safe")
-                    .contains("continuation=" + WITHHELD)
-                    .doesNotContain("ScreenContinuation[");
+                    .contains("pageMetadata=" + WITHHELD)
+                    .doesNotContain("PageCursorRequest[");
         }
 
         @Test
@@ -1146,7 +1147,7 @@ class TransactionListRequestTest {
             assertThat(rendered)
                     .as("which page, which row was marked and which direction was asked for is"
                             + " exactly what a diagnostic on this browse needs")
-                    .contains("continuation=" + WITHHELD)
+                    .contains("pageMetadata=" + WITHHELD)
                     .contains("keyAction=PFK08")
                     .contains(MARKED);
             assertThat(rendered)

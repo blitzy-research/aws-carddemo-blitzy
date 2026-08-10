@@ -990,12 +990,22 @@ public final class NavigationService {
             // reach a log record, and a value such as "A\r\nFORGED" would end the record early and
             // present the remainder as a second, invented entry. The bounded culprit still travels on
             // the abend, where it is structured data on an exception rather than text in a log record.
+            //
+            // Routed through the shared online abend diagnostic rather than logged here and raised
+            // separately. This site's own record was correct but was a third shape on a surface that should
+            // have one: it named its fields differently from every other abend record, under a different
+            // category, so a reader who searched the abend vocabulary would not find the abend. The rule
+            // being applied travels as the operation, so nothing this record used to say is lost.
+            //
+            // The described-culprit form is used because the culprit here is the one abend culprit in the
+            // estate that a caller chooses. The description travels into the record; the bounded value
+            // travels on the exception. See docs/decision-log.md entry DL-312.
             final String culprit = boundToLegacyProgramWidth(nominatedProgram);
-            LOG.error("Nominated program names no reachable destination, abending: "
-                    + "rule={} nominatedProgram={}", rule, describeNomination(nominatedProgram));
-            throw new AbendException(AbendException.ONLINE_ABEND_CODE, culprit,
+            throw AbendService.onlineAbendWithDescribedCulprit(culprit,
+                    describeNomination(nominatedProgram),
                     UNRESOLVABLE_PROGRAM_REASON,
-                    "NAVIGATION TRANSFER FAILED, RULE " + rule);
+                    "NAVIGATION TRANSFER FAILED, RULE " + rule,
+                    "XCTL RULE " + rule);
         }
         final Route route = nominated.get();
         // Reaching this line means the nomination matched an entry of the fixed destination table, so

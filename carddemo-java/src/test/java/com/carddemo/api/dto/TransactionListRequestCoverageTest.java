@@ -129,8 +129,8 @@ class TransactionListRequestCoverageTest {
 
     /** The five components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
-            "transactionIdFilter", "rowSelectors", "keyAction", "navigationContext",
-            "continuation");
+            "transactionIdFilter", "displayedPageNumber", "rowSelectors", "keyAction",
+            "navigationContext", "pageMetadata");
 
     /** Declared width of the transaction-identifier filter, restated from the symbolic map. */
     private static final int EXPECTED_FILTER_WIDTH = 16;
@@ -246,8 +246,7 @@ class TransactionListRequestCoverageTest {
                             + "withholding marker is an implementation detail of the rendering")
                     .containsExactlyInAnyOrder("TRANSACTION_ID_FILTER_LENGTH",
                             "DISPLAYED_PAGE_NUMBER_LENGTH", "ROW_SELECTOR_LENGTH", "ROW_COUNT",
-                            "ROW_SELECTOR_COUNT", "DISPLAYED_TRANSACTION_ID_LENGTH",
-                            "DISPLAYED_TRANSACTION_ID_COUNT", "REDACTION_PLACEHOLDER");
+                            "ROW_SELECTOR_COUNT", "REDACTION_PLACEHOLDER");
             assertThat(TransactionListRequest.ROW_COUNT)
                     .as("the loop runs from one until the index passes ten")
                     .isEqualTo(EXPECTED_ROW_COUNT);
@@ -273,11 +272,12 @@ class TransactionListRequestCoverageTest {
         void theRemainingComponentsAreTyped() {
             RecordComponent[] components = TransactionListRequest.class.getRecordComponents();
 
-            assertThat(components[1].getType()).isEqualTo(List.class);
-            assertThat(components[2].getType()).isEqualTo(KeyAction.class);
-            assertThat(components[3].getType()).isEqualTo(NavigationContext.class);
-            assertThat(components[4].getType())
-                    .isEqualTo(TransactionListRequest.ScreenContinuation.class);
+            assertThat(components[1].getType()).isEqualTo(String.class);
+            assertThat(components[2].getType()).isEqualTo(List.class);
+            assertThat(components[3].getType()).isEqualTo(KeyAction.class);
+            assertThat(components[4].getType()).isEqualTo(NavigationContext.class);
+            assertThat(components[5].getType())
+                    .isEqualTo(PageMetadata.PageCursorRequest.class);
         }
 
         @Test
@@ -442,28 +442,28 @@ class TransactionListRequestCoverageTest {
          * @param displayedPageNumber the indicator as echoed back, possibly {@code null}
          * @return the continuation
          */
-        private static TransactionListRequest.ScreenContinuation echoing(
+        private static PageMetadata.PageCursorRequest echoing(
                 final String displayedPageNumber) {
-            return new TransactionListRequest.ScreenContinuation(
-                    null, null, null, displayedPageNumber, false, List.of());
+            return new PageMetadata.PageCursorRequest(
+                    null, null, null, displayedPageNumber, false);
         }
 
         @Test
         @DisplayName("a well-formed indicator reads as the number it spells, with the map's padding "
                 + "ignored on either side")
         void aWellFormedIndicatorReadsAsItsNumber() {
-            assertThat(echoing("00000003").currentPageNumber()).isEqualTo(3);
-            assertThat(echoing("3       ").currentPageNumber()).isEqualTo(3);
-            assertThat(echoing("      42").currentPageNumber()).isEqualTo(42);
-            assertThat(echoing("  7     ").currentPageNumber()).isEqualTo(7);
+            assertThat(echoing("00000003").retainedPageNumber()).isEqualTo(3);
+            assertThat(echoing("3       ").retainedPageNumber()).isEqualTo(3);
+            assertThat(echoing("      42").retainedPageNumber()).isEqualTo(42);
+            assertThat(echoing("  7     ").retainedPageNumber()).isEqualTo(7);
         }
 
         @Test
         @DisplayName("an absent, empty or all-space indicator reads as no page rather than throwing")
         void anAbsentIndicatorReadsAsNoPage() {
-            assertThat(echoing(null).currentPageNumber()).isZero();
-            assertThat(echoing("").currentPageNumber()).isZero();
-            assertThat(echoing("        ").currentPageNumber()).isZero();
+            assertThat(echoing(null).retainedPageNumber()).isZero();
+            assertThat(echoing("").retainedPageNumber()).isZero();
+            assertThat(echoing("        ").retainedPageNumber()).isZero();
         }
 
         /**
@@ -477,19 +477,19 @@ class TransactionListRequestCoverageTest {
         @ValueSource(strings = {"1 2", " 1 2 ", "1  2", "12 34"})
         @DisplayName("an indicator with an embedded space reads as no page rather than faulting")
         void anIndicatorWithAnEmbeddedSpaceReadsAsNoPage(String echoed) {
-            assertThatCode(() -> echoing(echoed).currentPageNumber()).doesNotThrowAnyException();
+            assertThatCode(() -> echoing(echoed).retainedPageNumber()).doesNotThrowAnyException();
 
-            assertThat(echoing(echoed).currentPageNumber()).isZero();
+            assertThat(echoing(echoed).retainedPageNumber()).isZero();
         }
 
         @Test
         @DisplayName("an indicator carrying a non-digit reads as no page rather than faulting")
         void anIndicatorCarryingANonDigitReadsAsNoPage() {
-            assertThat(echoing("PAGE0001").currentPageNumber()).isZero();
-            assertThat(echoing("-1").currentPageNumber()).isZero();
-            assertThat(echoing("+3").currentPageNumber()).isZero();
-            assertThat(echoing("1.5").currentPageNumber()).isZero();
-            assertThat(echoing("\u0000").currentPageNumber()).isZero();
+            assertThat(echoing("PAGE0001").retainedPageNumber()).isZero();
+            assertThat(echoing("-1").retainedPageNumber()).isZero();
+            assertThat(echoing("+3").retainedPageNumber()).isZero();
+            assertThat(echoing("1.5").retainedPageNumber()).isZero();
+            assertThat(echoing("\u0000").retainedPageNumber()).isZero();
         }
 
         /**
@@ -498,9 +498,9 @@ class TransactionListRequestCoverageTest {
         @Test
         @DisplayName("an indicator longer than the map's field reads as no page")
         void anOverWideIndicatorReadsAsNoPage() {
-            assertThat(echoing("9".repeat(EXPECTED_DISPLAYED_PAGE_NUMBER_WIDTH + 1)).currentPageNumber())
+            assertThat(echoing("9".repeat(EXPECTED_DISPLAYED_PAGE_NUMBER_WIDTH + 1)).retainedPageNumber())
                     .isZero();
-            assertThat(echoing("9".repeat(40)).currentPageNumber()).isZero();
+            assertThat(echoing("9".repeat(40)).retainedPageNumber()).isZero();
         }
 
         /**
@@ -515,11 +515,11 @@ class TransactionListRequestCoverageTest {
                 + "reported as a violation rather than silently reset")
         void theDeclaredPatternRefusesAnEmbeddedSpace() {
             TransactionListRequest request = new TransactionListRequest(
-                    null, null, null, NavigationContext.empty(), echoing("1 2"));
+                    null, null, null, null, NavigationContext.empty(), echoing("1 2"));
 
             assertThat(validator.validate(request)).singleElement()
                     .satisfies(violation -> assertThat(violation.getPropertyPath())
-                            .hasToString("continuation.displayedPageNumber"));
+                            .hasToString("pageMetadata.displayedPageNumber"));
         }
 
         @Test
@@ -528,7 +528,7 @@ class TransactionListRequestCoverageTest {
             for (String admitted : List.of("00000001", "1       ", "       1", "  7     ", "",
                     "        ")) {
                 TransactionListRequest request = new TransactionListRequest(
-                        null, null, null, NavigationContext.empty(), echoing(admitted));
+                        null, null, null, null, NavigationContext.empty(), echoing(admitted));
 
                 assertThat(validator.validate(request))
                         .as("the map produces \"%s\", so validation has to admit it", admitted)
@@ -546,15 +546,13 @@ class TransactionListRequestCoverageTest {
                 + "violation")
         void aRequestAtEveryDeclaredWidthReportsNoViolation() {
             TransactionListRequest request = new TransactionListRequest(
-                    FILTER, tenRowsWithOneMark(0, "S"), KeyAction.PFK08,
+                    FILTER, "00000001", tenRowsWithOneMark(0, "S"), KeyAction.PFK08,
                     NavigationContext.empty(),
-                    new TransactionListRequest.ScreenContinuation(
+                    new PageMetadata.PageCursorRequest(
                             "1".repeat(EXPECTED_FILTER_WIDTH),
                             "2".repeat(EXPECTED_FILTER_WIDTH),
                             PageMetadata.PagingDirection.FORWARD,
-                            "00000001", true,
-                            Collections.nCopies(EXPECTED_ROW_COUNT,
-                                    "3".repeat(EXPECTED_FILTER_WIDTH))));
+                            "00000001", true));
 
             assertThat(validator.validate(request)).isEmpty();
         }
@@ -562,23 +560,25 @@ class TransactionListRequestCoverageTest {
         @ParameterizedTest(name = "{0} rejects a value one character over {1}")
         @CsvSource({
             "transactionIdFilter,16",
-            "continuation.displayedPageNumber,8",
-            "continuation.previousCursorKey,16",
-            "continuation.nextCursorKey,16",
+            "displayedPageNumber,8",
+            "pageMetadata.displayedPageNumber,8",
+            "pageMetadata.previousCursorKey,16",
+            "pageMetadata.nextCursorKey,16",
         })
         @DisplayName("each bounded text component reports a value one character over its width")
         void eachBoundedTextComponentReportsAnOverLongValue(String component, int width) {
             String tooLong = "9".repeat(width + 1);
-            TransactionListRequest.ScreenContinuation continuation =
-                    new TransactionListRequest.ScreenContinuation(
-                            "continuation.previousCursorKey".equals(component) ? tooLong : null,
-                            "continuation.nextCursorKey".equals(component) ? tooLong : null,
+            PageMetadata.PageCursorRequest carriedPaging =
+                    new PageMetadata.PageCursorRequest(
+                            "pageMetadata.previousCursorKey".equals(component) ? tooLong : null,
+                            "pageMetadata.nextCursorKey".equals(component) ? tooLong : null,
                             null,
-                            "continuation.displayedPageNumber".equals(component) ? tooLong : null,
-                            false, List.of());
+                            "pageMetadata.displayedPageNumber".equals(component) ? tooLong : null,
+                            false);
             TransactionListRequest request = new TransactionListRequest(
                     "transactionIdFilter".equals(component) ? tooLong : null,
-                    null, null, null, continuation);
+                    "displayedPageNumber".equals(component) ? tooLong : null,
+                    null, null, null, carriedPaging);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = validator.validate(request);
 
@@ -663,23 +663,24 @@ class TransactionListRequestCoverageTest {
     class WireShape {
 
         @Test
-        @DisplayName("a fully populated request renders one complete continuation in the body")
+        @DisplayName("a fully populated request renders all six components in the body")
         void aFullyPopulatedRequestRendersAllSixMembers() throws JsonProcessingException {
             TransactionListRequest request = new TransactionListRequest(
-                    FILTER, tenRowsWithOneMark(2, "S"), KeyAction.PFK07,
+                    FILTER, "00000002", tenRowsWithOneMark(2, "S"), KeyAction.PFK07,
                     JsonContractSupport.populatedNavigation(),
-                    new TransactionListRequest.ScreenContinuation(
+                    new PageMetadata.PageCursorRequest(
                             "prev", "next", PageMetadata.PagingDirection.BACKWARD,
-                            "00000002", true, List.of("0000000000000001")));
+                            "00000002", true));
 
             JsonNode payload = payloadOf(request);
 
             assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size());
             assertThat(payload.get("transactionIdFilter").asText()).isEqualTo(FILTER);
             assertThat(payload.get("keyAction").asText()).isEqualTo("PFK07");
-            assertThat(payload.get("continuation").get("displayedPageNumber").asText())
+            assertThat(payload.get("displayedPageNumber").asText()).isEqualTo("00000002");
+            assertThat(payload.get("pageMetadata").get("displayedPageNumber").asText())
                     .isEqualTo("00000002");
-            assertThat(payload.get("continuation").get("direction").asText())
+            assertThat(payload.get("pageMetadata").get("direction").asText())
                     .as("the backward direction is the one whose rows are read bottom-up and "
                             + "re-ordered by the service, so it has to survive the round trip")
                     .isEqualTo("BACKWARD");
@@ -711,42 +712,50 @@ class TransactionListRequestCoverageTest {
             assertThat(payload.size())
                     .as("the other five components are absent and are therefore omitted")
                     .isEqualTo(1);
+            assertThat(payload.has("pageMetadata")).isFalse();
         }
 
         /**
-         * The round trip preserves everything except the read-only page number.
+         * The round trip preserves everything except the displayed page label.
          *
-         * <p>One component is bound in one direction only. The page number is written outbound - a
-         * response has to be able to tell a client which page it is looking at - and ignored inbound,
-         * because the server computes it and a submitted value could only be a client asserting a page
-         * it was not given. A round trip therefore cannot return an equal instance, and asserting that
-         * it does would require reopening the inbound direction.</p>
+         * <p>One component is bound in one direction only. The label is written outbound - a response
+         * has to be able to tell a client which page it is looking at - and ignored inbound, because it
+         * mirrors the protected map item the program writes and never reads back. A round trip therefore
+         * cannot return an equal instance, and asserting that it does would require reopening the
+         * inbound direction.</p>
          *
          * <p>What is asserted instead is that the loss is precisely that one component and that
          * everything else survives, selector order and paging direction included. That is stronger than
          * equality would have been, because it names what may change and would fail if a second
-         * component silently acquired a directional binding.</p>
+         * component silently acquired a directional binding. The <em>retained</em> figure inside the
+         * paging state does survive, and it is the one a turn takes its page decisions from.</p>
          */
         @Test
-        @DisplayName("a fully populated request round trips with its entire continuation intact")
-        void aFullyPopulatedRequestRoundTripsWithoutItsReadOnlyPageNumber()
+        @DisplayName("a fully populated request round trips without its publish-only page label")
+        void aFullyPopulatedRequestRoundTripsWithoutItsPublishOnlyPageLabel()
                 throws JsonProcessingException {
             TransactionListRequest request = new TransactionListRequest(
-                    FILTER, List.of("S", " ", "", "  ", "u", "", " ", "U", "", " "),
+                    FILTER, "00000007", List.of("S", " ", "", "  ", "u", "", " ", "U", "", " "),
                     KeyAction.PFK08, JsonContractSupport.populatedNavigation(),
-                    new TransactionListRequest.ScreenContinuation(
+                    new PageMetadata.PageCursorRequest(
                             "p", "n", PageMetadata.PagingDirection.FORWARD,
-                            "00000007", true,
-                            List.of("0000000000000001", "0000000000000002")));
+                            "00000007", true));
 
             ObjectMapper mapper = JsonContractSupport.declaredSettingsMapper();
             TransactionListRequest returned = mapper.readValue(
                     mapper.writeValueAsString(request), TransactionListRequest.class);
 
-            assertThat(returned).isEqualTo(request);
-            assertThat(returned.continuation().displayedPageNumber()).isEqualTo("00000007");
-            assertThat(returned.continuation().displayedTransactionIds())
-                    .containsExactly("0000000000000001", "0000000000000002");
+            assertThat(returned.displayedPageNumber())
+                    .as("bound outbound only, so a submitted label cannot substitute a page the server "
+                            + "did not compute")
+                    .isNull();
+            assertThat(returned.transactionIdFilter()).isEqualTo(FILTER);
+            assertThat(returned.keyAction()).isEqualTo(KeyAction.PFK08);
+            assertThat(returned.navigationContext())
+                    .isEqualTo(JsonContractSupport.populatedNavigation());
+            assertThat(returned.pageMetadata().displayedPageNumber()).isEqualTo("00000007");
+            assertThat(returned.pageMetadata().direction())
+                    .isEqualTo(PageMetadata.PagingDirection.FORWARD);
             assertThat(returned.rowSelectors())
                     .containsExactly("S", " ", "", "  ", "u", "", " ", "U", "", " ");
         }
@@ -813,7 +822,7 @@ class TransactionListRequestCoverageTest {
     class DiagnosticRendering {
 
         @Test
-        @DisplayName("the rendering names all five members and replaces those that identify a "
+        @DisplayName("the rendering names all six members and replaces those that identify a "
                 + "card holder's transaction with a fixed marker")
         void theRenderingWithholdsTheBrowseKeyAndTheCursor() {
             TransactionListRequest request = new TransactionListRequest(
@@ -826,7 +835,8 @@ class TransactionListRequestCoverageTest {
                     .startsWith("TransactionListRequest[")
                     .contains("transactionIdFilter=***REDACTED***")
                     .contains("keyAction=PFK07")
-                    .contains("continuation=***REDACTED***")
+                    .contains("displayedPageNumber=00000004")
+                    .contains("pageMetadata=***REDACTED***")
                     .doesNotContain(FILTER);
         }
 

@@ -104,9 +104,15 @@ evidence of anything: the same file name means different things depending on whi
 ```bash
 cd carddemo-java
 ./mvnw -B clean verify                      # the full gate: unit, then integration, then the merge
-open target/site/jacoco-merged/index.html   # gate evidence - unit and integration combined
-open target/site/jacoco/index.html          # the unit tier alone
-open target/site/jacoco-it/index.html       # the integration tier alone
+
+# then open these in a browser. Paths, not a command, because the command differs by platform:
+#   target/site/jacoco-merged/index.html    gate evidence - unit and integration combined
+#   target/site/jacoco/index.html           the unit tier alone
+#   target/site/jacoco-it/index.html        the integration tier alone
+#
+# On Linux:  xdg-open target/site/jacoco-merged/index.html
+# On macOS:  open     target/site/jacoco-merged/index.html
+# Headless:  serve the directory, or copy it out - the report is a self-contained static site
 ```
 
 Two properties of the merged report are what make it load-bearing rather than informational. Line coverage
@@ -122,10 +128,10 @@ run that names one leaves the other's counters absent rather than zero.
 ```bash
 cd carddemo-java
 ./mvnw -B -Pscoped-tests test -Dtest=AccountViewServiceTest
-open target/scoped-site/jacoco/index.html        # the unit tier of that scoped run
+# then open target/scoped-site/jacoco/index.html     - the unit tier of that scoped run
 
 ./mvnw -B -Pscoped-tests verify -Dit.test=CombineTransactionsJobConfigIT
-open target/scoped-site/jacoco-it/index.html     # the integration tier of that scoped run
+# then open target/scoped-site/jacoco-it/index.html  - the integration tier of that scoped run
 ```
 
 Both write beneath `target/scoped-site/`, never over the gate evidence.
@@ -1237,8 +1243,16 @@ properties therefore hold, each a way the page could otherwise go silently wrong
   supplementary suite named in a member lead line exist under the module's test tree.
 - **Every covering test can reach the method it is named against.** Rows whose method the delivered
   driver never routes to are the ones a row count cannot vouch for, so they are marked `¶` and carry a
-  stronger obligation: the named test must declare the method by name. All six such rows are
-  `COACTUPC`'s, and all six are asserted individually.
+  stronger obligation: the named test must declare the method by name. There are **sixteen** such rows,
+  spread across **four** members — `COACTUPC` 6, `COCRDLIC` 4, `COCRDSLC` 4 and `COACTVWC` 2 — and every
+  one of the sixteen is asserted individually. An earlier reading of this list recorded six rows and
+  attributed all of them to `COACTUPC`, which was the largest member's subtotal mistaken for the whole
+  census; the marker legend above has carried sixteen throughout. Count them yourself:
+
+  ```bash
+  grep -E '^\| *app/(cbl|cpy)/' docs/traceability-matrix.md | grep -c '¶'      # 16
+  grep -E '^\| *app/(cbl|cpy)/' docs/traceability-matrix.md | grep '¶' | cut -d'|' -f2 | sort | uniq -c
+  ```
 - **Per-member subtotals match the census.** Member by member, including `COACTUPC` 85, `COCRDUPC` 45,
   `COCRDLIC` 39, `COACTVWC` 35, `COCRDSLC` 34, `CSUTLDTC` 2, `CSUTLDPY` 14 and `CSSTRPFY` 2.
 - **The estate contains no `SECTION`s.** Every one of the 544 units is a paragraph, so no row is a

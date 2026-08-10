@@ -31,10 +31,12 @@ import com.carddemo.service.DailyTransactionReadService;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionReadResult;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionVerification;
 import com.carddemo.util.BatchCancellation;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StagedResourceNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -195,9 +197,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  * its own error text and the raw two-character file status. That ordering is the contract across the whole
  * batch tier, because on a mainframe the diagnostic reached the operator whether or not anything survived
  * the abend. Both failure paths reachable from this class therefore emit first and raise second: the
- * translated service does so through the estate's shared abend path, and the staged-dataset path in
- * {@link #stagedDailyTransactionInput()} logs the operation, the resource and the raw status, then the
- * abend announcement, and only then raises. The code is always
+ * translated service does so through the estate's shared abend path, and the staged-dataset path -
+ * {@link #openStagedDataset(FlatFileItemReader)} and {@link #readStagedRecord(FlatFileItemReader)}, both
+ * reporting through {@link #abendOnStagedDatasetFailure(String, Exception)} - logs the operation, the
+ * resource and the raw status, then the abend announcement, and only then raises. The code is always
  * {@link AbendException#BATCH_ABEND_CODE}, taken from the exception's own constant and never restated as a
  * literal, and nothing logs after a raise.
  *
@@ -256,7 +259,7 @@ public final class DailyTransactionReadJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = BatchJobCatalog.DAILY_TRANSACTION_READ_JOB_NAME;
+    public static final String JOB_NAME = BatchJobCatalog.DAILY_TRANSACTION_READ_JOB;
 
     /**
      * The stable step name, published for the same reason as {@link #JOB_NAME} and original for the same
@@ -609,7 +612,7 @@ public final class DailyTransactionReadJobConfig {
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
     public Optional<FlatFileItemReader<DailyTransaction>> dalytranReader() {
-        return stagedResource(this.dalytranLocation).map(this.readerFactory::dailyTransactionReader);
+        return stagedResource(this.dalytranLocation, DALYTRAN_RESOURCE_PROPERTY).map(this.readerFactory::dailyTransactionReader);
     }
 
     /**
@@ -633,7 +636,7 @@ public final class DailyTransactionReadJobConfig {
     public Optional<FlatFileItemReader<Customer>> custfileReader(
             final UnaryOperator<String> regulatedFieldSealer) {
         Objects.requireNonNull(regulatedFieldSealer, "regulatedFieldSealer must not be null");
-        return stagedResource(this.custfileLocation)
+        return stagedResource(this.custfileLocation, CUSTFILE_RESOURCE_PROPERTY)
                 .map(resource -> this.readerFactory.customerReader(resource, regulatedFieldSealer));
     }
 
@@ -648,7 +651,7 @@ public final class DailyTransactionReadJobConfig {
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
     public Optional<FlatFileItemReader<CardCrossReference>> xreffileReader() {
-        return stagedResource(this.xreffileLocation).map(this.readerFactory::cardCrossReferenceReader);
+        return stagedResource(this.xreffileLocation, XREFFILE_RESOURCE_PROPERTY).map(this.readerFactory::cardCrossReferenceReader);
     }
 
     /**
@@ -660,7 +663,7 @@ public final class DailyTransactionReadJobConfig {
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
     public Optional<FlatFileItemReader<Card>> cardfileReader() {
-        return stagedResource(this.cardfileLocation).map(this.readerFactory::cardReader);
+        return stagedResource(this.cardfileLocation, CARDFILE_RESOURCE_PROPERTY).map(this.readerFactory::cardReader);
     }
 
     /**
@@ -674,7 +677,7 @@ public final class DailyTransactionReadJobConfig {
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
     public Optional<FlatFileItemReader<Account>> acctfileReader() {
-        return stagedResource(this.acctfileLocation).map(this.readerFactory::accountReader);
+        return stagedResource(this.acctfileLocation, ACCTFILE_RESOURCE_PROPERTY).map(this.readerFactory::accountReader);
     }
 
     /**
@@ -687,7 +690,7 @@ public final class DailyTransactionReadJobConfig {
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
     public Optional<FlatFileItemReader<Transaction>> tranfileReader() {
-        return stagedResource(this.tranfileLocation).map(this.readerFactory::transactionReader);
+        return stagedResource(this.tranfileLocation, TRANFILE_RESOURCE_PROPERTY).map(this.readerFactory::transactionReader);
     }
 
     /**
@@ -936,10 +939,29 @@ public final class DailyTransactionReadJobConfig {
      * <p>No path is composed from a caller's value: the local rung accepts only an already-validated
      * simple name and resolves it beneath the one configured root.
      *
+     * <p><strong>The property key travels with the location.</strong> All six of this job's logical
+     * locations resolve through this one method, and a malformed simple name is refused by naming the
+     * property it came from - so the key has to be the caller's own. It used to be the daily-transaction
+     * key for every one of them, which meant a malformed customer, cross-reference, card, account or
+     * transaction location was reported against a property the operator had not set, sending them to the
+     * wrong line of their configuration.
+     * <p><strong>The local rung tests trust, not existence.</strong> It used to ask only whether
+     * something was there, which accepts a symbolic link and any entry type, and the resource that
+     * followed would then open whatever the link pointed at - so a local actor who can write the staging
+     * root could have this job read a file of their choosing, and every subsequent step would treat its
+     * contents as the day's transactions. The predicate applied instead is the one every other staged
+     * rung in this package already uses, and it is the same rule stated once rather than a second
+     * spelling of it: a real regular file this process owns, in a root nothing else can write to, reached
+     * without following a link. An entry that is present but fails the rule is refused rather than
+     * repaired, and resolution falls through to the configured location exactly as it does when nothing
+     * is staged locally at all - so the not-found behaviour is unchanged and only the trusted case is
+     * accepted. See {@code docs/decision-log.md} entry DL-309.
+     *
      * @param location the configured location, possibly blank
+     * @param propertyKey the configuration property this location was read from, named in any refusal
      * @return the resource the location names, or empty when the location is blank
      */
-    private Optional<Resource> stagedResource(final String location) {
+    private Optional<Resource> stagedResource(final String location, final String propertyKey) {
         if (location.isBlank()) {
             return Optional.empty();
         }
@@ -948,11 +970,23 @@ public final class DailyTransactionReadJobConfig {
             return Optional.of(this.stagingArea.stagedInput(normalized));
         }
         if (isSimpleLocation(normalized)) {
-            final String logicalName = StagedResourceNames.requireSimpleName(normalized,
-                    DALYTRAN_RESOURCE_PROPERTY);
+            final String logicalName =
+                    StagedResourceNames.requireSimpleName(normalized, propertyKey);
             final Path localCandidate = this.stagingDirectory.resolve(logicalName).normalize();
-            if (Files.exists(localCandidate)) {
+            if (SecureStagedFiles.isTrustedStagedArtifact(this.stagingDirectory, localCandidate)) {
                 return Optional.of(new FileSystemResource(localCandidate));
+            }
+            // Reported only when something is actually there, and reported without following a link so
+            // the report itself cannot be redirected. Silence here would be the worse outcome: the job
+            // would resolve the configured location instead and an operator would have no way to learn
+            // that a staged-looking entry had been declined, which is precisely the signal that someone
+            // put it there.
+            if (Files.exists(localCandidate, LinkOption.NOFOLLOW_LINKS)) {
+                LOG.warn("{} {}: property {} names {} beneath the local staging root, but that entry is"
+                                + " not a regular file this process owns in an owner-only root, so it is"
+                                + " not accepted as {}",
+                        PROGRAM_NAME, DD_DALYTRAN, DALYTRAN_RESOURCE_PROPERTY, logicalName,
+                        DD_DALYTRAN);
             }
         }
         return Optional.of(this.resourceLoader.getResource(normalized));

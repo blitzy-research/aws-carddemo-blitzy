@@ -21,8 +21,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.Map;
 
-import javax.sql.DataSource;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.Job;
@@ -31,8 +29,8 @@ import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
-import com.carddemo.batch.BatchLaunchCoordinator.LaunchRejectedException;
-import com.carddemo.batch.BatchLaunchCoordinator.RejectionReason;
+import com.carddemo.service.BatchLaunchGateway.LaunchRejectedException;
+import com.carddemo.service.BatchLaunchGateway.RejectionReason;
 import com.carddemo.support.AbstractPostgresIT;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,7 +49,7 @@ final class BatchLaunchCoordinatorIT extends AbstractPostgresIT {
     @Test
     @DisplayName("a lock held by another database session refuses the launch before metadata changes")
     void aCompetingDatabaseSessionOwnsTheLaunchGuard() throws Exception {
-        final DataSource dataSource = new DriverManagerDataSource(
+        final javax.sql.DataSource dataSource = new DriverManagerDataSource(
                 jdbcUrl(), databaseUser(), databasePassword());
         final BatchLaunchCoordinator coordinator = new BatchLaunchCoordinator(
                 mock(JobRepository.class),
@@ -71,7 +69,7 @@ final class BatchLaunchCoordinatorIT extends AbstractPostgresIT {
 
             assertThatThrownBy(() -> coordinator.start(job, Map.of()))
                     .isInstanceOfSatisfying(LaunchRejectedException.class,
-                            rejected -> assertThat(rejected.reason())
+                            rejected -> assertThat(rejected.rejectionReason())
                                     .isEqualTo(RejectionReason.ACTIVE_EXECUTION));
             owner.rollback();
         }

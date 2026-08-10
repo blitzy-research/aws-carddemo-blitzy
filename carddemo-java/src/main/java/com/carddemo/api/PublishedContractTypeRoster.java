@@ -62,9 +62,17 @@ import org.springframework.stereotype.Component;
  * <p><strong>Why the roster is explicit rather than discovered.</strong> A schema reaches the document only
  * if some scanned controller operation happens to reference the type, so an operation-driven document would
  * publish only the subset any signature happens to mention and would silently omit the rest - including
- * every echoed carrier and every state a client has to be able to read. Naming all twenty-eight families
- * here makes the published contract complete and makes its completeness assertable, which is what lets a
- * test fail when a family is added and forgotten.
+ * every echoed carrier and every state a client has to be able to read. Naming every family here makes the
+ * published contract complete and makes its completeness assertable, which is what lets a test fail when a
+ * family is added and forgotten.
+ *
+ * <p>The number of families is deliberately not spelled out in this description. It was, once, and the
+ * numeral outlived the list: families were added below and the sentence above them was not revised, and
+ * nothing failed, because prose is not compiled. The membership is asserted instead -
+ * {@code OpenApiConfigTest} builds an independent list from the contract package's own files, requires the
+ * roster to contain all of it, and requires the roster to hold exactly that many entries plus the one
+ * nested shape named below - so a family added and forgotten fails a test rather than contradicting a
+ * sentence.
  *
  * <p><strong>The nested shapes are deliberately absent from this list, and are still published.</strong>
  * Each entry is resolved transitively by the caller, so a family's nested rows, states and cursor shapes
@@ -89,9 +97,10 @@ public final class PublishedContractTypeRoster implements ContractTypeRoster {
     /**
      * Every published family, in the order a reader of the document would look for them: alphabetical.
      *
-     * <p>Twenty-nine entries for twenty-eight families plus the one nested cursor shape that no family
-     * references by property, which is why that shape is named explicitly while every other nested row,
-     * state and cursor is derived transitively.
+     * <p>One entry per family, plus exactly one more: {@code PageMetadata.PageCursorRequest}, the nested
+     * cursor shape that no family references by property. That is why this shape is named explicitly while
+     * every other nested row, state and cursor is derived transitively from the component that references
+     * it. The count itself is this list's own size and is stated nowhere else.
      */
     private static final List<Class<?>> PUBLISHED_CONTRACT_TYPES = List.of(
             AccountUpdateRequest.class,

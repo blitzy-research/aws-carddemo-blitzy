@@ -23,6 +23,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -104,13 +106,13 @@ class WebMvcConfigSecurityTest {
         @Test
         @DisplayName("zero, malformed and excessively large body limits are refused")
         void unsafeBodyLimitsAreRefused() {
-            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("0B"))
+            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("0B", new SimpleMeterRegistry()))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("between 1 byte");
-            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("17MB"))
+            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("17MB", new SimpleMeterRegistry()))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("between 1 byte");
-            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("not-a-size"))
+            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("not-a-size", new SimpleMeterRegistry()))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("valid data-size");
         }
@@ -199,6 +201,7 @@ class WebMvcConfigSecurityTest {
                     .withPropertyValues(
                             WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
                             WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB")
+                    .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                     .run(context -> assertThat(context)
                             .hasNotFailed()
                             .hasSingleBean(WebMvcConfig.class)

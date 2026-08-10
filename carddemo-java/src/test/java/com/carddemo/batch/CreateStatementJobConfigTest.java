@@ -32,6 +32,7 @@ import com.carddemo.batch.CreateStatementJobConfig.OrderAndReprojectProgram;
 import com.carddemo.batch.CreateStatementJobConfig.StatementOutput;
 import com.carddemo.batch.CreateStatementJobConfig.TransactionWorkResource;
 import com.carddemo.batch.step.StatementProcessor;
+import com.carddemo.config.BatchConfig.ConditionCodeGate;
 import com.carddemo.domain.Transaction;
 import com.carddemo.exception.AbendException;
 import com.carddemo.repository.TransactionScanRepository;
@@ -39,11 +40,16 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
 import com.carddemo.service.StatementLineSummary;
+import com.carddemo.service.StatementOutputSink;
 import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StatementWorkRecordMapper;
 import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.support.OrderedTransactionScan;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -55,10 +61,12 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.stubbing.Answer;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParametersIncrementer;
@@ -67,6 +75,7 @@ import org.springframework.batch.core.job.flow.FlowJob;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.data.domain.Sort;
+import org.slf4j.LoggerFactory;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -279,17 +288,72 @@ class CreateStatementJobConfigTest {
                 transaction.getTranOrigTs(), transaction.getTranProcTs());
     }
 
+    /** The two plain records a completed scripted run writes, at the declared plain width. */
+    private static final List<String> COMPLETED_RUN_STATEMENT_RECORDS = List.of(
+            pad("STATEMENT LINE ONE", CreateStatementJobConfig.STATEMENT_RECORD_LENGTH),
+            pad("STATEMENT LINE TWO", CreateStatementJobConfig.STATEMENT_RECORD_LENGTH));
+
+    /** The two markup records a completed scripted run writes, at the declared markup width. */
+    private static final List<String> COMPLETED_RUN_HTML_RECORDS = List.of(
+            pad("<p>HTML LINE ONE</p>", CreateStatementJobConfig.HTML_RECORD_LENGTH),
+            pad("<p>HTML LINE TWO</p>", CreateStatementJobConfig.HTML_RECORD_LENGTH));
+
+    /**
+     * The dispatch trail a completed run reports: the five phase selectors in execution order, then the
+     * catch-all clause that ends the run.
+     *
+     * @return the trail
+     */
+    private static List<String> completeDispatchTrail() {
+        final List<String> dispatched = new ArrayList<>(StatementProcessor.EXPECTED_DISPATCH_SEQUENCE);
+        // The terminal entry is the catch-all clause, which is by definition not a phase selector.
+        dispatched.add("TERMINATED");
+        return dispatched;
+    }
+
+    /**
+     * Scripts a generation that emits its output to the sink the stage supplies and then reports it as
+     * tallies, which is what a stubbed generation looks like now that the service streams.
+     *
+     * @param  statementRecords the plain records to emit
+     * @param  htmlRecords      the markup records to emit
+     * @param  summaries        the per-line summaries to emit
+     * @param  cards            distinct cards tabulated
+     * @param  transactions     transactions tabulated
+     * @param  statements       statements written
+     * @return the scripted generation
+     */
+    private static Answer<StatementRun> emitting(final List<String> statementRecords,
+            final List<String> htmlRecords, final List<StatementLineSummary> summaries,
+            final int cards, final int transactions, final int statements) {
+        final List<String> dispatched = completeDispatchTrail();
+        return invocation -> {
+            final StatementOutputSink destination = invocation.getArgument(3);
+            for (final String phase : dispatched) {
+                destination.dispatchedPhase(phase);
+            }
+            for (final String record : statementRecords) {
+                destination.statementRecord(record);
+            }
+            for (final String record : htmlRecords) {
+                destination.htmlRecord(record);
+            }
+            for (final StatementLineSummary summary : summaries) {
+                destination.transactionSummary(summary);
+            }
+            return new StatementRun(statementRecords.size(), htmlRecords.size(), summaries.size(),
+                    dispatched.size(), cards, transactions, statements);
+        };
+    }
+
     /**
      * A statement run that satisfies every proof the statement stage applies to one, so that a
      * generation lifecycle can be exercised without a database.
      *
-     * @return a run of two records per stream at their two declared widths
+     * @return a scripted run of two records per stream at their two declared widths
      */
-    private static StatementRun completedRun() {
-        final List<String> dispatched = new ArrayList<>(StatementProcessor.EXPECTED_DISPATCH_SEQUENCE);
-        // The terminal entry is the catch-all clause, which is by definition not a phase selector.
-        dispatched.add("TERMINATED");
-        return new StatementRun(
+    private static Answer<StatementRun> completedRun() {
+        return emitting(
                 List.of(pad("STATEMENT LINE ONE", CreateStatementJobConfig.STATEMENT_RECORD_LENGTH),
                         pad("STATEMENT LINE TWO", CreateStatementJobConfig.STATEMENT_RECORD_LENGTH)),
                 List.of(pad("<p>HTML LINE ONE</p>", CreateStatementJobConfig.HTML_RECORD_LENGTH),
@@ -298,7 +362,7 @@ class CreateStatementJobConfigTest {
                         statementSummary("TRAN000000000001", "4111111111111111"),
                         statementSummary("TRAN000000000002", "4111111111111111"),
                         statementSummary("TRAN000000000003", "5555555555554444")),
-                dispatched, 2, 3, 2);
+                2, 3, 2);
     }
 
     @Nested
@@ -318,10 +382,35 @@ class CreateStatementJobConfigTest {
         }
 
         @Test
-        @DisplayName("the gate outcomes are the framework's own failure status and a catch-all")
-        void gateOutcomesAreTheFrameworkStatusAndACatchAll() {
-            assertThat(CreateStatementJobConfig.GATE_FAILURE_OUTCOME).isEqualTo("FAILED");
-            assertThat(CreateStatementJobConfig.GATE_ONWARD_OUTCOME).isEqualTo("*");
+        @DisplayName("the gate outcomes are the shared NUMERIC decider's own verdicts, not framework "
+                + "status names and not a catch-all wildcard")
+        void gateOutcomesAreTheNumericDecidersVerdicts() {
+            // COND=(0,NE) is "every earlier step returned zero". A wildcard alternative admitted any
+            // nonzero code that was not spelled FAILED, which the legacy gate would have refused.
+            assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE)
+                    .isSameAs(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO);
+            assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE.highestToleratedReturnCode())
+                    .isZero();
+            assertThat(CreateStatementJobConfig.GATE_FAILURE_OUTCOME)
+                    .isEqualTo(ConditionCodeGate.REFUSED);
+            assertThat(CreateStatementJobConfig.GATE_ONWARD_OUTCOME)
+                    .isEqualTo(ConditionCodeGate.PERMITTED);
+            assertThat(CreateStatementJobConfig.GATE_ONWARD_OUTCOME)
+                    .as("a wildcard would readmit every unnamed nonzero code")
+                    .isNotEqualTo("*");
+        }
+
+        @Test
+        @DisplayName("the gate this job wires is the same decider the estate's fourth gate wires, so "
+                + "all four condition-code gates are one rule")
+        void theGateIsSharedWithTheBackupJob() {
+            assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE)
+                    .isSameAs(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO);
+            assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE.permits(0)).isTrue();
+            assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE.permits(4))
+                    .as("a declared warning code is nonzero, so the gate refuses it")
+                    .isFalse();
+            assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE.permits(12)).isFalse();
         }
 
         @Test
@@ -807,7 +896,7 @@ class CreateStatementJobConfigTest {
         void bothStreamsReachTheirResourcesAtTheirDeclaredWidths(@TempDir final Path staging)
                 throws IOException {
 
-            when(generationService.generate(any(), any(), any())).thenReturn(completedRun());
+            when(generationService.generate(any(), any(), any(), any())).thenAnswer(completedRun());
 
             final CreateStatementJobConfig config = config(staging);
             final TransactionWorkResource resource =
@@ -826,12 +915,15 @@ class CreateStatementJobConfigTest {
             assertThat(program.statementRecordsWritten()).isEqualTo(2L);
             assertThat(program.htmlRecordsWritten()).isEqualTo(2L);
             assertThat(program.statementRun()).isNotNull();
-            assertThat(program.statementRun().transactionSummaries())
+            assertThat(program.statementRun().transactionSummariesEmitted())
                     .as("the batch stage consumes the service-owned statement carrier directly; no "
-                            + "transport DTO or cross-layer adapter participates in this path")
-                    .hasSize(3)
-                    .extracting(StatementLineSummary::transactionId)
-                    .containsExactly("TRAN000000000001", "TRAN000000000002", "TRAN000000000003");
+                            + "transport DTO or cross-layer adapter participates in this path, and the "
+                            + "carriers are counted rather than retained because the legacy program "
+                            + "writes no summary to any dataset")
+                    .isEqualTo(3);
+            assertThat(program.transactionSummariesObserved()).isEqualTo(3L);
+            assertThat(program.dispatcherEntriesObserved())
+                    .isEqualTo((long) StatementProcessor.EXPECTED_DISPATCH_ENTRY_COUNT);
 
             final List<String> statements = fixedWidthRecordsOf(config.statementOutputResource(),
                     CreateStatementJobConfig.STATEMENT_RECORD_LENGTH);
@@ -846,7 +938,7 @@ class CreateStatementJobConfigTest {
 
             final org.mockito.ArgumentCaptor<StatementTransactionSource> source =
                     org.mockito.ArgumentCaptor.forClass(StatementTransactionSource.class);
-            verify(generationService).generate(source.capture(), any(), any());
+            verify(generationService).generate(source.capture(), any(), any(), any());
             assertThat(source.getValue().readAt(0)).contains(projected);
             assertThat(source.getValue().readAt(1)).isEmpty();
             assertThat(resource.recordCount())
@@ -857,11 +949,8 @@ class CreateStatementJobConfigTest {
         @Test
         @DisplayName("an empty run still allocates both outputs and writes no record to either")
         void anEmptyRunIsNotAFailure(@TempDir final Path staging) throws IOException {
-            final List<String> dispatched =
-                    new ArrayList<>(StatementProcessor.EXPECTED_DISPATCH_SEQUENCE);
-            dispatched.add("TERMINATED");
-            when(generationService.generate(any(), any(), any())).thenReturn(new StatementRun(List.of(),
-                    List.of(), List.of(), dispatched, 0, 0, 0));
+            when(generationService.generate(any(), any(), any(), any())).thenAnswer(
+                    emitting(List.of(), List.of(), List.of(), 0, 0, 0));
 
             final CreateStatementJobConfig config = config(staging);
             final GenerateStatementsProgram program = config.newGenerateStatementsProgram(
@@ -965,13 +1054,71 @@ class CreateStatementJobConfigTest {
         }
 
         @Test
-        @DisplayName("releasing a handle after a failure tolerates absence and a failing close")
-        void releasingAHandleToleratesAbsenceAndFailure() {
+        @DisplayName("releasing a handle CLOSES it, so the release is a release and not a no-op that "
+                + "happens not to raise")
+        void releasingAHandleClosesIt() {
+            final CountingCloseable handle = new CountingCloseable(null);
+
+            CreateStatementJobConfig.releaseQuietly(handle, StatementProcessor.OUTPUT_DD_STMTFILE);
+
+            assertThat(handle.closures())
+                    .as("the handle must be closed exactly once. Asserting only that the call does not "
+                            + "raise would be satisfied by a body that did nothing at all, which is what "
+                            + "the previous form of this test permitted: the descriptor would have been "
+                            + "left open on every failure path in this configuration and no test would "
+                            + "have noticed")
+                    .isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("an absent handle is tolerated, because a failure can precede acquisition")
+        void anAbsentHandleIsTolerated() {
             assertThatNoException().isThrownBy(() -> CreateStatementJobConfig.releaseQuietly(null,
                     StatementProcessor.OUTPUT_DD_STMTFILE));
-            assertThatNoException().isThrownBy(() -> CreateStatementJobConfig.releaseQuietly(() -> {
-                throw new IOException("the handle cannot be released");
-            }, StatementProcessor.OUTPUT_DD_STMTFILE));
+        }
+
+        @Test
+        @DisplayName("a handle that refuses to close is swallowed, named in a warning together with its "
+                + "failure chain, and never allowed to replace the diagnosis the run already reported")
+        void aHandleThatRefusesToCloseIsSwallowedAndLogged() {
+            final Logger owner =
+                    (Logger) LoggerFactory.getLogger(CreateStatementJobConfig.class);
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.start();
+            owner.addAppender(recorder);
+            try {
+                final CountingCloseable refuses =
+                        new CountingCloseable(new IOException("the handle cannot be released"));
+
+                assertThatNoException().isThrownBy(() -> CreateStatementJobConfig.releaseQuietly(refuses,
+                        StatementProcessor.OUTPUT_DD_STMTFILE));
+
+                assertThat(refuses.closures())
+                        .as("the close was attempted, which is what makes the swallowed failure real")
+                        .isEqualTo(1);
+                assertThat(recorder.list)
+                        .as("the swallowed failure must leave a record: a release that failed silently is "
+                                + "indistinguishable in a log from one that succeeded")
+                        .hasSize(1);
+                final ILoggingEvent recorded = recorder.list.getFirst();
+                assertThat(recorded.getLevel())
+                        .as("reported as a warning, because the run has already reported its own "
+                                + "diagnosis and this is not the reason it failed")
+                        .isEqualTo(Level.WARN);
+                assertThat(recorded.getFormattedMessage())
+                        .as("naming the data definition the handle belonged to, and the failure chain")
+                        .contains(StatementProcessor.OUTPUT_DD_STMTFILE)
+                        .contains("COULD NOT BE RELEASED")
+                        .contains("failureChain=")
+                        .contains(IOException.class.getSimpleName());
+                assertThat(recorded.getThrowableProxy())
+                        .as("and the throwable itself is not handed to the logger, which is the module's "
+                                + "standing diagnostic rule")
+                        .isNull();
+            } finally {
+                owner.detachAppender(recorder);
+                recorder.stop();
+            }
         }
 
         @Test
@@ -983,6 +1130,14 @@ class CreateStatementJobConfigTest {
                     .isEqualTo(CreateStatementJobConfig.CONDITION_CODE_GATE_COUNT);
             assertThat(source.split("\\.on\\(GATE_ONWARD_OUTCOME\\)\\.to\\(", -1).length - 1)
                     .isEqualTo(CreateStatementJobConfig.CONDITION_CODE_GATE_COUNT);
+            assertThat(source.split("CONDITION_CODE_GATE\\.atOnePlacement\\(\\)", -1).length - 1)
+                    .as("every gated step is reached through the numeric decider, one placement per gate")
+                    .isEqualTo(CreateStatementJobConfig.CONDITION_CODE_GATE_COUNT);
+            assertThat(source)
+                    .as("handing the shared enumeration singleton to the flow builder more than once "
+                            + "yields one decision state carrying all three transition pairs, so every "
+                            + "gate routes wherever the first pair pointed - back into the step just run")
+                    .doesNotContain(".next(CONDITION_CODE_GATE)", ".from(CONDITION_CODE_GATE)");
             assertThat(source)
                     .as("a gate that ended the job would report a completion code of zero for a run "
                             + "whose step abended, which no z/OS submission ever does")
@@ -1011,6 +1166,45 @@ class CreateStatementJobConfigTest {
             // job's character typing separate from the report job's zoned-decimal typing.
             assertThat(source).contains("private static final Comparator<String>")
                     .doesNotContain("TransactionReportJobConfig");
+        }
+    }
+
+    /**
+     * An {@link AutoCloseable} that records how often it was closed and can refuse to close.
+     *
+     * <p>Exists so that a release can be asserted as a release. A lambda that throws proves the failure arm
+     * is reached, but a lambda that does nothing proves nothing about the success arm: it passes whether the
+     * production method closes the handle or ignores it. Counting the closures is what distinguishes the
+     * two.
+     */
+    private static final class CountingCloseable implements AutoCloseable {
+
+        /** The failure to raise on close, or {@code null} to close cleanly. */
+        private final IOException refusal;
+
+        /** How many times close was invoked. */
+        private int closures;
+
+        /**
+         * @param refusal the failure to raise on close, or {@code null} to close cleanly
+         */
+        CountingCloseable(final IOException refusal) {
+            this.refusal = refusal;
+        }
+
+        @Override
+        public void close() throws IOException {
+            this.closures++;
+            if (this.refusal != null) {
+                throw this.refusal;
+            }
+        }
+
+        /**
+         * @return how many times this handle was closed
+         */
+        int closures() {
+            return this.closures;
         }
     }
 }

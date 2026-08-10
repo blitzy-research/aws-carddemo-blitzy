@@ -19,9 +19,7 @@ package com.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ch.qos.logback.classic.Level;
@@ -35,11 +33,9 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -1673,16 +1669,12 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
         assertThat(TransactionReportJobConfig.PROCESSING_DATE_SORT_LENGTH)
                 .isEqualTo(PROCESSING_DATE_WIDTH);
 
-        assertThat(TransactionReportJobConfig.REPORT_GENERATION_LIMIT)
+        assertThat(StagedGenerationStore.REPORT_RETENTION_LIMIT)
                 .as("declared at one depth in one member and re-declared at another in a second; the "
-                        + "later and more specific declaration governs")
+                        + "later and more specific declaration governs, and the store is the one place "
+                        + "either depth is written down")
                 .isEqualTo(10);
-        assertThat(TransactionReportJobConfig.SUPERSEDED_REPORT_GENERATION_LIMIT)
-                .as("published so the conflict stays visible rather than being silently resolved")
-                .isEqualTo(5)
-                .isNotEqualTo(TransactionReportJobConfig.REPORT_GENERATION_LIMIT);
-        assertThat(TransactionReportJobConfig.TRANSACTION_BACKUP_GENERATION_LIMIT).isEqualTo(5);
-        assertThat(TransactionReportJobConfig.FILTERED_TRANSACTION_GENERATION_LIMIT).isEqualTo(5);
+        assertThat(StagedGenerationStore.STANDARD_RETENTION_LIMIT).isEqualTo(5);
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -2487,6 +2479,115 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
                         + "them - which is also the only place the duplicated job-member step name is "
                         + "disambiguated")
                 .containsExactlyInAnyOrder(LEGACY_UNLOAD_STEP, LEGACY_SORT_STEP, LEGACY_REPORT_STEP);
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The record source of the ordering step: the generation the unload sealed, and nothing else.
+    // -----------------------------------------------------------------------------------------------
+
+    @Test
+    @Order(17)
+    @DisplayName("a transaction committed BETWEEN the unload and the ordering step is absent from the "
+            + "report, so the archive the job took and the rows the job reported are the same set")
+    void aRowCommittedBetweenTheTwoStepsIsNotReported() throws Exception {
+        install(List.of(
+                fixtureRecord(1, FIRST_CARD, INSIDE_WINDOW, PLAIN_AMOUNT),
+                fixtureRecord(2, SECOND_CARD, INSIDE_WINDOW, PLAIN_AMOUNT)));
+
+        final long execution = SEAM_EXECUTION_ID;
+        final Path sealed = this.reportConfig.backupGeneration(execution);
+        final Path filtered = this.reportConfig.filteredGeneration(execution);
+        this.reportConfig.newUnloadProgram(sealed).run();
+
+        // THE SEAM. The two steps run in separate step transactions, so a concurrent writer can commit
+        // between them. This is that writer, and it commits a row squarely inside the report's window.
+        install(List.of(fixtureRecord(3, FIRST_CARD, INSIDE_WINDOW, PLAIN_AMOUNT)));
+        assertThat(this.transactionRepository.count())
+                .as("the master really does hold the late row when the ordering step begins")
+                .isEqualTo(3L);
+
+        final TransactionReportJobConfig.FilterAndOrderProgram program =
+                this.reportConfig.newFilterAndOrderProgram(sealed, filtered, pinnedWindow());
+        program.run();
+
+        assertThat(program.recordsRead())
+                .as("the step read the sealed generation's two records, not the master's three")
+                .isEqualTo(2L);
+
+        final List<String> sealedIdentifiers = identifiersIn(sealed);
+        final List<String> reportedIdentifiers = identifiersIn(filtered);
+        assertThat(reportedIdentifiers)
+                .as("ROW-SET IDENTITY. The cataloged procedure names the generation the preceding step "
+                        + "wrote as its sort input, so the reported set and the archived set are one set "
+                        + "by construction. Reading the live master here would have reported a row the "
+                        + "backup does not contain, which is a lineage defect and not an optimisation.")
+                .containsExactlyInAnyOrderElementsOf(sealedIdentifiers)
+                .containsExactly(identifier(1), identifier(2))
+                .doesNotContain(identifier(3));
+    }
+
+    @Test
+    @Order(18)
+    @DisplayName("the ordering step completes with the master EMPTIED after the unload, which is only "
+            + "possible because its input is the sealed generation and not a query")
+    void theOrderingStepNeedsNoRowsInTheMaster() throws Exception {
+        install(List.of(
+                fixtureRecord(1, FIRST_CARD, INSIDE_WINDOW, PLAIN_AMOUNT),
+                fixtureRecord(2, SECOND_CARD, INSIDE_WINDOW, PLAIN_AMOUNT)));
+
+        final long execution = SEAM_EXECUTION_ID + 1L;
+        final Path sealed = this.reportConfig.backupGeneration(execution);
+        final Path filtered = this.reportConfig.filteredGeneration(execution);
+        this.reportConfig.newUnloadProgram(sealed).run();
+
+        // Every row removed and committed. A step that queried the master - for its records OR for a row
+        // count it derived the excluded figure from - could not survive this.
+        this.transactionRepository.deleteAll();
+        assertThat(this.transactionRepository.count()).isZero();
+
+        final TransactionReportJobConfig.FilterAndOrderProgram program =
+                this.reportConfig.newFilterAndOrderProgram(sealed, filtered, pinnedWindow());
+        program.run();
+
+        assertThat(program.recordsRead()).isEqualTo(2L);
+        assertThat(program.recordsExcluded())
+                .as("the excluded figure is COUNTED from the records read, not derived from a row count "
+                        + "the master no longer has")
+                .isZero();
+        assertThat(identifiersIn(filtered))
+                .as("both records reached the filtered generation from the sealed file")
+                .containsExactly(identifier(1), identifier(2));
+    }
+
+    /**
+     * A job-execution identifier well above anything the framework assigns in this class, so the two
+     * seam specifications resolve generations of their own without colliding with a launched run's.
+     */
+    private static final long SEAM_EXECUTION_ID = 9_000_000L;
+
+    /**
+     * The window the seam specifications filter on: the same pinned bounds every launched run uses.
+     *
+     * @return the inclusive window
+     */
+    private static JobParameterValidators.ReportDateWindow pinnedWindow() {
+        return new JobParameterValidators.ReportDateWindow(PINNED_WINDOW_START_DATE.toString(),
+                PINNED_WINDOW_END_DATE.toString());
+    }
+
+    /**
+     * Reads the transaction identifiers out of a staged 350-byte generation, in emission order.
+     *
+     * @param  generation the generation to read
+     * @return the identifiers
+     * @throws IOException if the generation cannot be read
+     */
+    private static List<String> identifiersIn(final Path generation) throws IOException {
+        final List<String> identifiers = new ArrayList<>();
+        for (final String image : recordsOf(generation, TRANSACTION_RECORD_WIDTH)) {
+            identifiers.add(identifierOf(image));
+        }
+        return identifiers;
     }
 
     // -----------------------------------------------------------------------------------------------

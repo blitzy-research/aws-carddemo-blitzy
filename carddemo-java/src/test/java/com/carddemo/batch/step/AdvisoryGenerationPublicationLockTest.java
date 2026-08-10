@@ -27,16 +27,24 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import org.slf4j.LoggerFactory;
 
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.jdbc.core.ConnectionCallback;
@@ -63,6 +71,10 @@ class AdvisoryGenerationPublicationLockTest {
     private List<String> acquiredKeys;
     private AdvisoryGenerationPublicationLock lock;
 
+    private Logger lockLogger;
+    private ListAppender<ILoggingEvent> logRecorder;
+    private Level originalLevel;
+
     @BeforeEach
     void setUp() throws SQLException {
         this.jdbcOperations = mock(JdbcOperations.class);
@@ -78,6 +90,32 @@ class AdvisoryGenerationPublicationLockTest {
         runCallbackOnTheMockConnection();
 
         this.lock = new AdvisoryGenerationPublicationLock(this.jdbcOperations);
+
+        this.lockLogger = (Logger) LoggerFactory.getLogger(AdvisoryGenerationPublicationLock.class);
+        this.originalLevel = this.lockLogger.getLevel();
+        this.logRecorder = new ListAppender<>();
+        this.logRecorder.setContext(this.lockLogger.getLoggerContext());
+        this.logRecorder.start();
+        this.lockLogger.addAppender(this.logRecorder);
+        this.lockLogger.setLevel(Level.INFO);
+    }
+
+    @AfterEach
+    void detachLogRecorder() {
+        this.lockLogger.detachAppender(this.logRecorder);
+        this.logRecorder.stop();
+        this.lockLogger.setLevel(this.originalLevel);
+    }
+
+    /** Every message the recorder captured at exactly the named level, in order. */
+    private List<String> recordsAt(final Level level) {
+        final List<String> messages = new ArrayList<>();
+        for (final ILoggingEvent event : this.logRecorder.list) {
+            if (event.getLevel().equals(level)) {
+                messages.add(event.getFormattedMessage());
+            }
+        }
+        return messages;
     }
 
     /** Captures each bound key so acquisition order can be asserted. */
@@ -271,6 +309,20 @@ class AdvisoryGenerationPublicationLockTest {
         }
 
         @Test
+        @DisplayName("does not raise an operational alert when the publication itself failed")
+        void aFailedPublicationRaisesNoReleaseAlert() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> lock.whileHolding(List.of("ONE.BASE"), () -> {
+                        throw new IllegalStateException("the artifact could not be uploaded");
+                    }));
+
+            assertThat(recordsAt(Level.ERROR))
+                    .as("the alert claims a publication completed; a failed publication must not "
+                            + "produce it, or an operator would read a failed job as a published one")
+                    .isEmpty();
+        }
+
+        @Test
         @DisplayName("does not set a query timeout it was never asked to apply to a second statement")
         void onlyTheAcquisitionIsTimed() throws SQLException {
             lock.whileHolding(List.of("ONE.BASE", "OTHER.BASE"), () -> { });
@@ -281,6 +333,91 @@ class AdvisoryGenerationPublicationLockTest {
             verify(connection, org.mockito.Mockito.times(2))
                     .prepareStatement(AdvisoryGenerationPublicationLock.ACQUIRE_LOCK_SQL);
             verify(connection, never()).createStatement();
+        }
+    }
+
+    /**
+     * Releasing the bases after the publication has already completed.
+     *
+     * <h2>Why this is a separate outcome from every failure above</h2>
+     *
+     * <p>The commit in this class does one thing: it ends the transaction, which is what releases the
+     * advisory locks. It runs only after {@code publication.run()} has returned, and by then the
+     * publication has passed its own commit point - the objects are durable, the fixed-name aliases name
+     * them, the registry is cleared, and retention has irreversibly deleted whatever rolled off. So a
+     * failure of this commit carries no information at all about the publication.
+     *
+     * <p>Raising it would mark FAILED a job whose output is durable, visible and correct, and the boundary
+     * listener would then discard the local generations that name it. That is not a conservative choice:
+     * a job reported FAILED is re-run, and the re-run publishes a second generation of every base. The
+     * treatment here is the one retention already receives, for the identical reason.</p>
+     */
+    @Nested
+    @DisplayName("releasing the bases, after the generations are already durable")
+    class ReleasingTheBases {
+
+        @Test
+        @DisplayName("a release failure does not fail a publication that already completed")
+        void aReleaseFailureDoesNotFailTheJob() throws SQLException {
+            final List<String> ran = new ArrayList<>();
+            doThrow(new SQLException("the transaction could not be committed"))
+                    .when(connection).commit();
+
+            lock.whileHolding(List.of("ONE.BASE"), () -> ran.add("published"));
+
+            assertThat(ran)
+                    .as("the publication ran to completion, which is the only fact that decides the "
+                            + "job's verdict")
+                    .containsExactly("published");
+        }
+
+        @Test
+        @DisplayName("the release failure is reported as an operational alert naming what was held")
+        void theReleaseFailureIsAnOperationalAlert() throws SQLException {
+            doThrow(new SQLException("the transaction could not be committed"))
+                    .when(connection).commit();
+
+            lock.whileHolding(List.of("AWS.M2.CARDDEMO.TRANSACT.BKUP"), () -> { });
+
+            assertThat(recordsAt(Level.ERROR))
+                    .as("swallowing it silently would leave a real database fault unreported; the "
+                            + "record has to say the verdict is unchanged so nobody re-runs the job on "
+                            + "the strength of it")
+                    .singleElement()
+                    .satisfies(message -> assertThat(message)
+                            .contains("OPERATIONAL ALERT")
+                            .contains("could not be released")
+                            .contains("generations are durable")
+                            .contains("verdict is unchanged")
+                            .contains("AWS.M2.CARDDEMO.TRANSACT.BKUP")
+                            .contains("SQLException"));
+        }
+
+        @Test
+        @DisplayName("does not roll back over the top of a commit that already failed")
+        void aFailedCommitIsNotFollowedByARollback() throws SQLException {
+            doThrow(new SQLException("the transaction could not be committed"))
+                    .when(connection).commit();
+
+            lock.whileHolding(List.of("ONE.BASE"), () -> { });
+
+            // The server has already aborted the transaction, and restoring auto-commit on the way out
+            // ends it either way. Issuing a rollback here would add a second failure to log and change
+            // nothing about the locks, which are released by the transaction ending however it ends.
+            verify(connection, never()).rollback();
+            verify(connection).setAutoCommit(false);
+        }
+
+        @Test
+        @DisplayName("still hands the connection back in the state it was borrowed in")
+        void autoCommitIsRestoredEvenWhenTheReleaseFailed() throws SQLException {
+            when(connection.getAutoCommit()).thenReturn(true, false);
+            doThrow(new SQLException("the transaction could not be committed"))
+                    .when(connection).commit();
+
+            lock.whileHolding(List.of("ONE.BASE"), () -> { });
+
+            verify(connection).setAutoCommit(true);
         }
     }
 }

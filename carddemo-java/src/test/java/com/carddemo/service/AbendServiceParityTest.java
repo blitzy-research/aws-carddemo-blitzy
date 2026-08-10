@@ -166,7 +166,7 @@ class AbendServiceParityTest {
     // THE BATCH ABEND
 
     /**
-     * Verifies the batch abend, which stands in for {@code CALL 'CEE3ABD'}.
+     * Verifies the batch abend, which stands in for the CEE3ABD call.
      *
      * <p>The abend code is the three-character batch value rather than the four-character online
      * one. That is not a rounding of the same number: the two tiers really do use different codes,
@@ -341,13 +341,20 @@ class AbendServiceParityTest {
         }
 
         @Test
-        @DisplayName("the 134-byte ABEND-DATA image is emitted alongside the diagnostic")
-        void theFixedWidthContextImageIsEmitted() {
+        @DisplayName("the 134-byte ABEND-DATA image is NOT emitted alongside the diagnostic, and that "
+                + "reversal is the finding: the legacy area is transmitted to a terminal, not to a log")
+        void theFixedWidthContextImageIsNotEmitted() {
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.abendOnline(ONLINE_PROGRAM, REASON));
 
-            assertThat(diagnostics()).anySatisfy(line ->
-                    assertThat(line).contains("contextLength=" + AbendException.CONTEXT_LENGTH));
+            // The legacy routine moved this area into a terminal message and sent it to the screen the
+            // operator was sitting at. Rendering it into a centralised log is a different act with a
+            // different audience: the area's fourth field is a 72-character message slot whose content is
+            // the only part not drawn from a vocabulary this module owns. The width itself remains a
+            // documented property of the exception, asserted immediately below and in AbendExceptionTest.
+            assertThat(diagnostics())
+                    .noneMatch(line -> line.contains("contextLength="))
+                    .noneMatch(line -> line.contains("abendContext="));
             assertThat(AbendException.CONTEXT_LENGTH).isEqualTo(134);
         }
 

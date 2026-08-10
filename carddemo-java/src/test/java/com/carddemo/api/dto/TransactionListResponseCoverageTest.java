@@ -146,11 +146,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("TransactionListResponse :: response contract of legacy transaction CT00")
 class TransactionListResponseCoverageTest {
 
-    /** The nineteen components, in the order the record declares them. */
+    /** The eighteen components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "rows",
             "pageMetadata",
-            "continuation",
             "navigationContext",
             "nextRoute",
             "transactionIdFilter",
@@ -182,9 +181,9 @@ class TransactionListResponseCoverageTest {
             "transactionName",
             "programName");
 
-    /** The eight components that carry no declared maximum length. */
+    /** The seven components that carry no declared maximum length. */
     private static final List<String> UNBOUNDED_COMPONENTS =
-            List.of("rows", "pageMetadata", "continuation", "navigationContext", "nextRoute",
+            List.of("rows", "pageMetadata", "navigationContext", "nextRoute",
                     "error", "fieldErrors", "preserveDisplayedPage");
 
     /**
@@ -420,7 +419,7 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse carrying(String component, String value) {
         return new TransactionListResponse(
                 List.of(),
-                null, TransactionListRequest.ScreenContinuation.empty(),
+                null,
                 null,
                 "nextRoute".equals(component) ? value : null,
                 "transactionIdFilter".equals(component) ? value : null,
@@ -445,7 +444,7 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse withRows(
             List<TransactionListResponse.TransactionRow> rows) {
         return new TransactionListResponse(
-                rows, null, null, null, null, null, null, null, false, List.of(), null, false,
+                rows, null, null, null, null, null, null, false, List.of(), null, false,
                 null, null, null, null, null, null, null);
     }
 
@@ -458,8 +457,8 @@ class TransactionListResponseCoverageTest {
      */
     private static TransactionListResponse reporting(String message, boolean error) {
         return new TransactionListResponse(
-                List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null, null, null, null, message, error, List.of(), null, false, null, null, null, null,
-                null, null, null);
+                List.of(), null, null, null, null, null, message, error, List.of(), null, false,
+                null, null, null, null, null, null, null);
     }
 
     /**
@@ -470,7 +469,7 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse populatedPage() {
         return new TransactionListResponse(
                 threeAscendingRows(),
-                forwardPosition(), TransactionListRequest.ScreenContinuation.empty(),
+                forwardPosition(),
                 JsonContractSupport.populatedNavigation(),
                 NEXT_ROUTE,
                 TRANSACTION_ID_FILTER,
@@ -496,7 +495,7 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse singleRowPageWithoutNestedRecords() {
         return new TransactionListResponse(
                 List.of(row(ROW_TRANSACTION_ID_1)),
-                null, TransactionListRequest.ScreenContinuation.empty(),
+                null,
                 null,
                 NEXT_ROUTE,
                 TRANSACTION_ID_FILTER,
@@ -582,8 +581,7 @@ class TransactionListResponseCoverageTest {
 
             assertThat(declared[0].getName()).isEqualTo("rows");
             assertThat(declared[1].getName()).isEqualTo("pageMetadata");
-            assertThat(declared[2].getName()).isEqualTo("continuation");
-            assertThat(declared[3].getName()).isEqualTo("navigationContext");
+            assertThat(declared[2].getName()).isEqualTo("navigationContext");
         }
 
         /**
@@ -1994,9 +1992,9 @@ class TransactionListResponseCoverageTest {
     @DisplayName("Diagnostic rendering")
     class DiagnosticRendering {
 
-        /** The five components this type replaces with a fixed placeholder in its rendering. */
+        /** The four components this type replaces with a fixed placeholder in its rendering. */
         private static final List<String> WITHHELD_BY_THIS_TYPE =
-                List.of("rows", "pageMetadata", "continuation", "transactionIdFilter",
+                List.of("rows", "pageMetadata", "transactionIdFilter",
                         "selectedTransactionId");
 
         /** The three row components the nested row replaces with a fixed placeholder. */
@@ -2010,7 +2008,7 @@ class TransactionListResponseCoverageTest {
          * independently written list of rendered values, so that a change to either the order or a
          * value fails this test. Two things distinguish it from what a record would generate: a row
          * count is emitted ahead of the components, because how many rows a page carried is the useful
-         * non-identifying fact about it, and three components are replaced by a fixed placeholder.
+         * non-identifying fact about it, and four components are replaced by a fixed placeholder.
          * Everything else is emitted in declaration order exactly as the generated form would.</p>
          */
         @Test
@@ -2019,7 +2017,6 @@ class TransactionListResponseCoverageTest {
             String withheld = "***REDACTED***";
             List<String> renderedValues =
                     List.of(
-                            withheld,
                             withheld,
                             withheld,
                             "null",
@@ -2223,8 +2220,8 @@ class TransactionListResponseCoverageTest {
                             "PAGE0002");
             TransactionListResponse response =
                     new TransactionListResponse(
-                            List.of(), position, TransactionListRequest.ScreenContinuation.empty(), null, null, null, null, null, false, List.of(), null, false, null, null,
-                            null, null, null, null, null);
+                            List.of(), position, null, null, null, null, null, false, List.of(),
+                            null, false, null, null, null, null, null, null, null);
 
             String rendered = response.toString();
 

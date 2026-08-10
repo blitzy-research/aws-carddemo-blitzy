@@ -59,7 +59,6 @@ import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersInvalidException;
-import org.springframework.batch.core.UnexpectedJobExecutionException;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.JobLauncher;
@@ -79,7 +78,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -96,7 +94,7 @@ import static org.mockito.Mockito.when;
  * does - job behaviour belongs to the nine job configurations and to their own suites. Six properties
  * matter and each has a nest below: the delivered operation inventory is exactly two documented
  * operations and nothing else; the launch inventory is closed at nine names read from the configurations
- * that publish them; a launch delegates once, verbatim, and adds nothing that would break idempotency; a
+ * that publish them; a launch delegates once, verbatim, and adds nothing of its own; a
  * refused launch is translated without echoing what was sent; a status answer carries four safe members
  * and never the framework's exit description; and the timers stay bounded whatever a caller sends.
  *
@@ -503,8 +501,9 @@ class BatchJobControllerTest {
         }
 
         @Test
-        @DisplayName("hands the framework the supplied values unchanged and adds nothing, so the same "
-                + "request twice is the same job identity and stays idempotent")
+        @DisplayName("hands the framework the supplied values unchanged and adds nothing of its own, so "
+                + "the identifying value is the server's to mint one layer down and never this "
+                + "boundary's to invent")
         void handsTheSuppliedParametersOverUnchanged() throws Exception {
             final String jobName = TransactionReportJobConfig.JOB_NAME;
             final Job registered = registerLaunchableJob(jobName);
@@ -516,7 +515,11 @@ class BatchJobControllerTest {
 
             final JobParameters handedOver = capturedLaunchParameters(registered);
             assertThat(handedOver.getParameters().keySet())
-                    .as("a generated run identifier, timestamp or unique value would break idempotency")
+                    .as("this boundary adds no run identifier, timestamp or unique value of its own; the"
+                            + " one identifying value a launch carries is minted by the shared parameter"
+                            + " incrementer inside batch/BatchLaunchCoordinator, which is what makes a"
+                            + " repeat a second distinct instance rather than a refusal - see"
+                            + " BatchJobControllerIT for that behaviour end to end")
                     .containsExactlyInAnyOrder(JobParameterValidators.REPORT_START_DATE_KEY,
                             JobParameterValidators.REPORT_END_DATE_KEY);
             assertThat(handedOver.getString(JobParameterValidators.REPORT_START_DATE_KEY))
@@ -770,7 +773,15 @@ class BatchJobControllerTest {
         @DisplayName("names exactly the parameters each job reads, taken from the declaring authority "
                 + "rather than repeated, and nothing for the six that read none")
         void namesExactlyTheParametersEachJobReads() {
-            final Map<String, Object> expected = Map.of(
+            // Declared as Map<String, Set<String>>, which is what the schema under test actually is.
+            // It used to be Map<String, Object>, and that single widening is what forced everything
+            // below it: the values came back as Object, so the comparison had to narrow each one
+            // through a cast, and the cast needed @SuppressWarnings("unchecked") to survive
+            // -Xlint:all -Werror. Gate 2 forbids a suppressed warning as firmly as a warning, and the
+            // type was never in doubt - Map.of infers Set<String> from this very target type, including
+            // for the empty sets. Declaring it correctly removes the cast, the helper and the
+            // suppression together, and the comparison becomes a direct one.
+            final Map<String, Set<String>> expected = Map.of(
                     PostTransactionJobConfig.JOB_NAME, Set.of(),
                     InterestCalculationJobConfig.JOB_NAME,
                             Set.of(JobParameterValidators.INTEREST_PARM_DATE_KEY),
@@ -786,10 +797,7 @@ class BatchJobControllerTest {
                     DailyTransactionReadJobConfig.JOB_NAME, Set.of());
 
             assertThat(BatchJobController.ACCEPTED_JOB_PARAMETER_NAMES)
-                    .containsExactlyInAnyOrderEntriesOf(
-                            expected.entrySet().stream().collect(java.util.stream.Collectors.toMap(
-                                    Map.Entry::getKey,
-                                    entry -> castNames(entry.getValue()))));
+                    .containsExactlyInAnyOrderEntriesOf(expected);
         }
 
         @Test
@@ -803,16 +811,6 @@ class BatchJobControllerTest {
                             .get(InterestCalculationJobConfig.JOB_NAME).add("nonce"));
         }
 
-        /**
-         * Narrows a declared expectation to the set type the schema holds.
-         *
-         * @param names the expected names
-         * @return the same names as a set of strings
-         */
-        @SuppressWarnings("unchecked")
-        private static Set<String> castNames(final Object names) {
-            return (Set<String>) names;
-        }
     }
 
     // ==================================================================================================

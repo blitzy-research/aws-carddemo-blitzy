@@ -80,8 +80,9 @@ import java.util.Objects;
  * rather than at the grant's expiry. Nothing about the mapping enforces that; the mapping simply makes it
  * possible, by keeping the digest here and nowhere else.
  *
- * <p>Rows do exist in this table from the outset: {@code V4__seed_user_security.sql} sits flat beside
- * the other four migrations and seeds ten identities, every credential an independently salted
+ * <p>Rows do exist in this table under the seeding profiles: {@code V4__seed_user_security.sql} ships
+ * from {@code classpath:db/migration/seed} and seeds ten identities, every credential an independently
+ * salted
  * 60-character digest, so the not-null column is satisfied without any cleartext value. Whatever
  * component later authenticates against those rows carries two obligations this mapping cannot enforce
  * on its behalf: it must write only a digest, and it must never store or compare a cleartext
@@ -153,7 +154,8 @@ import java.util.Objects;
  * every caller to remember to hash first is a convention rather than a control. Both write paths -
  * the five-argument constructor and {@link #replaceCredentialDigest(String)} - therefore verify that
  * the value handed to them is structurally a BCrypt digest: exactly sixty characters, a recognised
- * version marker, a two-digit cost of at least {@value #MINIMUM_BCRYPT_COST}, and a radix-64 tail.
+ * version marker, a two-digit cost between {@value #MINIMUM_BCRYPT_COST} and
+ * {@value #MAXIMUM_BCRYPT_COST}, and a radix-64 tail.
  * A cleartext credential cannot satisfy that shape and is refused rather than stored. The check is
  * structural only - it neither hashes nor verifies, and it needs no encoder - so the layer boundary
  * stays intact while the column stops being able to hold a secret in the clear.
@@ -228,10 +230,10 @@ import java.util.Objects;
  *   <li><strong>No rows are seeded by the reference-data migration.</strong> The table is empty
  *       after {@code V3__seed_reference_data.sql}. {@code V4__seed_user_security.sql} owns the ten
  *       sign-on identities - five of type {@code A} and five of type {@code U}, matching the job
- *       stream above - and stores each credential as a BCrypt digest. It sits flat beside the other
- *       four migrations and is kept out of production by the version pin
- *       {@code spring.flyway.target=2} that {@code application-prod.yml} declares, so no production
- *       deployment ever receives a seeded login.</li>
+ *       stream above - and stores each credential as a BCrypt digest. It ships from
+ *       {@code classpath:db/migration/seed}, a location {@code application-prod.yml} never declares and
+ *       {@code FlywayConfig} refuses under the production profile, so no production deployment ever
+ *       receives a seeded login. See {@code DL-298} in {@code docs/decision-log.md}.</li>
  * </ul>
  *
  * <h2>Provenance</h2>
@@ -274,9 +276,30 @@ public class UserSecurity {
     /**
      * Lowest cost factor this entity will store. Ten is the encoder's own default, so requiring at
      * least ten rejects a deliberately weakened work factor without rejecting anything the module
-     * produces. A higher factor is always accepted.
+     * produces.
+     *
+     * <p>Package-private rather than private so the accepted range can be asserted against the range
+     * {@code service.CredentialDigestService} verifies over, which is the invariant that matters: a
+     * digest this entity stores must be one that path can read.
      */
-    private static final int MINIMUM_BCRYPT_COST = 10;
+    static final int MINIMUM_BCRYPT_COST = 10;
+
+    /**
+     * Highest cost factor this entity will store.
+     *
+     * <p>Thirty-one is not a policy choice: BCrypt encodes its work factor as a base-two logarithm of
+     * the round count, and the algorithm is defined only up to 2^31 rounds, so a verifier refuses any
+     * value above 31 outright. This bound used to be absent, which meant the two digits were checked
+     * for being digits and for being at least ten and nothing else - so a digest declaring cost 32
+     * through 99 was structurally well formed, passed this guard, and was written to the column. It
+     * would then have failed every subsequent verification, because the verifier rejects it before
+     * looking at the hash. The identity would have been created or updated successfully and been
+     * unable to authenticate ever again, with nothing in the failure to say why. Refusing the write is
+     * the only outcome that reports the problem to the caller who caused it.
+     *
+     * <p>Package-private for the same reason as {@link #MINIMUM_BCRYPT_COST}.
+     */
+    static final int MAXIMUM_BCRYPT_COST = 31;
 
     /**
      * Version markers a BCrypt digest may carry. All three denote the same algorithm and differ only
@@ -464,7 +487,8 @@ public class UserSecurity {
      * <p>This method does not hash and does not verify - hashing deliberately lives outside this
      * package - but it does <strong>refuse</strong>. The argument must be structurally a BCrypt
      * digest: exactly {@value #BCRYPT_DIGEST_LENGTH} characters, a recognised version marker, a
-     * two-digit cost of at least {@value #MINIMUM_BCRYPT_COST}, and a radix-64 tail. An
+     * two-digit cost between {@value #MINIMUM_BCRYPT_COST} and {@value #MAXIMUM_BCRYPT_COST}, and a
+     * radix-64 tail. An
      * eight-character cleartext credential cannot satisfy that shape, which is what stops a caller
      * from writing one into a column that would otherwise accept it.
      *
@@ -592,9 +616,9 @@ public class UserSecurity {
      *
      * <p>Four conditions must all hold. The value must be non-null and exactly
      * {@value #BCRYPT_DIGEST_LENGTH} characters long; it must open with one of the recognised version
-     * markers; the two characters after that marker must be digits forming a cost of at least
-     * {@value #MINIMUM_BCRYPT_COST}, followed by a separator; and the remaining 53 characters must all
-     * come from BCrypt's radix-64 alphabet. The check is structural only - it does not hash, does not
+     * markers; the two characters after that marker must be digits forming a cost between
+     * {@value #MINIMUM_BCRYPT_COST} and {@value #MAXIMUM_BCRYPT_COST} inclusive, followed by a
+     * separator; and the remaining 53 characters must all come from BCrypt's radix-64 alphabet. The check is structural only - it does not hash, does not
      * verify and does not need an encoder - so it adds no dependency to this layer.
      *
      * <p><strong>The rejection message never contains the offending value</strong>, because a rejected
@@ -635,9 +659,10 @@ public class UserSecurity {
                     + " version marker is followed by a two-digit cost and a separator");
         }
         final int cost = (costTens - '0') * 10 + (costUnits - '0');
-        if (cost < MINIMUM_BCRYPT_COST) {
+        if (cost < MINIMUM_BCRYPT_COST || cost > MAXIMUM_BCRYPT_COST) {
             throw new IllegalArgumentException("the stored credential must be a BCrypt digest with a"
-                    + " cost of at least " + MINIMUM_BCRYPT_COST + ", but " + cost + " was supplied");
+                    + " cost between " + MINIMUM_BCRYPT_COST + " and " + MAXIMUM_BCRYPT_COST
+                    + " inclusive, but " + cost + " was supplied");
         }
         for (int index = 7; index < BCRYPT_DIGEST_LENGTH; index++) {
             if (BCRYPT_RADIX_64_ALPHABET.indexOf(digest.charAt(index)) < 0) {

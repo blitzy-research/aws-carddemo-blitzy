@@ -122,7 +122,8 @@ final class TransactionTypeRepositoryIT extends AbstractPostgresIT {
      *
      * <p>Five sibling columns elsewhere in the schema name a transaction type with a {@code _cd}
      * suffix, and regularising this one to match them would fail start-up under validate-only
-     * mapping. {@link #SUFFIXED_KEY_COLUMN} is asserted absent so that drift is caught by name.
+     * mapping. Every column of this table is asserted not to end with {@link #CODE_SUFFIX}, so a column
+     * regularised to the sibling spelling is caught by name.
      */
     private static final String KEY_COLUMN = "tran_type";
 

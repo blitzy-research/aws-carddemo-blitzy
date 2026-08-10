@@ -48,9 +48,11 @@ import com.carddemo.domain.id.DisclosureGroupId;
  * goes through {@link ZonedDecimalCodec}, which applies scale 2 with truncation toward zero because
  * no arithmetic statement anywhere in the estate specifies rounding. This class never calls
  * {@code setScale} and never names a rounding mode, and no binary floating-point type appears here.
- * One representational limit is stated rather than hidden: a {@link BigDecimal} cannot carry a
- * negative zero, so a negatively-signed all-zero image decodes to zero and re-emits positive, and a
- * caller needing byte-exact preservation reads the field through the codec's signed entry points.
+ * One representational limit is bridged rather than accepted: a {@link BigDecimal} cannot carry a
+ * negative zero, so this mapper reads and writes the rate through the codec's <em>signed</em> entry
+ * points and carries the missing bit on the entity's transient negative-zero marker. A negatively-signed
+ * all-zero rate therefore re-emits the byte it arrived as, which matters here because the reference data
+ * contains a whole zero-rate group.
  *
  * <p><strong>This rate is the interest computation's multiplicand, and the computation is not
  * here.</strong> The accrual service multiplies a category balance by this rate and only then
@@ -315,9 +317,10 @@ public final class DisclosureGroupRecordMapper {
      * Encoded width of the interest rate: <strong>six bytes</strong>, the only field of this shape in
      * the estate. Deliberately neither the eleven bytes of the transaction, daily-transaction and
      * category-balance amounts nor the twelve of the account monetary fields, so an implementation that
-     * assumes the common monetary width misreads every byte from here onward.
+     * assumes the common monetary width misreads every byte from here onward. Taken from the codec's own
+     * published width rather than restated, so the layout and the decoder cannot disagree.
      */
-    public static final int DIS_INT_RATE_LENGTH = 6;
+    public static final int DIS_INT_RATE_LENGTH = ZonedDecimalCodec.INTEREST_RATE_WIDTH;
 
     /**
      * Width of the mapped data prefix, and the exact bound for a fixture round-trip comparison: compare
@@ -505,9 +508,15 @@ public final class DisclosureGroupRecordMapper {
         // The rate image is sliced here and converted there: this class owns the offset, the codec
         // owns the overpunch convention and the scale, and neither owns both.
         String rateImage = record.field(FIELD_INT_RATE, DIS_INT_RATE_OFFSET, DIS_INT_RATE_LENGTH);
-        BigDecimal intRate =
-                ZonedDecimalCodec.decodeMonetary(rateImage, DIS_INT_RATE_LENGTH, FIELD_INT_RATE);
-        return new DisclosureGroup(acctGroupId, tranTypeCd, tranCatCd, intRate);
+        // The SIGNED entry point: a negatively-signed all-zero rate differs from a positive one only in
+        // its final byte, and the zero-rate group in the reference data makes that a live case rather
+        // than a theoretical one. The bit travels on the entity's transient marker.
+        ZonedDecimalCodec.ZonedValue rate = ZonedDecimalCodec.decodeSigned(rateImage,
+                DIS_INT_RATE_LENGTH, ZonedDecimalCodec.MONETARY_SCALE, FIELD_INT_RATE);
+        DisclosureGroup mapped =
+                new DisclosureGroup(acctGroupId, tranTypeCd, tranCatCd, rate.value());
+        mapped.setDisIntRateNegativeZero(rate.negativeZero());
+        return mapped;
     }
 
     /**
@@ -544,7 +553,11 @@ public final class DisclosureGroupRecordMapper {
                 // The codec returns exactly the declared width, so this placement is positional only; it is
                 // right-justified so an overpunched sign byte stays in the final position.
                 .putNumeric(FIELD_INT_RATE, DIS_INT_RATE_OFFSET, DIS_INT_RATE_LENGTH,
-                        ZonedDecimalCodec.encodeMonetary(intRate, DIS_INT_RATE_LENGTH,
+                        ZonedDecimalCodec.encodeSigned(
+                                new ZonedDecimalCodec.ZonedValue(intRate,
+                                        group.isDisIntRateNegativeZero()
+                                                && intRate.signum() == 0),
+                                DIS_INT_RATE_LENGTH, ZonedDecimalCodec.MONETARY_SCALE,
                                 FIELD_INT_RATE))
                 // Stated explicitly rather than inherited from the buffer's default, so the deliberate
                 // choice of space over the fixture's ASCII zero is visible right here.

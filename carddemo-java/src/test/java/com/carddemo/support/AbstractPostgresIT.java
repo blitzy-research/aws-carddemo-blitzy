@@ -36,6 +36,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * Shared base for every integration test that needs the migrated relational schema on a real
@@ -183,10 +184,26 @@ import org.testcontainers.containers.PostgreSQLContainer;
 public abstract class AbstractPostgresIT {
 
     /**
-     * The pinned server image. Held as a constant so a subclass can assert against it rather than
-     * restating the tag.
+     * The pinned server image, named by tag <em>and</em> by content digest.
+     *
+     * <p><strong>Why the digest is part of the reference.</strong> A tag is a mutable pointer. The
+     * container stack definition and the continuous-integration workflow both pin this image by digest
+     * already, and this reference did not - so the tests could silently run against a different server from
+     * the one the stack and the pipeline were verified on, after a rebuild of the tag upstream. That
+     * divergence is invisible: the tests would pass or fail against an image nobody chose, and a
+     * reproduction on a developer machine would not reproduce. Naming the same digest here is what makes
+     * "PostgreSQL 16.14" one server across the stack, the pipeline and the suite.
+     *
+     * <p>The tag is kept alongside the digest rather than replaced by it, because a reader needs to know
+     * which release the digest denotes, and because the two together fail loudly if they ever disagree.
+     *
+     * <p>Held as a constant so a subclass can assert against it rather than restating the reference.
      */
-    protected static final String POSTGRES_IMAGE = "postgres:16.14-bookworm";
+    protected static final String POSTGRES_IMAGE = "postgres:16.14-bookworm@sha256:"
+            + "92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55";
+
+    /** The repository the pinned reference denotes, named for the container library's compatibility check. */
+    private static final String POSTGRES_REPOSITORY = "postgres";
 
     /** The database name the module's own configuration uses. */
     protected static final String DATABASE_NAME = "carddemo";
@@ -201,14 +218,30 @@ public abstract class AbstractPostgresIT {
     protected static final String DATABASE_PASSWORD = "carddemo";
 
     /**
-     * The one location every shipped profile declares, holding all four delivered migrations flat.
+     * The schema location every shipped profile declares, holding the two schema migrations.
      *
      * <p>This base exists to reproduce a shipped profile rather than to invent a third arrangement, so
-     * it declares exactly what the test profile declares: this location, and no other. A
-     * production-shaped run declares the same one and differs only in its version ceiling, which is
-     * why {@code SeedMigrationIT} proves that posture by changing the ceiling rather than the list.</p>
+     * it declares exactly what the test profile declares: this location together with
+     * {@link #SEED_MIGRATION_LOCATION}, and no other. A production-shaped run declares THIS ONE ALONE
+     * and differs in nothing else, which is why {@code SeedMigrationIT} proves that posture by removing
+     * the seed location from the list rather than by imposing a version ceiling.
+     *
+     * <p>Their shared parent {@code classpath:db/migration} is deliberately NOT used, even though it
+     * would resolve the same four scripts: Flyway records a script under a name relative to its
+     * location, so migrating from the parent would write {@code schema/V1__create_schema.sql} into the
+     * history where every shipped profile writes {@code V1__create_schema.sql} - and a context booted
+     * by a subclass, which migrates from the two children, would then validate against a history that
+     * names its scripts differently. See docs/decision-log.md DL-298.</p>
      */
-    protected static final String MIGRATION_LOCATION = "classpath:db/migration";
+    protected static final String MIGRATION_LOCATION = "classpath:db/migration/schema";
+
+    /**
+     * The seed location the two non-production profiles add, holding the two seed migrations.
+     *
+     * <p>Declared here because the fixtures every subclass asserts against are the rows these two
+     * scripts load. A production-shaped run omits it, which is the whole of the production exclusion.
+     */
+    protected static final String SEED_MIGRATION_LOCATION = "classpath:db/migration/seed";
 
     /**
      * The highest migration version that belongs to the schema rather than to the seeds.
@@ -338,8 +371,14 @@ public abstract class AbstractPostgresIT {
      * @return the started, migrated container
      */
     private static PostgreSQLContainer<?> startMigratedServer() {
+        // The compatibility declaration is required by the digest, not by the image: the container library
+        // recognises a bare `postgres:<tag>` reference on its own but treats `postgres:<tag>@sha256:<digest>`
+        // as an unknown substitute, because it compares the whole reference against the name it was written
+        // for. Naming `postgres` here says what the digest denotes. It widens nothing - the digest is the
+        // narrower statement of the two, and it is the one this suite runs against.
         final PostgreSQLContainer<?> container =
-                new PostgreSQLContainer<>(POSTGRES_IMAGE)
+                new PostgreSQLContainer<>(DockerImageName.parse(POSTGRES_IMAGE)
+                        .asCompatibleSubstituteFor(POSTGRES_REPOSITORY))
                         .withDatabaseName(DATABASE_NAME)
                         .withUsername(DATABASE_USER)
                         .withPassword(DATABASE_PASSWORD)
@@ -348,7 +387,7 @@ public abstract class AbstractPostgresIT {
         container.start();
         Flyway.configure()
                 .dataSource(container.getJdbcUrl(), container.getUsername(), container.getPassword())
-                .locations(MIGRATION_LOCATION)
+                .locations(MIGRATION_LOCATION, SEED_MIGRATION_LOCATION)
                 .load()
                 .migrate();
         return container;
@@ -581,7 +620,7 @@ public abstract class AbstractPostgresIT {
         forgetSeedMigrationHistory();
         Flyway.configure()
                 .dataSource(jdbcUrl(), databaseUser(), databasePassword())
-                .locations(MIGRATION_LOCATION)
+                .locations(MIGRATION_LOCATION, SEED_MIGRATION_LOCATION)
                 .load()
                 .migrate();
     }

@@ -19,7 +19,6 @@ package com.carddemo.config;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
-import java.util.Objects;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -199,19 +198,5 @@ public record JwtProperties(
      */
     public boolean hasSecret() {
         return this.secret != null && !this.secret.isBlank();
-    }
-
-    /**
-     * Reports whether these settings carry the same issuer as another set.
-     *
-     * <p>Compares the issuer alone, deliberately. It exists so that agreement between two bound copies -
-     * for instance a minting side and a verifying side configured separately - can be asserted without
-     * comparing, and therefore without any caller holding, the signing material.</p>
-     *
-     * @param other settings to compare against; {@code null} yields {@code false}
-     * @return {@code true} when both carry an equal issuer
-     */
-    public boolean sharesIssuerWith(final JwtProperties other) {
-        return other != null && Objects.equals(this.issuer, other.issuer);
     }
 }

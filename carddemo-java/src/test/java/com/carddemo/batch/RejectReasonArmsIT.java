@@ -29,7 +29,6 @@ import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.RejectRecordWriter;
 import com.carddemo.batch.step.StagedGenerationStore;
-import com.carddemo.batch.step.TransactionValidationProcessor;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.domain.Account;

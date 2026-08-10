@@ -47,6 +47,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Pageable;
 
 import com.carddemo.domain.Account;
@@ -65,6 +66,7 @@ import com.carddemo.repository.DisclosureGroupRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.util.SensitiveLogRedactor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -194,6 +196,15 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 @DisplayName("InterestCalculationService: the interest accrual run, truncating and operand-ordered")
 final class InterestCalculationServiceTest {
+
+    /**
+     * The bound the two alternate-key finders now require, generous enough that these specifications
+     * measure the finder's shape rather than its bound.
+     *
+     * <p>The bound itself is measured against a real server in the repository specifications, where a
+     * fixture can hold two rows under one account identifier; a mock cannot establish it.
+     */
+    private static final Limit ALTERNATE_KEY_ROWS = Limit.of(100);
 
     /* ============================================================================================ */
     /* PINNED DETERMINISM                                                                            */
@@ -1579,6 +1590,73 @@ final class InterestCalculationServiceTest {
         }
 
         @Test
+        @DisplayName("the withheld-rewrite outcome is reported at INFO with its reason and two counters "
+                + "and with no monetary amount and no raw identifier anywhere in it")
+        void theWithheldRewriteIsReportedWithoutAMonetaryAmountOrARawIdentifier() {
+            final Account first = account(ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE);
+            final Account highest = account(HIGHER_ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE);
+            givenGroupReadsResolve(first);
+            givenGroupReadsResolve(highest);
+            givenAccountRewriteEchoes();
+            givenEveryProbeResolvesAt(DECISIVE_RATE);
+
+            InterestCalculationServiceTest.this.service.calculateInterest(PINNED_RUN_DATE,
+                    List.of(categoryBalance(ACCOUNT_ID, DECISIVE_BALANCE),
+                            categoryBalance(HIGHER_ACCOUNT_ID, DECISIVE_BALANCE)),
+                    recordSink(), groupSink());
+
+            final List<String> atInfo = InterestCalculationServiceTest.this.logCapture.list.stream()
+                    .filter(event -> event.getLevel() == Level.INFO)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+            final String withheldOutcome = atInfo.stream()
+                    .filter(message -> message.contains("1050-UPDATE-ACCOUNT IS NOT PERFORMED"))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "the withheld-rewrite outcome is not reported at all: " + atInfo));
+
+            assertAll(
+                    () -> assertThat(withheldOutcome)
+                            .as("the reason the rewrite did not happen, which is what an operator has "
+                                    + "to be able to explain")
+                            .contains("END OF FILE CONTROL BREAK IS UNREACHABLE"),
+                    () -> assertThat(withheldOutcome)
+                            .as("the first counter separates a group that accrued nothing and lost "
+                                    + "nothing from one whose real accrual was dropped")
+                            .contains("interestAccrued=true"),
+                    () -> assertThat(withheldOutcome)
+                            .as("the second counter says how many records the group wrote")
+                            .contains("recordsWritten=1"),
+                    () -> assertThat(withheldOutcome)
+                            .as("the account is named by a redaction marker and a reference, never by "
+                                    + "the eleven-digit key itself")
+                            .contains(SensitiveLogRedactor.REDACTED)
+                            .doesNotContain(HIGHER_ACCOUNT_ID),
+                    () -> assertThat(withheldOutcome)
+                            .as("the withheld interest is a customer's accrued money and does not "
+                                    + "appear; a stable per-run account reference beside it would make "
+                                    + "the figure attributable")
+                            .doesNotContain(DECISIVE_INTEREST.toPlainString()),
+                    () -> assertThat(withheldOutcome)
+                            .as("nor does the balance the accrual would have moved, nor the balance it "
+                                    + "was withheld from")
+                            .doesNotContain(OPENING_BALANCE.toPlainString(),
+                                    BALANCE_AFTER_DECISIVE_INTEREST.toPlainString(),
+                                    DECISIVE_BALANCE.toPlainString()),
+                    () -> assertThat(withheldOutcome)
+                            .as("and no two-decimal figure of any kind survives, which is the shape "
+                                    + "every monetary field in the estate carries")
+                            .doesNotMatch("(?s).*\\d+\\.\\d{2}.*"),
+                    () -> assertThat(atInfo)
+                            .as("no message at this level names the account by its key or publishes a "
+                                    + "two-decimal figure, so the ordinary operational log carries "
+                                    + "neither")
+                            .noneMatch(message -> message.contains(HIGHER_ACCOUNT_ID)
+                                    || message.contains(ACCOUNT_ID)
+                                    || message.matches("(?s).*\\d+\\.\\d{2}.*")));
+        }
+
+        @Test
         @DisplayName("the second update site stays unreachable: only the accounts a KEY CHANGE closed "
                 + "are rewritten, so the run's last account is never rewritten at all")
         void onlyKeyChangeControlBreaksRewriteAnAccount() {
@@ -2552,14 +2630,14 @@ final class InterestCalculationServiceTest {
                     crossReference(ACCOUNT_ID, SECOND_XREF_CARD_NUM);
             final CardCrossReference secondAsSupplied = crossReference(ACCOUNT_ID, XREF_CARD_NUM);
             when(InterestCalculationServiceTest.this.crossReferenceRepository
-                    .findByXrefAcctId(ACCOUNT_ID))
+                    .findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID, ALTERNATE_KEY_ROWS))
                     .thenReturn(List.of())
                     .thenReturn(List.of(firstAsSupplied, secondAsSupplied));
 
             final List<CardCrossReference> absent = InterestCalculationServiceTest.this
-                    .crossReferenceRepository.findByXrefAcctId(ACCOUNT_ID);
+                    .crossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID, ALTERNATE_KEY_ROWS);
             final List<CardCrossReference> several = InterestCalculationServiceTest.this
-                    .crossReferenceRepository.findByXrefAcctId(ACCOUNT_ID);
+                    .crossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID, ALTERNATE_KEY_ROWS);
 
             assertAll(
                     () -> assertThat(absent)

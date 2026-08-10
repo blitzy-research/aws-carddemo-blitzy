@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -32,6 +33,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.Appender;
+import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -74,6 +76,7 @@ import com.carddemo.util.SensitiveFieldCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
@@ -713,6 +716,102 @@ final class DailyTransactionReadJobConfigTest {
                         .isNull();
             } finally {
                 bound.close();
+            }
+        }
+
+        @Test
+        @DisplayName("a symbolic link beneath the staging root is refused rather than followed, because "
+                + "following it would let whoever planted it choose the day's transactions")
+        void aSymbolicLinkBeneathTheStagingRootIsRefused(@TempDir final Path root) throws Exception {
+            final String datasetName = "AWS.M2.CARDDEMO.DALYTRAN.PS";
+            final Path elsewhere = Files.createTempFile("planted-", ".txt");
+            try {
+                Files.writeString(elsewhere, "", StandardCharsets.US_ASCII);
+                Files.createSymbolicLink(root.resolve(datasetName), elsewhere);
+
+                final DailyTransactionReadJobConfig configuration =
+                        new DailyTransactionReadJobConfig(jobRepository, transactionManager,
+                                readerFactory, readService, meterRegistry, resourceLoader, stagingArea,
+                                root.toString(), datasetName, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED,
+                                UNSTAGED);
+
+                // The local rung declines, so resolution falls through to the configured location - which
+                // is the bare dataset name, and the loader resolves a name with no scheme as a class-path
+                // resource. So the reader cannot open, and that is the correct outcome: refused, not
+                // redirected. A followed link would instead have opened the planted file quietly and every
+                // subsequent step would have treated its contents as the day's transactions.
+                final FlatFileItemReader<DailyTransaction> bound =
+                        configuration.dalytranReader().orElseThrow();
+                assertThatExceptionOfType(Exception.class)
+                        .as("the link must not have been resolved into an openable resource")
+                        .isThrownBy(() -> bound.open(new ExecutionContext()))
+                        .withMessageNotContaining(elsewhere.toString());
+            } finally {
+                Files.deleteIfExists(elsewhere);
+            }
+        }
+
+        @Test
+        @DisplayName("a staged file anybody may write is refused, because a file whose contents can be "
+                + "replaced between the check and the read was never this deployment's output")
+        void aWorldWritableStagedFileIsRefused(@TempDir final Path root) throws Exception {
+            final String datasetName = "AWS.M2.CARDDEMO.DALYTRAN.PS";
+            final Path staged = root.resolve(datasetName);
+            Files.writeString(staged, "", StandardCharsets.US_ASCII);
+            Files.setPosixFilePermissions(staged, PosixFilePermissions.fromString("rw-rw-rw-"));
+
+            final DailyTransactionReadJobConfig configuration = new DailyTransactionReadJobConfig(
+                    jobRepository, transactionManager, readerFactory, readService, meterRegistry,
+                    resourceLoader, stagingArea, root.toString(), datasetName, UNSTAGED, UNSTAGED,
+                    UNSTAGED, UNSTAGED, UNSTAGED);
+
+            // This entry is a real regular file in the right place with the right name, so existence
+            // alone accepts it - and the identical file with owner-only permissions IS accepted by the
+            // sibling specification above. The only difference is the mode, which is the whole point:
+            // the rule is about who could have written it, not about whether it is there.
+            final FlatFileItemReader<DailyTransaction> bound =
+                    configuration.dalytranReader().orElseThrow();
+            assertThatExceptionOfType(Exception.class)
+                    .as("the local rung must decline, so resolution falls through and the bare name "
+                            + "cannot be opened as a class-path resource")
+                    .isThrownBy(() -> bound.open(new ExecutionContext()));
+        }
+
+        @Test
+        @DisplayName("a refused entry is reported, because silence would leave an operator unable to "
+                + "learn that something had been planted where the job reads")
+        void aRefusedEntryIsReported(@TempDir final Path root) throws Exception {
+            final String datasetName = "AWS.M2.CARDDEMO.DALYTRAN.PS";
+            Files.createDirectory(root.resolve(datasetName));
+            final Logger configLogger =
+                    (Logger) LoggerFactory.getLogger(DailyTransactionReadJobConfig.class);
+            final Level originalLevel = configLogger.getLevel();
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.setContext(configLogger.getLoggerContext());
+            recorder.start();
+            configLogger.addAppender(recorder);
+            configLogger.setLevel(Level.WARN);
+            try {
+                new DailyTransactionReadJobConfig(jobRepository, transactionManager, readerFactory,
+                        readService, meterRegistry, resourceLoader, stagingArea, root.toString(),
+                        datasetName, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED)
+                        .dalytranReader();
+
+                assertThat(recorder.list)
+                        .as("one warning naming the property and the dataset, and nothing about the "
+                                + "entry's target - which is the point of not following the link")
+                        .singleElement()
+                        .satisfies(event -> {
+                            assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                            assertThat(event.getFormattedMessage())
+                                    .contains(DailyTransactionReadJobConfig.DALYTRAN_RESOURCE_PROPERTY)
+                                    .contains(datasetName)
+                                    .contains("not a regular file this process owns");
+                        });
+            } finally {
+                configLogger.detachAppender(recorder);
+                recorder.stop();
+                configLogger.setLevel(originalLevel);
             }
         }
 

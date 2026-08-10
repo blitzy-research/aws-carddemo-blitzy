@@ -16,6 +16,10 @@
  */
 package com.carddemo.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.config.MenuOptionCatalog;
 
 import java.time.Clock;
@@ -24,6 +28,8 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -31,6 +37,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
+import org.slf4j.LoggerFactory;
 
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
@@ -660,6 +667,130 @@ class MenuServiceTest {
             assertThat(MenuService.SIGN_ON_PROGRAM_NAME).isEqualTo("COSGN00C");
             assertThat(MenuService.OPTION_FIELD_WIDTH).isEqualTo(2);
             assertThat(MenuService.OPTION_SCREEN_FIELD_ID).isEqualTo("OPTION");
+        }
+    }
+    /**
+     * What a menu abend leaves in the log.
+     *
+     * <h2>Why this group exists</h2>
+     *
+     * <p>Review found that both of this class's abend paths built their failure directly, so a menu dispatch
+     * that terminated left <strong>no log record at all</strong>: not the culprit, not the reason, nothing.
+     * The exception reached the boundary, was rendered to the caller, and the operator had only the response
+     * to work from - on a path that only fires when the option catalog and the destination table disagree,
+     * which is exactly the condition an operator needs told about.
+     *
+     * <p>Both paths now record through the centralised online abend diagnostic, which is the same record
+     * every other abend site in the estate writes: one line, under the abend category, naming the abend
+     * code, the culprit and the reason, with the operation where one exists. Every value in it is a literal
+     * this class authored or an option number it derived from a validated selection.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-312.
+     */
+    @Nested
+    @DisplayName("a menu abend is recorded, which it previously was not")
+    class AMenuAbendIsRecorded {
+
+        /** Captures the centralised abend category. */
+        private ListAppender<ILoggingEvent> recorder;
+
+        /** The abend category. */
+        private Logger abendLogger;
+
+        /** Its level before this group pinned it. */
+        private Level originalLevel;
+
+        @BeforeEach
+        void captureTheAbendCategory() {
+            this.abendLogger = (Logger) LoggerFactory.getLogger(AbendService.class);
+            this.originalLevel = this.abendLogger.getLevel();
+            this.abendLogger.setLevel(Level.ERROR);
+            this.recorder = new ListAppender<>();
+            this.recorder.setContext(this.abendLogger.getLoggerContext());
+            this.recorder.start();
+            this.abendLogger.addAppender(this.recorder);
+        }
+
+        @AfterEach
+        void releaseTheAbendCategory() {
+            this.abendLogger.detachAppender(this.recorder);
+            this.recorder.stop();
+            this.abendLogger.setLevel(this.originalLevel);
+        }
+
+        /** The records captured, formatted. */
+        private List<String> recorded() {
+            return this.recorder.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        }
+
+        @Test
+        @DisplayName("an option with no catalog entry records the culprit, the reason and the option, on "
+                + "one line, where nothing was recorded before")
+        void anOptionWithNoCatalogEntryIsRecorded() {
+            MenuOptionCatalog inconsistent = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(inconsistent.userMenuOptionCount()).thenReturn(USER_ROUTES.size());
+            Mockito.when(inconsistent.findUserOption(3)).thenReturn(Optional.empty());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> serviceWith(inconsistent)
+                            .userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER));
+
+            assertThat(recorded())
+                    .singleElement()
+                    .isEqualTo("ABENDING PROGRAM abendCode=9999 culprit=COMEN01C"
+                            + " reason=MENU OPTION TABLE HOLDS NO SELECTED ENTRY"
+                            + " operation=SELECT OPTION 3");
+        }
+
+        @Test
+        @DisplayName("an option naming an unreachable program records the transfer that failed")
+        void anUnreachableProgramIsRecorded() {
+            MenuService broken = serviceWith(userCatalogAnswering(catalog, 3,
+                    new MenuOptionCatalog.UserMenuOption(3, "Credit Card List", "COZZZZZZ", "U")));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> broken.userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER));
+
+            assertThat(recorded())
+                    .singleElement()
+                    .isEqualTo("ABENDING PROGRAM abendCode=9999 culprit=COMEN01C"
+                            + " reason=XCTL TO UNRESOLVABLE PROGRAM NAME operation=XCTL");
+        }
+
+        @Test
+        @DisplayName("the administrative menu records under its own culprit, so one record identifies which "
+                + "of the two transactions terminated")
+        void theAdministrativeMenuRecordsItsOwnCulprit() {
+            MenuOptionCatalog inconsistent = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(inconsistent.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
+            Mockito.when(inconsistent.findAdminOption(2)).thenReturn(Optional.empty());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> serviceWith(inconsistent)
+                            .adminMenu(reEntry(), KeyAction.ENTER, "2"));
+
+            assertThat(recorded())
+                    .singleElement()
+                    .asString()
+                    .contains("culprit=COADM01C")
+                    .contains("operation=SELECT OPTION 2");
+        }
+
+        @Test
+        @DisplayName("the record carries no fixed-width abend image, which is the other half of the same "
+                + "finding: the area's message slot is not log content")
+        void theRecordCarriesNoContextImage() {
+            MenuService broken = serviceWith(userCatalogAnswering(catalog, 3,
+                    new MenuOptionCatalog.UserMenuOption(3, "Credit Card List", "COZZZZZZ", "U")));
+            abendLogger.setLevel(Level.TRACE);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> broken.userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER));
+
+            assertThat(recorded())
+                    .allSatisfy(line -> assertThat(line)
+                            .doesNotContain("abendContext=")
+                            .doesNotContain("contextLength="));
         }
     }
 }

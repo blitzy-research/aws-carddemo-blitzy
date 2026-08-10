@@ -61,8 +61,10 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -221,6 +223,14 @@ class AuthenticationServiceTest {
      */
     private static final String LOCALE_DIVERGENT_CHARACTERS = "\u00df\u00b5";
 
+    /**
+     * A value the credential column must never hold: eight characters, no version marker, no
+     * cost and no radix-64 tail. It stands for a column that stopped holding a digest - a
+     * migration run against the wrong schema, a restore from a pre-hashing backup - which is a
+     * deployment fault rather than anything the caller did.
+     */
+    private static final String NOT_A_DIGEST = "PASSWORD";
+
     /** A short entry, below the key width, used to prove the move into the record's own key. */
     private static final String SHORT_USER_ENTRY = "user1";
 
@@ -353,6 +363,11 @@ class AuthenticationServiceTest {
                 Duration.ofMinutes(5), Duration.ofMinutes(1), 10_000, FIXED_CLOCK, governorMeters);
         subject = new AuthenticationService(userSecurityRepository, credentialDigestService,
                 navigationService, messageCatalogService, FIXED_CLOCK, attemptGovernor);
+        // The stored column holds a digest in every case this class describes. Stated leniently because
+        // most of these turns never reach the credential comparison at all - a refused key, a blank
+        // field or an unknown identifier answers first - and a strict stub would then be reported as
+        // unused. The one class that describes a column NOT holding a digest overrides this.
+        lenient().when(credentialDigestService.isDigest(anyString())).thenReturn(true);
 
         serviceLogger = (Logger) LoggerFactory.getLogger(AuthenticationService.class);
         previousLogLevel = serviceLogger.getLevel();
@@ -737,6 +752,41 @@ class AuthenticationServiceTest {
                             .isEqualTo(AuthenticationService.Decision.WRONG_PASSWORD),
                     () -> assertThat(screen.userId()).isNull(),
                     () -> assertThat(screen.route()).isNull());
+        }
+
+        @Test
+        @DisplayName("A COLUMN THAT STOPPED HOLDING A DIGEST GIVES THE CALLER THE SAME NEUTRAL "
+                + "REFUSAL: the deployment fault is named in the log and nowhere else, and the "
+                + "hashing work is still performed so the corrupt case is not the cheap one")
+        void aStoredValueThatIsNotADigestIsRefusedNeutrally() {
+            final UserSecurity stored = mock(UserSecurity.class);
+            when(stored.credentialDigest()).thenReturn(NOT_A_DIGEST);
+            when(userSecurityRepository.findById(ADMIN_USER_ID)).thenReturn(Optional.of(stored));
+            when(credentialDigestService.isDigest(NOT_A_DIGEST)).thenReturn(false);
+
+            final AuthenticationService.SignOnScreen screen =
+                    subject.signOn(ADMIN_USER_ID, FOLDED_SECRET_ENTRY);
+
+            assertAll(
+                    () -> assertThat(screen.decision())
+                            .as("the caller learns the credential did not verify and nothing about the "
+                                    + "state of this deployment's column")
+                            .isEqualTo(AuthenticationService.Decision.WRONG_PASSWORD),
+                    () -> assertThat(screen.userId()).isNull(),
+                    () -> assertThat(screen.route()).isNull(),
+                    () -> assertThat(screen.errorFlag())
+                            .as("the same lowered flag the wrong-secret clause leaves")
+                            .isFalse(),
+                    () -> assertThat(capturedDiagnostics())
+                            .as("an operator must be able to tell a corrupt column from a caller who "
+                                    + "keeps mistyping, which identical log lines would not permit")
+                            .anySatisfy(message -> assertThat(message)
+                                    .contains("rule=stored-credential-is-not-a-digest")),
+                    () -> assertThat(capturedDiagnostics())
+                            .as("and the offending value is never one of the things it can tell them")
+                            .noneSatisfy(message -> assertThat(message).contains(NOT_A_DIGEST)));
+            // The equalising comparison, performed for the same reason the not-found path performs it.
+            verify(credentialDigestService).matches(any(), any());
         }
 
         @Test

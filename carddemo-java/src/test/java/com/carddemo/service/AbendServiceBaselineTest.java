@@ -36,6 +36,7 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
@@ -505,27 +506,33 @@ class AbendServiceBaselineTest {
         }
 
         @Test
-        @DisplayName("emits the fixed-width context image on the online path once the logger"
-                + " admits debug events")
-        void raisingTheLevelToDebugEmitsTheFixedWidthContextImage() {
+        @DisplayName("emits NO fixed-width context image on the online path even once the logger admits "
+                + "debug events, and the area stays on the exception where the legacy transmitted it")
+        void raisingTheLevelToDebugStillEmitsNoContextImage() {
+            // THIS ASSERTION IS THE REVERSE OF THE ONE IT REPLACES, and the reversal is the finding. The
+            // fourth field of the legacy area is a 72-character operator message slot - the one part not
+            // drawn from a vocabulary this module owns - so a debug switch used to copy an arbitrary
+            // caller-facing value into centralised logging in a format built for a 3270 screen. The legacy
+            // routine transmitted that area to the terminal the operator was sitting at, which is a
+            // different act with a different audience. Every width and offset assertion below is retained
+            // verbatim; only its SOURCE moved, from a log record to the exception.
+            // See docs/decision-log.md entry DL-312.
             logger.setLevel(Level.DEBUG);
             assertThat(logger.isDebugEnabled()).isTrue();
 
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> service.abendOnline(ONLINE_PROGRAM, REASON,
-                            TERMINAL_MESSAGE));
+            final AbendException raised = catchThrowableOfType(AbendException.class,
+                    () -> service.abendOnline(ONLINE_PROGRAM, REASON, TERMINAL_MESSAGE));
 
-            assertThat(recorder.list).hasSize(2);
+            assertThat(recorder.list)
+                    .as("one record, at error level, whatever the level admits")
+                    .hasSize(1);
             assertThat(recorder.list.getFirst().getLevel()).isEqualTo(Level.ERROR);
+            assertThat(recorder.list.getFirst().getFormattedMessage())
+                    .doesNotContain("contextLength=")
+                    .doesNotContain("abendContext=")
+                    .doesNotContain(TERMINAL_MESSAGE);
 
-            ILoggingEvent contextEvent = recorder.list.get(1);
-            assertThat(contextEvent.getLevel()).isEqualTo(Level.DEBUG);
-
-            String formatted = contextEvent.getFormattedMessage();
-            assertThat(formatted).contains("contextLength=" + AbendException.CONTEXT_LENGTH);
-
-            String image = formatted.substring(formatted.indexOf('[') + 1,
-                    formatted.lastIndexOf(']'));
+            String image = raised.toFixedWidthContext();
 
             // The width is asserted twice: once against the published constant and once
             // against the sum of the four field widths declared by the abend copybook, so

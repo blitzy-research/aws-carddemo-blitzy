@@ -22,11 +22,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.anyIterable;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,6 +33,7 @@ import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.DateValidationService;
+import com.carddemo.support.RunScopedStagingRoot;
 import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.TransactionRecordMapper;
 import ch.qos.logback.classic.Level;
@@ -57,27 +55,23 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
-import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.JobParametersIncrementer;
-import org.springframework.batch.core.JobParametersInvalidException;
-import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
-import org.springframework.batch.core.job.DefaultJobParametersValidator;
 import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
@@ -150,6 +144,14 @@ class CombineTransactionsJobConfigTest {
     /** A representative execution identifier used to name the per-run combined generation. */
     private static final long JOB_EXECUTION_ID = 42L;
 
+    /**
+     * The system property the production minting call reads to place a per-execution work area.
+     *
+     * <p>Named here because one test redirects it, briefly and under {@code finally}, so that it can
+     * observe the release of a work area without listing a directory the whole host writes to.
+     */
+    private static final String PLATFORM_TEMPORARY_PROPERTY = "java.io.tmpdir";
+
     /** Builds the readers over the transaction master layout; stateless, so one instance serves all. */
     private final FixedWidthFlatFileReaderFactory readerFactory = new FixedWidthFlatFileReaderFactory();
 
@@ -169,11 +171,28 @@ class CombineTransactionsJobConfigTest {
      */
     private final StagedGenerationStore generationStore = mock(StagedGenerationStore.class);
 
-    /** Local fallback root; file-URI fixtures bypass it while logical-name tests exercise it. */
-    private static final String STAGING_DIRECTORY = System.getProperty("java.io.tmpdir");
+    /**
+     * The staging root this class owns for the length of one run, and nothing else does.
+     *
+     * <p><strong>Why this is not {@code java.io.tmpdir}.</strong> It was, and the consequence was a
+     * host-global collision. A generation is named from its execution identifier, and this class uses two
+     * fixed identifiers so that a test can name the file it expects; two clones of this module building on
+     * one host therefore resolved <em>the same two paths</em>, and one clone's run could read, overwrite or
+     * delete the other's generation. The failure that follows belongs to neither run and reproduces on
+     * neither in isolation - and a run that passed may have passed on a neighbour's file.
+     *
+     * <p>A root created per run removes the collision without weakening anything the tests assert: the
+     * fixed identifiers stay fixed, because they are now unique <em>within a directory nobody else has</em>.
+     * The cleanup below is likewise bounded to this root, so it cannot reach a sibling clone's files.
+     */
+    private static final Path STAGING_ROOT =
+            RunScopedStagingRoot.createFor(CombineTransactionsJobConfigTest.class);
+
+    /** The owned root as the configuration's property expects it: a plain directory path. */
+    private static final String STAGING_DIRECTORY = STAGING_ROOT.toString();
 
     /**
-     * Removes any combined generation a test left in the shared staging root.
+     * Removes any combined generation a test left in the owned staging root.
      *
      * <p>The production path removes its own local copy once the load step has served it, but a test
      * that stops half way through the two roles deliberately does not reach that point, so the suite
@@ -188,6 +207,12 @@ class CombineTransactionsJobConfigTest {
             Files.deleteIfExists(generation);
             Files.deleteIfExists(generation.resolveSibling(generation.getFileName() + ".part"));
         }
+    }
+
+    /** Removes the owned root itself, so a run leaves nothing behind on the host. */
+    @AfterAll
+    static void removeTheOwnedStagingRoot() {
+        RunScopedStagingRoot.deleteRecursively(STAGING_ROOT);
     }
 
     /**
@@ -1537,6 +1562,41 @@ class CombineTransactionsJobConfigTest {
     @DisplayName("a failure to release an input is reported, never allowed to mask the outcome")
     final class AFailureToReleaseAnInputIsReported {
 
+        /**
+         * The directory the production minting call is pointed at while a test in this nest runs.
+         *
+         * <p>The per-execution ordering work area is minted beneath the platform temporary location,
+         * because that is what the production call reads. Four tests here observe whether such an area was
+         * released, and they used to do so by listing that host-global location and comparing the listing
+         * before and after. On a host building several clones of this module at once that comparison is
+         * unsound in both directions: a neighbour's run can add an area between the two listings, or remove
+         * one, and either turns a correct release into a failure or hides a leak.
+         *
+         * <p>Redirecting the property at a directory this class owns removes the ambiguity entirely. The
+         * directory starts empty for every test, so "released" is the exact statement <em>this is empty</em>
+         * rather than the differential one, and nothing outside this run can write to it. The property is
+         * restored after each test, and no JUnit or Surefire parallelism is configured in this module, so
+         * the redirection is visible to nothing else.
+         */
+        private Path observedTemporaryRoot;
+
+        /** The platform temporary location as the JVM was started with, restored after each test. */
+        private String platformTemporary;
+
+        /** Points the production minting call at a directory this nest owns. */
+        @BeforeEach
+        void redirectThePlatformTemporaryLocation() throws IOException {
+            this.observedTemporaryRoot = Files.createTempDirectory(STAGING_ROOT, "ordering-work-");
+            this.platformTemporary = System.getProperty(PLATFORM_TEMPORARY_PROPERTY);
+            System.setProperty(PLATFORM_TEMPORARY_PROPERTY, this.observedTemporaryRoot.toString());
+        }
+
+        /** Restores it, whatever the test did. */
+        @AfterEach
+        void restoreThePlatformTemporaryLocation() {
+            System.setProperty(PLATFORM_TEMPORARY_PROPERTY, this.platformTemporary);
+        }
+
         @Test
         @DisplayName("an input that will not close cleanly does not fail the pass, because by the time "
                 + "it is closed its records have already been read in full")
@@ -1562,7 +1622,10 @@ class CombineTransactionsJobConfigTest {
         @DisplayName("the ordered work file and the per-execution directory minted to hold it are both "
                 + "removed, so a run leaves nothing behind on the host")
         void bothTheWorkFileAndItsDirectoryAreRemoved() throws Exception {
-            final Set<Path> before = orderingWorkAreas();
+            assertThat(orderingWorkAreas())
+                    .as("the owned observation root starts empty, which is what makes the readings below "
+                            + "exact rather than differential")
+                    .isEmpty();
             final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
             when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
             final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
@@ -1575,11 +1638,11 @@ class CombineTransactionsJobConfigTest {
 
             assertThat(during)
                     .as("the pass mints exactly one work area of its own")
-                    .hasSize(before.size() + 1);
+                    .hasSize(1);
             assertThat(orderingWorkAreas())
                     .as("a work area minted per execution and never removed accumulates one empty "
                             + "directory per run for the life of the host")
-                    .isEqualTo(before);
+                    .isEmpty();
         }
 
         @Test
@@ -1601,7 +1664,7 @@ class CombineTransactionsJobConfigTest {
         @DisplayName("a cleanup that cannot complete reports its first failure and carries the later one "
                 + "beneath it, having attempted both rather than stopping at the first")
         void aCleanupFailureCarriesTheLaterOneBeneathIt() throws Exception {
-            final Set<Path> before = orderingWorkAreas();
+            assertThat(orderingWorkAreas()).isEmpty();
             final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
             when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
             final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
@@ -1609,7 +1672,7 @@ class CombineTransactionsJobConfigTest {
                     "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
             reader.open(new ExecutionContext());
             final Set<Path> minted = new HashSet<>(orderingWorkAreas());
-            minted.removeAll(before);
+            assertThat(minted).as("the pass mints exactly one work area of its own").hasSize(1);
             final Path area = minted.iterator().next();
             final Path work = onlyEntryOf(area);
             // The work file's path is made undeletable by making it a non-empty directory, which every
@@ -1660,7 +1723,6 @@ class CombineTransactionsJobConfigTest {
         @DisplayName("and a preparation failure is reported as itself, never replaced by whatever the "
                 + "cleanup that follows it happens to find")
         void aPreparationFailureIsNotReplacedByACleanupFailure() throws Exception {
-            final Set<Path> before = orderingWorkAreas();
             final FixedWidthFlatFileReaderFactory refuses =
                     mock(FixedWidthFlatFileReaderFactory.class);
             when(refuses.fixedTransactionReader(any()))
@@ -1675,19 +1737,20 @@ class CombineTransactionsJobConfigTest {
                     .hasMessageContaining("could not be allocated");
 
             assertThat(orderingWorkAreas())
-                    .as("a failed preparation still releases what it had minted")
-                    .isEqualTo(before);
+                    .as("a failed preparation still releases what it had minted: the work area it created "
+                            + "beneath the redirected platform location is gone, and that location is one "
+                            + "no other run can write to, so a leftover here is this pass's leak")
+                    .isEmpty();
         }
 
         /**
-         * The ordering work areas currently present in the shared staging root.
+         * The ordering work areas currently present beneath the directory this nest owns.
          *
          * @return their paths, which the pass mints and removes one per execution
-         * @throws IOException if the root cannot be listed
+         * @throws IOException if the directory cannot be listed
          */
         private Set<Path> orderingWorkAreas() throws IOException {
-            final Path root = Path.of(System.getProperty("java.io.tmpdir"));
-            try (var held = Files.list(root)) {
+            try (var held = Files.list(this.observedTemporaryRoot)) {
                 return held.filter(Files::isDirectory)
                         .filter(path -> path.getFileName().toString()
                                 .startsWith("carddemo-combine-order-"))

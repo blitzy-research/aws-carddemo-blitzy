@@ -1916,9 +1916,17 @@ class TransactionReportProcessorTest {
             // The record that could not be resolved never reaches the report, and no substitute account
             // identifier is invented for it.
             assertThat(emitted).noneMatch(record -> record.startsWith(identifier(1)));
-            // The lookups that follow the cross-reference in the mainline are never reached.
-            verifyNoInteractions(types);
-            verifyNoInteractions(categories);
+            // The lookups that follow the cross-reference in the MAINLINE are never reached, which is
+            // what "nothing is skipped" means: the run stops at the first miss rather than resolving the
+            // rest of the record and reporting it incomplete.
+            //
+            // Asserted as an absence of KEYED reads rather than as an absence of all interaction. The two
+            // closed-vocabulary reference clusters are read in full when their own resource is opened,
+            // and the open sequence precedes the driving loop in the legacy member exactly as it does
+            // here, so a run that abends on its first record has already opened those files. What must
+            // not happen - and does not - is a mainline resolution of this record's type or category.
+            verify(types, never()).findById(any());
+            verify(categories, never()).findById(any());
         }
 
         @Test
@@ -1940,7 +1948,9 @@ class TransactionReportProcessorTest {
                     DIAG_INVALID_TRANTYPE, RECORD_NOT_FOUND_STATUS, READ_OPERATION, DD_TRANTYPE);
 
             assertThat(emitted).noneMatch(record -> record.startsWith(identifier(1)));
-            verifyNoInteractions(categories);
+            // The category lookup follows the type lookup in the mainline and is never reached. Stated
+            // as an absence of keyed reads for the reason given above.
+            verify(categories, never()).findById(any());
         }
 
         @Test

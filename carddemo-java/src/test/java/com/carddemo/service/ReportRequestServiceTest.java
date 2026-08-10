@@ -62,6 +62,9 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.util.ReportRetryTokens;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -134,6 +137,15 @@ class ReportRequestServiceTest {
     private static final Instant PINNED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
 
     private static final Clock PINNED_CLOCK = Clock.fixed(PINNED_INSTANT, ZoneOffset.UTC);
+
+    /**
+     * Signing material the token service derives its key from.
+     *
+     * <p>Fixed rather than absent, so that a token minted by one service in a case is recognised by another
+     * built over a moved clock in the same case - which is how the expiry arms are written.
+     */
+    private static final String TOKEN_SIGNING_SECRET =
+            "report-request-unit-test-signing-secret-0123456789";
 
     // ==============================================================================================
     // Contract widths and counts. Legacy contract values, never tuning parameters.
@@ -393,9 +405,18 @@ class ReportRequestServiceTest {
     /** A submission identity the stubbed bridge echoes back; whitespace-free, as the bridge demands. */
     private static final String STUBBED_SUBMISSION_ID = "stubbed-submission-identity";
 
-    private static final String RETRY_TOKEN = "report-request-retry-001";
+    /**
+     * A token an earlier attempt of this deployment returned.
+     *
+     * <p>Minted rather than invented, because a presented token is now checked and not merely carried: it
+     * has to be one this deployment issued and it has to be inside the window. A literal a caller could have
+     * chosen for itself - which is what this used to be - is exactly the value the boundary now refuses, and
+     * a test that kept using one would have been asserting the behaviour the finding was about.
+     */
+    private String retryToken;
 
-    private static final String OTHER_TOKEN = "report-request-new-002";
+    /** A second, distinct minted token, for the cases that separate a retry from a new submission. */
+    private String otherToken;
 
     /**
      * One of the two operators the scoping assertions use, at the eight-character width of a user-record
@@ -453,6 +474,21 @@ class ReportRequestServiceTest {
 
     private ReportRequestService subject;
 
+    /**
+     * A real token service, not a double.
+     *
+     * <p>The token is minted material carrying an authenticated instant, and the properties under test here
+     * are exactly the ones a double would have to reproduce: that a token this deployment minted is honoured
+     * within the window, and that one it did not mint, or one that has aged out, refuses the turn before a
+     * card is published. A stub returning the value it was handed would assert nothing about either. It
+     * reads the same pinned clock as the service, so the window is deterministic; where a case needs the
+     * clock to have moved it builds a second service over a moved clock rather than mutating this one.
+     */
+    private ReportRetryTokenService retryTokens;
+
+    /** Where the token service's refusal counter lands, so a refusal can be read back. */
+    private MeterRegistry tokenMeters;
+
     /** The service's own logger, so a non-fatal failure can be proven to have been recorded. */
     private Logger serviceLogger;
 
@@ -469,8 +505,12 @@ class ReportRequestServiceTest {
      */
     @BeforeEach
     void setUp() {
+        tokenMeters = new SimpleMeterRegistry();
+        retryTokens = new ReportRetryTokenService(TOKEN_SIGNING_SECRET, PINNED_CLOCK, tokenMeters);
         subject = new ReportRequestService(dateValidationService, jobSubmissionService,
-                messageCatalogService, navigationService, PINNED_CLOCK);
+                messageCatalogService, navigationService, PINNED_CLOCK, retryTokens);
+        retryToken = retryTokens.mint();
+        otherToken = retryTokens.mint();
 
         serviceLogger = (Logger) LoggerFactory.getLogger(ReportRequestService.class);
         previousLogLevel = serviceLogger.getLevel();
@@ -494,21 +534,29 @@ class ReportRequestServiceTest {
         assertAll(
                 () -> assertThatExceptionOfType(NullPointerException.class)
                         .isThrownBy(() -> new ReportRequestService(null, jobSubmissionService,
-                                messageCatalogService, navigationService, PINNED_CLOCK)),
+                                messageCatalogService, navigationService, PINNED_CLOCK, retryTokens)),
                 () -> assertThatExceptionOfType(NullPointerException.class)
                         .isThrownBy(() -> new ReportRequestService(dateValidationService, null,
-                                messageCatalogService, navigationService, PINNED_CLOCK)),
+                                messageCatalogService, navigationService, PINNED_CLOCK, retryTokens)),
                 () -> assertThatExceptionOfType(NullPointerException.class)
                         .isThrownBy(() -> new ReportRequestService(dateValidationService,
-                                jobSubmissionService, null, navigationService, PINNED_CLOCK)),
+                                jobSubmissionService, null, navigationService, PINNED_CLOCK,
+                                retryTokens)),
                 () -> assertThatExceptionOfType(NullPointerException.class)
                         .isThrownBy(() -> new ReportRequestService(dateValidationService,
-                                jobSubmissionService, messageCatalogService, null, PINNED_CLOCK)),
+                                jobSubmissionService, messageCatalogService, null, PINNED_CLOCK,
+                                retryTokens)),
                 () -> assertThatExceptionOfType(NullPointerException.class)
                         .as("an absent clock would make the derived windows read the host clock")
                         .isThrownBy(() -> new ReportRequestService(dateValidationService,
                                 jobSubmissionService, messageCatalogService, navigationService,
-                                null)));
+                                null, retryTokens)),
+                () -> assertThatExceptionOfType(NullPointerException.class)
+                        .as("an absent token service would leave the retry window unenforced, which is"
+                                + " the whole of the promise the returned token makes")
+                        .isThrownBy(() -> new ReportRequestService(dateValidationService,
+                                jobSubmissionService, messageCatalogService, navigationService,
+                                PINNED_CLOCK, null)));
         verifyNoInteractions(dateValidationService, jobSubmissionService, messageCatalogService,
                 navigationService);
     }
@@ -525,7 +573,8 @@ class ReportRequestServiceTest {
      */
     private ReportRequestService serviceAt(final Clock clock) {
         return new ReportRequestService(dateValidationService, jobSubmissionService,
-                messageCatalogService, navigationService, clock);
+                messageCatalogService, navigationService, clock,
+                new ReportRetryTokenService(TOKEN_SIGNING_SECRET, clock, new SimpleMeterRegistry()));
     }
 
     /**
@@ -1098,7 +1147,7 @@ class ReportRequestServiceTest {
             assertAll(() -> assertThatExceptionOfType(NullPointerException.class)
                             .isThrownBy(() -> subject.processReportRequest(null)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
-                            .isThrownBy(() -> subject.processReportRequest(null, RETRY_TOKEN)));
+                            .isThrownBy(() -> subject.processReportRequest(null, retryToken)));
             verifyNoInteractions(jobSubmissionService, dateValidationService, messageCatalogService,
                     navigationService);
         }
@@ -2129,15 +2178,84 @@ class ReportRequestServiceTest {
         }
 
         @Test
-        @DisplayName("a supplied logical-request token is carried through unchanged, so a caller can "
-                + "repeat it to retry the same submission")
+        @DisplayName("a token this deployment issued, still inside its window, is carried through "
+                + "unchanged, so a caller can repeat it to retry the same submission")
         void aSuppliedTokenIsCarriedThroughUnchanged() {
             bridgeAcceptsEveryCard();
 
             final ReportRequestService.ReportRequestResult result =
-                    subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken);
 
-            assertThat(result.submissionToken()).isEqualTo(RETRY_TOKEN);
+            assertThat(result.submissionToken()).isEqualTo(retryToken);
+        }
+
+        @Test
+        @DisplayName("a token older than the enforced window refuses the turn before a single card is "
+                + "published, rather than reissuing identifiers the queue has forgotten")
+        void anExpiredTokenRefusesTheTurn() {
+            final Clock afterTheWindow = Clock.fixed(
+                    PINNED_INSTANT.plus(ReportRetryTokens.VALIDITY).plusSeconds(1L), ZoneOffset.UTC);
+            final ReportRequestService later = new ReportRequestService(dateValidationService,
+                    jobSubmissionService, messageCatalogService, navigationService, afterTheWindow,
+                    new ReportRetryTokenService(TOKEN_SIGNING_SECRET, afterTheWindow, tokenMeters));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .as("the promise the token represents can no longer be kept, so it is not made")
+                    .isThrownBy(() -> later.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken))
+                    .withMessageContaining("Idempotency-Key")
+                    .withMessageContaining("omit the header");
+            verifyNoInteractions(jobSubmissionService);
+            assertThat(tokenMeters.get(ReportRetryTokenService.METRIC_RETRY_TOKEN_REFUSED)
+                            .tag(ReportRetryTokenService.TAG_REASON,
+                                    ReportRetryTokenService.REASON_EXPIRED)
+                            .counter().count())
+                    .as("a refusal the deployment cannot see is indistinguishable from an absent control")
+                    .isEqualTo(1.0d);
+        }
+
+        @Test
+        @DisplayName("a token this deployment never issued refuses the turn, rather than being ignored "
+                + "and published as a new submission the caller believes was a retry")
+        void aForeignTokenRefusesTheTurn() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> subject.processReportRequest(monthlyTurn(CONFIRM_YES),
+                            "report-request-retry-001"))
+                    .withMessageContaining("Idempotency-Key");
+            verifyNoInteractions(jobSubmissionService);
+            assertThat(tokenMeters.get(ReportRetryTokenService.METRIC_RETRY_TOKEN_REFUSED)
+                            .tag(ReportRetryTokenService.TAG_REASON,
+                                    ReportRetryTokenService.REASON_NOT_ISSUED_HERE)
+                            .counter().count())
+                    .isEqualTo(1.0d);
+        }
+
+        @Test
+        @DisplayName("the refusal names the header and the remedy and never the value presented, because "
+                + "a refused token is caller-supplied text")
+        void theRefusalNamesNothingTheCallerSent() {
+            final String presented = "a-token-carrying-something-private-0451";
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> subject.processReportRequest(monthlyTurn(CONFIRM_YES), presented))
+                    .withMessageNotContaining(presented)
+                    .withMessageContaining(String.valueOf(ReportRetryTokens.VALIDITY_MINUTES));
+        }
+
+        @Test
+        @DisplayName("a token minted at the far edge of the window is still honoured, so the boundary "
+                + "second is not refused while the queue would still collapse it")
+        void theBoundarySecondIsStillHonoured() {
+            bridgeAcceptsEveryCard();
+            final Clock atTheEdge = Clock.fixed(
+                    PINNED_INSTANT.plus(ReportRetryTokens.VALIDITY), ZoneOffset.UTC);
+            final ReportRequestService later = new ReportRequestService(dateValidationService,
+                    jobSubmissionService, messageCatalogService, navigationService, atTheEdge,
+                    new ReportRetryTokenService(TOKEN_SIGNING_SECRET, atTheEdge, tokenMeters));
+
+            final ReportRequestService.ReportRequestResult result =
+                    later.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken);
+
+            assertThat(result.submissionToken()).isEqualTo(retryToken);
         }
 
         @Test
@@ -2172,14 +2290,14 @@ class ReportRequestServiceTest {
         }
 
         @Test
-        @DisplayName("the same token and the same window reproduce the same submission identity, while "
-                + "a different token makes a distinct submission of that same window")
+        @DisplayName("the same token and the same reporting period reproduce the same submission "
+                + "identity, while a different token makes a distinct submission of that same period")
         void theSameTokenAndWindowReproduceTheSameIdentity() {
             bridgeAcceptsEveryCard();
 
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), OTHER_TOKEN);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), otherToken);
 
             verify(jobSubmissionService, times(3)).submitCanonicalJobImage(
                     submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
@@ -2205,8 +2323,8 @@ class ReportRequestServiceTest {
             // period name, a run label. Before the identity named the operator, the queue collapsed the
             // second operator's cards as a duplicate of the first's and answered the second operator as
             // though its request had been submitted.
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, SECOND_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken, SECOND_OPERATOR);
 
             verify(jobSubmissionService, times(2)).submitCanonicalJobImage(
                     submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
@@ -2231,9 +2349,9 @@ class ReportRequestServiceTest {
         void theSameTokenFromOneOperatorReproducesOneIdentity() {
             bridgeAcceptsEveryCard();
 
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), OTHER_TOKEN, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), otherToken, FIRST_OPERATOR);
 
             verify(jobSubmissionService, times(3)).submitCanonicalJobImage(
                     submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
@@ -2252,8 +2370,8 @@ class ReportRequestServiceTest {
         void aTurnThatNamesNoOperatorIsItsOwnNamespace() {
             bridgeAcceptsEveryCard();
 
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, null);
-            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken, null);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken, FIRST_OPERATOR);
 
             verify(jobSubmissionService, times(2)).submitCanonicalJobImage(
                     submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
@@ -2338,12 +2456,12 @@ class ReportRequestServiceTest {
             bridgeAcceptsEveryCard();
 
             final ReportRequestService.ReportRequestResult result =
-                    subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES), retryToken);
 
             assertAll(() -> assertThat(result.submissionAccepted()).isTrue(),
                     () -> assertThat(result.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT),
                     () -> assertThat(result.errorFlag()).isFalse(),
-                    () -> assertThat(result.submissionToken()).isEqualTo(RETRY_TOKEN),
+                    () -> assertThat(result.submissionToken()).isEqualTo(retryToken),
                     () -> assertThat(result.navigationContext()).isNotNull(),
                     () -> assertThat(result.fieldErrors()).isEmpty(),
                     () -> assertThat(result.reArmedTransactionId())

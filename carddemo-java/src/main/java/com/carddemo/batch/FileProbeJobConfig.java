@@ -48,7 +48,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -106,12 +105,17 @@ import org.springframework.transaction.PlatformTransactionManager;
  * <p>All four legacy file selections declare indexed organisation, sequential access mode and a record
  * key. Reading such a file from beginning to end therefore returns its records in ascending
  * primary-key order, and because every record reaches the diagnostic channel, <strong>that ordering is
- * observable output</strong> rather than an implementation detail. No repository in this module imposes
- * an order of its own, and an unordered query returns rows in whatever order the database finds
- * cheapest, so each mode carries an explicit ascending {@link Sort} on its business key and every scan
- * is issued with it. Omitting it would produce a diagnostic stream that differed between runs against
- * identical data. For the same reason the step is strictly sequential: no task executor, no
- * partitioning and no parallel flow, because any of them would interleave the stream.
+ * observable output</strong> rather than an implementation detail. An unordered query returns rows in
+ * whatever order the database finds cheapest, which would produce a diagnostic stream that differed
+ * between runs against identical data.
+ *
+ * <p>The ordering is imposed by {@code FileMaintenanceService}, which owns the pass and issues it through
+ * a derived key-ordered finder per cluster - each naming its own key ascending in the finder's own name -
+ * so the order is part of the query rather than an argument handed to it. Each mode here publishes the
+ * name of the key its pass is ordered on and nothing more: a second representation of the same ordering,
+ * carried alongside the one that is actually issued, is how the two would come to disagree. For the same
+ * reason the step is strictly sequential: no task executor, no partitioning and no parallel flow, because
+ * any of them would interleave the stream.
  *
  * <h2>What this job does not have, because the four members do not have it</h2>
  *
@@ -202,7 +206,7 @@ public final class FileProbeJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String FILE_PROBE_JOB_NAME = BatchJobCatalog.FILE_PROBE_JOB_NAME;
+    public static final String FILE_PROBE_JOB_NAME = BatchJobCatalog.FILE_PROBE_JOB;
 
     /** The one step name, and the bean name it is published under. */
     public static final String FILE_PROBE_STEP_NAME = "fileProbeStep";
@@ -365,9 +369,6 @@ public final class FileProbeJobConfig {
         /** The business key the ascending order is taken on. */
         private final String businessKeyProperty;
 
-        /** The ascending order that reproduces sequential access over the indexed file. */
-        private final Sort keyOrder;
-
         /**
          * @param parameterValue      the exact, case-sensitive launch value
          * @param legacyProgramName   the legacy program this mode translates
@@ -383,7 +384,6 @@ public final class FileProbeJobConfig {
             this.logicalResourceName = logicalResourceName;
             this.recordLength = recordLength;
             this.businessKeyProperty = businessKeyProperty;
-            this.keyOrder = Sort.by(Sort.Direction.ASC, businessKeyProperty);
         }
 
         /**
@@ -415,23 +415,24 @@ public final class FileProbeJobConfig {
         }
 
         /**
+         * The entity attribute carrying the business key this mode's pass is ordered on.
+         *
+         * <p>The ordering itself is <strong>not</strong> imposed from here, and this mode publishes no
+         * order object of its own. {@code FileMaintenanceService} owns the pass and issues it through
+         * derived key-ordered finders - one per cluster, each naming its own key ascending in the finder
+         * name - so the order is part of the query the pass makes rather than an argument handed to it.
+         * Publishing a second, unused representation of the same ordering here is how the two would come
+         * to disagree; this names the key and leaves the ordering to its owner.
+         *
+         * <p>The order is not optional wherever it is imposed. Sequential access over an indexed file
+         * returns records in ascending primary-key order and every record reaches the diagnostic channel,
+         * so the order is observable output; an unordered query would make that output depend on the
+         * database's own plan.
+         *
          * @return the entity attribute carrying the business key, never {@code null}
          */
         public String businessKeyProperty() {
             return this.businessKeyProperty;
-        }
-
-        /**
-         * The ascending order every scan for this mode is issued with.
-         *
-         * <p>It is not optional. Sequential access over an indexed file returns records in ascending
-         * primary-key order and every record reaches the diagnostic channel, so the order is observable
-         * output; an unordered query would make that output depend on the database's own plan.
-         *
-         * @return the ascending order on this mode's business key, never {@code null}
-         */
-        public Sort keyOrder() {
-            return this.keyOrder;
         }
 
         /**

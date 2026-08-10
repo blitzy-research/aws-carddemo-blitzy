@@ -34,6 +34,12 @@ import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.sns.core.SnsOperations;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
+
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -42,6 +48,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -88,13 +95,48 @@ class AwsResourceHealthConfigTest {
     private AwsResourceHealthConfig configuration;
     private ExecutorService workers;
 
+    /**
+     * The registry a probe's observation is carried from onto its worker.
+     *
+     * <p>Recording, because "the context was carried" is only assertable as "the worker's call was seen
+     * as a child". A plain registry would let a lost context pass unnoticed.
+     */
+    private ObservationRegistry observationRegistry;
+
+    /** Every observation stopped during a test, in stop order. */
+    private final List<Observation.Context> observed =
+            java.util.Collections.synchronizedList(new ArrayList<>());
+
+    /**
+     * Builds a registry that records what it observed.
+     *
+     * @return a recording registry
+     */
+    private ObservationRegistry recordingRegistry() {
+        final ObservationRegistry registry = ObservationRegistry.create();
+        registry.observationConfig().observationHandler(new ObservationHandler<>() {
+            @Override
+            public void onStop(final Observation.Context context) {
+                observed.add(context);
+            }
+
+            @Override
+            public boolean supportsContext(final Observation.Context context) {
+                return true;
+            }
+        });
+        return registry;
+    }
+
     @BeforeEach
     void setUp() {
         s3Operations = mock(S3Operations.class);
         sqsAsyncClient = mock(SqsAsyncClient.class);
         snsClient = mock(SnsClient.class);
         snsOperations = mock(SnsOperations.class);
-        configuration = new AwsResourceHealthConfig(settings());
+        observed.clear();
+        observationRegistry = recordingRegistry();
+        configuration = new AwsResourceHealthConfig(settings(), observationRegistry);
         workers = configuration.awsHealthCheckExecutor();
     }
 
@@ -107,8 +149,13 @@ class AwsResourceHealthConfigTest {
     @DisplayName("requires the validated AWS inventory")
     void requiresTheAwsInventory() {
         assertThatNullPointerException()
-                .isThrownBy(() -> new AwsResourceHealthConfig(null))
+                .isThrownBy(() -> new AwsResourceHealthConfig(null, ObservationRegistry.create()))
                 .withMessageContaining("awsProperties");
+        assertThatNullPointerException()
+                .as("without a registry a worker's provider call becomes a detached one-span trace, so "
+                        + "the registry is as mandatory as the inventory")
+                .isThrownBy(() -> new AwsResourceHealthConfig(settings(), null))
+                .withMessageContaining("observationRegistry");
     }
 
     @Test
@@ -117,6 +164,10 @@ class AwsResourceHealthConfigTest {
         new ApplicationContextRunner()
                 .withUserConfiguration(AwsResourceHealthConfig.class)
                 .withBean(AwsProperties.class, AwsResourceHealthConfigTest::settings)
+                // Registered explicitly: this slice registers beans directly rather than reading the
+                // shipped documents, so the observation registry the auto-configuration would supply is
+                // not present and the configuration requires one.
+                .withBean(ObservationRegistry.class, ObservationRegistry::create)
                 .withBean(S3Operations.class, () -> s3Operations)
                 .withBean(SqsAsyncClient.class, () -> sqsAsyncClient)
                 .withBean(SnsClient.class, () -> snsClient)
@@ -184,7 +235,7 @@ class AwsResourceHealthConfigTest {
     @DisplayName("a configured queue URL is verified with a read rather than accepted by syntax")
     void verifiesAConfiguredQueueUrl() {
         final AwsResourceHealthConfig urlConfiguration =
-                new AwsResourceHealthConfig(settings(QUEUE_URL));
+                new AwsResourceHealthConfig(settings(QUEUE_URL), observationRegistry);
         when(sqsAsyncClient.getQueueAttributes(
                 org.mockito.ArgumentMatchers
                         .<Consumer<GetQueueAttributesRequest.Builder>>any()))
@@ -280,6 +331,44 @@ class AwsResourceHealthConfigTest {
         assertThat(shared)
                 .as("the queue stays required: a request that cannot reach it never runs its job")
                 .contains(AwsResourceHealthConfig.COMPONENT_SQS);
+    }
+
+    @Test
+    @DisplayName("the probe's observation is carried onto the worker, so the provider call is not a "
+            + "detached root")
+    void theProbesObservationIsCarriedOntoTheWorker() {
+        // The gap this closes: a plain executor hands a worker a thread with nothing current, so the
+        // provider call the worker makes appears in a trace of its own with no link to the probe that
+        // asked for it. The pool is untouched - its direct handoff and its rejecting handler are what keep
+        // the deadline honest - and only the submitted work is wrapped.
+        final AtomicReference<Observation> onTheWorker = new AtomicReference<>();
+        when(s3Operations.bucketExists(BUCKET)).thenAnswer(invocation -> {
+            onTheWorker.set(observationRegistry.getCurrentObservation());
+            return Boolean.TRUE;
+        });
+        final Observation probe = Observation.createNotStarted("probe", observationRegistry).start();
+        final Observation.Scope scope = probe.openScope();
+        try {
+            configuration.awsS3HealthIndicator(s3Operations, workers).health();
+        } finally {
+            scope.close();
+            probe.stop();
+        }
+
+        assertThat(onTheWorker.get())
+                .as("the worker ran inside the probe's own observation; a null here is exactly the "
+                        + "detached-root state this closes")
+                .isSameAs(probe);
+    }
+
+    @Test
+    @DisplayName("a probe with no observation of its own still runs, because an unobserved caller is "
+            + "an ordinary case")
+    void anUnobservedProbeStillRuns() {
+        when(s3Operations.bucketExists(BUCKET)).thenReturn(true);
+
+        assertThat(configuration.awsS3HealthIndicator(s3Operations, workers).health().getStatus())
+                .isEqualTo(Status.UP);
     }
 
     @Nested

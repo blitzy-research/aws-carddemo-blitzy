@@ -59,7 +59,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *
  * <h2>Why the failure path is asserted to skip the close family entirely</h2>
  *
- * <p>The legacy terminal path is {@code CALL 'CEE3ABD'}, which does not return. Everything the
+ * <p>The legacy terminal path is the CEE3ABD call, which does not return. Everything the
  * legacy program would have executed after the abend point — the close paragraphs, the
  * record-count diagnostic and the end-of-execution announcement — therefore never runs. A Java
  * template that closed its resources in a finally block would execute observable work the legacy

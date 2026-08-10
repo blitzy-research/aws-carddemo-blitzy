@@ -69,11 +69,19 @@ public interface BatchLaunchGateway {
     }
 
     /**
-     * Starts one registered job after allocating server identity and refusing overlap.
+     * Starts one registered job after allocating server identity and refusing overlap, and answers the
+     * identifier of the execution it reserved.
+     *
+     * <p>Every refusal is raised before this returns, because reserving is what decides them. Whether the
+     * job has <em>finished</em> when this returns is the implementation's business and callers must not
+     * assume it has: the production implementation reserves synchronously and runs the job on a bounded
+     * worker, so the returned identifier is normally that of an execution still in progress, and the
+     * identifier is the handle for asking after its outcome. The adapter below inherits whatever timing
+     * the framework launcher it wraps has been configured with.
      *
      * @param job registered job to start
      * @param callerParameters allow-listed caller-owned parameters
-     * @return the framework execution identifier
+     * @return the framework execution identifier, valid the moment this returns
      * @throws LaunchRejectedException when the guarded launch cannot be reserved
      */
     long start(Job job, Map<String, String> callerParameters);
@@ -85,8 +93,17 @@ public interface BatchLaunchGateway {
         INVALID_PARAMETERS
     }
 
-    /** Safe launch refusal carrying only a closed reason code. */
-    class LaunchRejectedException extends RuntimeException {
+    /**
+     * Safe launch refusal carrying only a closed reason code.
+     *
+     * <p>This is the only refusal type in the module and {@link RejectionReason} is the only refusal
+     * vocabulary. The implementation used to publish a second enum of the same three constants and a
+     * subclass that converted between them by {@code Enum.valueOf(other.name())}: a name-matched bridge
+     * that compiled either way and would have failed at run time the first time one side gained a
+     * constant the other did not. The class is final and the vocabulary is declared once so that bridge
+     * cannot come back.
+     */
+    final class LaunchRejectedException extends RuntimeException {
 
         private static final long serialVersionUID = 1L;
 
@@ -95,10 +112,14 @@ public interface BatchLaunchGateway {
         /**
          * Creates a refusal.
          *
+         * <p>Public because the launch coordinator that raises refusals lives in another package and
+         * must construct this type rather than a package-local stand-in for it.
+         *
          * @param reason closed refusal reason
-         * @param cause internal cause, never rendered at the transport boundary
+         * @param cause internal cause, never rendered at the transport boundary, {@code null} when the
+         *     refusal has no internal cause
          */
-        protected LaunchRejectedException(
+        public LaunchRejectedException(
                 final RejectionReason reason, final Throwable cause) {
             super(Objects.requireNonNull(reason, "reason must not be null").name(), cause);
             this.rejectionReason = reason;
@@ -109,7 +130,7 @@ public interface BatchLaunchGateway {
          *
          * @return closed refusal reason
          */
-        public final RejectionReason rejectionReason() {
+        public RejectionReason rejectionReason() {
             return this.rejectionReason;
         }
     }

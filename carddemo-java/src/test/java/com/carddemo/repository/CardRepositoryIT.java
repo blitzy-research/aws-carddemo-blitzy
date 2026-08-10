@@ -200,6 +200,15 @@ import com.carddemo.support.TestDataFactory;
         + "version counter")
 final class CardRepositoryIT extends AbstractPostgresIT {
 
+    /**
+     * The bound the two alternate-key finders now require.
+     *
+     * <p>Generous, because most specifications here measure what the finder returns rather than how much
+     * of it. The bound's own behaviour is measured separately, on a fixture that holds more rows than the
+     * bound admits.
+     */
+    private static final Limit ALTERNATE_KEY_ROWS = Limit.of(100);
+
     /** Rows the delivered reference fixture seeds into this table: 7,550 bytes at 150 bytes each. */
     private static final int SEEDED_CARD_COUNT = 50;
 
@@ -561,7 +570,7 @@ final class CardRepositoryIT extends AbstractPostgresIT {
                             + "would already have failed")
                     .isNotNull();
 
-            assertThat(repository.findByCardAcctId(SEEDED_ACCOUNT)).hasSize(1);
+            assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS)).hasSize(1);
             assertThat(repository.findFirstByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT)).isPresent();
             assertThat(repository.findByCardNumGreaterThanOrderByCardNumAsc(
                     RESERVED_RANGE_START, Limit.of(SCREEN_ROWS))).isNotNull();
@@ -583,22 +592,31 @@ final class CardRepositoryIT extends AbstractPostgresIT {
      * exactly the kind of contract check that scope exists to permit here and forbid there.
      */
     @Test
-    @DisplayName("the account finder is declared to return a collection and not a single value, because "
-            + "the access path it reproduces is non-unique")
+    @DisplayName("the account finder is declared to return a collection, and to require a row bound, "
+            + "because the access path it reproduces is non-unique and unbounded")
     void theAccountFinderIsDeclaredAsACollection() {
         runner().run(context -> {
             final Method declared =
-                    CardRepository.class.getDeclaredMethod("findByCardAcctId", String.class);
+                    CardRepository.class.getDeclaredMethod(
+                            "findByCardAcctIdOrderByCardNumAsc", String.class, Limit.class);
 
             assertThat(declared.getReturnType())
                     .as("a single-valued declaration would fail as soon as one account owned two cards")
                     .isEqualTo(List.class)
                     .isNotEqualTo(Optional.class);
+            assertThat(declared.getParameterTypes())
+                    .as("nothing in the schema bounds how many cards an account may own, so the bound is "
+                            + "part of the signature and a caller cannot omit it")
+                    .containsExactly(String.class, Limit.class);
+            assertThat(declared.getName())
+                    .as("and the ordering is part of the name, because a bound without an order has no "
+                            + "referent - DL-296")
+                    .endsWith("OrderByCardNumAsc");
 
             // The compiler states the same thing a second way: this assignment stays legal only while
             // the declared type remains a collection.
             final List<Card> matches =
-                    context.getBean(CardRepository.class).findByCardAcctId(SEEDED_ACCOUNT);
+                    context.getBean(CardRepository.class).findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS);
             assertThat(matches).isNotNull();
         });
     }
@@ -618,7 +636,7 @@ final class CardRepositoryIT extends AbstractPostgresIT {
     void aDeliveredAccountOwnsExactlyOneCardAtFullWidth() {
         runner().run(context -> {
             final CardRepository repository = context.getBean(CardRepository.class);
-            final List<Card> matches = repository.findByCardAcctId(SEEDED_ACCOUNT);
+            final List<Card> matches = repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS);
 
             assertThat(matches).hasSize(1);
             final Card only = matches.get(0);
@@ -645,8 +663,8 @@ final class CardRepositoryIT extends AbstractPostgresIT {
         runner().run(context -> {
             final CardRepository repository = context.getBean(CardRepository.class);
 
-            assertThat(repository.findByCardAcctId(ABSENT_ACCOUNT)).isNotNull().isEmpty();
-            assertThat(catchThrowable(() -> repository.findByCardAcctId(ABSENT_ACCOUNT)))
+            assertThat(repository.findByCardAcctIdOrderByCardNumAsc(ABSENT_ACCOUNT, ALTERNATE_KEY_ROWS)).isNotNull().isEmpty();
+            assertThat(catchThrowable(() -> repository.findByCardAcctIdOrderByCardNumAsc(ABSENT_ACCOUNT, ALTERNATE_KEY_ROWS)))
                     .as("a miss is a result, not a failure")
                     .isNull();
         });
@@ -671,7 +689,7 @@ final class CardRepositoryIT extends AbstractPostgresIT {
             try {
                 repository.saveAllAndFlush(extraCardsOnDeliveredAccount());
 
-                final List<Card> owned = repository.findByCardAcctId(SEEDED_ACCOUNT);
+                final List<Card> owned = repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS);
 
                 assertThat(owned)
                         .as("one delivered card plus the seven issued here")
@@ -688,11 +706,41 @@ final class CardRepositoryIT extends AbstractPostgresIT {
                         .as("a keyed read of the non-unique path yields the lowest base key, which is "
                                 + "the delivered card because every reserved key sorts above it")
                         .isEqualTo(deliveredCard);
+
+                // ★ THE ORDER IS THE PATH'S. A read of a NONUNIQUEKEY path yields duplicates in
+                // ascending base-key order, and the base key of this cluster is the card number. An
+                // earlier revision declared no ordering term at all, so the rows arrived in whatever
+                // order the plan produced - which also left a row bound with no referent, because "the
+                // first n" means nothing without an order. Asserted as an ORDERED list. DL-296.
+                final List<String> ownedKeys = owned.stream().map(Card::getCardNum).toList();
+                assertThat(ownedKeys)
+                        .as("ascending by card number, which is the order the path itself yields")
+                        .isSorted()
+                        .startsWith(deliveredCard);
+
+                // ★ THE BOUND IS HONOURED, AND IT SELECTS THE LEADING ROWS OF THAT ORDER. Nothing in
+                // the schema bounds how many cards an account may own - there is no unique constraint on
+                // the account identifier - so an unbounded finder's result size is a property of the
+                // data, and the one-to-one seed is precisely the shape that would never reveal it.
+                assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, Limit.of(3)))
+                        .extracting(Card::getCardNum)
+                        .as("three rows, and the three LOWEST of the eight - not an arbitrary subset")
+                        .containsExactlyElementsOf(ownedKeys.subList(0, 3));
+                assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, Limit.of(1)))
+                        .extracting(Card::getCardNum)
+                        .as("bounded to one, it agrees with the first-match finder - two depths of one "
+                                + "path rather than two answers to one question")
+                        .containsExactly(deliveredCard);
+                assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT,
+                        Limit.of(EXTRA_CARDS_ON_ONE_ACCOUNT + 1)))
+                        .as("a bound at the row count returns them all, so the bound truncates and never "
+                                + "filters")
+                        .hasSize(EXTRA_CARDS_ON_ONE_ACCOUNT + 1);
             } finally {
                 removeReservedRange(repository);
             }
 
-            assertThat(repository.findByCardAcctId(SEEDED_ACCOUNT))
+            assertThat(repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS))
                     .as("the delivered one-to-one relation is restored")
                     .hasSize(1);
         });
@@ -1289,7 +1337,7 @@ final class CardRepositoryIT extends AbstractPostgresIT {
      * @return the sixteen-character key of the single card the delivered account owns
      */
     private static String deliveredCardNumber(final CardRepository repository) {
-        final List<Card> owned = repository.findByCardAcctId(SEEDED_ACCOUNT);
+        final List<Card> owned = repository.findByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT, ALTERNATE_KEY_ROWS);
         assertThat(owned).as("the delivered account must own exactly one card").hasSize(1);
         return owned.get(0).getCardNum();
     }

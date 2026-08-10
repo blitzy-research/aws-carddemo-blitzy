@@ -17,8 +17,14 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.Transaction;
+import java.time.LocalDate;
+import java.time.chrono.IsoChronology;
+import java.time.format.DateTimeFormatter;
+import java.time.format.ResolverStyle;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -124,19 +130,31 @@ import org.springframework.data.repository.query.Param;
  * region: the account, card, card alternate index, card cross-reference, cross-reference alternate
  * index, customer, transaction base cluster and user-security files. Both card-side alternate-index
  * paths are among them; the transaction alternate-index path is not, and the transaction entry
- * addresses the base cluster directly. No online request can therefore reach this index, and exactly
- * one caller in the module does: the reporting job's record-selection step, through
- * {@link #findByProcessingDateWindowOrderedByCardNumber(String, String)}.
+ * addresses the base cluster directly. No online request can therefore reach this index. The index's
+ * one declared consumer in the module is
+ * {@link #findByProcessingTimestampWindow(String, String, org.springframework.data.domain.Limit)},
+ * with {@link #findByProcessingDateWindow(String, String, org.springframework.data.domain.Limit)} as
+ * its inclusive-date form.
  *
- * <p><strong>That query is the index's reason for existing and its only consumer.</strong> The legacy
- * reporting stream unloads the whole cluster and then hands the unload to an external sort whose
- * inclusion condition addresses ten characters of the processing timestamp; performed as a file scan
- * the selection reads every stored record, which is precisely the cost the alternate index was defined
- * to avoid. The selection is therefore declared here, where the index can serve it, and the report
- * step calls it rather than filtering an unloaded generation for itself. A range query that no
- * production caller reached was previously removed from this interface for being a second contract for
- * the same selection; what is declared now is the <em>first</em> contract, and the report's selection
- * step is its caller.
+ * <p><strong>That query is this interface's keyed date-window access to the master, and it is stated
+ * here honestly rather than flatteringly: it has no production caller today.</strong> It is declared
+ * because the plan the module is built to requires a JPQL date-range consumer for this third alternate
+ * index, and because a date window over the master is a contract this table must be able to serve at
+ * index speed if any caller ever needs one. It is <strong>not</strong> the transaction report's input,
+ * and an earlier revision of this interface was wrong to say that it was. The cataloged procedure
+ * {@code app/proc/TRANREPT.prc} names {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)} as its sort step's
+ * {@code SORTIN} - the generation the immediately preceding unload step wrote - so the legacy report
+ * filters and orders a <em>frozen copy</em>, never the live cluster. Reading the live master after the
+ * unload would give the report a row set that the backup taken in the same job does not contain, which
+ * is a lineage defect rather than an optimisation, so the report step applies the inclusion condition
+ * over the generation it sealed. Recorded as {@code DL-294} in {@code docs/decision-log.md}, which
+ * supersedes DL-276 on that point.
+ *
+ * <p>What the query still earns by existing is the shape of the predicate. Both of its bounds are bare
+ * column comparisons, so the whole window is one index range scan; the superseded form wrapped the
+ * upper bound in a ten-character prefix, which is correct and unindexable, and left the upper bound as
+ * a filter applied after rows had been read. Any future caller therefore inherits an indexable window
+ * rather than a scan.
  *
  * <p>{@code V2__create_indexes.sql} additionally declares {@code fk_transaction_card}, from this
  * table's card number to the card master. The entity nonetheless declares <strong>no association of
@@ -324,80 +342,148 @@ public interface TransactionRepository
     Optional<String> findMaxId();
 
     /**
-     * Returns every transaction whose processing date falls inside an inclusive ten-character window,
-     * ordered by card number ascending, which is the record selection the reporting stream performs.
+     * Returns the single stored transaction carrying the highest identifier, or empty when the table holds
+     * no rows.
      *
-     * <h2>What this reproduces, statement for statement</h2>
+     * <p>This is the {@code READPREV} of {@code app/cbl/COTRN02C.cbl} reproduced at its own width. The
+     * source moves high values into the record key, starts a browse at that key and reads backward once
+     * [app/cbl/COTRN02C.cbl:L444, L475], which lands on the highest key present; an end-of-file response
+     * moves zeros into the key and raises no error, which is why an empty result here is a defined outcome
+     * rather than a failure.
      *
-     * <p>The cataloged reporting procedure declares two sort symbols over the 350-byte record - the card
-     * number as sixteen zoned-decimal bytes at one-based position 263, and the processing date as ten
-     * character bytes at one-based position 305 - then applies an inclusion condition that admits a
-     * record whose processing date is greater than or equal to the start bound <em>and</em> less than or
-     * equal to the end bound, and orders what survives by the card number ascending. Both bounds are
-     * inclusive and both comparisons are between characters. This method is that step: the predicate is
-     * the {@code WHERE} clause, the ordering is the {@code ORDER BY} clause, and the width the predicate
-     * addresses is the ten leading characters of the timestamp rather than the whole 26-character field.
+     * <p><strong>&#9733; A single-row read, and deliberately not a page.</strong> An earlier revision asked
+     * for page zero of a descending sort at size one and read only its content. A page carries a total, so
+     * the server was additionally counting every row of the transaction master on every turn of a screen
+     * that displays one - a cost that grows with the table, is paid on every copy-last and every add, and
+     * is never read by anything. This finder is bounded to one row by its own name, so no total exists to
+     * discard. Recorded as {@code DL-296} in {@code docs/decision-log.md}.
      *
-     * <p><strong>The ten-character width is the trap, and it is why the UPPER bound takes a prefix.</strong>
-     * The stored field is 26 characters; the bound is 10. Comparing the <em>whole</em> column against a
-     * ten-character upper bound drops every record processed on the end date, because a longer string
-     * whose leading characters equal a shorter one sorts above it - so a record stamped
-     * {@code 2022-07-06 12:00:00.000000} would fail a {@code <= '2022-07-06'} test even though the legacy
-     * admits it. Taking the leading ten characters on the upper bound is what makes it inclusive in the
-     * sense the legacy means.
+     * <p>Distinct from {@link #findMaxId()}, which answers the same question with the identifier alone.
+     * That is what the allocator needs; this is what the copy-last path needs, because it presents the
+     * record's fields and not only its key.
      *
-     * <p><strong>The lower bound is deliberately left bare, and that is the half that reaches the
-     * index.</strong> A wrapped lower bound is not indexable, so wrapping both would have left this
-     * selection reading every stored row - the very cost the alternate index exists to avoid. Bare is
-     * also exactly equivalent: a 26-character value whose ten-character prefix is at or above a
-     * ten-character bound is itself at or above that bound, because either the two differ within the
-     * first ten characters, in which case the value is greater, or the prefix equals the bound, in which
-     * case the longer value is greater. The prefix upper bound remains a filter, which is expected and
-     * sufficient. One consequence is worth stating because it removes a guard rather than adding one: an
-     * unprocessed record carries twenty-six blanks, which sort below the digits of any date, so the bare
-     * lower bound already excludes it and this query needs no emptiness test.
+     * @return the highest-keyed transaction, or an empty {@link Optional} when the table holds no rows
+     */
+    Optional<Transaction> findFirstByOrderByTranIdDesc();
+
+    /**
+     * Returns the transactions whose processing timestamp falls inside a half-open window, ordered by
+     * processing timestamp ascending then by identifier ascending, bounded by an explicit limit.
      *
-     * <p><strong>Card-number ordering, and what breaks ties.</strong> The sort key is the card number and
-     * nothing else, so records sharing a card number are in no order the sort utility guarantees. The
-     * identifier is added as a second key here for one reason: it makes the result <em>stable</em>, so the
-     * emitted report is a function of the stored rows and not of the plan the server happened to choose.
-     * The card number is sixteen digit characters in every writer's output - the schema's own key-shape
-     * check on the transaction identifier states the same rule for that column, and the card master's
-     * width check states it for card numbers - so ascending character order and ascending numeric order
-     * coincide, which is what lets a character comparison reproduce the utility's zoned-decimal typing.
-     * The report job nonetheless re-applies its own zoned-decimal comparator to the rows it receives, so
-     * the emitted order is that comparator's even if a future collation were to disagree with this one.
+     * <h2>What this is, and what it deliberately is not</h2>
      *
-     * <p><strong>Collation independence.</strong> Both operands of each comparison are ten characters in
-     * the same shape - four digits, a hyphen, two digits, a hyphen, two digits - so the hyphens occupy
-     * identical positions and cannot change the outcome under any collation that orders digits normally.
-     * The delivered schema is validated against a server initialised with the byte-ordering locale, and
-     * this predicate does not depend on that.
+     * <p>This is the module's keyed date-window access to the transaction master, and it is the one
+     * declared consumer of the batch-only alternate index the legacy estate defines over the processing
+     * timestamp in {@code app/jcl/TRANIDX.jcl} - a non-unique upgrade index keyed at one-based position
+     * 305 for 26 bytes. Its purpose is to make that index reachable through a predicate a B-tree can
+     * serve at <strong>both</strong> ends.
      *
-     * <p><strong>Why the result is a plain list and why that is bounded in practice.</strong> The legacy
-     * step materialised its whole result as a dataset before the report program read a record of it, so a
-     * materialised result is the faithful shape rather than a concession. The window is the bound: the
-     * caller supplies a start and an end date and receives the records processed between them, which is
-     * the same set the legacy sort wrote to its output dataset. The report step then walks that set once,
-     * writing one record at a time.
+     * <p>It is <strong>not</strong> the transaction report's input. The report's inclusion condition is
+     * applied by the job over the sequential generation its own unload step wrote, because that is what
+     * the cataloged procedure does: {@code app/proc/TRANREPT.prc} names
+     * {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)} as the sort step's {@code SORTIN} - the generation the
+     * preceding step produced - so the report describes a frozen copy and not the live cluster. Querying
+     * the live master after the unload would give the report a different row set from the backup taken in
+     * the same job, which is a lineage defect and not an optimisation. See {@code docs/decision-log.md}
+     * DL-294, which supersedes the reasoning of DL-276 on that point.
      *
-     * <p>This is the only method on this interface that reads through the processing-timestamp alternate
-     * index, and the lower bound alone is the predicate able to drive it.
+     * <h2>Why the upper bound is exclusive rather than a prefix</h2>
      *
-     * <p>Recorded in {@code docs/decision-log.md} DL-276.
+     * <p>The stored field is 26 characters and a date bound is 10, so an inclusive upper bound cannot be
+     * written as {@code <= :endDate} - a longer string whose leading characters equal a shorter one sorts
+     * above it, and every record processed on the end date would be dropped. The superseded form wrapped
+     * the column in a ten-character prefix to fix that, which is correct and <strong>not indexable</strong>:
+     * a function of the column cannot drive an index over the column, so the upper bound degenerated into
+     * a filter applied after rows had already been read.
      *
-     * @param  startDate the inclusive lower bound, exactly {@code YYYY-MM-DD}
-     * @param  endDate   the inclusive upper bound, exactly {@code YYYY-MM-DD}
-     * @return the selected records, ordered by card number ascending then by identifier ascending, empty
-     *         when the window admits none
+     * <p>The exclusive next-day bound is both correct and indexable. A record processed at any instant on
+     * the end date compares below the next day's date, because the two differ within the first ten
+     * characters; a record processed at midnight on the next day compares above it, because its leading
+     * ten characters equal the bound and it is longer. So {@code < nextDay} admits exactly the records
+     * {@code <= endDate} was meant to admit, and it does so as a bare column comparison. Both bounds are
+     * now bare, so the whole predicate is a single index range scan.
+     *
+     * <p>The window remains <strong>inclusive of both dates</strong> as the legacy inclusion condition is.
+     * The exclusivity is a property of the derived bound, not of the contract:
+     * {@link #findByProcessingDateWindow(String, String, Limit)} takes the inclusive end date and derives
+     * the bound, so no caller performs that arithmetic and no caller can get it wrong.
+     *
+     * <p><strong>The blank sentinel is excluded by the lower bound alone.</strong> An unprocessed record
+     * carries twenty-six blanks, and a blank sorts below every digit, so a bare {@code >= :startDate}
+     * already refuses it. No emptiness test is needed and none is written.
+     *
+     * <p><strong>Ordering follows the index this query exists to reach</strong> - the processing timestamp
+     * ascending - with the base cluster key as the tie-break, so the result is deterministic rather than
+     * dependent on the plan the server happened to choose. Records sharing a timestamp are ordered by
+     * identifier, which is unique.
+     *
+     * <p><strong>Bounded by an explicit limit.</strong> A window can admit an unbounded number of rows, so
+     * the caller states how many it is prepared to receive rather than discovering it. This is a query
+     * over a growing table and there is no shape of it that is safe without a bound.
+     *
+     * <p>Collation independence: both operands of each comparison are ten characters in the same shape -
+     * four digits, a hyphen, two digits, a hyphen, two digits - so the hyphens occupy identical positions
+     * and cannot change the outcome under any collation that orders digits normally.
+     *
+     * @param  startDate        the inclusive lower bound, exactly {@code YYYY-MM-DD}
+     * @param  endExclusiveDate the exclusive upper bound, exactly {@code YYYY-MM-DD}, normally the day
+     *                          after the window's inclusive end date
+     * @param  limit            the greatest number of records to return; never absent
+     * @return the selected records, ordered by processing timestamp ascending then identifier ascending,
+     *         at most {@code limit} of them, empty when the window admits none
      */
     @Query("""
             SELECT t
             FROM Transaction t
             WHERE t.tranProcTs >= :startDate
-              AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate
-            ORDER BY t.tranCardNum ASC, t.tranId ASC
+              AND t.tranProcTs < :endExclusiveDate
+            ORDER BY t.tranProcTs ASC, t.tranId ASC
             """)
-    List<Transaction> findByProcessingDateWindowOrderedByCardNumber(
-            @Param("startDate") String startDate, @Param("endDate") String endDate);
+    List<Transaction> findByProcessingTimestampWindow(
+            @Param("startDate") String startDate,
+            @Param("endExclusiveDate") String endExclusiveDate,
+            Limit limit);
+
+    /**
+     * Returns the transactions processed between two dates inclusive, bounded by an explicit limit.
+     *
+     * <p>The inclusive form of {@link #findByProcessingTimestampWindow(String, String, Limit)}: it derives
+     * the exclusive next-day upper bound the indexable predicate needs, so the day arithmetic exists in
+     * exactly one place and every caller states the window in the terms the legacy inclusion condition
+     * states it in.
+     *
+     * @param  startDate the inclusive lower bound, exactly {@code YYYY-MM-DD}
+     * @param  endDate   the inclusive upper bound, exactly {@code YYYY-MM-DD}
+     * @param  limit     the greatest number of records to return; never absent
+     * @return the selected records, ordered by processing timestamp ascending then identifier ascending
+     * @throws NullPointerException                    if either bound or the limit is {@code null}
+     * @throws java.time.format.DateTimeParseException if {@code endDate} is not a valid ISO date
+     */
+    default List<Transaction> findByProcessingDateWindow(final String startDate,
+            final String endDate, final Limit limit) {
+
+        Objects.requireNonNull(startDate, "startDate must not be null");
+        Objects.requireNonNull(limit, "limit must not be null");
+        return findByProcessingTimestampWindow(startDate, exclusiveUpperBoundOf(endDate), limit);
+    }
+
+    /**
+     * Derives the exclusive upper bound of an inclusive end date: the day after it.
+     *
+     * <p>Strict ISO parsing, so an impossible calendar date is refused rather than normalised into a
+     * neighbouring one. The rendered result is always exactly ten characters for every date this estate
+     * can hold, which is what keeps the comparison a like-for-like character comparison.
+     *
+     * @param  endDate the inclusive upper bound, exactly {@code YYYY-MM-DD}
+     * @return the day after it, exactly {@code YYYY-MM-DD}
+     * @throws NullPointerException                    if {@code endDate} is {@code null}
+     * @throws java.time.format.DateTimeParseException if it is not a valid ISO date
+     */
+    static String exclusiveUpperBoundOf(final String endDate) {
+        Objects.requireNonNull(endDate, "endDate must not be null");
+        return LocalDate.parse(endDate, DateTimeFormatter.ISO_LOCAL_DATE.withResolverStyle(
+                ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE))
+                .plusDays(1)
+                .format(DateTimeFormatter.ISO_LOCAL_DATE);
+    }
 }

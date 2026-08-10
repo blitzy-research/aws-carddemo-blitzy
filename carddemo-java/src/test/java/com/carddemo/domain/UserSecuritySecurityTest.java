@@ -16,7 +16,9 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.service.CredentialDigestService;
 import com.carddemo.support.SensitiveValues;
+import java.util.Locale;
 import java.util.Map;
 
 import org.junit.jupiter.api.DisplayName;
@@ -261,7 +263,19 @@ class UserSecuritySecurityTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> withCredential(weakened))
-                    .withMessageContaining("cost of at least 10");
+                    .withMessageContaining("cost between 10 and 31 inclusive");
+        }
+
+        @ParameterizedTest(name = "cost {0} is refused as unverifiable")
+        @ValueSource(strings = {"32", "40", "63", "64", "99"})
+        @DisplayName("a cost above what BCrypt encodes is refused, because such a digest would be "
+                + "written and would then never verify again")
+        void aCostAboveTheCeilingIsRefused(String cost) {
+            String unverifiable = REAL_DIGEST.substring(0, 4) + cost + REAL_DIGEST.substring(6);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> withCredential(unverifiable))
+                    .withMessageContaining("cost between 10 and 31 inclusive");
         }
 
         @Test
@@ -270,6 +284,41 @@ class UserSecuritySecurityTest {
             String atTheFloor = REAL_DIGEST.substring(0, 4) + "10" + REAL_DIGEST.substring(6);
 
             assertThat(SensitiveValues.fingerprint(withCredential(atTheFloor).credentialDigest())).isEqualTo(SensitiveValues.fingerprint(atTheFloor));
+        }
+
+        @Test
+        @DisplayName("a cost of exactly the ceiling is accepted, so the bound refuses only what BCrypt "
+                + "cannot express")
+        void aCostOfExactlyTheCeilingIsAccepted() {
+            String atTheCeiling = REAL_DIGEST.substring(0, 4) + "31" + REAL_DIGEST.substring(6);
+
+            assertThat(SensitiveValues.fingerprint(withCredential(atTheCeiling).credentialDigest())).isEqualTo(SensitiveValues.fingerprint(atTheCeiling));
+        }
+
+        @Test
+        @DisplayName("every cost this entity stores is one the credential service can verify over, "
+                + "which is the invariant that matters rather than either bound on its own")
+        void everyStorableCostIsOneTheCredentialServiceAccepts() {
+            CredentialDigestService digests = new CredentialDigestService();
+            for (int cost = 0; cost <= 99; cost++) {
+                String candidate = REAL_DIGEST.substring(0, 4)
+                        + String.format(Locale.ROOT, "%02d", Integer.valueOf(cost))
+                        + REAL_DIGEST.substring(6);
+                boolean entityStores;
+                try {
+                    withCredential(candidate);
+                    entityStores = true;
+                } catch (IllegalArgumentException refused) {
+                    entityStores = false;
+                }
+                if (entityStores) {
+                    assertThat(digests.isDigest(candidate))
+                            .as("cost %d is storable but the verification path does not accept it, so "
+                                    + "an identity written at that cost could never sign on again",
+                                    Integer.valueOf(cost))
+                            .isTrue();
+                }
+            }
         }
 
         @ParameterizedTest(name = "the character {0} in the tail is refused")
@@ -348,7 +397,7 @@ class UserSecuritySecurityTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> user.replaceCredentialDigest(weakened))
-                    .withMessageContaining("cost of at least 10");
+                    .withMessageContaining("cost between 10 and 31 inclusive");
         }
     }
 

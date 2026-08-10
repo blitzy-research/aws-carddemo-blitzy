@@ -19,6 +19,8 @@ package com.carddemo.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import java.util.Objects;
 
@@ -91,10 +93,11 @@ import java.util.Objects;
  * back through the mapper reproduces the identical fifty bytes. Nothing in this class trims, strips,
  * folds, pads or normalizes a value, so a description is stored exactly as supplied in either form and
  * the padding decision stays with the record writer that owns it. The seed rows are excluded from a
- * production migration by VERSION: all four migrations are delivered flat from
- * {@code classpath:db/migration}, which every profile resolves, and the shared and production
- * configurations stop a migration after the index script, so a production database receives the schema
- * without the sample rows.
+ * production migration by LOCATION: the schema scripts ship from
+ * {@code classpath:db/migration/schema} and the seed scripts from
+ * {@code classpath:db/migration/seed}, production resolves the first and never the second, so a
+ * production database receives the schema without the sample rows and the seed scripts appear in no
+ * state at all. See {@code DL-298} in {@code docs/decision-log.md}.
  *
  * <p><strong>Consumers.</strong> {@code CVTRA03Y} is included by exactly one program in the whole
  * estate, the transaction-report program {@code CBTRN03C} - the lowest inclusion count among the
@@ -118,6 +121,14 @@ import java.util.Objects;
 public class TransactionType {
 
     /**
+     * Width of the type code: 2, from {@code TRAN-TYPE PIC X(02)}.
+     *
+     * <p>Named so that the column declaration, the persistence-time rule and the check constraint in
+     * {@code V1__create_schema.sql} read the one figure rather than three copies of it.
+     */
+    static final int TRAN_TYPE_WIDTH = 2;
+
+    /**
      * Transaction type code - legacy field {@code TRAN-TYPE}, a 2-byte alphanumeric field at
      * offset 0 of the 60-byte record and the whole of the cluster key.
      *
@@ -131,7 +142,7 @@ public class TransactionType {
      * requires cannot initialise a final attribute.
      */
     @Id
-    @Column(name = "tran_type", length = 2, nullable = false)
+    @Column(name = "tran_type", length = TRAN_TYPE_WIDTH, nullable = false)
     private String tranType;
 
     /**
@@ -234,6 +245,31 @@ public class TransactionType {
      */
     public void setTranTypeDesc(final String tranTypeDesc) {
         this.tranTypeDesc = tranTypeDesc;
+    }
+
+    /**
+     * Requires the type code to be exactly the width its record layout declares, immediately before the
+     * row is inserted or updated.
+     *
+     * <p>This entity's own equality documentation already states that {@code "01"} is not equal to
+     * {@code "1"}, and that is exactly the reason the rule exists: the two are different rows claiming
+     * the same two bytes of one 60-byte reference record, and only one of them can be reached by the
+     * type-code join every posted transaction depends on. The picture clause is alphanumeric, so the
+     * width is contractual and the character class is not - no digit test is applied even though all
+     * seven seeded codes are digits. Recorded as {@code DL-297} in {@code docs/decision-log.md}.
+     *
+     * <p>Placed on the callback rather than in the constructor for the reason
+     * {@code StoredValueRules} records: the provider hydrates a row by instantiating the entity and
+     * assigning its fields, so a constructor guard would be bypassed on every read, while a callback
+     * sits on the one path every insert and every update must take. {@code V1__create_schema.sql} carries
+     * the same rule a second time, so a bulk load that never constructs an entity is refused as well.
+     *
+     * @throws IllegalArgumentException if the type code is absent or is not exactly two characters
+     */
+    @PrePersist
+    @PreUpdate
+    void validateBeforeWrite() {
+        StoredValueRules.requireFixedWidth(tranType, TRAN_TYPE_WIDTH, "tranType");
     }
 
     /**

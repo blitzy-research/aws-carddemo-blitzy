@@ -19,6 +19,7 @@ package com.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.TransactionValidationProcessor;
 import com.carddemo.config.AwsConfig;
 import com.carddemo.config.AwsProperties;
@@ -42,7 +43,6 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -57,12 +57,14 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.flow.FlowExecutionStatus;
 import org.springframework.batch.core.job.flow.FlowJob;
 import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.step.StepLocator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationRunner;
@@ -450,6 +452,23 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
     private static final String POSTING_PROBE_PARAMETER = "carddemo.it.backup-transaction.prior-run";
 
     /**
+     * The parameter the execution that runs its two steps around a concurrent commit is identified by.
+     *
+     * <p>Namespaced to this specification for the same reason as the posting probe: it must not collide
+     * with a launched execution or with a validator's own parameter names.
+     */
+    private static final String LATE_COMMIT_PROBE_PARAMETER =
+            "carddemo.it.backup-transaction.late-commit";
+
+    /**
+     * Identifier of the record committed between the archive and the clear.
+     *
+     * <p>Above the fixture's own identifiers so the ordering of the archive is unaffected, and outside
+     * the reserved set so the shared clean-up does not remove it before the assertions run.
+     */
+    private static final String LATE_ARRIVAL_ID = "0000000000009999";
+
+    /**
      * The identifier the unpersisted execution the ceiling is asked about carries.
      *
      * <p>A gate's verdict is a function of the step outcomes an execution has accumulated, so that
@@ -639,6 +658,94 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
                     .as("%s was removed through the repository, not by a utility", reserved)
                     .isEmpty();
         }
+    }
+
+    @Test
+    @DisplayName("a transaction committed after the archive was taken survives the clear, because the "
+            + "clear removes the archived row set and nothing else")
+    void aTransactionCommittedAfterTheArchiveSurvivesTheClear() throws Exception {
+        final List<ArchiveRecord> master = master();
+        seed(master);
+
+        final JobExecution execution =
+                this.jobRepository.createJobExecution(BackupTransactionJobConfig.JOB_NAME,
+                        new JobParametersBuilder()
+                                .addString(LATE_COMMIT_PROBE_PARAMETER, PINNED_BUSINESS_DATE.toString())
+                                .toJobParameters());
+        try {
+            runStepOf(execution, BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
+            this.hasPublished = true;
+
+            // The window the finding named: committed after the archive read its last record and
+            // before the gated clear runs. The legacy region had its files closed for the backup
+            // window and could not reach this state; a relational master can, on every cycle.
+            this.transactionRepository.save(lateArrival().entity());
+            assertThat(this.transactionRepository.count())
+                    .as("the late arrival is committed and visible before the clear runs")
+                    .isEqualTo(master.size() + 1);
+
+            runStepOf(execution, BackupTransactionJobConfig.RESET_STEP_NAME);
+
+            assertThat(this.transactionRepository.findById(LATE_ARRIVAL_ID))
+                    .as("THE UNARCHIVED ROW MUST SURVIVE: no copy of it exists in any generation, so"
+                            + " deleting it would lose it outright")
+                    .isPresent();
+            for (final ArchiveRecord archived : master) {
+                assertThat(this.transactionRepository.findById(archived.id()))
+                        .as("%s was archived, so the clear removed it", archived.id())
+                        .isEmpty();
+            }
+            assertThat(this.transactionRepository.count())
+                    .as("exactly the archived set was cleared")
+                    .isEqualTo(1L);
+
+            final String bucket = this.awsProperties.s3().batchStagingBucket();
+            final byte[] archived = stagedObjectBytes(bucket, newestArchiveKey(bucket));
+            assertThat(archived)
+                    .as("the generation carries the rows that were archived and not the late arrival")
+                    .isEqualTo(expectedArchive(master));
+        } finally {
+            this.transactionRepository.deleteById(LATE_ARRIVAL_ID);
+            forget(execution);
+        }
+    }
+
+    /**
+     * Runs one step of the job as part of a nominated execution, through the framework's own contract.
+     *
+     * <p>Two steps of <em>one</em> execution are run separately here on purpose: the hand-off from the
+     * archive to the clear is what the archived-row-set capture travels through, and a launched job
+     * runs them back to back with no window between them for a concurrent commit to land in.
+     *
+     * @param execution the execution both steps belong to
+     * @param stepName  the step to run
+     * @throws Exception if the step raised
+     */
+    private void runStepOf(final JobExecution execution, final String stepName) throws Exception {
+        final Step step = ((StepLocator) this.backupTransactionJob).getStep(stepName);
+        final StepExecution stepExecution = execution.createStepExecution(stepName);
+        this.jobRepository.add(stepExecution);
+
+        step.execute(stepExecution);
+
+        assertThat(stepExecution.getFailureExceptions())
+                .as("step %s must complete for the hand-off under test to be exercised", stepName)
+                .isEmpty();
+        assertThat(stepExecution.getStatus())
+                .as("step %s must complete", stepName)
+                .isEqualTo(BatchStatus.COMPLETED);
+    }
+
+    /**
+     * The record that lands between the two steps: a row no generation carries.
+     *
+     * @return the late arrival, keyed outside the fixture's own identifier range
+     */
+    private static ArchiveRecord lateArrival() {
+        return new ArchiveRecord(LATE_ARRIVAL_ID, "01", "0005", "POS TERM",
+                "Committed after the archive was taken", new BigDecimal("12.34"), "000000123",
+                "Merchant Name", "Merchant City", "72112", SEEDED_CARD, FIXTURE_ORIGINAL_TIMESTAMP,
+                BLANK_TIMESTAMP);
     }
 
     @Test
@@ -1418,11 +1525,17 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
      * <p>The publication lock is the production one rather than a direct-run stand-in, because this slice
      * has the server that lock needs: the archive base is shared with the transaction-report job's unload
      * step, so the lock is what keeps two publications from interleaving their retention passes.
+     *
+     * <p>The shared generation store is imported for the same reason and is likewise the production one.
+     * The job reads its retention depth and its local staging root from that store rather than restating
+     * either, so the store is a collaborator of the job and not an incidental bean; a slice that left it
+     * out would not start, and one that substituted a stand-in would assert a retention depth this module
+     * does not publish.
      */
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({BackupTransactionJobConfig.class, BatchConfig.class, AwsConfig.class,
-            AdvisoryGenerationPublicationLock.class})
+            StagedGenerationStore.class, AdvisoryGenerationPublicationLock.class})
     @EnableJpaRepositories(basePackageClasses = TransactionRepository.class)
     @EntityScan(basePackageClasses = Transaction.class)
     static class JobContext {

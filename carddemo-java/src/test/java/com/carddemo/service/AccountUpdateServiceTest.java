@@ -566,6 +566,29 @@ class AccountUpdateServiceTest {
                 SEEDED_DATE_OF_BIRTH, SEEDED_EFT_ACCOUNT, SEEDED_PRIMARY_CARD_HOLDER, ficoScore);
     }
 
+    /**
+     * A value carrying the protected-value envelope shape, standing in for a stored national identifier.
+     *
+     * <p>Structural only, because the encryption service is a mock here: what the entity requires is the
+     * envelope shape and what the turn requires is a stubbed reveal. It identifies nobody.
+     */
+    private static final String STORED_NATIONAL_IDENTIFIER_ENVELOPE =
+            "ENC1:" + java.util.Base64.getEncoder().encodeToString(new byte[28]);
+
+    /**
+     * The same row with a national identifier actually stored, sealed as the column holds it.
+     *
+     * <p>Needed because every seeded row holds none, so a specification about the stored-value-present
+     * case cannot use the seeded fixture. The value is a fixture and identifies nobody.
+     */
+    private static Customer seededCustomerHoldingANationalIdentifier() {
+        return new Customer(CUSTOMER_ID, SEEDED_FIRST_NAME, SEEDED_MIDDLE_NAME, SEEDED_LAST_NAME,
+                SEEDED_ADDRESS_LINE_1, SEEDED_ADDRESS_LINE_2, SEEDED_CITY, SEEDED_STATE,
+                SEEDED_COUNTRY, SEEDED_ZIP, SEEDED_PHONE_1, SEEDED_PHONE_2,
+                STORED_NATIONAL_IDENTIFIER_ENVELOPE, null,
+                SEEDED_DATE_OF_BIRTH, SEEDED_EFT_ACCOUNT, SEEDED_PRIMARY_CARD_HOLDER, SEEDED_FICO);
+    }
+
     private static CardCrossReference seededCrossReference() {
         return new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID);
     }
@@ -696,6 +719,11 @@ class AccountUpdateServiceTest {
 
         private Turn customerId(final String value) {
             this.customerId = value;
+            return this;
+        }
+
+        private Turn protectedValuesWithheld() {
+            this.protectedValuesWithheld = true;
             return this;
         }
 
@@ -1356,6 +1384,58 @@ class AccountUpdateServiceTest {
         }
 
         @Test
+        @DisplayName("AN ORDINARY OPERATOR CAN SAVE OVER A SEEDED ROW THAT HOLDS NO NATIONAL "
+                + "IDENTIFIER: three mandatory edits used to reject the whole submission over a field "
+                + "the operator had never seen and could not have supplied")
+        void anOrdinaryOperatorSavesOverAnAbsentNationalIdentifier() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            // Exactly the shape a caller without the authority to see the regulated values echoes back:
+            // the values were withheld, and for this row there was nothing to withhold, so all three
+            // components arrive absent. The change is a credit limit, which has nothing to do with them.
+            final AccountUpdateOutcome outcome = service.handle(new Turn()
+                    .protectedValuesWithheld()
+                    .nationalIdentifier(null, null, null)
+                    .creditLimit("2500.00")
+                    .build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors())
+                            .as("every seeded account was unmaintainable while this rejected: not a "
+                                    + "limit, not an address, not a status could be changed")
+                            .isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse(),
+                    () -> assertThat(outcome.infoMessage())
+                            .as("the turn reaches the confirmation prompt, which is what a clean edit "
+                                    + "over a changed record does")
+                            .isEqualTo(INFO_PROMPT_FOR_CONFIRMATION));
+        }
+
+        @Test
+        @DisplayName("and the absence is not a way to blank an identifier that exists: with a value "
+                + "stored, an unsupplied submission is refused exactly as before")
+        void anAbsentSubmissionOverAStoredIdentifierIsStillRefused() {
+            stubSeededReads(seededCustomerHoldingANationalIdentifier());
+            stubAllEditsAccepting();
+            when(AccountUpdateServiceTest.this.fieldEncryption.revealNullable(
+                    SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
+                    STORED_NATIONAL_IDENTIFIER_ENVELOPE)).thenReturn("123456789");
+
+            final AccountUpdateOutcome outcome = service.handle(new Turn()
+                    .protectedValuesWithheld()
+                    .nationalIdentifier(null, null, null)
+                    .creditLimit("2500.00")
+                    .build());
+
+            assertThat(outcome.error())
+                    .as("the record holds an identifier, so blanking it is a change and the mandatory "
+                            + "edit judges it")
+                    .isTrue();
+            assertThat(outcome.fieldErrors()).isNotEmpty();
+        }
+
+        @Test
         @DisplayName("a turn with no error at all reports an empty list rather than a null one")
         void aCleanTurnReportsAnEmptyList() {
             stubSeededReads();
@@ -1446,6 +1526,81 @@ class AccountUpdateServiceTest {
         }
 
         @Test
+        @DisplayName("an OVER-LONG value in either field is accepted and truncated to the record width, "
+                + "never rejected - a bounded column refusing it would be a rejection by another route")
+        void anOverLongValueInEitherFieldIsTruncatedRatherThanRefused() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any()))
+                    .thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Customer> written = ArgumentCaptor.forClass(Customer.class);
+
+            // Neither field carries a constraint and neither ever may, so nothing upstream bounds what a
+            // caller may send. A terminal could not have transmitted more than the map item's width and
+            // the MOVE into PIC X(25) and PIC X(50) discards the surplus of a longer source, so this is
+            // what the legacy path did with a long value at both of the two points it could occur.
+            final AccountUpdateOutcome outcome = service.handle(cleanChangedTurn()
+                    .middleName("M".repeat(40))
+                    .addressLine2("A".repeat(120))
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(customerRepository).compareAndSet(any(), written.capture());
+            assertAll(
+                    () -> assertThat(written.getValue().getMiddleName())
+                            .as("truncated to the 25 characters CUST-MIDDLE-NAME declares")
+                            .isEqualTo("M".repeat(25)),
+                    () -> assertThat(written.getValue().getAddrLine2())
+                            .as("truncated to the 50 characters CUST-ADDR-LINE-2 declares")
+                            .isEqualTo("A".repeat(50)),
+                    () -> assertThat(outcome.error())
+                            .as("THE POINT: the turn is not in error. A rejection is the one outcome the "
+                                    + "source forbids for these two fields, and letting an arbitrary "
+                                    + "length reach a bounded column produces one at the persistence "
+                                    + "boundary instead of at the validator")
+                            .isFalse(),
+                    () -> assertThat(outcome.fieldErrors())
+                            .as("and no per-field error is composed against either of them")
+                            .noneSatisfy(fieldError -> assertThat(fieldError.field())
+                                    .isIn(FIELD_MIDDLE_NAME, FIELD_ADDRESS_LINE_2)));
+        }
+
+        @Test
+        @DisplayName("a value exactly at the record width, and one shorter, both cross unchanged - so the "
+                + "rule truncates and never pads")
+        void valuesAtOrBelowTheRecordWidthCrossUnchanged() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any()))
+                    .thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Customer> written = ArgumentCaptor.forClass(Customer.class);
+
+            service.handle(cleanChangedTurn()
+                    .middleName("M".repeat(25))
+                    .addressLine2("Flat 9")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(customerRepository).compareAndSet(any(), written.capture());
+            assertAll(
+                    () -> assertThat(written.getValue().getMiddleName()).isEqualTo("M".repeat(25)),
+                    () -> assertThat(written.getValue().getAddrLine2())
+                            .as("NOT padded to fifty. Every non-key text column in this module stores its "
+                                    + "natural length and the record mapper pads to the record width on "
+                                    + "the way out, which is what keeps the 500-byte image identical "
+                                    + "either way; padding here would make an updated row's screen echo "
+                                    + "differ from a seeded row's for no contractual reason")
+                            .isEqualTo("Flat 9")
+                            .hasSize(6));
+        }
+
+        @Test
         @DisplayName("both fields are still written, so a keyed value reaches the record even though "
                 + "nothing validated it")
         void bothFieldsAreStillWritten() {
@@ -1508,6 +1663,122 @@ class AccountUpdateServiceTest {
      * (L1955-L2007), {@code 1235-EDIT-ALPHA-OPT} (L2012-L2055) and {@code 1240-EDIT-ALPHANUM-OPT}
      * (L2061-L2103), read as read-only reference. No source text is transcribed.
      */
+    @Nested
+    @DisplayName("the account group identifier, whose width the rate lookup silently depends on")
+    class AccountGroupIdentifierWidth {
+
+        /** Creates the nest. */
+        AccountGroupIdentifierWidth() {
+        }
+
+        @Test
+        @DisplayName("a SEVEN-character group identifier is stored as TEN, because the record field is "
+                + "PIC X(10) and the disclosure key it composes carries its trailing spaces")
+        void aShortGroupIdentifierIsStoredAtTheRecordWidth() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any()))
+                    .thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Account> written = ArgumentCaptor.forClass(Account.class);
+
+            // ZEROAPR is not an arbitrary example. Two of the three seeded disclosure groups are seven
+            // characters followed by three spaces, so the unpadded spelling is exactly what a caller would
+            // send and exactly what resolves nothing: it matches no disclosure row, the interest run takes
+            // its documented default-group fallback, and an account on a zero-rate group accrues at the
+            // default group's rate instead. Nothing fails; the wrong money is charged.
+            service.handle(cleanChangedTurn()
+                    .accountGroupId("ZEROAPR")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(accountRepository).saveAndFlush(written.capture());
+            assertAll(
+                    () -> assertThat(written.getValue().getAcctGroupId())
+                            .as("left-justified and space-padded on the right, which is what an "
+                                    + "alphanumeric MOVE into a PIC X(10) item does with a shorter source")
+                            .isEqualTo("ZEROAPR   ")
+                            .hasSize(10),
+                    () -> assertThat(written.getValue().getAcctGroupId())
+                            .as("and NOT the unpadded spelling, which is the value that resolves nothing")
+                            .isNotEqualTo("ZEROAPR"));
+        }
+
+        @Test
+        @DisplayName("a value already at the record width crosses byte for byte, so nothing is re-padded "
+                + "or re-justified on the way through")
+        void aValueAtTheRecordWidthCrossesUnchanged() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any()))
+                    .thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Account> written = ArgumentCaptor.forClass(Account.class);
+
+            service.handle(cleanChangedTurn()
+                    .accountGroupId("A000000000")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(accountRepository).saveAndFlush(written.capture());
+            assertThat(written.getValue().getAcctGroupId()).isEqualTo("A000000000");
+        }
+
+        @Test
+        @DisplayName("an ELEVEN-character value is truncated to ten rather than refused, which is the "
+                + "other half of what the MOVE does and what the map item could not have transmitted")
+        void anOverLongGroupIdentifierIsTruncatedToTheRecordWidth() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any()))
+                    .thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Account> written = ArgumentCaptor.forClass(Account.class);
+
+            service.handle(cleanChangedTurn()
+                    .accountGroupId("A0000000001")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(accountRepository).saveAndFlush(written.capture());
+            assertThat(written.getValue().getAcctGroupId())
+                    .isEqualTo("A000000000")
+                    .hasSize(10);
+        }
+
+        @Test
+        @DisplayName("the all-space group identifier every seeded account carries survives as ten spaces, "
+                + "so the normalisation cannot be mistaken for a trim")
+        void theAllSpaceGroupIdentifierSurvivesAsTenSpaces() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any()))
+                    .thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Account> written = ArgumentCaptor.forClass(Account.class);
+
+            service.handle(cleanChangedTurn()
+                    .accountGroupId(ACCOUNT_GROUP_ID_TEN_SPACES)
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(accountRepository).saveAndFlush(written.capture());
+            assertThat(written.getValue().getAcctGroupId())
+                    .as("all fifty seeded accounts carry ten spaces here, so a rule that trimmed or "
+                            + "defaulted a blank value would rewrite every one of them")
+                    .isEqualTo(ACCOUNT_GROUP_ID_TEN_SPACES)
+                    .hasSize(10);
+        }
+    }
+
     @Nested
     @DisplayName("the three character-class edits the member translates but never reaches: exercised "
             + "directly, because a named covering test that never runs the method is not coverage")
@@ -2885,7 +3156,8 @@ class AccountUpdateServiceTest {
 
             verify(cardCrossReferenceRepository)
                     .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
-            verify(cardCrossReferenceRepository, never()).findByXrefAcctId(any());
+            verify(cardCrossReferenceRepository, never())
+                    .findByXrefAcctIdOrderByXrefCardNumAsc(any(), any());
         }
 
         @Test
@@ -3458,7 +3730,8 @@ class AccountUpdateServiceTest {
                     .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
             verify(accountRepository).findById(ACCOUNT_ID);
             verify(customerRepository).findById(CUSTOMER_ID);
-            verify(cardCrossReferenceRepository, never()).findByXrefAcctId(any());
+            verify(cardCrossReferenceRepository, never())
+                    .findByXrefAcctIdOrderByXrefCardNumAsc(any(), any());
             verifyNoMoreInteractions(cardCrossReferenceRepository, accountRepository,
                     customerRepository);
         }

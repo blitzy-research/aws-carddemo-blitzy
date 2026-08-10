@@ -981,13 +981,13 @@ final class OpenApiConfigTest {
          *
          * <p>A nested record becomes its own named schema because it appears as the element type of a
          * collection or as a component of another shape; a nested enumeration does not, because its permitted
-         * values are inlined on the property that declares it. These nine are the record and record-like
+         * values are inlined on the property that declares it. These eight are the record and record-like
          * shapes, and the list is asserted to be complete so an inlined shape cannot quietly become a named
          * one, or the reverse, without this test noticing.</p>
          */
         private static final List<String> NESTED_SHAPES = List.of(
                 "AdminMenuOption", "CardListRow", "FieldError", "MarkedField", "PageCursorRequest",
-                "ScreenContinuation", "TransactionRow", "UserMenuOption", "UserRow");
+                "TransactionRow", "UserMenuOption", "UserRow");
 
         @Test
         @DisplayName("every contract family is published as a named schema, so a consumer reads the shape "
@@ -996,6 +996,29 @@ final class OpenApiConfigTest {
             assertThat(publishedDocument().getComponents().getSchemas().keySet())
                     .as("a family missing here is a family absent from the configuration's roster")
                     .containsAll(CONTRACT_FAMILIES);
+        }
+
+        @Test
+        @DisplayName("the roster holds one entry per contract family plus the single nested cursor shape, "
+                + "which is what its own description claims")
+        void theRosterHoldsEveryFamilyAndTheOneNamedNestedShape() {
+            final List<String> rosterNames = new PublishedContractTypeRoster().publishedContractTypes()
+                    .stream()
+                    .map(Class::getSimpleName)
+                    .toList();
+
+            assertThat(rosterNames)
+                    .as("a family declared in the contract package and forgotten in the roster is a "
+                            + "shape the published document would never describe")
+                    .containsAll(CONTRACT_FAMILIES);
+            assertThat(rosterNames)
+                    .as("the roster is one entry per family plus the one nested shape no family "
+                            + "references by property, so any other size means the description above it "
+                            + "no longer holds")
+                    .hasSize(CONTRACT_FAMILIES.size() + 1);
+            assertThat(rosterNames)
+                    .as("that one extra entry, named exactly once")
+                    .containsOnlyOnce("PageCursorRequest");
         }
 
         @Test

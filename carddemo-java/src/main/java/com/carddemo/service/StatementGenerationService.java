@@ -18,8 +18,6 @@ package com.carddemo.service;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.function.UnaryOperator;
 
@@ -78,7 +76,7 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <h2>Thirteen call sites, one collaborator</h2>
  *
- * <p>All 13 {@code CALL 'CBSTM03B'} sites in the estate are in this member - at {@code L351},
+ * <p>All 13 call sites of CBSTM03B in the estate are in this member - at {@code L351},
  * {@code L377}, {@code L401}, {@code L734}, {@code L746}, {@code L769}, {@code L787}, {@code L805},
  * {@code L835}, {@code L860}, {@code L877}, {@code L893} and {@code L909} - and each becomes one call
  * on the injected {@code StatementDataAccessService} with a populated parameter object. The payload
@@ -242,7 +240,7 @@ public final class StatementGenerationService {
     private static final String DD_HTMLFILE = "HTMLFILE";
 
     /**
-     * The two characters {@code MOVE ZERO TO WS-M03B-RC} leaves in the two-byte return-code field -
+     * The two characters the source's zeroing of WS-M03B-RC leaves in the two-byte return-code field -
      * observed at {@code [app/cbl/CBSTM03A.CBL:L349, L375, L399, L733, L768, L786, L804, L859, L876,
      * L892, L908]}.
      *
@@ -263,10 +261,32 @@ public final class StatementGenerationService {
     private static final String STATUS_RECORD_LENGTH_MISMATCH = FileStatus.RECORD_LENGTH_MISMATCH.getCode();
 
     /**
-     * Raw status meaning the sequential read found no next record. A normal outcome for the
-     * cross-reference and transaction reads and never an error.
+     * Integer digit positions of every amount receiving field this program declares.
+     *
+     * <p>{@code WS-TOTAL-AMT} and {@code WS-TRN-AMT} are {@code PIC S9(9)V99} at
+     * {@code app/cbl/CBSTM03A.CBL} lines 65 and 68, and the three edited statement fields
+     * {@code ST-CURR-BAL}, {@code ST-TRANAMT} and {@code ST-TOTAL-TRAMT} carry nine integer positions at
+     * lines 113, 137 and 142. They are all the same width, and it is <em>narrower than the account
+     * balance</em>, which is a ten-integer-digit field: the move at line 484 therefore drops the account
+     * balance's high-order digit, and the store is what reproduces that.
      */
-    private static final String STATUS_END_OF_FILE = FileStatus.END_OF_FILE.getCode();
+    private static final int AMOUNT_FIELD_INTEGER_DIGITS =
+            StatementTextTemplates.AMOUNT_MASK_INTEGER_DIGITS;
+
+    /** Legacy name of the transaction accumulator, line 65. */
+    private static final String FIELD_WS_TOTAL_AMT = "WS-TOTAL-AMT";
+
+    /** Legacy name of the accumulator's move target, line 68. */
+    private static final String FIELD_WS_TRN_AMT = "WS-TRN-AMT";
+
+    /** Legacy name of the edited balance field, line 113. */
+    private static final String FIELD_ST_CURR_BAL = "ST-CURR-BAL";
+
+    /** Legacy name of the edited transaction-amount field, line 137. */
+    private static final String FIELD_ST_TRANAMT = "ST-TRANAMT";
+
+    /** Legacy name of the edited total field, line 142. */
+    private static final String FIELD_ST_TOTAL_TRAMT = "ST-TOTAL-TRAMT";
 
     /** {@code END-OF-FILE} at {@code [app/cbl/CBSTM03A.CBL:L70]} in its initial, not-yet-exhausted state. */
     private static final String NOT_AT_END_OF_FILE = "N";
@@ -277,7 +297,7 @@ public final class StatementGenerationService {
     /**
      * Zero-based index at which a record begins inside the payload field.
      *
-     * <p>The counterpart of {@code MOVE WS-M03B-FLDT TO <record>}, which starts at the field's first
+     * <p>The counterpart of the payload field carried into a record area, which starts at the field's first
      * byte. Not a field offset: every field offset and width inside a record belongs to the record
      * mapper that owns the layout, and none appears in this file.
      */
@@ -290,7 +310,7 @@ public final class StatementGenerationService {
     private static final int NO_KEY_LENGTH = 0;
 
     /**
-     * The blanked payload field, {@code MOVE SPACES TO WS-M03B-FLDT}. The request normalises it to the
+     * The blanked payload field - WS-M03B-FLDT cleared to spaces. The request normalises it to the
      * declared payload width, so an empty value here becomes a field of spaces exactly as the legacy
      * move does.
      */
@@ -358,7 +378,7 @@ public final class StatementGenerationService {
     /**
      * Binds the two collaborators that replace this member's static linkage: the file-handling
      * subprogram reached by its 13 call sites, and the Language Environment abort routine reached by
-     * {@code CALL 'CEE3ABD'} at {@code [app/cbl/CBSTM03A.CBL:L923]}.
+     * The Language Environment abend call at {@code [app/cbl/CBSTM03A.CBL:L923]}.
      *
      * @param statementDataAccessService stands in for the file-handling subprogram; must not be
      *                                   {@code null}
@@ -377,12 +397,20 @@ public final class StatementGenerationService {
     // ================================================================================================
 
     /**
-     * Runs one statement generation and returns the ordered record content of both output files.
+     * Runs one statement generation, emitting every record of both output files to the given sink as it
+     * is produced, and returns the run's tallies.
      *
      * <p>Reproduces the whole of {@code [app/cbl/CBSTM03A.CBL]} from its procedure entry to its
      * {@code GOBACK}: the unnamed entry sequence, the dispatcher and every phase the dispatcher reaches.
-     * Nothing is written to a file, an object store or a queue - emitting the returned records is the
-     * batch step's work, and this class exists to get the bytes right.
+     * Nothing is written to a file, an object store or a queue - where the emitted records go is the
+     * sink's business and the batch step's work, and this class exists to get the bytes right.
+     *
+     * <p><strong>&#9733; Records leave through the sink, not through the return value.</strong> A legacy
+     * {@code WRITE} hands one record to an open dataset and the program's working storage never holds the
+     * file; the number of records one run emits is bounded only by the number of cross-reference records
+     * it consumes, which is unbounded. This method therefore retains no record at all: each is handed to
+     * {@link StatementOutputSink} at the moment the source writes it, and what comes back is seven
+     * tallies. The working set is one record, exactly as the legacy program's was.
      *
      * <p><strong>Why two functions rather than none.</strong> The legacy customer file held its two
      * regulated identifiers in the clear, so its keyed read needed no help. This module protects them at
@@ -407,9 +435,13 @@ public final class StatementGenerationService {
      * @param regulatedFieldSealer   seals those two identifiers back into the module's protected-value
      *                               envelope when the composed image is read into an entity; must not be
      *                               {@code null} and must not return {@code null}
-     * @return the run's ordered 80-byte statement records, ordered 100-byte HTML records, per-card
-     *         transaction summaries, observed dispatch sequence and three counts
-     * @throws NullPointerException     if the source or either operation is {@code null}
+     * @param outputSink             receives every 80-byte statement record, every 100-byte markup
+     *                               record, every per-line transaction summary and every dispatcher
+     *                               entry, in emission order, as the run produces them; must not be
+     *                               {@code null}
+     * @return the run's tallies: how many records of each stream it emitted, how many summaries and
+     *         dispatcher entries it emitted, and the three counts the legacy program accumulates
+     * @throws NullPointerException     if the source, either operation or the sink is {@code null}
      * @throws AbendException           if any file operation fails, reproducing
      *                                  {@code 9999-ABEND-PROGRAM} at {@code [app/cbl/CBSTM03A.CBL:L921]}
      * @throws IllegalArgumentException if a record image the collaborator returns does not satisfy the
@@ -418,10 +450,12 @@ public final class StatementGenerationService {
      */
     public StatementRun generate(final StatementTransactionSource transactionSource,
                                  final UnaryOperator<String> regulatedFieldRevealer,
-                                 final UnaryOperator<String> regulatedFieldSealer) {
+                                 final UnaryOperator<String> regulatedFieldSealer,
+                                 final StatementOutputSink outputSink) {
         Objects.requireNonNull(transactionSource, "transactionSource must not be null");
         Objects.requireNonNull(regulatedFieldRevealer, "regulatedFieldRevealer must not be null");
         Objects.requireNonNull(regulatedFieldSealer, "regulatedFieldSealer must not be null");
+        Objects.requireNonNull(outputSink, "outputSink must not be null");
         // The cross-reference cluster is read live from its own file, with no sort step and no work
         // resource between it and this member, so the run acquires its own sequential walk of it here
         // rather than being handed a snapshot as it is for the transaction work resource. One walk per
@@ -431,11 +465,11 @@ public final class StatementGenerationService {
                 "the file handler reported no cross-reference source for this run");
         final StatementRunContext context =
                 new StatementRunContext(transactionSource, crossReferenceSource,
-                        regulatedFieldRevealer, regulatedFieldSealer);
+                        regulatedFieldRevealer, regulatedFieldSealer, outputSink);
         openOutputFilesAndInitialiseTables(context);
         startDispatcher(context);
-        return new StatementRun(context.stmtFileRecords, context.htmlFileRecords,
-                context.transactionSummaries, context.dispatchedPhases, context.crCnt,
+        return new StatementRun(context.statementRecordsEmitted, context.htmlRecordsEmitted,
+                context.transactionSummariesEmitted, context.dispatcherEntries, context.crCnt,
                 context.wsTrnTblCntr.total(context.crCnt), context.statementsWritten);
     }
 
@@ -503,17 +537,17 @@ public final class StatementGenerationService {
         while (dispatching) {
             context.recordDispatch(phase);
             switch (phase) {
-                // WHEN 'TRNXFILE' [L299-L301]
+                // The TRNXFILE arm [L299-L301]
                 case TRNXFILE -> phase = fileOpen(context, StatementPhase.TRNXFILE);
-                // WHEN 'XREFFILE' [L302-L304]
+                // The XREFFILE arm [L302-L304]
                 case XREFFILE -> phase = fileOpen(context, StatementPhase.XREFFILE);
-                // WHEN 'CUSTFILE' [L305-L307]
+                // The CUSTFILE arm [L305-L307]
                 case CUSTFILE -> phase = fileOpen(context, StatementPhase.CUSTFILE);
-                // WHEN 'ACCTFILE' [L308-L310]
+                // The ACCTFILE arm [L308-L310]
                 case ACCTFILE -> phase = fileOpen(context, StatementPhase.ACCTFILE);
-                // WHEN 'READTRNX' [L311-L312]
+                // The READTRNX arm [L311-L312]
                 case READTRNX -> phase = readTransactionPhase(context);
-                // WHEN OTHER [L313-L314] - GO TO 9999-GOBACK
+                // The catch-all arm [L313-L314] - leaves by way of 9999-GOBACK
                 case TERMINATED -> {
                     goBack(context);
                     dispatching = false;
@@ -554,7 +588,7 @@ public final class StatementGenerationService {
                     customerFileGet(context);
                     accountFileGet(context);
                     createStatement(context);
-                    // Reset step [L324-L325]: MOVE 1 TO CR-JMP, MOVE ZERO TO WS-TOTAL-AMT. Kept as its
+                    // Reset step [L324-L325]: CR-JMP back to one and the running total back to zero. Kept as its
                     // own step in its own position, exactly where the source places it.
                     context.crJmp = 1;
                     context.wsTotalAmt = ZonedDecimalCodec.toMonetaryScale(BigDecimal.ZERO);
@@ -580,14 +614,14 @@ public final class StatementGenerationService {
      *
      * <p>Reached two ways in the source and one way here. The source arrives either by falling out of the
      * mainline or through the dispatcher's catch-all clause; here both arrive as the terminal phase, so
-     * this method runs once per run and the returned record content is what the caller then observes.
+     * this method runs once per run and every record it reports has already reached the sink.
      *
      * @param context the run's working storage, read only to report what the run produced
      */
     private static void goBack(final StatementRunContext context) {
         LOG.info("Statement generation complete: {} statement records, {} HTML records, {} cards, "
-                        + "{} transactions", context.stmtFileRecords.size(),
-                context.htmlFileRecords.size(), context.crCnt,
+                        + "{} transactions", context.statementRecordsEmitted,
+                context.htmlRecordsEmitted, context.crCnt,
                 context.wsTrnTblCntr.total(context.crCnt));
     }
 
@@ -620,11 +654,11 @@ public final class StatementGenerationService {
                 NO_KEY, NO_KEY_LENGTH, context.xrefFilePosition);
         context.xrefFilePosition = response.sequentialPosition();
         switch (response.status().orElse(null)) {
-            // WHEN '00' CONTINUE [L354-L355]
+            // The status-'00' arm [L354-L355], which does nothing
             case SUCCESS -> {
                 // The read succeeded; the unconditional move below is all this arm does.
             }
-            // WHEN '10' [L356-L357]
+            // The status-'10' arm [L356-L357]
             case END_OF_FILE -> context.endOfFile = AT_END_OF_FILE;
             // WHEN OTHER [L358-L361]
             case null, default -> {
@@ -634,7 +668,7 @@ public final class StatementGenerationService {
                         StatementDataAccessService.DD_XREFFILE);
             }
         }
-        // L364: MOVE WS-M03B-FLDT TO CARD-XREF-RECORD, on both accepted arms.
+        // L364 carries the payload field into the cross-reference record image, on both accepted arms.
         context.cardXrefRecordImage = context.m03bFldt;
         if (NOT_AT_END_OF_FILE.equals(context.endOfFile)) {
             context.cardXrefRecord = crossReferenceRecordFromPayload(context.cardXrefRecordImage);
@@ -666,7 +700,7 @@ public final class StatementGenerationService {
                 StatementDataAccessService.DD_CUSTFILE, StatementDataAccessService.OPERATION_READ_KEYED,
                 customerKey, customerKey.length(), FIRST_RECORD_POSITION);
         switch (response.status().orElse(null)) {
-            // WHEN '00' CONTINUE [L380-L381]
+            // The status-'00' arm [L380-L381], which does nothing
             case SUCCESS -> {
                 // The read succeeded; the move below is all this arm does.
             }
@@ -678,7 +712,7 @@ public final class StatementGenerationService {
                         StatementDataAccessService.DD_CUSTFILE);
             }
         }
-        // L388: MOVE WS-M03B-FLDT TO CUSTOMER-RECORD.
+        // L388 carries the payload field into the customer record image.
         context.customerRecord = customerRecordFromPayload(context, context.m03bFldt);
     }
 
@@ -703,7 +737,7 @@ public final class StatementGenerationService {
                 StatementDataAccessService.DD_ACCTFILE, StatementDataAccessService.OPERATION_READ_KEYED,
                 accountKey, accountKey.length(), FIRST_RECORD_POSITION);
         switch (response.status().orElse(null)) {
-            // WHEN '00' CONTINUE [L404-L405]
+            // The status-'00' arm [L404-L405], which does nothing
             case SUCCESS -> {
                 // The read succeeded; the move below is all this arm does.
             }
@@ -715,7 +749,7 @@ public final class StatementGenerationService {
                         StatementDataAccessService.DD_ACCTFILE);
             }
         }
-        // L412: MOVE WS-M03B-FLDT TO ACCOUNT-RECORD.
+        // L412 carries the payload field into the account record image.
         context.accountRecord = accountRecordFromPayload(context.m03bFldt);
     }
 
@@ -763,13 +797,19 @@ public final class StatementGenerationService {
                     context.trnxRecord =
                             context.wsTrnxTable.transaction(context.crJmp, context.trJmp);
                     writeTransaction(context);
-                    context.wsTotalAmt = context.wsTotalAmt.add(context.trnxRecord.getTranAmt());
+                    // L429: ADD TRNX-AMT TO WS-TOTAL-AMT, stored into the nine-integer-digit
+                    // accumulator the program declares.
+                    context.wsTotalAmt = ZonedDecimalCodec.storeIntoMonetary(
+                            context.wsTotalAmt.add(context.trnxRecord.getTranAmt()),
+                            AMOUNT_FIELD_INTEGER_DIGITS, FIELD_WS_TOTAL_AMT);
                 }
             }
         }
         // L433-L434
-        context.wsTrnAmt = ZonedDecimalCodec.toMonetaryScale(context.wsTotalAmt);
-        context.stTotalTrAmt = context.wsTrnAmt;
+        context.wsTrnAmt = ZonedDecimalCodec.storeIntoMonetary(context.wsTotalAmt,
+                AMOUNT_FIELD_INTEGER_DIGITS, FIELD_WS_TRN_AMT);
+        context.stTotalTrAmt = ZonedDecimalCodec.storeIntoMonetary(context.wsTrnAmt,
+                AMOUNT_FIELD_INTEGER_DIGITS, FIELD_ST_TOTAL_TRAMT);
         // L435-L437: the rule line's third write, the total, then the 32/16/32 end banner.
         context.writeStatementRecord(StatementTextTemplates.ST_LINE12_RULE);
         context.writeStatementRecord(
@@ -848,7 +888,11 @@ public final class StatementGenerationService {
         // L483-L485
         context.stAcctId = movedInto(context.accountRecord.getAcctId(),
                 StatementTextTemplates.ST_LINE7_ACCOUNT_ID_WIDTH);
-        context.stCurrBal = ZonedDecimalCodec.toMonetaryScale(context.accountRecord.getAcctCurrBal());
+        // L484: MOVE ACCT-CURR-BAL TO ST-CURR-BAL. The source declares ten integer digits and the
+        // edited receiving field nine, so the store drops the high-order digit exactly as the move does.
+        context.stCurrBal = ZonedDecimalCodec.storeIntoMonetary(
+                context.accountRecord.getAcctCurrBal(),
+                AMOUNT_FIELD_INTEGER_DIGITS, FIELD_ST_CURR_BAL);
         context.stFicoScore = movedInto(customer.getFicoCreditScore(),
                 StatementTextTemplates.ST_LINE9_FICO_SCORE_WIDTH);
         // L486
@@ -1052,7 +1096,8 @@ public final class StatementGenerationService {
                 StatementTextTemplates.ST_LINE14_TRAN_ID_WIDTH);
         context.stTranDt = movedInto(transaction.getTranDesc(),
                 StatementTextTemplates.ST_LINE14_TRAN_DETAIL_WIDTH);
-        context.stTranAmt = ZonedDecimalCodec.toMonetaryScale(transaction.getTranAmt());
+        context.stTranAmt = ZonedDecimalCodec.storeIntoMonetary(transaction.getTranAmt(),
+                AMOUNT_FIELD_INTEGER_DIGITS, FIELD_ST_TRANAMT);
         // L679
         context.writeStatementRecord(StatementTextTemplates.stLine14Transaction(context.stTranId,
                 context.stTranDt, context.stTranAmt));
@@ -1069,7 +1114,7 @@ public final class StatementGenerationService {
                 StatementTextTemplates.formatAmountMaskWithZeroSuppression(context.stTranAmt)));
         context.writeHtmlRecord(StatementHtmlTemplates.HTML_LTDE);
         context.writeHtmlRecord(StatementHtmlTemplates.HTML_LTRE);
-        context.transactionSummaries.add(new StatementLineSummary(transaction.getTranCardNum(),
+        context.emitTransactionSummary(new StatementLineSummary(transaction.getTranCardNum(),
                 transaction.getTranId(), transaction.getTranTypeCd(), transaction.getTranCatCd(),
                 transaction.getTranSource(), transaction.getTranDesc(), transaction.getTranAmt(),
                 transaction.getMerchantId(), transaction.getMerchantName(),
@@ -1334,9 +1379,9 @@ public final class StatementGenerationService {
                     NO_KEY, NO_KEY_LENGTH, context.trnxFilePosition);
             context.trnxFilePosition = response.sequentialPosition();
             switch (response.status().orElse(null)) {
-                // WHEN '00' [L838-L840] - move the record and loop back to this paragraph.
+                // The status-'00' arm [L838-L840] - move the record and loop back to this paragraph.
                 case SUCCESS -> context.trnxRecord = transactionRecordFromPayload(context.m03bFldt);
-                // WHEN '10' [L841-L842] - leave for 8599-EXIT.
+                // The status-'10' arm [L841-L842] - leave for 8599-EXIT.
                 case END_OF_FILE -> reading = false;
                 // WHEN OTHER [L843-L846]
                 case null, default -> {
@@ -1492,7 +1537,7 @@ public final class StatementGenerationService {
     }
 
     /**
-     * The guard-form status test, {@code IF WS-M03B-RC = '00' OR '04'}, used at the four opens, the first
+     * The guard-form status test - WS-M03B-RC accepted at '00' or '04' - used at the four opens, the first
      * transaction-file read and the four closes - nine of the member's status tests and no others.
      *
      * <p><strong>Two codes are accepted, not one.</strong> The at-end status is deliberately absent, which
@@ -1621,7 +1666,7 @@ public final class StatementGenerationService {
     }
 
     /**
-     * {@code MOVE WS-M03B-FLDT TO TRNX-RECORD} - the transaction record the payload carries.
+     * The payload field carried into TRNX-RECORD - the transaction record the payload carries.
      *
      * <p>The image is the card-first projected COSTM01 transaction-work record materialised by the
      * statement job's preceding steps. The mapper named here owns both that projected layout and the
@@ -1638,7 +1683,7 @@ public final class StatementGenerationService {
     }
 
     /**
-     * {@code MOVE WS-M03B-FLDT TO CARD-XREF-RECORD} - the cross-reference record the payload carries.
+     * The payload field carried into CARD-XREF-RECORD - the cross-reference record the payload carries.
      *
      * @param payload the payload field the call left behind
      * @return the record the payload's leading bytes describe
@@ -1649,7 +1694,7 @@ public final class StatementGenerationService {
     }
 
     /**
-     * {@code MOVE WS-M03B-FLDT TO CUSTOMER-RECORD} - the customer record the payload carries.
+     * The payload field carried into CUSTOMER-RECORD - the customer record the payload carries.
      *
      * <p>The caller's sealing operation is applied to the two regulated identifiers and to nothing else,
      * because the entity holds those two only inside the module's protected-value envelope while the
@@ -1666,7 +1711,7 @@ public final class StatementGenerationService {
     }
 
     /**
-     * {@code MOVE WS-M03B-FLDT TO ACCOUNT-RECORD} - the account record the payload carries.
+     * The payload field carried into ACCOUNT-RECORD - the account record the payload carries.
      *
      * @param payload the payload field the call left behind
      * @return the record the payload's leading bytes describe
@@ -1733,52 +1778,44 @@ public final class StatementGenerationService {
     // ================================================================================================
 
     /**
-     * Everything one statement run yields: the two record streams at their two widths, the per-card
-     * transaction summaries, the observed dispatch sequence and the three counts the legacy accumulates.
+     * What one statement run yields once its records have been emitted: seven tallies and nothing else.
      *
-     * <p>Emitting to a destination is the batch step's work, so this type carries ordered <em>content</em>
-     * and nothing about files, streams or object stores. Every component is copied defensively and
-     * published unmodifiable, so a run's result cannot be altered after the fact.
+     * <p><strong>Deliberately carries no record content.</strong> Every record of both streams, every
+     * per-line summary and every dispatcher entry left the run through
+     * {@link StatementOutputSink} at the moment it was produced. Returning them here as well would put
+     * the whole output of an unbounded input on the heap and then copy it a second time, which is
+     * precisely what the sink exists to avoid. A caller that needs the content observes it at the sink;
+     * a caller that needs only to know what happened reads it here.
      *
-     * @param statementRecords     the plain statement records in emission order, each exactly 80
-     *                             US-ASCII bytes as {@code [app/cbl/CBSTM03A.CBL:L45]} declares, with no
-     *                             line terminator
-     * @param htmlRecords          the HTML statement records in emission order, each exactly 100
-     *                             US-ASCII bytes as {@code [app/cbl/CBSTM03A.CBL:L47]} declares, with no
-     *                             line terminator
-     * @param transactionSummaries one summary per emitted transaction line, in emission order, so the
-     *                             entries of one card are contiguous and the cards follow
-     *                             cross-reference order
-     * @param dispatchedPhases     the value of {@code WS-FL-DD} observed at each dispatcher entry, in
-     *                             order, with a final entry for the clause that ends the run. Recorded
-     *                             because dispatcher re-entry is the behaviour a reader most needs to be
-     *                             able to confirm
-     * @param cardsTabulated       {@code CR-CNT} as the read phase left it: the number of distinct card
-     *                             numbers the transaction file presented
-     * @param transactionsTabulated the total of the per-card counters: the number of transaction records
-     *                             tabulated across every card
-     * @param statementsWritten    how many statements the mainline produced, one per cross-reference
-     *                             record it consumed
-     * @throws NullPointerException if any list component is {@code null}
+     * <p>Seven primitive components, so the result of a run is the same size whether the run emitted one
+     * record or a million. That property is the point of this type and is asserted rather than assumed.
+     *
+     * @param statementRecordsEmitted     how many plain statement records reached the sink, each exactly
+     *                                    80 US-ASCII bytes as {@code [app/cbl/CBSTM03A.CBL:L45]}
+     *                                    declares
+     * @param htmlRecordsEmitted          how many markup statement records reached the sink, each exactly
+     *                                    100 US-ASCII bytes as {@code [app/cbl/CBSTM03A.CBL:L47]}
+     *                                    declares
+     * @param transactionSummariesEmitted how many per-line transaction summaries reached the sink, one
+     *                                    per emitted transaction line
+     * @param dispatcherEntries           how many times the dispatcher was entered, including the entry
+     *                                    for the clause that ends the run. Reported because dispatcher
+     *                                    re-entry is the behaviour a reader most needs to be able to
+     *                                    confirm; the sequence itself is observed at the sink
+     * @param cardsTabulated              {@code CR-CNT} as the read phase left it: the number of distinct
+     *                                    card numbers the transaction file presented
+     * @param transactionsTabulated       the total of the per-card counters: the number of transaction
+     *                                    records tabulated across every card
+     * @param statementsWritten           how many statements the mainline produced, one per
+     *                                    cross-reference record it consumed
      */
-    public record StatementRun(List<String> statementRecords,
-                               List<String> htmlRecords,
-                               List<StatementLineSummary> transactionSummaries,
-                               List<String> dispatchedPhases,
+    public record StatementRun(int statementRecordsEmitted,
+                               int htmlRecordsEmitted,
+                               int transactionSummariesEmitted,
+                               int dispatcherEntries,
                                int cardsTabulated,
                                int transactionsTabulated,
                                int statementsWritten) {
-
-        public StatementRun {
-            statementRecords = List.copyOf(
-                    Objects.requireNonNull(statementRecords, "statementRecords must not be null"));
-            htmlRecords =
-                    List.copyOf(Objects.requireNonNull(htmlRecords, "htmlRecords must not be null"));
-            transactionSummaries = List.copyOf(Objects.requireNonNull(transactionSummaries,
-                    "transactionSummaries must not be null"));
-            dispatchedPhases = List.copyOf(
-                    Objects.requireNonNull(dispatchedPhases, "dispatchedPhases must not be null"));
-        }
     }
 
     // ================================================================================================
@@ -1894,7 +1931,7 @@ public final class StatementGenerationService {
         private final int[] wsTrct = new int[MAX_CARD_ENTRIES];
 
         /**
-         * {@code MOVE TR-CNT TO WS-TRCT (n)}, performed at {@code [app/cbl/CBSTM03A.CBL:L822]} when a
+         * The transaction count carried into the nth WS-TRCT slot at {@code [app/cbl/CBSTM03A.CBL:L822]} when a
          * card break is detected and at {@code L850} when the read phase ends.
          *
          * @param cardSubscript the one-based card subscript
@@ -2077,17 +2114,25 @@ public final class StatementGenerationService {
 
         // --- The run's output ----------------------------------------------------------------------
 
-        /** The records written to the plain statement file, in emission order. */
-        private final List<String> stmtFileRecords = new ArrayList<>();
+        /**
+         * Where the run's output goes, one item at a time, as it is produced.
+         *
+         * <p>The run holds a destination and not a collection. That is the whole of why the working set
+         * is one record: an emitted record is unreachable from here the instant the sink has taken it.
+         */
+        private final StatementOutputSink outputSink;
 
-        /** The records written to the HTML statement file, in emission order. */
-        private final List<String> htmlFileRecords = new ArrayList<>();
+        /** How many plain statement records this run has emitted. */
+        private int statementRecordsEmitted;
 
-        /** One summary per emitted transaction line, in emission order. */
-        private final List<StatementLineSummary> transactionSummaries = new ArrayList<>();
+        /** How many markup statement records this run has emitted. */
+        private int htmlRecordsEmitted;
 
-        /** The value of {@code WS-FL-DD} seen at each dispatcher entry, in order. */
-        private final List<String> dispatchedPhases = new ArrayList<>();
+        /** How many per-line transaction summaries this run has emitted. */
+        private int transactionSummariesEmitted;
+
+        /** How many times the dispatcher has been entered, including the entry that ends the run. */
+        private int dispatcherEntries;
 
         /** How many statements the mainline has produced. */
         private int statementsWritten;
@@ -2123,19 +2168,22 @@ public final class StatementGenerationService {
          *                               {@code null}
          * @param regulatedFieldRevealer the caller's revealing operation; must not be {@code null}
          * @param regulatedFieldSealer   the caller's sealing operation; must not be {@code null}
+         * @param outputSink             where this run emits its output; must not be {@code null}
          */
         private StatementRunContext(final StatementTransactionSource transactionSource,
                                     final StatementCrossReferenceSource crossReferenceSource,
                                     final UnaryOperator<String> regulatedFieldRevealer,
-                                    final UnaryOperator<String> regulatedFieldSealer) {
+                                    final UnaryOperator<String> regulatedFieldSealer,
+                                    final StatementOutputSink outputSink) {
             this.transactionSource = transactionSource;
             this.crossReferenceSource = crossReferenceSource;
             this.regulatedFieldRevealer = regulatedFieldRevealer;
             this.regulatedFieldSealer = regulatedFieldSealer;
+            this.outputSink = outputSink;
         }
 
         /**
-         * {@code INITIALIZE STATEMENT-LINES} at {@code [app/cbl/CBSTM03A.CBL:L459]}.
+         * The clearing of STATEMENT-LINES at {@code [app/cbl/CBSTM03A.CBL:L459]}.
          *
          * <p>Resets every named item of the statement-line group to spaces or zero and leaves the literal
          * FILLER members untouched, which is precisely what a COBOL {@code INITIALIZE} does: it ignores
@@ -2161,33 +2209,50 @@ public final class StatementGenerationService {
         }
 
         /**
-         * {@code WRITE FD-STMTFILE-REC} - appends one 80-byte plain statement record.
+         * {@code WRITE FD-STMTFILE-REC} - hands one 80-byte plain statement record to the sink.
+         *
+         * <p>The record is not retained here. A {@code WRITE} on the mainframe hands a record to an open
+         * dataset and the program's storage keeps nothing; the same is true of this method, and the
+         * counter it bumps is the only trace the run keeps of it.
          *
          * @param record the complete record, already at its declared width by the builder that composed
          *               it
          */
         private void writeStatementRecord(final String record) {
-            this.stmtFileRecords.add(record);
+            this.outputSink.statementRecord(record);
+            this.statementRecordsEmitted++;
         }
 
         /**
-         * {@code WRITE FD-HTMLFILE-REC} - appends one 100-byte HTML statement record.
+         * {@code WRITE FD-HTMLFILE-REC} - hands one 100-byte HTML statement record to the sink.
          *
          * @param record the complete record, already at its declared width by the builder that composed
          *               it
          */
         private void writeHtmlRecord(final String record) {
-            this.htmlFileRecords.add(record);
+            this.outputSink.htmlRecord(record);
+            this.htmlRecordsEmitted++;
         }
 
         /**
-         * Records that the dispatcher was entered with a given phase, which is what makes re-entry after
+         * Hands the sink one summary of the transaction line just emitted.
+         *
+         * @param summary the summary of the line just emitted
+         */
+        private void emitTransactionSummary(final StatementLineSummary summary) {
+            this.outputSink.transactionSummary(summary);
+            this.transactionSummariesEmitted++;
+        }
+
+        /**
+         * Reports that the dispatcher was entered with a given phase, which is what makes re-entry after
          * a state change observable.
          *
          * @param phase the phase the dispatcher is about to branch on
          */
         private void recordDispatch(final StatementPhase phase) {
-            this.dispatchedPhases.add(phase.name());
+            this.outputSink.dispatchedPhase(phase.name());
+            this.dispatcherEntries++;
         }
     }
 }

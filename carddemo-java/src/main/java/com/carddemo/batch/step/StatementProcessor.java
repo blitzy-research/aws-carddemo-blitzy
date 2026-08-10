@@ -23,6 +23,8 @@ import com.carddemo.domain.Transaction;
 import com.carddemo.service.StatementDataAccessService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
+import com.carddemo.service.StatementLineSummary;
+import com.carddemo.service.StatementOutputSink;
 import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.util.StatementHtmlTemplates;
 import com.carddemo.util.StatementTextTemplates;
@@ -30,6 +32,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.UnaryOperator;
@@ -246,7 +249,8 @@ import org.springframework.batch.item.ItemProcessor;
  * @see AbstractCobolStep
  * @since 1.0.0
  */
-public final class StatementProcessor implements ItemProcessor<StatementTransactionSource, StatementRun> {
+public final class StatementProcessor implements ItemProcessor<StatementProcessor.StatementRunRequest,
+        StatementRun> {
 
     /**
      * Diagnostics for this stage.
@@ -550,36 +554,77 @@ public final class StatementProcessor implements ItemProcessor<StatementTransact
     }
 
     /**
+     * One run request: the frozen input the run consumes and the destination its output goes to.
+     *
+     * <p>This is the batch item, and it is a pair rather than a single value because one run has two
+     * ends. The legacy program declares its two inputs and its two outputs in the same file section, so
+     * naming only the input would leave the item half-described; and because the run emits through
+     * {@link StatementOutputSink} rather than returning its records, the destination has to arrive with
+     * the item and cannot be a field of this stage - this stage is a singleton and a destination is
+     * per-execution state.
+     *
+     * @param transactionSource the frozen, projected transaction-work snapshot materialised by the job's
+     *                          preceding steps; must not be {@code null}
+     * @param outputSink        where the run emits every record of both streams, every per-line summary
+     *                          and every dispatcher entry, as it produces them; must not be
+     *                          {@code null}
+     * @throws NullPointerException if either component is {@code null}
+     */
+    public record StatementRunRequest(StatementTransactionSource transactionSource,
+                                      StatementOutputSink outputSink) {
+
+        public StatementRunRequest {
+            Objects.requireNonNull(transactionSource, () -> LEGACY_JOB + " " + LEGACY_STATEMENT_STEP
+                    + " received no frozen " + INPUT_DD_TRNXFILE + " transaction source");
+            Objects.requireNonNull(outputSink, () -> LEGACY_JOB + " " + LEGACY_STATEMENT_STEP
+                    + " received no destination for the " + OUTPUT_DD_STMTFILE + " and "
+                    + OUTPUT_DD_HTMLFILE + " records; a run that emits nowhere is a run whose output"
+                    + " was silently discarded");
+        }
+    }
+
+    /**
      * Generates one whole run of statements from the frozen transaction-work snapshot supplied by the
-     * job, and hands on both record streams with every record proved to its contracted width.
+     * job, streaming both record streams to the request's destination with every record proved to its
+     * contracted width before it gets there.
      *
      * <p>Five things happen, in this order, and the order is deliberate:
      *
      * <ol>
-     *   <li>the source is required. One item is one whole frozen run, so a null here would mean the
-     *       framework contract had been breached rather than that an input was empty - an empty
-     *       snapshot is a valid source whose first read reports end of file;</li>
+     *   <li>the request is required. One item is one whole frozen run together with its destination, so
+     *       a null here would mean the framework contract had been breached rather than that an input
+     *       was empty - an empty snapshot is a valid source whose first read reports end of file;</li>
      *   <li>the whole run is delegated to {@link StatementGenerationService}, which drives the
      *       explicit phase enum through its {@code while} loop over the ordered {@code switch},
      *       re-enters the dispatcher after every state change, performs all thirteen data-access
      *       operations, tabulates the transactions into the bounded card table, and assembles both
      *       streams from the two template authorities in source order. <strong>No phase is driven
      *       from here</strong>;</li>
-     *   <li>the observed dispatch trace is proved against
-     *       {@link #EXPECTED_DISPATCH_SEQUENCE} and {@link #EXPECTED_DISPATCH_ENTRY_COUNT}. This is
-     *       the re-entry proof: a service refactored into nested one-pass calls would still produce
-     *       records and would fail here;</li>
+     *   <li>every record of both streams is proved pure US-ASCII and then measured on its encoded byte
+     *       array - {@value #STATEMENT_RECORD_LENGTH} bytes for the plain stream and
+     *       {@value #HTML_RECORD_LENGTH} for the HTML stream - <strong>as it passes through</strong>,
+     *       so a mis-sized record never reaches the destination at all. A breach of either is a defect
+     *       in a layout authority rather than bad input, so it is diagnosed and raised rather than
+     *       skipped;</li>
+     *   <li>the dispatch trace is proved against {@link #EXPECTED_DISPATCH_SEQUENCE} and
+     *       {@link #EXPECTED_DISPATCH_ENTRY_COUNT}, entry by entry as the run reports them and then
+     *       for completeness once it has finished. This is the re-entry proof: a service refactored
+     *       into nested one-pass calls would still produce records and would fail here;</li>
      *   <li>the bounded grouping is proved: the run may not report more distinct cards than the card
      *       table holds, nor more tabulated transactions than the table's two dimensions multiplied
      *       together allow, nor a transaction count inconsistent with the cards it tabulated. The
      *       service already refuses to exceed the bound while tabulating; this proves the result it
-     *       returned is consistent with having done so;</li>
-     *   <li>every record of both streams is proved pure US-ASCII and then measured on its encoded byte
-     *       array - {@value #STATEMENT_RECORD_LENGTH} bytes for the plain stream and
-     *       {@value #HTML_RECORD_LENGTH} for the HTML stream. A breach of either is a defect in a
-     *       layout authority rather than bad input, so it is diagnosed and raised rather than
-     *       skipped.</li>
+     *       returned is consistent with having done so. The run's own tallies are then proved against
+     *       what actually passed through this stage, so a run cannot misreport what it emitted.</li>
      * </ol>
+     *
+     * <p><strong>&#9733; Records stream through; nothing is accumulated here.</strong> This stage holds
+     * one record at a time - the one currently being proved - and never a stream. The two proofs that
+     * can only be evaluated on a completed run, the trace's length and the tally consistency, therefore
+     * run after records have already reached the destination. That is inherent to streaming and is
+     * contained rather than ignored: the statement job writes to working files and seals them into
+     * generations only once the step has completed, so a run that fails a closing proof publishes
+     * nothing. See {@link StatementOutputSink}.
      *
      * <p>An empty run is a legitimate outcome and is <strong>not</strong> converted into a failure: a
      * cross-reference file with no records still produces the two empty streams the legacy program
@@ -591,60 +636,60 @@ public final class StatementProcessor implements ItemProcessor<StatementTransact
      * files the legacy job produced and this one silently did not. The method has exactly two
      * outcomes: the result, or a thrown exception.
      *
-     * <p>The generation and all four proofs are timed together on one sample, tagged with the outcome,
-     * so a failure is visible on the metrics endpoint as its own series. That timer supplements the
-     * whole-step timing owned by {@link AbstractCobolStep} and the job configuration and does not
-     * stand in for it.
+     * <p>The generation and all of the proofs are timed together on one sample, tagged with the
+     * outcome, so a failure is visible on the metrics endpoint as its own series. A destination that
+     * refuses a record is timed as a failed generation too, which is the honest reading: the run did
+     * not complete. That timer supplements the whole-step timing owned by {@link AbstractCobolStep}
+     * and the job configuration and does not stand in for it.
      *
      * <p>Nothing is caught for translation. The delegate diagnoses a technical failure - naming the
      * failing operation, the resource and the raw two-character file status - and abends after doing
      * so, and that ordering must not be disturbed by an intervening handler here. The only exception
      * handling on this path re-tags the timer and rethrows the very same exception.
      *
-     * @param  transactionSource the frozen, projected transaction-work snapshot materialised by the
-     *                           job's preceding steps; never {@code null}
-     * @return the run's two ordered record streams, its per-card transaction summaries, its observed
-     *         dispatch trace and its three counts; never {@code null}, because a null return would
+     * @param  request the frozen, projected transaction-work snapshot together with the destination its
+     *                 records are emitted to; never {@code null}
+     * @return the run's tallies: the records emitted to each stream, the summaries and dispatcher
+     *         entries emitted, and its three counts; never {@code null}, because a null return would
      *         filter the only item and silently produce no statements
-     * @throws NullPointerException     if {@code transactionSource} is {@code null}, or if the delegate
-     *                                  reports no result at all
+     * @throws NullPointerException     if {@code request} is {@code null}, or if the delegate reports no
+     *                                  result at all
      * @throws IllegalStateException    if the observed dispatch trace is not the expected one, if the
      *                                  run's counts are inconsistent with the legacy table's two
-     *                                  dimensions, or if any record of either stream is not exactly its
-     *                                  contracted number of encoded bytes or carries a character
-     *                                  US-ASCII cannot represent
+     *                                  dimensions or with what passed through this stage, or if any
+     *                                  record of either stream is not exactly its contracted number of
+     *                                  encoded bytes or carries a character US-ASCII cannot represent
      */
     @Override
-    public StatementRun process(final StatementTransactionSource transactionSource) {
-        Objects.requireNonNull(transactionSource, () -> LEGACY_JOB + " "
-                + LEGACY_STATEMENT_STEP + " received no frozen " + INPUT_DD_TRNXFILE
-                + " transaction source");
+    public StatementRun process(final StatementRunRequest request) {
+        Objects.requireNonNull(request, () -> LEGACY_JOB + " " + LEGACY_STATEMENT_STEP
+                + " received no run request, so it has neither a frozen " + INPUT_DD_TRNXFILE
+                + " transaction source nor a destination");
 
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        final ProvingSink proving = new ProvingSink(request.outputSink());
         final StatementRun run;
         try {
             run = Objects.requireNonNull(
-                    this.statementGenerationService.generate(transactionSource,
-                            this.regulatedFieldRevealer, this.regulatedFieldSealer),
+                    this.statementGenerationService.generate(request.transactionSource(),
+                            this.regulatedFieldRevealer, this.regulatedFieldSealer, proving),
                     () -> LEGACY_PROGRAM + " reported no result for the " + INPUT_DD_TRNXFILE
                             + " work resource");
-            // The four proofs sit inside the timed region and inside this guard on purpose: they are
+            // The closing proofs sit inside the timed region and inside this guard on purpose: they are
             // part of what this stage promises, so a run that fails one of them must be reported as a
-            // failed generation rather than as a completed one.
-            requireExpectedDispatchSequence(run.dispatchedPhases());
+            // failed generation rather than as a completed one. The per-record proofs already ran, one
+            // record at a time, inside the sink above.
+            proving.requireCompletedDispatchTrace();
             requireBoundedGrouping(run);
-            requireRecordWidths(run.statementRecords(), STREAM_STATEMENT, STATEMENT_RECORD_LENGTH,
-                    OUTPUT_DD_STMTFILE);
-            requireRecordWidths(run.htmlRecords(), STREAM_HTML, HTML_RECORD_LENGTH,
-                    OUTPUT_DD_HTMLFILE);
+            proving.requireTalliesAgreeWith(run);
         } catch (RuntimeException failure) {
             stopSample(sample, OUTCOME_FAILED);
             throw failure;
         }
         stopSample(sample, OUTCOME_COMPLETED);
 
-        this.statementRecordCounter.increment(run.statementRecords().size());
-        this.htmlRecordCounter.increment(run.htmlRecords().size());
+        this.statementRecordCounter.increment(run.statementRecordsEmitted());
+        this.htmlRecordCounter.increment(run.htmlRecordsEmitted());
         this.statementCounter.increment(run.statementsWritten());
         // Counts, resource names and the observed phase count only. Every record of both streams
         // carries customer, account, card or transaction content, and none of it is logged.
@@ -653,67 +698,212 @@ public final class StatementProcessor implements ItemProcessor<StatementTransact
                         + " {} transaction summary(ies), {} dispatcher entry(ies)",
                 LEGACY_JOB, LEGACY_STATEMENT_STEP, LEGACY_PROGRAM, LEGACY_SUBPROGRAM,
                 run.statementsWritten(), run.cardsTabulated(), run.transactionsTabulated(),
-                INPUT_DD_TRNXFILE, run.statementRecords().size(), STATEMENT_RECORD_LENGTH,
-                OUTPUT_DD_STMTFILE, run.htmlRecords().size(), HTML_RECORD_LENGTH,
-                OUTPUT_DD_HTMLFILE, run.transactionSummaries().size(),
-                run.dispatchedPhases().size());
+                INPUT_DD_TRNXFILE, run.statementRecordsEmitted(), STATEMENT_RECORD_LENGTH,
+                OUTPUT_DD_STMTFILE, run.htmlRecordsEmitted(), HTML_RECORD_LENGTH,
+                OUTPUT_DD_HTMLFILE, run.transactionSummariesEmitted(),
+                run.dispatcherEntries());
         return run;
     }
 
     /**
-     * Proves that the run entered the dispatcher the expected number of times and visited the expected
-     * phases in the expected execution order.
+     * The pass-through destination this stage wraps the caller's own destination in: it proves each item
+     * and then forwards it, holding one item at a time and never a stream.
      *
-     * <p>Three properties are established, and together they are the re-entry proof:
+     * <p>Three obligations live here, and each is discharged at the earliest moment it can be:
      *
      * <ul>
-     *   <li>the trace is exactly {@link #EXPECTED_DISPATCH_ENTRY_COUNT} entries long. More would mean
-     *       a phase had been re-entered; fewer would mean one had been skipped or folded into its
-     *       predecessor, which is what a nested-call refactor of the service would produce;</li>
-     *   <li>its leading entries are the selectors {@link #EXPECTED_DISPATCH_SEQUENCE} publishes, in
-     *       that order. That order is the run's <em>execution</em> order and is deliberately not the
-     *       dispatcher's clause order, so this assertion is what keeps the documented difference
-     *       between the two honest;</li>
-     *   <li>its final entry is none of those five selectors, which is how the catch-all clause
-     *       identifies itself: the source's clause matches any <em>other</em> value, so it is verified
-     *       by exclusion rather than by naming a constant that belongs to the service's own private
-     *       alphabet.</li>
+     *   <li><strong>Record width and purity</strong>, proved <em>before</em> the record is forwarded, so
+     *       a mis-sized or non-representable record never reaches a fixed-width destination. The
+     *       superseded shape proved the whole stream after the run and then wrote it, which meant a
+     *       destination could receive a record the stage had not yet looked at.</li>
+     *   <li><strong>Dispatch order</strong>, proved entry by entry as the run reports them. An entry out
+     *       of order, or a seventh entry, fails at that entry rather than at the end of the run, so the
+     *       diagnostic names the dispatcher entry that actually diverged.</li>
+     *   <li><strong>Tallies</strong>, counted here so that the run's own reported figures can be proved
+     *       against what this stage observed passing through.</li>
      * </ul>
      *
-     * <p>Nothing is repaired, reordered or tolerated. A trace that disagrees is a structural change to
-     * the state machine, not bad input, so it ends the run.
+     * <p>The observed trace is retained, and that is not an exception to the no-accumulation rule: its
+     * length is fixed by the state machine at {@link #EXPECTED_DISPATCH_ENTRY_COUNT}, this class refuses
+     * to grow it beyond one more than that, and the entries are eight-character selector values
+     * carrying no customer, account, card or transaction content. The two record streams are unbounded
+     * and are never retained.
      *
-     * @param  dispatchedPhases the selector value observed at each dispatcher entry, in order
-     * @throws IllegalStateException if the trace is not the expected one
+     * <p>One instance serves one invocation of {@link #process(StatementRunRequest)}, because its
+     * counters are per-run state and this stage is a singleton.
      */
-    private static void requireExpectedDispatchSequence(final List<String> dispatchedPhases) {
-        if (dispatchedPhases.size() != EXPECTED_DISPATCH_ENTRY_COUNT) {
-            LOGGER.error("{} {}: the dispatcher was entered {} time(s), expected {}", LEGACY_JOB,
-                    LEGACY_STATEMENT_STEP, dispatchedPhases.size(), EXPECTED_DISPATCH_ENTRY_COUNT);
-            throw new IllegalStateException(dispatchSequenceFailure(dispatchedPhases,
-                    "the dispatcher was entered " + dispatchedPhases.size() + " time(s) rather than "
-                            + EXPECTED_DISPATCH_ENTRY_COUNT));
+    private static final class ProvingSink implements StatementOutputSink {
+
+        /**
+         * Highest number of trace entries this sink will hold: the expected count plus the one
+         * additional entry that proves the count was exceeded. Bounded so that a service looping on the
+         * dispatcher cannot grow this list without limit.
+         */
+        private static final int MAX_RETAINED_TRACE_ENTRIES = EXPECTED_DISPATCH_ENTRY_COUNT + 1;
+
+        /** The caller's destination, which receives every item this sink has proved. */
+        private final StatementOutputSink destination;
+
+        /** The selector values observed so far, bounded by {@link #MAX_RETAINED_TRACE_ENTRIES}. */
+        private final List<String> observedTrace = new ArrayList<>(MAX_RETAINED_TRACE_ENTRIES);
+
+        /** Plain statement records proved and forwarded. */
+        private int statementRecords;
+
+        /** Markup statement records proved and forwarded. */
+        private int htmlRecords;
+
+        /** Per-line transaction summaries forwarded. */
+        private int transactionSummaries;
+
+        /** Dispatcher entries proved and forwarded. */
+        private int dispatcherEntries;
+
+        /**
+         * @param destination the caller's destination; must not be {@code null}
+         */
+        ProvingSink(final StatementOutputSink destination) {
+            this.destination = Objects.requireNonNull(destination, () -> LEGACY_JOB + " "
+                    + LEGACY_STATEMENT_STEP + " received no destination for its records");
         }
 
-        for (int position = 0; position < EXPECTED_DISPATCH_SEQUENCE.size(); position++) {
-            final String expected = EXPECTED_DISPATCH_SEQUENCE.get(position);
-            final String observed = dispatchedPhases.get(position);
-            if (!expected.equals(observed)) {
-                LOGGER.error("{} {}: dispatcher entry {} observed phase {}, expected {}", LEGACY_JOB,
-                        LEGACY_STATEMENT_STEP, position, observed, expected);
-                throw new IllegalStateException(dispatchSequenceFailure(dispatchedPhases,
-                        "dispatcher entry " + position + " observed phase '" + observed
-                                + "' rather than '" + expected + "'"));
+        @Override
+        public void statementRecord(final String record) {
+            requireRecordWidth(record, this.statementRecords, STREAM_STATEMENT,
+                    STATEMENT_RECORD_LENGTH, OUTPUT_DD_STMTFILE);
+            this.destination.statementRecord(record);
+            this.statementRecords++;
+        }
+
+        @Override
+        public void htmlRecord(final String record) {
+            requireRecordWidth(record, this.htmlRecords, STREAM_HTML, HTML_RECORD_LENGTH,
+                    OUTPUT_DD_HTMLFILE);
+            this.destination.htmlRecord(record);
+            this.htmlRecords++;
+        }
+
+        @Override
+        public void transactionSummary(final StatementLineSummary summary) {
+            Objects.requireNonNull(summary, () -> LEGACY_JOB + " " + LEGACY_STATEMENT_STEP
+                    + ": transaction summary " + this.transactionSummaries + " is absent, but a run"
+                    + " reports one summary per emitted transaction line");
+            this.destination.transactionSummary(summary);
+            this.transactionSummaries++;
+        }
+
+        /**
+         * Proves this dispatcher entry against the expected execution order and forwards it.
+         *
+         * <p>Three separate breaches are distinguished, and each fails at the entry that reveals it: a
+         * seventh entry means a phase was re-entered; an entry that is not the expected selector for its
+         * position means the phases ran in the wrong order; and a final entry that is one of the five
+         * selectors means the run ended on a phase rather than on the catch-all clause that ends it.
+         *
+         * @param phase the selector value the dispatcher is about to branch on
+         * @throws IllegalStateException if this entry breaches the expected trace
+         */
+        @Override
+        public void dispatchedPhase(final String phase) {
+            Objects.requireNonNull(phase, () -> LEGACY_JOB + " " + LEGACY_STATEMENT_STEP
+                    + ": dispatcher entry " + this.dispatcherEntries + " reported no phase selector");
+            if (this.observedTrace.size() < MAX_RETAINED_TRACE_ENTRIES) {
+                this.observedTrace.add(phase);
+            }
+
+            if (this.dispatcherEntries >= EXPECTED_DISPATCH_ENTRY_COUNT) {
+                LOGGER.error("{} {}: the dispatcher was entered {} time(s), expected {}", LEGACY_JOB,
+                        LEGACY_STATEMENT_STEP, this.dispatcherEntries + 1,
+                        EXPECTED_DISPATCH_ENTRY_COUNT);
+                throw new IllegalStateException(dispatchSequenceFailure(this.observedTrace,
+                        "the dispatcher was entered " + (this.dispatcherEntries + 1)
+                                + " time(s) rather than " + EXPECTED_DISPATCH_ENTRY_COUNT));
+            }
+
+            if (this.dispatcherEntries < EXPECTED_DISPATCH_SEQUENCE.size()) {
+                final String expected = EXPECTED_DISPATCH_SEQUENCE.get(this.dispatcherEntries);
+                if (!expected.equals(phase)) {
+                    LOGGER.error("{} {}: dispatcher entry {} observed phase {}, expected {}",
+                            LEGACY_JOB, LEGACY_STATEMENT_STEP, this.dispatcherEntries, phase,
+                            expected);
+                    throw new IllegalStateException(dispatchSequenceFailure(this.observedTrace,
+                            "dispatcher entry " + this.dispatcherEntries + " observed phase '" + phase
+                                    + "' rather than '" + expected + "'"));
+                }
+            } else if (EXPECTED_DISPATCH_SEQUENCE.contains(phase)) {
+                LOGGER.error("{} {}: the run ended on phase {}, which is a phase selector rather than"
+                        + " the catch-all clause", LEGACY_JOB, LEGACY_STATEMENT_STEP, phase);
+                throw new IllegalStateException(dispatchSequenceFailure(this.observedTrace,
+                        "the final dispatcher entry was the phase selector '" + phase
+                                + "' rather than the catch-all clause that ends the run"));
+            }
+
+            this.destination.dispatchedPhase(phase);
+            this.dispatcherEntries++;
+        }
+
+        /**
+         * Proves that the completed run entered the dispatcher exactly the expected number of times.
+         *
+         * <p>The only trace property that cannot be established while the run is in flight. Too many
+         * entries and an entry out of order both fail at the offending entry; too few can only be
+         * detected once there are no more.
+         *
+         * @throws IllegalStateException if the run ended having entered the dispatcher too few times
+         */
+        void requireCompletedDispatchTrace() {
+            if (this.dispatcherEntries != EXPECTED_DISPATCH_ENTRY_COUNT) {
+                LOGGER.error("{} {}: the dispatcher was entered {} time(s), expected {}", LEGACY_JOB,
+                        LEGACY_STATEMENT_STEP, this.dispatcherEntries,
+                        EXPECTED_DISPATCH_ENTRY_COUNT);
+                throw new IllegalStateException(dispatchSequenceFailure(this.observedTrace,
+                        "the dispatcher was entered " + this.dispatcherEntries
+                                + " time(s) rather than " + EXPECTED_DISPATCH_ENTRY_COUNT));
             }
         }
 
-        final String terminal = dispatchedPhases.get(EXPECTED_DISPATCH_ENTRY_COUNT - 1);
-        if (EXPECTED_DISPATCH_SEQUENCE.contains(terminal)) {
-            LOGGER.error("{} {}: the run ended on phase {}, which is a phase selector rather than the"
-                    + " catch-all clause", LEGACY_JOB, LEGACY_STATEMENT_STEP, terminal);
-            throw new IllegalStateException(dispatchSequenceFailure(dispatchedPhases,
-                    "the final dispatcher entry was the phase selector '" + terminal
-                            + "' rather than the catch-all clause that ends the run"));
+        /**
+         * Proves the run's own tallies against what this sink observed passing through it.
+         *
+         * <p>A run reports what it emitted; this sink counted what it actually forwarded. The two must
+         * agree, because every downstream figure - the three meters, the step's completion diagnostic
+         * and the job's accounting - is taken from the run's tallies rather than from the destination.
+         * A disagreement means the tallies are not a description of the output, which is a defect in the
+         * service rather than bad input.
+         *
+         * @param  run the completed run
+         * @throws IllegalStateException if any tally disagrees with what passed through
+         */
+        void requireTalliesAgreeWith(final StatementRun run) {
+            requireTallyAgrees(run.statementRecordsEmitted(), this.statementRecords,
+                    STREAM_STATEMENT + " record(s)");
+            requireTallyAgrees(run.htmlRecordsEmitted(), this.htmlRecords,
+                    STREAM_HTML + " record(s)");
+            requireTallyAgrees(run.transactionSummariesEmitted(), this.transactionSummaries,
+                    "transaction summary(ies)");
+            requireTallyAgrees(run.dispatcherEntries(), this.dispatcherEntries,
+                    "dispatcher entry(ies)");
+        }
+
+        /**
+         * Requires one reported tally to equal the number of items that passed through.
+         *
+         * @param  reported what the run said it emitted
+         * @param  observed what this sink forwarded
+         * @param  subject  what the tally counts, worded for a diagnostic
+         * @throws IllegalStateException if the two disagree
+         */
+        private static void requireTallyAgrees(final int reported, final int observed,
+                final String subject) {
+            if (reported != observed) {
+                LOGGER.error("{} {}: the run reported {} {} but {} passed through the stage",
+                        LEGACY_JOB, LEGACY_STATEMENT_STEP, reported, subject, observed);
+                throw new IllegalStateException(LEGACY_JOB + " " + LEGACY_STATEMENT_STEP + " ("
+                        + LEGACY_PROGRAM + "): the run reported " + reported + " " + subject
+                        + " but " + observed + " reached the destination. A run's tallies are the only"
+                        + " description of output that is retained, so they must equal what was"
+                        + " emitted");
+            }
         }
     }
 
@@ -827,28 +1017,6 @@ public final class StatementProcessor implements ItemProcessor<StatementTransact
                     + ", but " + because + ", so the value must lie between " + floor + " and "
                     + ceiling + " inclusive. The bound is legacy table capacity, not a tuning value,"
                     + " and it is never relaxed to accept input the source cannot hold");
-        }
-    }
-
-    /**
-     * Proves the contracted width of every record of one of the run's two streams.
-     *
-     * <p>Records are checked in emission order and the first breach stops the run, so the diagnostic
-     * names the earliest record that is wrong rather than the last. The list itself cannot hold a null
-     * element - the result record seals both streams with immutable copies, which reject one - so the
-     * per-record null check exists only to keep this helper safe if it is ever called with a list
-     * assembled elsewhere.
-     *
-     * @param  records      the stream's records in emission order
-     * @param  stream       which stream this is, worded for a diagnostic
-     * @param  recordLength the contracted width in encoded US-ASCII bytes
-     * @param  resource     the data-definition name the stream is written under
-     * @throws IllegalStateException if any record breaches purity or width
-     */
-    private static void requireRecordWidths(final List<String> records, final String stream,
-            final int recordLength, final String resource) {
-        for (int index = 0; index < records.size(); index++) {
-            requireRecordWidth(records.get(index), index, stream, recordLength, resource);
         }
     }
 

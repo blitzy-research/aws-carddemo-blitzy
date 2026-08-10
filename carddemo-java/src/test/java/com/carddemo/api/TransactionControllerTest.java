@@ -34,8 +34,11 @@ import com.carddemo.service.TransactionListService;
 import com.carddemo.service.TransactionViewService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -380,8 +383,7 @@ class TransactionControllerTest {
                     .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
                             browseWindow()));
 
-            controller.listTransactions(listRequest(KeyAction.PFK08, List.of("S", "")),
-                    List.of("ID-1", "ID-2"), 4, true, IDENTITY);
+            controller.listTransactions(listRequest(KeyAction.PFK08, List.of("S", "")), IDENTITY);
 
             ArgumentCaptor<TransactionListService.TransactionListCommand> captor =
                     ArgumentCaptor.forClass(TransactionListService.TransactionListCommand.class);
@@ -390,13 +392,61 @@ class TransactionControllerTest {
             assertThat(command.keyAction()).isEqualTo(KeyAction.PFK08);
             assertThat(command.transactionIdFilter()).isEqualTo("FILTER");
             assertThat(command.rowSelectors()).containsExactly("S", "");
-            assertThat(command.displayedTransactionIds()).containsExactly("ID-1", "ID-2");
-            assertThat(command.currentPageNumber()).isEqualTo(4);
+            assertThat(command.currentPageNumber())
+                    .as("read from the retained figure inside the echoed paging state, which is the "
+                            + "communication-area field, and not from the displayed label")
+                    .isEqualTo(2);
             assertThat(command.nextPageAvailable()).isTrue();
             assertThat(command.navigationContext()).isEqualTo(ScreenNavigationState.empty()
                     .reconciledWith("USER0001", UserType.USER));
             assertThat(command.pageCursor().previousCursorKey()).isEqualTo("PREV");
             assertThat(command.pageCursor().nextCursorKey()).isEqualTo("NEXT");
+        }
+
+        @Test
+        @DisplayName("no displayed-row identifier reaches the transaction, because the command declares "
+                + "no component to carry one and the identifier is re-read from the cursor instead")
+        void noDisplayedRowIdentifierReachesTheTransaction() {
+            when(transactionListService.listTransactions(any()))
+                    .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
+                            browseWindow()));
+
+            controller.listTransactions(listRequest(KeyAction.ENTER, List.of("S")), IDENTITY);
+
+            ArgumentCaptor<TransactionListService.TransactionListCommand> captor =
+                    ArgumentCaptor.forClass(TransactionListService.TransactionListCommand.class);
+            verify(transactionListService).listTransactions(captor.capture());
+
+            assertThat(Arrays.stream(
+                            TransactionListService.TransactionListCommand.class
+                                    .getRecordComponents())
+                            .map(RecordComponent::getName))
+                    .as("a component here would be an inbound channel for an identifier the submitter "
+                            + "states rather than one the browse established")
+                    .noneMatch(name -> name.toLowerCase(Locale.ROOT)
+                            .contains("transactionids"));
+            assertThat(captor.getValue().rowSelectors()).containsExactly("S");
+        }
+
+        @Test
+        @DisplayName("a submission that carried no paging state at all reaches the transaction with the "
+                + "page counter the legacy field holds before any page has been walked")
+        void aSubmissionWithoutPagingStateReachesTheTransactionAtPageZero() {
+            when(transactionListService.listTransactions(any()))
+                    .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
+                            browseWindow()));
+
+            controller.listTransactions(new TransactionListRequest(null, null, List.of(),
+                    KeyAction.ENTER, NavigationContext.empty(), null), IDENTITY);
+
+            ArgumentCaptor<TransactionListService.TransactionListCommand> captor =
+                    ArgumentCaptor.forClass(TransactionListService.TransactionListCommand.class);
+            verify(transactionListService).listTransactions(captor.capture());
+
+            assertThat(captor.getValue().currentPageNumber()).isZero();
+            assertThat(captor.getValue().nextPageAvailable()).isFalse();
+            assertThat(captor.getValue().pageCursor()).isNotNull();
+            assertThat(captor.getValue().pageCursor().previousCursorKey()).isNull();
         }
 
         @Test
@@ -407,7 +457,7 @@ class TransactionControllerTest {
                     .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
                             browseWindow()));
 
-            controller.listTransactions(listRequest(null, List.of()), null, 0, false, IDENTITY);
+            controller.listTransactions(listRequest(null, List.of()), IDENTITY);
 
             ArgumentCaptor<TransactionListService.TransactionListCommand> captor =
                     ArgumentCaptor.forClass(TransactionListService.TransactionListCommand.class);
@@ -432,64 +482,68 @@ class TransactionControllerTest {
     class ListBrowseStateProjection {
 
         /**
-         * A backward page fills the bottom slot first, and the published continuation has to say so.
+         * A backward page fills the bottom slot first, and each row publishes the slot it occupies.
          *
          * <p>Reproduces the fill order of {@code app/cbl/COTRN00C.cbl:L349}, where a backward browse
          * writes into slot ten and works upward, so the first row read is the last row displayed. The
-         * continuation is a fixed ten-position list indexed by the slot each row occupies, which is why
-         * a row landing in slot ten appears in the tenth position even though it is the only row on the
-         * page. Deriving the list from the compacted row order instead would put that identifier in the
-         * first position, and the next turn's selector would then address the wrong record.</p>
+         * slot travels on the row itself, which is what lets a client render a bottom-aligned page and
+         * address the right line with a selector. Inferring a slot from a row's position in the
+         * published list instead would put a single bottom-slot row on line one.</p>
+         *
+         * <p>No identifier list is published beside the rows, and that is deliberate rather than an
+         * omission: the next turn does not tell the server which identifier sat on the row it marked,
+         * the server re-reads it from the cursor. A published list would be an inbound channel waiting
+         * to be believed.</p>
          */
         @Test
-        @DisplayName("a backward page publishes each identifier in the slot its row occupies, not in "
-                + "the position it happens to hold in the row list")
-        void aBackwardPagePublishesEachIdentifierInItsOwnSlot() {
+        @DisplayName("a backward page publishes the slot each row occupies and no identifier list "
+                + "beside it")
+        void aBackwardPagePublishesEachRowsOwnSlotAndNoIdentifierList() {
             when(transactionListService.listTransactions(any())).thenReturn(listResult(
                     List.of(listRow(10, "BOTTOM SLOT", ORIGIN_TS)), false,
                     NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.PFK07, List.of()), null, 0, false, IDENTITY);
+                    listRequest(KeyAction.PFK07, List.of()), IDENTITY);
 
-            assertThat(body.continuation().displayedTransactionIds())
-                    .as("ten positions, one per screen slot, whatever the page actually filled")
-                    .hasSize(10);
-            assertThat(body.continuation().displayedTransactionIds().get(9))
-                    .as("the row occupies slot ten, so its identifier is carried in position ten")
-                    .isEqualTo(TRANSACTION_ID);
-            assertThat(body.continuation().displayedTransactionIds().get(0))
-                    .as("slot one was never filled, so its position carries no identifier")
-                    .isEmpty();
             assertThat(body.rows()).singleElement()
-                    .satisfies(row -> assertThat(row.screenRow()).isEqualTo(10));
+                    .satisfies(row -> {
+                        assertThat(row.screenRow()).isEqualTo(10);
+                        assertThat(row.transactionId()).isEqualTo(TRANSACTION_ID);
+                    });
+            assertThat(Arrays.stream(
+                            TransactionListResponse.class.getRecordComponents())
+                            .map(RecordComponent::getName))
+                    .as("nothing publishes the displayed identifiers as continuation state")
+                    .noneMatch(name -> name.toLowerCase(Locale.ROOT)
+                            .contains("continuation"));
         }
 
         /**
-         * A forward page fills from the top, which the same indexing has to render correctly too.
+         * A forward page fills from the top, which the same slot publication has to render correctly.
          */
         @Test
-        @DisplayName("a forward page carries its identifiers from the first slot upward, with the "
-                + "unfilled slots left empty")
-        void aForwardPageCarriesItsIdentifiersFromTheFirstSlot() {
+        @DisplayName("a forward page publishes its rows in the slots the turn filled, from the first "
+                + "slot upward")
+        void aForwardPagePublishesItsRowsFromTheFirstSlot() {
             when(transactionListService.listTransactions(any())).thenReturn(listResult(
                     List.of(listRow(1, "FIRST SLOT", ORIGIN_TS),
                             listRow(2, "SECOND SLOT", ORIGIN_TS)),
                     false, NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.PFK08, List.of()), null, 0, false, IDENTITY);
+                    listRequest(KeyAction.PFK08, List.of()), IDENTITY);
 
-            assertThat(body.continuation().displayedTransactionIds()).hasSize(10);
-            assertThat(body.continuation().displayedTransactionIds().get(0))
-                    .isEqualTo(TRANSACTION_ID);
-            assertThat(body.continuation().displayedTransactionIds().get(1))
-                    .isEqualTo(TRANSACTION_ID);
-            assertThat(body.continuation().displayedTransactionIds().subList(2, 10))
-                    .as("the eight slots the page did not fill carry nothing")
-                    .containsOnly("");
             assertThat(body.rows()).extracting(
                     TransactionListResponse.TransactionRow::screenRow).containsExactly(1, 2);
+            assertThat(body.rows()).extracting(
+                    TransactionListResponse.TransactionRow::transactionId)
+                    .as("each row carries its own identifier, which is what a client renders")
+                    .containsExactly(TRANSACTION_ID, TRANSACTION_ID);
+            assertThat(body.pageMetadata().previousCursorKey())
+                    .as("the cursor pair is the only browse state a submission echoes back")
+                    .isEqualTo("PREV");
+            assertThat(body.pageMetadata().nextCursorKey()).isEqualTo("NEXT");
         }
 
         /**
@@ -508,7 +562,7 @@ class TransactionControllerTest {
                             NavigationService.Route.TRANSACTION_VIEW));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.ENTER, List.of("", "", "S")), null, 0, false, IDENTITY);
+                    listRequest(KeyAction.ENTER, List.of("", "", "S")), IDENTITY);
 
             assertThat(body.selectedTransactionId()).isEqualTo(TRANSACTION_ID);
             assertThat(body.nextRoute())
@@ -526,7 +580,7 @@ class TransactionControllerTest {
                             NavigationService.Route.TRANSACTION_LIST));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.ENTER, List.of()), null, 0, false, IDENTITY);
+                    listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.selectedTransactionId()).isNull();
         }
@@ -546,16 +600,14 @@ class TransactionControllerTest {
             when(transactionListService.listTransactions(any())).thenReturn(
                     listResult(List.of(), null, false, NavigationService.Route.TRANSACTION_LIST));
 
-            assertThat(controller.listTransactions(listRequest(KeyAction.PFK07, List.of()), null, 0,
-                    false, IDENTITY).preserveDisplayedPage())
+            assertThat(controller.listTransactions(listRequest(KeyAction.PFK07, List.of()), IDENTITY).preserveDisplayedPage())
                     .as("the turn did not ask for an erase, so the operator's page is retained")
                     .isTrue();
 
             when(transactionListService.listTransactions(any())).thenReturn(
                     listResult(List.of(), null, true, NavigationService.Route.TRANSACTION_LIST));
 
-            assertThat(controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                    false, IDENTITY).preserveDisplayedPage())
+            assertThat(controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY).preserveDisplayedPage())
                     .as("the turn asked for an erase, so the page is rebuilt rather than retained")
                     .isFalse();
         }
@@ -580,7 +632,7 @@ class TransactionControllerTest {
                                     "Invalid selection"))));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.ENTER, List.of("", "", "X")), null, 0, false, IDENTITY);
+                    listRequest(KeyAction.ENTER, List.of("", "", "X")), IDENTITY);
 
             assertThat(body.fieldErrors()).hasSize(2);
             assertThat(body.fieldErrors().get(0).fieldName()).isEqualTo("transactionIdFilter");
@@ -605,7 +657,7 @@ class TransactionControllerTest {
                             browseWindow()));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.ENTER, List.of()), null, 0, false, IDENTITY);
+                    listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.fieldErrors()).isNotNull().isEmpty();
         }
@@ -624,8 +676,7 @@ class TransactionControllerTest {
                             browseWindow()));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false, IDENTITY);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.transactionName()).isEqualTo("CT00");
             assertThat(body.programName()).isEqualTo("COTRN00C");
@@ -651,8 +702,7 @@ class TransactionControllerTest {
                             null));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false, IDENTITY);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.pageMetadata()).isNull();
             assertThat(body.displayedPageNumber()).isNull();
@@ -665,8 +715,7 @@ class TransactionControllerTest {
                     .thenReturn(listResult(List.of(), false, null, browseWindow()));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false, IDENTITY);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.nextRoute()).isNull();
         }
@@ -681,7 +730,7 @@ class TransactionControllerTest {
                     false, NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.ENTER, List.of("S", "U")), null, 0, false, IDENTITY);
+                    listRequest(KeyAction.ENTER, List.of("S", "U")), IDENTITY);
 
             assertThat(body.rows()).hasSize(3);
             assertThat(body.rows().get(0).selection()).isEqualTo("S");
@@ -697,7 +746,7 @@ class TransactionControllerTest {
                     NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, null), null, 0, false, IDENTITY);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, null), IDENTITY);
 
             assertThat(body.rows()).hasSize(1);
             assertThat(body.rows().get(0).selection()).isNull();
@@ -712,8 +761,7 @@ class TransactionControllerTest {
                     NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false, IDENTITY);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.rows().get(0).displayedDate()).isEqualTo("07/19/22").hasSize(8);
         }
@@ -726,8 +774,7 @@ class TransactionControllerTest {
                     NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false, IDENTITY);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.rows().get(0).displayedDate()).isNull();
             assertThat(body.rows().get(1).displayedDate()).isNull();
@@ -743,8 +790,7 @@ class TransactionControllerTest {
                     NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false, IDENTITY);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(body.rows().get(0).description())
                     .hasSize(TransactionListResponse.DESCRIPTION_LENGTH);
@@ -758,7 +804,7 @@ class TransactionControllerTest {
                     .thenReturn(listResult(List.of(), true, NavigationService.Route.TRANSACTION_LIST,
                             browseWindow()));
 
-            controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0, false, IDENTITY);
+            controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), IDENTITY);
 
             assertThat(timed("carddemo.online.transaction.list.turn", "rejected",
                     NavigationService.Route.TRANSACTION_LIST.getRouteValue())).isEqualTo(1L);

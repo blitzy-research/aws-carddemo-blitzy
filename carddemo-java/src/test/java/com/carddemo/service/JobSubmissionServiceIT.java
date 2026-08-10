@@ -56,7 +56,7 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  *
  * <h2>What is under test</h2>
  * {@link JobSubmissionService} replaces the one online-to-batch bridge the legacy estate has:
- * {@code EXEC CICS WRITEQ TD QUEUE('JOBS')}, performed card by card by the misspelled
+ * the transient-data queue write to JOBS, performed card by card by the misspelled
  * {@code WIRTE-JOBSUB-TDQ} paragraph of {@code app/cbl/CORPT00C.cbl} at line 515. The queue that
  * paragraph writes to is defined in {@code app/csd/CARDDEMO.CSD} as
  * {@code RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD) ERROROPTION(IGNORE)}, and each of those

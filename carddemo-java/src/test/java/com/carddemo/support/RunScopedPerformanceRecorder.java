@@ -174,6 +174,13 @@ public final class RunScopedPerformanceRecorder {
                 .append("     measurements, not thresholds: nothing here may become an assertion. -->")
                 .append(System.lineSeparator())
                 .append(System.lineSeparator())
+                // Which build and which run produced these figures. A Gate 3 row is a property of one
+                // run on one machine, so a file of them that cannot be attributed to a build is a file
+                // of numbers of unknown origin - the exact thing the evidence page forbids quoting.
+                // See docs/decision-log.md DL-315.
+                .append(GateEvidenceProvenance.stamp())
+                .append(System.lineSeparator())
+                .append(System.lineSeparator())
                 .append("| Run | Records | Elapsed (ms) | Peak heap (bytes) | Records/second |")
                 .append(System.lineSeparator())
                 .append("| --- | ---: | ---: | ---: | ---: |")

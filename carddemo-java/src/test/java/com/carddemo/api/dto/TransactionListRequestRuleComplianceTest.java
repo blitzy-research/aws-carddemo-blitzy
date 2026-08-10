@@ -461,30 +461,31 @@ class TransactionListRequestRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the request declares five components, the identifier filter, selector list, "
-                + "attention key, conversation state and continuation")
+        @DisplayName("the request declares six components, the identifier filter, page label, "
+                + "selector list, attention key, conversation state and paging state")
         void theRequestDeclaresSixComponents() {
             final List<String> declared = Arrays.stream(
                     TransactionListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).containsExactly("transactionIdFilter", "rowSelectors",
-                    "keyAction", "navigationContext", "continuation");
-            assertThat(declared).hasSize(5);
+            assertThat(declared).containsExactly("transactionIdFilter", "displayedPageNumber",
+                    "rowSelectors", "keyAction", "navigationContext", "pageMetadata");
+            assertThat(declared).hasSize(6);
         }
 
         @Test
-        @DisplayName("exactly two top-level components carry an accessor-level bound")
+        @DisplayName("exactly three top-level components carry an accessor-level bound")
         void exactlyThreeComponentsCarryAnAccessorLevelBound() {
             final List<String> bounded = Arrays.stream(
                     TransactionListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .filter(TransactionListRequestRuleComplianceTest::declaresAnUpperBound).toList();
 
-            assertThat(bounded).containsExactly("transactionIdFilter", "rowSelectors");
+            assertThat(bounded).containsExactly("transactionIdFilter", "displayedPageNumber",
+                    "rowSelectors");
             assertThat(bounded)
-                    .as("the attention key, the conversation state and the cursor carry no width")
-                    .doesNotContain("keyAction", "navigationContext", "continuation");
+                    .as("the attention key, the conversation state and the paging state carry no width")
+                    .doesNotContain("keyAction", "navigationContext", "pageMetadata");
         }
 
         @Test
@@ -500,11 +501,13 @@ class TransactionListRequestRuleComplianceTest {
             assertThat(request.rowSelectors()).containsExactly("S");
             assertThat(request.keyAction()).isEqualTo(KeyAction.PFK08);
             assertThat(request.navigationContext()).isEqualTo(NavigationContext.empty());
-            // The retained page number reaches the paging carrier, which is where the screen reads it
-            // from, so the carrier the request answers is the supplied one plus that value.
-            assertThat(request.pageMetadata()).isEqualTo(new PageMetadata.PageCursorRequest(
-                    TRANSACTION_ID, null, PageMetadata.PagingDirection.FORWARD, "00000001", false));
-            assertThat(request.pageMetadata().retainedPageNumber()).isEqualTo(1);
+            // The paging carrier is answered exactly as supplied. It carries its own retained page
+            // number, which is the figure a turn takes its page decisions from; the displayed label
+            // above is a separate value the screen renders and no decision reads.
+            assertThat(request.pageMetadata()).isEqualTo(cursor);
+            assertThat(request.pageMetadata().retainedPageNumber())
+                    .as("this cursor carried no retained figure, which is the first-entry shape")
+                    .isZero();
         }
 
         @Test
@@ -518,7 +521,7 @@ class TransactionListRequestRuleComplianceTest {
         }
 
         @ParameterizedTest
-        @CsvSource({"transactionIdFilter,16", "continuation.displayedPageNumber,8"})
+        @CsvSource({"transactionIdFilter,16", "displayedPageNumber,8"})
         @DisplayName("a bounded component accepts its declared width and rejects one character more")
         void aBoundedComponentAcceptsItsWidthAndRejectsOneMore(final String componentName,
                 final int declaredMaximum) {
@@ -567,7 +570,7 @@ class TransactionListRequestRuleComplianceTest {
                         .hasSize(1)
                         .allSatisfy(violation -> assertThat(
                                 violation.getPropertyPath().toString())
-                                .isEqualTo("continuation.previousCursorKey"));
+                                .isEqualTo("pageMetadata.previousCursorKey"));
             }
         }
 
@@ -590,7 +593,7 @@ class TransactionListRequestRuleComplianceTest {
         @DisplayName("both nested components declare the cascade, so neither is validated only in its "
                 + "own right")
         void bothNestedComponentsDeclareTheCascade() throws NoSuchMethodException {
-            assertThat(TransactionListRequest.class.getDeclaredMethod("continuation")
+            assertThat(TransactionListRequest.class.getDeclaredMethod("pageMetadata")
                     .getAnnotation(Valid.class)).isNotNull();
             assertThat(TransactionListRequest.class.getDeclaredMethod("navigationContext")
                     .getAnnotation(Valid.class)).isNotNull();
@@ -643,7 +646,7 @@ class TransactionListRequestRuleComplianceTest {
 
             assertThat(rendered).startsWith("TransactionListRequest[");
             assertThat(rendered).contains("transactionIdFilter=" + REDACTION_PLACEHOLDER,
-                    "continuation=" + REDACTION_PLACEHOLDER);
+                    "pageMetadata=" + REDACTION_PLACEHOLDER);
             assertThat(rendered)
                     .as("no fragment of the withheld identifier survives anywhere in the rendering")
                     .doesNotContain(TRANSACTION_ID);
@@ -656,8 +659,9 @@ class TransactionListRequestRuleComplianceTest {
             final String rendered = aRequest(TRANSACTION_ID, "00000001", List.of("S"),
                     KeyAction.PFK07, null, null).toString();
 
-            assertThat(rendered).contains("rowSelectors=[S]", "keyAction=PFK07",
-                    "navigationContext=null", "continuation=" + REDACTION_PLACEHOLDER);
+            assertThat(rendered).contains("displayedPageNumber=00000001", "rowSelectors=[S]",
+                    "keyAction=PFK07", "navigationContext=null",
+                    "pageMetadata=" + REDACTION_PLACEHOLDER);
         }
 
         @Test
@@ -667,8 +671,8 @@ class TransactionListRequestRuleComplianceTest {
             final String rendered = aRequest(null, null, null, null, null, null).toString();
 
             assertThat(rendered).contains("transactionIdFilter=" + REDACTION_PLACEHOLDER,
-                    "continuation=" + REDACTION_PLACEHOLDER);
-            assertThat(rendered).doesNotContain("transactionIdFilter=null", "continuation=null");
+                    "pageMetadata=" + REDACTION_PLACEHOLDER);
+            assertThat(rendered).doesNotContain("transactionIdFilter=null", "pageMetadata=null");
         }
 
         @Test
@@ -723,19 +727,27 @@ class TransactionListRequestRuleComplianceTest {
          * component silently acquired a directional binding.</p>
          */
         @Test
-        @DisplayName("a request round trips with its complete continuation preserved")
+        @DisplayName("a request round trips with everything but its publish-only page label preserved")
         void aRequestRoundTripsWithoutItsReadOnlyPageNumber() throws JsonProcessingException {
             final ObjectMapper mapper = moduleEquivalentMapper();
+            final PageMetadata.PageCursorRequest carriedPaging =
+                    new PageMetadata.PageCursorRequest(TRANSACTION_ID, null,
+                            PageMetadata.PagingDirection.BACKWARD, "00000002", true);
             final TransactionListRequest original = aRequest(TRANSACTION_ID, "00000002",
                     List.of(" ", "S"), KeyAction.PFK08, NavigationContext.empty().withReEntry(),
-                    new PageMetadata.PageCursorRequest(TRANSACTION_ID, null,
-                            PageMetadata.PagingDirection.BACKWARD, null, false));
+                    carriedPaging);
 
             final TransactionListRequest returned = mapper.readValue(
                     mapper.writeValueAsString(original), TransactionListRequest.class);
 
-            assertThat(returned).isEqualTo(original);
-            assertThat(returned.continuation().displayedPageNumber()).isEqualTo("00000002");
+            assertThat(returned.displayedPageNumber()).isNull();
+            assertThat(returned.transactionIdFilter()).isEqualTo(TRANSACTION_ID);
+            assertThat(returned.keyAction()).isEqualTo(KeyAction.PFK08);
+            assertThat(returned.navigationContext())
+                    .isEqualTo(NavigationContext.empty().withReEntry());
+            assertThat(returned.pageMetadata())
+                    .as("the retained figure and the direction are what a turn acts on, and both survive")
+                    .isEqualTo(carriedPaging);
             assertThat(returned.rowSelectors()).containsExactly(" ", "S");
         }
     }

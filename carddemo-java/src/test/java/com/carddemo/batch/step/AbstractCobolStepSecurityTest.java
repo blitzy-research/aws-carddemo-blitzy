@@ -255,8 +255,8 @@ class AbstractCobolStepSecurityTest {
      * family, and that distinction is itself the security-relevant part.
      *
      * <p>An abend on the mainframe is terminal: {@code 9999-ABEND-PROGRAM} ends with
-     * {@code CALL 'CEE3ABD'} [{@code app/cbl/CBACT01C.cbl}:L169-L173], which does not return, so the
-     * {@code PERFORM 9000-ACCTFILE-CLOSE} at line 83 is unreachable once anything has abended, and the
+     * the CEE3ABD call [{@code app/cbl/CBACT01C.cbl}:L169-L173], which does not return, so the
+     * the 9000-ACCTFILE-CLOSE call at line 83 is unreachable once anything has abended, and the
      * operating system reclaimed the data sets when the enclave ended. Driving the observable close
      * family from the failure path would fabricate {@code CLOSE} operations, with their normalised
      * statuses and their diagnostics, that the legacy never performs -- a false operator signal. The

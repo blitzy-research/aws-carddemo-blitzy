@@ -320,7 +320,7 @@ class TransactionListResponseTest {
     private static TransactionListResponse response(
             List<TransactionListResponse.TransactionRow> rows, String message) {
         return new TransactionListResponse(rows, forwardPaging(),
-                TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                navigation(), NEXT_ROUTE,
                 TRANSACTION_ID_LOWER, PAGE_INDICATOR, message, false, List.of(), TRANSACTION_ID,
                 true, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
                 CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
@@ -341,7 +341,7 @@ class TransactionListResponseTest {
      * @return a response with a null in every reference position
      */
     private static TransactionListResponse emptyResponse() {
-        return new TransactionListResponse(null, null, null, null, null, null, null, null, false,
+        return new TransactionListResponse(null, null, null, null, null, null, null, false,
                 List.of(), null, false, null, null, null, null, null, null, null);
     }
 
@@ -706,7 +706,7 @@ class TransactionListResponseTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionListResponse(rows(rowsCarried),
-                            narrowerThanThePage, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER,
+                            narrowerThanThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER,
                             PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
                             CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME))
                     .withMessageContaining(String.valueOf(declaredPageSize))
@@ -721,7 +721,7 @@ class TransactionListResponseTest {
                     NEXT_CURSOR_KEY, true, false, PAGE_INDICATOR);
 
             TransactionListResponse response = new TransactionListResponse(rows(declaredPageSize),
-                    matchingThePage, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
+                    matchingThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
                     null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME,
                     TRANSACTION_NAME, PROGRAM_NAME);
 
@@ -729,7 +729,7 @@ class TransactionListResponseTest {
 
             // A short page is still a valid page: the final page of a browse is routinely shorter than
             // the page size, so only exceeding the declared size is a defect.
-            assertThat(new TransactionListResponse(rows(1), matchingThePage, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+            assertThat(new TransactionListResponse(rows(1), matchingThePage, navigation(), NEXT_ROUTE,
                             TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                             TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME)
                     .rows())
@@ -740,7 +740,7 @@ class TransactionListResponseTest {
         @DisplayName("applies no metadata comparison when no paging metadata travels with the page")
         void appliesNoMetadataComparisonWhenNoPagingMetadataTravels() {
             TransactionListResponse response = new TransactionListResponse(
-                    rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE), null, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE), null, navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                     TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
 
@@ -882,12 +882,12 @@ class TransactionListResponseTest {
         @DisplayName("carries either direction through the response unchanged")
         void carriesEitherDirectionThroughTheResponse() {
             TransactionListResponse walkedForward = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
             TransactionListResponse walkedBackward = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), backwardPaging(), TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), backwardPaging(), navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
@@ -906,7 +906,7 @@ class TransactionListResponseTest {
             TransactionListResponse.TransactionRow firstOfAll = row(TRANSACTION_ID_ONE, AMOUNT);
             List<TransactionListResponse.TransactionRow> descending = List.of(last, middle, firstOfAll);
 
-            TransactionListResponse subject = new TransactionListResponse(descending, backwardPaging(), TransactionListRequest.ScreenContinuation.empty(),
+            TransactionListResponse subject = new TransactionListResponse(descending, backwardPaging(),
                     navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
                     TransactionListResponse.MESSAGE_REACHED_TOP, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                     TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
@@ -1282,7 +1282,7 @@ class TransactionListResponseTest {
             PageMetadata supplied = forwardPaging();
 
             TransactionListResponse subject = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), supplied, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), supplied, navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
@@ -1355,7 +1355,7 @@ class TransactionListResponseTest {
                     PREVIOUS_CURSOR_KEY, null, false, true, PAGE_INDICATOR);
 
             TransactionListResponse subject = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), exhausted, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), exhausted, navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR,
                     TransactionListResponse.MESSAGE_REACHED_BOTTOM, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                     TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
@@ -1399,7 +1399,7 @@ class TransactionListResponseTest {
             NavigationContext supplied = navigation();
 
             TransactionListResponse subject = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), TransactionListRequest.ScreenContinuation.empty(), supplied, NEXT_ROUTE,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), supplied, NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
@@ -1436,7 +1436,7 @@ class TransactionListResponseTest {
             assertThat(emptyResponse().navigationContext()).isNull();
 
             TransactionListResponse withEmpty = new TransactionListResponse(
-                    List.of(), forwardPaging(), TransactionListRequest.ScreenContinuation.empty(), NavigationContext.empty(), null, null, null, null, false, List.of(), null, false,
+                    List.of(), forwardPaging(), NavigationContext.empty(), null, null, null, null, false, List.of(), null, false,
                     null, null, null, null, null, null, null);
 
             assertThat(withEmpty.navigationContext()).isEqualTo(NavigationContext.empty());
@@ -1574,7 +1574,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("reports nothing for an empty string, because no blankness constraint applies")
         void reportsNothingForAnEmptyString() {
-            TransactionListResponse subject = new TransactionListResponse(List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null, "", "",
+            TransactionListResponse subject = new TransactionListResponse(List.of(), null, null, "", "",
                     "", "", false, List.of(), null, false, "", "", "", "", "", "", "");
 
             assertThat(violationsOf(subject)).isEmpty();
@@ -1608,10 +1608,10 @@ class TransactionListResponseTest {
     class SerializedForm {
 
         @Test
-        @DisplayName("publishes exactly the nineteen components the contract declares")
-        void publishesExactlyNineteenComponents() throws JsonProcessingException {
+        @DisplayName("publishes exactly the eighteen components the contract declares")
+        void publishesExactlyEighteenComponents() throws JsonProcessingException {
             assertThat(published(populatedResponse())).containsOnlyKeys("rows", "pageMetadata",
-                    "continuation", "navigationContext", "nextRoute", "transactionIdFilter",
+                    "navigationContext", "nextRoute", "transactionIdFilter",
                     "displayedPageNumber", "message", "error", "fieldErrors", "selectedTransactionId",
                     "preserveDisplayedPage", "focusScreenFieldId", "title01",
                     "title02", "currentDate", "currentTime", "transactionName", "programName");
@@ -1657,7 +1657,7 @@ class TransactionListResponseTest {
         void omitsEveryAbsentValue() throws JsonProcessingException {
             Map<String, Object> body = published(emptyResponse());
 
-            assertThat(body).doesNotContainKeys("pageMetadata", "continuation", "navigationContext",
+            assertThat(body).doesNotContainKeys("pageMetadata", "navigationContext",
                     "nextRoute", "transactionIdFilter", "displayedPageNumber", "message",
                     "selectedTransactionId", "focusScreenFieldId",
                     "title01", "title02", "currentDate", "currentTime", "transactionName",
@@ -1675,7 +1675,7 @@ class TransactionListResponseTest {
         void alwaysPublishesTheErrorIndicator() throws JsonProcessingException {
             assertThat(published(emptyResponse())).containsEntry("error", Boolean.FALSE);
 
-            TransactionListResponse failing = new TransactionListResponse(List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null, null,
+            TransactionListResponse failing = new TransactionListResponse(List.of(), null, null, null,
                     null, null, TransactionListResponse.MESSAGE_INVALID_SELECTION, true, List.of(), null, false, null, null,
                     null, null, null, null, null);
 
@@ -1756,7 +1756,7 @@ class TransactionListResponseTest {
         void carriesAValueThatIsNotARouteAtAll() {
             String notARoute = "  not a route at all  ";
 
-            TransactionListResponse subject = new TransactionListResponse(List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null,
+            TransactionListResponse subject = new TransactionListResponse(List.of(), null, null,
                     notARoute, null, null, null, false, List.of(), null, false, null, null, null, null, null, null, null);
 
             assertThat(subject.nextRoute()).isEqualTo(notARoute);

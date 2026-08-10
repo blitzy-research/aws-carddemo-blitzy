@@ -220,22 +220,126 @@ final class PersistenceTimeRulesTest {
         }
 
         @Test
-        @DisplayName("no key rule reaches the raw daily-transaction landing table, because a malformed "
-                + "identifier there is a reject record with a reason code rather than a refused insert")
-        void noKeyRuleReachesTheDailyLandingTable() {
-            assertThatNoException()
-                    .as("refusing it here would delete the very case the posting job exists to report")
+        @DisplayName("the raw landing table checks the WIDTH of its image-critical fields, because a row "
+                + "that cannot be re-encoded to 350 bytes cannot be reported either")
+        void theLandingTableChecksTheWidthOfItsImageCriticalFields() {
+            // Every field of a 350-byte image is exactly as wide as the layout declares, because it is a
+            // slice of that image, so no record the sequential reader can produce is refused here. A
+            // two-character identifier is a row nothing read from a file: it could not be echoed into the
+            // 350-byte leading segment of a reject record, so it could not be REPORTED either - the reject
+            // dataset would fail, not merely the posting.
+            assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(dailyTransaction("42", new BigDecimal("1.00"))
+                            ::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("dalytranId")
+                    .withMessageContaining("exactly 16 characters");
+            assertThatNoException()
+                    .as("and the same row at the image width is accepted")
+                    .isThrownBy(dailyTransaction("0000000000000042", new BigDecimal("1.00"))
                             ::normalizeAndValidateBeforeWrite);
         }
 
         @Test
+        @DisplayName("but NO content rule reaches it: a card number that is not a card and an overpunched "
+                + "category code both pass, because content is the reject dataset's to report")
+        void noContentRuleReachesTheDailyLandingTable() {
+            // THE HALF OF THE ORIGINAL SPECIFICATION THAT STILL HOLDS, and it is the load-bearing half.
+            // Reject reason 100 exists to report a card number that resolves to no cross-reference, and it
+            // can only do so if such a row is allowed to land. A category code of 000J is the zoned-decimal
+            // minus-one form app/jcl/PRTCATBL.jcl declares for the corresponding field, so no digit class
+            // may be applied to it either.
+            final DailyTransaction unknownCard = dailyTransaction(
+                    "0000000000000042", new BigDecimal("1.00"));
+            unknownCard.setDalytranCardNum("NOTACARDNUMBER01");
+            unknownCard.setDalytranCatCd("000J");
+
+            assertThatNoException()
+                    .as("refusing either would delete the very case the posting job exists to report")
+                    .isThrownBy(unknownCard::normalizeAndValidateBeforeWrite);
+        }
+
+        @Test
         @DisplayName("no digit class reaches the disclosure group identifier, which is ten spaces in every "
-                + "seeded account row")
+                + "seeded account row - and none reaches its category code either")
         void noDigitClassReachesTheDisclosureGroupIdentifier() {
             assertThatNoException()
                     .isThrownBy(new DisclosureGroup("          ", "01", "0005", new BigDecimal("1.75"))
                             ::normalizeAndValidateBeforeWrite);
+            assertThatNoException()
+                    .as("the category code's picture clause is PIC 9(04), yet the estate's own sort "
+                            + "specification types the field it is looked up with as zoned decimal, whose "
+                            + "sign occupies the final byte - so a digit class would make a signed row "
+                            + "unmatchable rather than invalid")
+                    .isThrownBy(new DisclosureGroup("ZEROAPR   ", "01", "000J", new BigDecimal("0.00"))
+                            ::normalizeAndValidateBeforeWrite);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("its WIDTH is still contractual, and a seven-character group identifier is the "
+                            + "value that silently resolves nothing")
+                    .isThrownBy(new DisclosureGroup("ZEROAPR", "01", "0005", new BigDecimal("0.00"))
+                            ::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("disAcctGroupId")
+                    .withMessageContaining("exactly 10 characters");
+        }
+
+        @Test
+        @DisplayName("the account group identifier is checked for width, which is the one account column "
+                + "that is a key somewhere else and that no foreign key can reach")
+        void theAccountGroupIdentifierIsCheckedForWidth() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(accountWithGroup("ZEROAPR")::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("acctGroupId")
+                    .withMessageContaining("exactly 10 characters");
+            assertThatNoException()
+                    .as("the padded spelling is the one that resolves its own disclosure row")
+                    .isThrownBy(accountWithGroup("ZEROAPR   ")::normalizeAndValidateBeforeWrite);
+            assertThatNoException()
+                    .as("and the ten spaces every seeded account carries are accepted, so the rule is a "
+                            + "width and not a vocabulary")
+                    .isThrownBy(accountWithGroup("          ")::normalizeAndValidateBeforeWrite);
+        }
+
+        @Test
+        @DisplayName("the two reference tables check their key widths, which is what stops '1' and '01' "
+                + "claiming the same two bytes of one record")
+        void theReferenceTablesCheckTheirKeyWidths() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(new TransactionType("1", "Purchase")::validateBeforeWrite)
+                    .withMessageContaining("tranType")
+                    .withMessageContaining("exactly 2 characters");
+            assertThatNoException()
+                    .isThrownBy(new TransactionType("01", "Purchase")::validateBeforeWrite);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(new TransactionCategory("01", "5", "Regular Sales Draft")
+                            ::validateBeforeWrite)
+                    .withMessageContaining("tranCatCd")
+                    .withMessageContaining("exactly 4 characters");
+            assertThatNoException()
+                    .as("and an overpunched category code at the right width is accepted, for the same "
+                            + "zoned-decimal reason as the disclosure key")
+                    .isThrownBy(new TransactionCategory("01", "000J", "Regular Sales Draft")
+                            ::validateBeforeWrite);
+        }
+
+        @Test
+        @DisplayName("the category-balance key checks all three part widths and applies no digit class to "
+                + "the two its own sort specification declares zoned decimal")
+        void theCategoryBalanceKeyChecksAllThreePartWidths() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(new TransactionCategoryBalance("1", "01", "0005",
+                            new BigDecimal("1.00"))::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("trancatAcctId")
+                    .withMessageContaining("exactly 11 characters");
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(new TransactionCategoryBalance("00000000050", "01", "5",
+                            new BigDecimal("1.00"))::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("trancatCd")
+                    .withMessageContaining("exactly 4 characters");
+            assertThatNoException()
+                    .as("app/jcl/PRTCATBL.jcl declares TRANCAT-CD,14,4,ZD, so minus one is a legitimate "
+                            + "value of this field and the report's own ordering fixture is built from it")
+                    .isThrownBy(new TransactionCategoryBalance("00000000050", "01", "000J",
+                            new BigDecimal("1.00"))::normalizeAndValidateBeforeWrite);
         }
     }
 
@@ -379,9 +483,25 @@ final class PersistenceTimeRulesTest {
     }
 
     /**
+     * Builds one account carrying the given group identifier and nothing else of interest.
+     *
+     * @param groupIdentifier the value under test
+     * @return the account
+     */
+    private static Account accountWithGroup(final String groupIdentifier) {
+        return new Account("00000000050", "Y", new BigDecimal("100.00"), new BigDecimal("5000.00"),
+                new BigDecimal("500.00"), "2020-01-01", "2030-01-01", "2025-01-01",
+                new BigDecimal("0.00"), new BigDecimal("0.00"), "99999     ", groupIdentifier);
+    }
+
+    /**
      * Builds a daily transaction carrying the supplied identifier and amount.
      *
-     * @param identifier the identifier to carry, deliberately unconstrained on this table
+     * <p>The identifier is the value under test in this class: the landing table checks its width, because
+     * a row that cannot be re-encoded to 350 bytes cannot be echoed into a reject record either, and it
+     * checks nothing about its content, because content is what the reject reason codes report.
+     *
+     * @param identifier the identifier to carry
      * @param amount     the amount to carry
      * @return a daily transaction ready for the callback
      */

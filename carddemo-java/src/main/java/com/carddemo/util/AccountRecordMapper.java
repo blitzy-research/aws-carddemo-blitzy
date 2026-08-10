@@ -51,11 +51,12 @@ import com.carddemo.domain.Account;
  * {@code setScale} and never names a rounding mode</strong>, which is what prevents a second,
  * inconsistent rounding policy from appearing in the module; no binary floating-point type appears
  * here either, an IEEE-754 approximation of a cent being exactly what the mandated construct
- * mapping forbids. One asymmetry follows: a negatively-signed all-zero image has no
- * {@link BigDecimal} counterpart, so it decodes to zero and re-emits with the positive sign. It is
- * observable only where every digit is zero - an ordinary negative amount whose cent digit happens
- * to be zero round-trips exactly - and a caller that must preserve the distinction byte for byte
- * reads the field through the codec's signed entry points, which exist for that purpose.
+ * mapping forbids. One asymmetry of the target type is bridged rather than accepted: a
+ * negatively-signed all-zero image has no {@link BigDecimal} counterpart, so all five amounts are read
+ * and written through the codec's <em>signed</em> entry points and the missing bit travels on the
+ * entity's five transient negative-zero markers. Such an image therefore re-emits with the negative
+ * sign it arrived with. It was only ever observable where every digit is zero - an ordinary negative
+ * amount whose cent digit happens to be zero always round-tripped exactly.
  *
  * <p>The copybook genuinely spells the seventh item without its {@code T}. The defect is preserved
  * where it is load bearing and corrected where it is not: the byte offset and length are reproduced
@@ -127,17 +128,22 @@ public final class AccountRecordMapper {
     /** The status is carried as a raw code; nothing here translates or validates it. */
     public static final int ACCT_ACTIVE_STATUS_LENGTH = 1;
 
+    /**
+     * The five monetary widths below are the codec's published account width rather than a literal
+     * twelve, so the layout this class slices and the decoder that reads each slice cannot disagree
+     * about {@code PIC S9(10)V99}.
+     */
     public static final int ACCT_CURR_BAL_OFFSET = 12;
 
-    public static final int ACCT_CURR_BAL_LENGTH = 12;
+    public static final int ACCT_CURR_BAL_LENGTH = ZonedDecimalCodec.ACCOUNT_AMOUNT_WIDTH;
 
     public static final int ACCT_CREDIT_LIMIT_OFFSET = 24;
 
-    public static final int ACCT_CREDIT_LIMIT_LENGTH = 12;
+    public static final int ACCT_CREDIT_LIMIT_LENGTH = ZonedDecimalCodec.ACCOUNT_AMOUNT_WIDTH;
 
     public static final int ACCT_CASH_CREDIT_LIMIT_OFFSET = 36;
 
-    public static final int ACCT_CASH_CREDIT_LIMIT_LENGTH = 12;
+    public static final int ACCT_CASH_CREDIT_LIMIT_LENGTH = ZonedDecimalCodec.ACCOUNT_AMOUNT_WIDTH;
 
     public static final int ACCT_OPEN_DATE_OFFSET = 48;
 
@@ -157,11 +163,11 @@ public final class AccountRecordMapper {
 
     public static final int ACCT_CURR_CYC_CREDIT_OFFSET = 78;
 
-    public static final int ACCT_CURR_CYC_CREDIT_LENGTH = 12;
+    public static final int ACCT_CURR_CYC_CREDIT_LENGTH = ZonedDecimalCodec.ACCOUNT_AMOUNT_WIDTH;
 
     public static final int ACCT_CURR_CYC_DEBIT_OFFSET = 90;
 
-    public static final int ACCT_CURR_CYC_DEBIT_LENGTH = 12;
+    public static final int ACCT_CURR_CYC_DEBIT_LENGTH = ZonedDecimalCodec.ACCOUNT_AMOUNT_WIDTH;
 
     /**
      * Offset of the ZIP, which is alphanumeric rather than numeric: reference values begin with a
@@ -339,12 +345,14 @@ public final class AccountRecordMapper {
                 ACCT_ACTIVE_STATUS_LENGTH, requireText(FIELD_ACCT_ACTIVE_STATUS,
                         "acctActiveStatus", account.getAcctActiveStatus()));
         putAmount(image, FIELD_ACCT_CURR_BAL, "acctCurrBal", ACCT_CURR_BAL_OFFSET,
-                ACCT_CURR_BAL_LENGTH, account.getAcctCurrBal());
+                ACCT_CURR_BAL_LENGTH, account.getAcctCurrBal(),
+                account.isAcctCurrBalNegativeZero());
         putAmount(image, FIELD_ACCT_CREDIT_LIMIT, "acctCreditLimit", ACCT_CREDIT_LIMIT_OFFSET,
-                ACCT_CREDIT_LIMIT_LENGTH, account.getAcctCreditLimit());
+                ACCT_CREDIT_LIMIT_LENGTH, account.getAcctCreditLimit(),
+                account.isAcctCreditLimitNegativeZero());
         putAmount(image, FIELD_ACCT_CASH_CREDIT_LIMIT, "acctCashCreditLimit",
                 ACCT_CASH_CREDIT_LIMIT_OFFSET, ACCT_CASH_CREDIT_LIMIT_LENGTH,
-                account.getAcctCashCreditLimit());
+                account.getAcctCashCreditLimit(), account.isAcctCashCreditLimitNegativeZero());
         image.putAlphanumeric(FIELD_ACCT_OPEN_DATE, ACCT_OPEN_DATE_OFFSET, ACCT_OPEN_DATE_LENGTH,
                 requireText(FIELD_ACCT_OPEN_DATE, "acctOpenDate", account.getAcctOpenDate()));
         image.putAlphanumeric(FIELD_ACCT_EXPIRAION_DATE, ACCT_EXPIRAION_DATE_OFFSET,
@@ -355,9 +363,10 @@ public final class AccountRecordMapper {
                         account.getAcctReissueDate()));
         putAmount(image, FIELD_ACCT_CURR_CYC_CREDIT, "acctCurrCycCredit",
                 ACCT_CURR_CYC_CREDIT_OFFSET, ACCT_CURR_CYC_CREDIT_LENGTH,
-                account.getAcctCurrCycCredit());
+                account.getAcctCurrCycCredit(), account.isAcctCurrCycCreditNegativeZero());
         putAmount(image, FIELD_ACCT_CURR_CYC_DEBIT, "acctCurrCycDebit", ACCT_CURR_CYC_DEBIT_OFFSET,
-                ACCT_CURR_CYC_DEBIT_LENGTH, account.getAcctCurrCycDebit());
+                ACCT_CURR_CYC_DEBIT_LENGTH, account.getAcctCurrCycDebit(),
+                account.isAcctCurrCycDebitNegativeZero());
         image.putAlphanumeric(FIELD_ACCT_ADDR_ZIP, ACCT_ADDR_ZIP_OFFSET, ACCT_ADDR_ZIP_LENGTH,
                 requireText(FIELD_ACCT_ADDR_ZIP, "acctAddrZip", account.getAcctAddrZip()));
         image.putAlphanumeric(FIELD_ACCT_GROUP_ID, ACCT_GROUP_ID_OFFSET, ACCT_GROUP_ID_LENGTH,
@@ -375,33 +384,59 @@ public final class AccountRecordMapper {
      * deliberately not touched: it has no representation in the image.
      */
     private static Account mapFrom(FixedWidthFieldReader record) {
-        return new Account(
+        ZonedDecimalCodec.ZonedValue currentBalance =
+                amountAt(record, FIELD_ACCT_CURR_BAL, ACCT_CURR_BAL_OFFSET, ACCT_CURR_BAL_LENGTH);
+        ZonedDecimalCodec.ZonedValue creditLimit = amountAt(record, FIELD_ACCT_CREDIT_LIMIT,
+                ACCT_CREDIT_LIMIT_OFFSET, ACCT_CREDIT_LIMIT_LENGTH);
+        ZonedDecimalCodec.ZonedValue cashCreditLimit = amountAt(record,
+                FIELD_ACCT_CASH_CREDIT_LIMIT, ACCT_CASH_CREDIT_LIMIT_OFFSET,
+                ACCT_CASH_CREDIT_LIMIT_LENGTH);
+        ZonedDecimalCodec.ZonedValue cycleCredit = amountAt(record, FIELD_ACCT_CURR_CYC_CREDIT,
+                ACCT_CURR_CYC_CREDIT_OFFSET, ACCT_CURR_CYC_CREDIT_LENGTH);
+        ZonedDecimalCodec.ZonedValue cycleDebit = amountAt(record, FIELD_ACCT_CURR_CYC_DEBIT,
+                ACCT_CURR_CYC_DEBIT_OFFSET, ACCT_CURR_CYC_DEBIT_LENGTH);
+
+        Account account = new Account(
                 record.field(FIELD_ACCT_ID, ACCT_ID_OFFSET, ACCT_ID_LENGTH),
                 record.field(FIELD_ACCT_ACTIVE_STATUS, ACCT_ACTIVE_STATUS_OFFSET,
                         ACCT_ACTIVE_STATUS_LENGTH),
-                amountAt(record, FIELD_ACCT_CURR_BAL, ACCT_CURR_BAL_OFFSET, ACCT_CURR_BAL_LENGTH),
-                amountAt(record, FIELD_ACCT_CREDIT_LIMIT, ACCT_CREDIT_LIMIT_OFFSET,
-                        ACCT_CREDIT_LIMIT_LENGTH),
-                amountAt(record, FIELD_ACCT_CASH_CREDIT_LIMIT, ACCT_CASH_CREDIT_LIMIT_OFFSET,
-                        ACCT_CASH_CREDIT_LIMIT_LENGTH),
+                currentBalance.value(),
+                creditLimit.value(),
+                cashCreditLimit.value(),
                 record.field(FIELD_ACCT_OPEN_DATE, ACCT_OPEN_DATE_OFFSET, ACCT_OPEN_DATE_LENGTH),
                 record.field(FIELD_ACCT_EXPIRAION_DATE, ACCT_EXPIRAION_DATE_OFFSET,
                         ACCT_EXPIRAION_DATE_LENGTH),
                 record.field(FIELD_ACCT_REISSUE_DATE, ACCT_REISSUE_DATE_OFFSET,
                         ACCT_REISSUE_DATE_LENGTH),
-                amountAt(record, FIELD_ACCT_CURR_CYC_CREDIT, ACCT_CURR_CYC_CREDIT_OFFSET,
-                        ACCT_CURR_CYC_CREDIT_LENGTH),
-                amountAt(record, FIELD_ACCT_CURR_CYC_DEBIT, ACCT_CURR_CYC_DEBIT_OFFSET,
-                        ACCT_CURR_CYC_DEBIT_LENGTH),
+                cycleCredit.value(),
+                cycleDebit.value(),
                 record.field(FIELD_ACCT_ADDR_ZIP, ACCT_ADDR_ZIP_OFFSET, ACCT_ADDR_ZIP_LENGTH),
                 record.field(FIELD_ACCT_GROUP_ID, ACCT_GROUP_ID_OFFSET, ACCT_GROUP_ID_LENGTH));
+
+        // The five sign bits the amounts cannot carry. Set after construction because they are not part
+        // of the record-image constructor's parameter order and are not persisted state.
+        account.setAcctCurrBalNegativeZero(currentBalance.negativeZero());
+        account.setAcctCreditLimitNegativeZero(creditLimit.negativeZero());
+        account.setAcctCashCreditLimitNegativeZero(cashCreditLimit.negativeZero());
+        account.setAcctCurrCycCreditNegativeZero(cycleCredit.negativeZero());
+        account.setAcctCurrCycDebitNegativeZero(cycleDebit.negativeZero());
+        return account;
     }
 
-    /** Slices one zoned-decimal field and decodes it at the canonical monetary scale. */
-    private static BigDecimal amountAt(FixedWidthFieldReader record, String fieldName, int offset,
-            int length) {
-        return ZonedDecimalCodec.decodeMonetary(record.field(fieldName, offset, length), length,
-                fieldName);
+    /**
+     * Slices one zoned-decimal field and decodes it at the canonical monetary scale, together with the
+     * one bit of sign the amount itself cannot carry.
+     *
+     * <p>The <em>signed</em> codec entry point, deliberately. A negatively-signed all-zero image differs
+     * from a positively-signed one in its final byte alone, and reading through the plain entry point
+     * would discard that difference and re-emit {@code '{'} where the record held {@code '}'}. The bit
+     * travels on the entity as a transient marker, which is the only place it can travel, and this mapper
+     * is its only producer.
+     */
+    private static ZonedDecimalCodec.ZonedValue amountAt(FixedWidthFieldReader record,
+            String fieldName, int offset, int length) {
+        return ZonedDecimalCodec.decodeSigned(record.field(fieldName, offset, length), length,
+                ZonedDecimalCodec.MONETARY_SCALE, fieldName);
     }
 
     /**
@@ -410,11 +445,19 @@ public final class AccountRecordMapper {
      * <p>Numeric placement left-pads with ASCII zeros and leaves the overpunched sign in the final
      * byte. The codec has already produced exactly {@code length} bytes, so no padding occurs; the
      * mode is stated for safety if a narrower value ever arrives.
+     *
+     * <p>The negative-zero bit the entity carries is passed through to the codec, which is what makes the
+     * final byte of an all-zero field the byte the record held. It is applied only while the amount is
+     * zero, because a non-zero amount already carries its own sign.
      */
     private static void putAmount(FixedWidthFieldReader.Builder image, String fieldName,
-            String property, int offset, int length, BigDecimal value) {
-        image.putNumeric(fieldName, offset, length, ZonedDecimalCodec.encodeMonetary(
-                requireAmount(fieldName, property, value), length, fieldName));
+            String property, int offset, int length, BigDecimal value, boolean negativeZero) {
+        BigDecimal amount = requireAmount(fieldName, property, value);
+        // The signed form re-emits the sign byte the image arrived with, so a negative zero survives the
+        // round trip instead of being normalised to a positive one.
+        image.putNumeric(fieldName, offset, length, ZonedDecimalCodec.encodeSigned(
+                new ZonedDecimalCodec.ZonedValue(amount, negativeZero && amount.signum() == 0),
+                length, ZonedDecimalCodec.MONETARY_SCALE, fieldName));
     }
 
     /**

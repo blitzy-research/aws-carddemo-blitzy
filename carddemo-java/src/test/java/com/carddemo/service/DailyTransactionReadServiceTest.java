@@ -137,6 +137,15 @@ import static org.mockito.Mockito.when;
         + "only here")
 final class DailyTransactionReadServiceTest {
 
+    /**
+     * The bound the two alternate-key finders now require, generous enough that these specifications
+     * measure the finder's shape rather than its bound.
+     *
+     * <p>The bound itself is measured against a real server in the repository specifications, where a
+     * fixture can hold two rows under one account identifier; a mock cannot establish it.
+     */
+    private static final Limit ALTERNATE_KEY_ROWS = Limit.of(100);
+
     // =============================================================================================
     // Oracles restated from app/cbl/CBTRN01C.cbl and the copybooks it includes. Nothing in this
     // block is read back from a production class; each value is a literal a reviewer can check
@@ -1167,11 +1176,11 @@ final class DailyTransactionReadServiceTest {
         @DisplayName("the account-level cross-reference finder answers with a list, and an empty list "
                 + "is the not-found path rather than an out-of-bounds or no-such-element failure")
         void emptyCrossReferenceListIsTheNotFoundPath() {
-            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ONE))
+            when(cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ONE, ALTERNATE_KEY_ROWS))
                     .thenReturn(List.of());
 
             final List<CardCrossReference> rows =
-                    cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ONE);
+                    cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ONE, ALTERNATE_KEY_ROWS);
 
             assertAll(
                     () -> assertThat(rows).isEmpty(),
@@ -1194,10 +1203,10 @@ final class DailyTransactionReadServiceTest {
             final CardCrossReference lowerCard = crossReference(CARD_ONE, ACCOUNT_ONE);
             // Deliberately descending by card number: natural order would put the lower card first.
             final List<CardCrossReference> supplied = List.of(higherCard, lowerCard);
-            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ONE)).thenReturn(supplied);
+            when(cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ONE, ALTERNATE_KEY_ROWS)).thenReturn(supplied);
 
             final List<CardCrossReference> rows =
-                    cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ONE);
+                    cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ONE, ALTERNATE_KEY_ROWS);
 
             assertAll(
                     () -> assertThat(rows).containsExactly(higherCard, lowerCard),

@@ -278,8 +278,15 @@ public final class SecureStagedFiles {
      */
     public static Path newTemporaryDirectory(final String prefix) throws IOException {
         Objects.requireNonNull(prefix, "prefix must not be null");
+        // The parent is named explicitly rather than left to the no-parent overload. That overload resolves
+        // the platform location once, when the platform's own temporary-file helper is initialised, and
+        // never again; this method meanwhile computes the mode it will apply from the location as it reads
+        // NOW. Passing the same value to both is what keeps the two halves describing one directory: the
+        // attributes are derived from the filesystem the directory is actually created on, rather than from
+        // whatever the property said at the moment of the first temporary file in the process.
         final Path platformTemporary = Path.of(System.getProperty("java.io.tmpdir"));
-        return Files.createTempDirectory(prefix, directoryAttributes(platformTemporary));
+        return Files.createTempDirectory(platformTemporary, prefix,
+                directoryAttributes(platformTemporary));
     }
 
     /**

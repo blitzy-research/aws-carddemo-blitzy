@@ -18,10 +18,14 @@ package com.carddemo.service;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import org.slf4j.Logger;
@@ -466,7 +470,7 @@ public class TransactionReportService {
                     // range test with CONTINUE on the matching arm and NEXT SENTENCE on the
                     // non-matching arm. NEXT SENTENCE transfers control to the statement after the
                     // next sentence-terminating period, and the next period in this member is the
-                    // one on the END-PERFORM at line 206 - so the non-matching arm leaves the
+                    // one on the loop's scope terminator at line 206 - so the non-matching arm leaves the
                     // WHOLE driving loop rather than skipping one record, and the closes at line
                     // 208 run next. A record outside the range therefore truncates the report and
                     // suppresses the final page and grand totals entirely.
@@ -996,6 +1000,45 @@ public class TransactionReportService {
     private void trantypeOpen(final ReportRun run) {
         openResource(run, DD_TRANTYPE, resourceStatusOf(this.transactionTypeRepository),
                 DIAG_OPEN_TRANTYPE);
+        if (run.applResult().isAok()) {
+            preloadTransactionTypes(run);
+        }
+    }
+
+    /**
+     * Reads the whole transaction-type cluster once, at its open, into this run's reference memo.
+     *
+     * <p><strong>&#9733; Why the whole table, and why only this kind of table.</strong> The cluster is a
+     * closed reference vocabulary: {@code app/data/ASCII/trantype.txt} holds seven 60-byte records, and the
+     * schema's own key-shape constraint fixes the key at two characters, so the cardinality is bounded by
+     * the domain rather than by traffic. Reading it once costs one query for the whole run; resolving it a
+     * key at a time cost one query per distinct code, which is a per-key round trip in place of the
+     * mainframe's probe into a cluster held open for the whole step. Only genuinely bounded reference
+     * tables are read this way - the cross-reference cluster grows with the card estate and is resolved in
+     * bounded batches instead.
+     *
+     * <p>This is a read of the same cluster the open just reported on, at the moment the legacy program
+     * opens it, so the run sees exactly the rows it would have seen record by record. A row inserted after
+     * the open is still found: a memo miss falls through to the keyed read, which is also the path that
+     * abends on a code the cluster genuinely does not hold.
+     *
+     * <p>A failure here is the failure of a read of this resource and takes that resource's own arm, which
+     * is what the keyed read would have done at the first record.
+     *
+     * @param run the per-invocation state
+     */
+    private void preloadTransactionTypes(final ReportRun run) {
+        try {
+            for (final TransactionType type : this.transactionTypeRepository.findAll()) {
+                run.memoizeTransactionTypeDescription(type.getTranType(), type.getTranTypeDesc());
+            }
+        } catch (DataAccessException failure) {
+            logReferenceReadFailure(DD_TRANTYPE, failure);
+            LOG.error("{} resource={}", DIAG_INVALID_TRANTYPE, DD_TRANTYPE);
+            displayIoStatus(STATUS_PERMANENT_ERROR, OPERATION_READ, DD_TRANTYPE);
+            abendProgram(DIAG_INVALID_TRANTYPE, STATUS_PERMANENT_ERROR, OPERATION_READ,
+                    DD_TRANTYPE);
+        }
     }
 
     /**
@@ -1006,6 +1049,35 @@ public class TransactionReportService {
     private void trancatgOpen(final ReportRun run) {
         openResource(run, DD_TRANCATG, resourceStatusOf(this.transactionCategoryRepository),
                 DIAG_OPEN_TRANCATG);
+        if (run.applResult().isAok()) {
+            preloadTransactionCategories(run);
+        }
+    }
+
+    /**
+     * Reads the whole transaction-category cluster once, at its open, into this run's reference memo.
+     *
+     * <p>The same reasoning as {@link #preloadTransactionTypes(ReportRun)} and the same bound:
+     * {@code app/data/ASCII/trancatg.txt} holds eighteen 60-byte records under a composite key of a
+     * two-character type code and a four-digit category code, so the vocabulary is closed. Absence still
+     * abends on the record that first presents it, because a memo miss falls through to the keyed read.
+     *
+     * @param run the per-invocation state
+     */
+    private void preloadTransactionCategories(final ReportRun run) {
+        try {
+            for (final TransactionCategory category : this.transactionCategoryRepository.findAll()) {
+                run.memoizeTransactionCategoryDescription(
+                        new TransactionCategoryId(category.getTranTypeCd(), category.getTranCatCd()),
+                        category.getTranCatTypeDesc());
+            }
+        } catch (DataAccessException failure) {
+            logReferenceReadFailure(DD_TRANCATG, failure);
+            LOG.error("{} resource={}", DIAG_INVALID_TRANCATG, DD_TRANCATG);
+            displayIoStatus(STATUS_PERMANENT_ERROR, OPERATION_READ, DD_TRANCATG);
+            abendProgram(DIAG_INVALID_TRANCATG, STATUS_PERMANENT_ERROR, OPERATION_READ,
+                    DD_TRANCATG);
+        }
     }
 
     /**
@@ -1040,7 +1112,14 @@ public class TransactionReportService {
      * @param run the per-invocation state
      */
     private void lookupXref(final ReportRun run) {
-        final String memoized = run.memoizedXrefAccountId(run.xrefCardNumberKey());
+        String memoized = run.memoizedXrefAccountId(run.xrefCardNumberKey());
+        if (memoized == null) {
+            // ONE read for the card numbers this run is about to need, not one per distinct card. The
+            // frozen input is ordered by card number, so the cards a bounded lookahead names are the next
+            // cards the run will ask for.
+            prefetchCrossReferences(run);
+            memoized = run.memoizedXrefAccountId(run.xrefCardNumberKey());
+        }
         if (memoized != null) {
             run.xrefAccountId(memoized);
             return;
@@ -1068,6 +1147,50 @@ public class TransactionReportService {
 
         run.memoizeXrefAccountId(run.xrefCardNumberKey(), crossReference.getXrefAcctId());
         run.xrefAccountId(crossReference.getXrefAcctId());
+    }
+
+    /**
+     * Resolves the cross-reference records for the card the run is on and for the cards a bounded
+     * lookahead over the frozen input names, in one read.
+     *
+     * <p><strong>&#9733; Why a batch and not a preload.</strong> The cross-reference cluster grows with the
+     * card estate, so reading it whole is not bounded and is not done. What <em>is</em> bounded is how far
+     * ahead this run needs to look: the frozen input is ordered by card number under the job's own sort, so
+     * the distinct cards in the next {@value ReportRun#CROSS_REFERENCE_LOOKAHEAD} records are the next
+     * cards the run will ask about. One {@code findAllById} over that set replaces one keyed read per
+     * distinct card, which is the shape a report over a large window degenerated into.
+     *
+     * <p>The lookahead reads the run's own frozen sequence and consumes nothing: the records it inspects are
+     * held in the run's bounded buffer and are served from it when the driving loop reaches them. The buffer
+     * is the only lookahead in the design; nothing re-reads the generation and nothing seeks backwards.
+     *
+     * <p><strong>Absence is not memoized and abends are not moved.</strong> Only rows the cluster actually
+     * holds are recorded, so a card the cluster does not hold still falls through to the keyed read on the
+     * record that presents it, and that record is still the one that abends - with its own literal, its own
+     * status and its own resource. A batch is a way of reading fewer times, never a way of failing
+     * differently.
+     *
+     * <p>A failure of the batch is deliberately <strong>not</strong> reported here. It leaves the memo
+     * untouched and lets the keyed read below take the resource's own arm, so the diagnostic an operator
+     * sees is the one the legacy program produces for a failed read of this cluster.
+     *
+     * @param run the per-invocation state
+     */
+    private void prefetchCrossReferences(final ReportRun run) {
+        final Set<String> keys = run.upcomingCardNumbers(run.xrefCardNumberKey());
+        if (keys.isEmpty()) {
+            return;
+        }
+        try {
+            for (final CardCrossReference crossReference
+                    : this.cardCrossReferenceRepository.findAllById(keys)) {
+                run.memoizeXrefAccountId(crossReference.getXrefCardNum(),
+                        crossReference.getXrefAcctId());
+            }
+        } catch (DataAccessException failure) {
+            // Left to the keyed read below, which owns this resource's arm.
+            logReferenceReadFailure(DD_CARDXREF, failure);
+        }
     }
 
     /**
@@ -1493,6 +1616,15 @@ public class TransactionReportService {
         private static final BigDecimal ZERO_AT_MONETARY_SCALE =
                 ZonedDecimalCodec.toMonetaryScale(BigDecimal.ZERO);
 
+        /** Legacy name of the page accumulator, {@code app/cbl/CBTRN03C.cbl} line 134. */
+        private static final String FIELD_WS_PAGE_TOTAL = "WS-PAGE-TOTAL";
+
+        /** Legacy name of the account accumulator, {@code app/cbl/CBTRN03C.cbl} line 135. */
+        private static final String FIELD_WS_ACCOUNT_TOTAL = "WS-ACCOUNT-TOTAL";
+
+        /** Legacy name of the grand accumulator, {@code app/cbl/CBTRN03C.cbl} line 136. */
+        private static final String FIELD_WS_GRAND_TOTAL = "WS-GRAND-TOTAL";
+
         private final String dateParameterCard;
 
         private final ReportTransactionSource transactionSource;
@@ -1554,10 +1686,31 @@ public class TransactionReportService {
         private int accountBreakCount;
 
         /**
+         * How many records ahead of the one in hand this run buffers, and therefore how many cards one
+         * batched cross-reference read may resolve.
+         *
+         * <p>A working-set bound rather than a tuning value: it caps both the buffered records and the key
+         * list of one read, so neither grows with the window the report covers. The figure is the same
+         * bounded-page size the module's keyset walks use, so the batch tier has one page size and not
+         * several.
+         */
+        private static final int CROSS_REFERENCE_LOOKAHEAD = 256;
+
+        /**
+         * Records read ahead of the one in hand, at most {@value #CROSS_REFERENCE_LOOKAHEAD} of them.
+         *
+         * <p>The buffer is the run's read position, not a cache: a record enters it when it is read from the
+         * frozen source and leaves it when the driving loop is given it. Its only additional purpose is to
+         * let a reference read resolve the cards the run is about to need in one round trip.
+         */
+        private final Deque<Transaction> lookahead = new ArrayDeque<>();
+
+        /** Whether the frozen source has reported exhaustion, so it is not asked again. */
+        private boolean lookaheadExhausted;
+
+        /**
          * Reference reads this run has already resolved, keyed by the reference key each paragraph
-         * presents. One entry per <em>distinct</em> key, so the number of reference queries a run issues
-         * is bounded by the cardinality of the reference clusters and is independent of how many
-         * transaction records the run reports.
+         * presents.
          *
          * <p>This is what removes the one-query-per-row shape. The legacy performs a random read of a
          * key-sequenced cluster per record, which on the mainframe is an index probe against a cluster
@@ -1565,14 +1718,22 @@ public class TransactionReportService {
          * round trip per record, and a report over the seeded daily-transaction input issued several
          * hundred of them to resolve seven distinct transaction types and eighteen distinct categories.
          *
+         * <p><strong>The memo alone still left one query per distinct key</strong>, which grows with the
+         * report rather than with the reference vocabulary. Two of the three maps are therefore filled in
+         * full at the open of the cluster they describe, because those clusters are closed vocabularies of
+         * seven and eighteen rows; the third is filled in bounded batches over the cards the buffered
+         * lookahead names, because the cross-reference cluster grows with the card estate and reading it
+         * whole would not be bounded.
+         *
          * <p>Absence is deliberately <strong>not</strong> memoized, because an absent reference abends
          * on the record that first presents it and the run does not continue. The first missing reference
          * is therefore still the one that fails, with its own literal, its own status and its own
-         * resource, exactly as before.
+         * resource, exactly as before - a preload and a batch change how many times the store is read,
+         * never which record fails or how.
          *
          * <p>Held per run and never shared. A cache that outlived a run would make one run's reference
          * data visible to the next, which is a snapshot the legacy step never had. Recorded as DL-175 in
-         * {@code docs/decision-log.md}.
+         * {@code docs/decision-log.md}, extended by DL-294.
          */
         private final Map<String, String> xrefAccountIds = new HashMap<>();
 
@@ -1690,21 +1851,94 @@ public class TransactionReportService {
 
         void rewindTransactionSource() {
             this.transactionPosition = 0;
+            this.lookahead.clear();
+            this.lookaheadExhausted = false;
         }
 
         void releaseTransactionCursor() {
             this.transactionPosition = 0;
+            this.lookahead.clear();
+            this.lookaheadExhausted = false;
         }
 
+        /**
+         * Serves the next record of the frozen sequence, filling the bounded lookahead buffer when it is
+         * empty.
+         *
+         * <p>The buffer is what makes a batched reference read possible without a second pass over the
+         * generation: the records it holds are the ones the driving loop is about to be given, so their card
+         * numbers are the cards the next reference reads will ask for. It holds at most
+         * {@value #CROSS_REFERENCE_LOOKAHEAD} records, so the working set is bounded whatever the window
+         * admits, and the sequence it serves is byte for byte the sequence the source produced.
+         *
+         * @return the next record, or {@code null} at end of file
+         */
         Transaction readNextTransaction() {
-            final Optional<Transaction> next = Objects.requireNonNull(
-                    this.transactionSource.readAt(this.transactionPosition),
-                    "transactionSource.readAt must report an Optional, never null");
-            if (next.isEmpty()) {
+            if (this.lookahead.isEmpty()) {
+                fillLookahead();
+            }
+            final Transaction next = this.lookahead.pollFirst();
+            if (next == null) {
                 return null;
             }
             this.transactionPosition++;
-            return next.get();
+            return next;
+        }
+
+        /**
+         * Reads up to {@value #CROSS_REFERENCE_LOOKAHEAD} records forward into the buffer.
+         *
+         * <p>Reads by ascending position with no gaps, which is the only access a forward-only generation
+         * walk permits, and stops at the first exhausted position so a source is never asked for a position
+         * beyond its end twice.
+         */
+        private void fillLookahead() {
+            if (this.lookaheadExhausted) {
+                return;
+            }
+            int position = this.transactionPosition;
+            while (this.lookahead.size() < CROSS_REFERENCE_LOOKAHEAD) {
+                final Optional<Transaction> next = Objects.requireNonNull(
+                        this.transactionSource.readAt(position),
+                        "transactionSource.readAt must report an Optional, never null");
+                if (next.isEmpty()) {
+                    this.lookaheadExhausted = true;
+                    return;
+                }
+                this.lookahead.addLast(next.get());
+                position++;
+            }
+        }
+
+        /**
+         * The card numbers a batched cross-reference read should resolve: the one in hand plus the distinct
+         * card numbers the buffered records carry.
+         *
+         * <p>Bounded by the buffer, so the set is never larger than
+         * {@value #CROSS_REFERENCE_LOOKAHEAD} plus one however many records the window admitted. Insertion
+         * ordered, so the read's key list is deterministic and a diagnostic naming it reads the same way
+         * twice. Cards this run has already resolved are omitted, because re-reading them would defeat the
+         * memo the batch exists to fill.
+         *
+         * @param  currentCardNumberKey the cross-reference key of the record in hand
+         * @return the keys to resolve, empty when every one of them is already resolved
+         */
+        Set<String> upcomingCardNumbers(final String currentCardNumberKey) {
+            if (this.lookahead.isEmpty()) {
+                fillLookahead();
+            }
+            final Set<String> keys = new LinkedHashSet<>();
+            if (currentCardNumberKey != null
+                    && !this.xrefAccountIds.containsKey(currentCardNumberKey)) {
+                keys.add(currentCardNumberKey);
+            }
+            for (final Transaction upcoming : this.lookahead) {
+                final String cardNumber = upcoming.getTranCardNum();
+                if (cardNumber != null && !this.xrefAccountIds.containsKey(cardNumber)) {
+                    keys.add(cardNumber);
+                }
+            }
+            return keys;
         }
 
         Transaction currentTransaction() {
@@ -1745,13 +1979,17 @@ public class TransactionReportService {
 
         /**
          * The page-total half of the source's two-receiver add at lines 287-288, and of the stale add
-         * at line 200. Every store into a two-decimal receiving field truncates toward zero, and the
-         * truncation is applied by the codec so that no call site can choose a different policy.
+         * at line 200. The three accumulators are declared {@code PIC S9(09)V99} at
+         * {@code app/cbl/CBTRN03C.cbl} lines 134 to 136, so each add is <em>stored</em> into that
+         * geometry through the codec: surplus fractional digits truncate toward zero and surplus
+         * high-order digits are dropped, exactly as the receiving field's digit positions would. Both
+         * halves are the codec's so that no call site can choose a different policy.
          *
          * @param amount the addend, already at the monetary scale
          */
         void addToPageTotal(final BigDecimal amount) {
-            this.pageTotal = ZonedDecimalCodec.toMonetaryScale(this.pageTotal.add(amount));
+            this.pageTotal = ZonedDecimalCodec.storeIntoMonetary(this.pageTotal.add(amount),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_WS_PAGE_TOTAL);
         }
 
         /**
@@ -1760,7 +1998,8 @@ public class TransactionReportService {
          * @param amount the addend, already at the monetary scale
          */
         void addToAccountTotal(final BigDecimal amount) {
-            this.accountTotal = ZonedDecimalCodec.toMonetaryScale(this.accountTotal.add(amount));
+            this.accountTotal = ZonedDecimalCodec.storeIntoMonetary(this.accountTotal.add(amount),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_WS_ACCOUNT_TOTAL);
         }
 
         /**
@@ -1768,7 +2007,9 @@ public class TransactionReportService {
          * grand total. It is fed from the page total, never from a detail amount.
          */
         void foldPageTotalIntoGrandTotal() {
-            this.grandTotal = ZonedDecimalCodec.toMonetaryScale(this.grandTotal.add(this.pageTotal));
+            this.grandTotal = ZonedDecimalCodec.storeIntoMonetary(
+                    this.grandTotal.add(this.pageTotal),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_WS_GRAND_TOTAL);
         }
 
         /** The zeroing of line 298. */

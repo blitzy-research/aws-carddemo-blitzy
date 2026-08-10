@@ -29,14 +29,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.TreeMap;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.yaml.snakeyaml.Yaml;
 
 /**
  * Verifies the local AWS bootstrap contract: the three resources the emulator hook provisions, the
@@ -151,6 +153,19 @@ final class LocalStackBootstrapContractTest {
 
     /** How many resources the script provisions. */
     private static final int PROVISIONED_RESOURCE_COUNT = 3;
+
+    /**
+     * One row of the header's resource-to-key table: a value, a resource description, then an arrow and
+     * the configuration key path the application binds that resource from.
+     *
+     * <p>Anchored on the arrow rather than on the key, so that prose mentioning a key path - including
+     * the two spellings the header records as withdrawn - is not read as a table row.
+     */
+    private static final Pattern KEY_TABLE_ROW =
+            Pattern.compile("^#\\s{2,}\\S+\\s{2,}(.+?)\\s+->\\s+(carddemo\\.\\S+)\\s*$");
+
+    /** Any configuration key path under this module's own prefix, wherever it occurs in the script. */
+    private static final Pattern CONFIGURATION_KEY = Pattern.compile("carddemo\\.aws\\.[a-z0-9.-]+");
 
     /** The profile overlays that bind these names, plus the test overlay. */
     private static final List<String> OVERLAYS_BINDING_THE_NAMES = List.of(
@@ -323,6 +338,42 @@ final class LocalStackBootstrapContractTest {
                     .as("%s must be read with a default-substitution that supplies %s",
                             variable, canonicalValue)
                     .contains("${" + variable + ":-" + canonicalValue + "}");
+        }
+
+        @Test
+        @DisplayName("and the property path the script names for each resource is the property path the "
+                + "application actually binds")
+        void theScriptNamesThePropertyPathsTheApplicationBinds() throws IOException {
+            // WHY A COMMENT IS ASSERTED HERE, WHEN EVERY OTHER ASSERTION IN THIS CLASS DELIBERATELY READS
+            // ONLY THE EXECUTABLE LINES. This script creates the resources and binds none of them, so the
+            // mapping from a created resource to the setting the application reads it under exists ONLY as
+            // this header table. That makes the table the sole navigational route from a resource that is
+            // wrong to the configuration key that would have to change - and a wrong route costs a reader
+            // real time, because a property path that does not exist cannot be grepped to nothing useful.
+            //
+            // It had drifted: the table named carddemo.aws.s3.bucket and
+            // carddemo.aws.sqs.job-submission-queue, neither of which any file declares. The keys the
+            // application binds are the constants below, so they are compared against the constants rather
+            // than against transcriptions of them, and a rename of either now fails here instead of
+            // silently stranding the table again.
+            final String header = read(SCRIPT_PATH);
+
+            assertThat(header)
+                    .as("the object-store bucket's setting, as AwsProperties declares it")
+                    .contains(AwsProperties.S3.BATCH_STAGING_BUCKET_PROPERTY)
+                    .as("the submission queue's setting")
+                    .contains(AwsProperties.Sqs.JOB_QUEUE_PROPERTY)
+                    .as("the message group the publisher stamps on every card")
+                    .contains(AwsProperties.Sqs.MESSAGE_GROUP_ID_PROPERTY)
+                    .as("the notification topic")
+                    .contains(AwsProperties.Sns.JOB_NOTIFICATION_TOPIC_PROPERTY)
+                    .as("and the region every destination is resolved against")
+                    .contains(AwsProperties.REGION_PROPERTY);
+            assertThat(header)
+                    .as("while the two paths that never existed must not come back; each reads as "
+                            + "plausible, which is exactly why a reader trusted them")
+                    .doesNotContain("carddemo.aws.s3.bucket")
+                    .doesNotContain("carddemo.aws.sqs.job-submission-queue");
         }
 
         @Test
@@ -668,17 +719,28 @@ final class LocalStackBootstrapContractTest {
         }
 
         @Test
-        @DisplayName("the stack definition and the integration harness pin the same emulator image")
+        @DisplayName("the stack definition, the integration harness and the bootstrap tier all pin the "
+                + "same emulator image, digest included")
         void theStackDefinitionAndHarnessPinTheSameImage() throws IOException {
             // The stack definition states this requirement in a comment; here it becomes a check. A
-            // harness on a different tag would validate a stack no operator ever runs.
+            // harness on a different tag would validate a stack no operator ever runs - and a harness on
+            // the same TAG but a different DIGEST would do the same thing without being visible, because a
+            // tag is a mutable pointer. The harness pinned tag-only until this was widened, so all three
+            // references are now compared as whole references.
             assertThat(read(COMPOSE_PATH))
                     .as("the stack definition must pin the emulator image")
                     .contains("image: " + EMULATOR_IMAGE);
             assertThat(read("src/test/java/com/carddemo/support/AbstractLocalStackIT.java"))
-                    .as("the integration harness must pin the same readable tag; Compose adds the "
-                            + "immutable digest because it is a deployable stack definition")
-                    .contains("\"" + EMULATOR_IMAGE_TAG + "\"");
+                    .as("the integration harness must pin the same reference, digest included, so a "
+                            + "rebuild of the tag upstream cannot move the suite off the image the stack "
+                            + "was verified against")
+                    .contains("\"" + EMULATOR_IMAGE_TAG + "@sha256:\"")
+                    .contains(EMULATOR_IMAGE.substring(EMULATOR_IMAGE.indexOf("@sha256:") + 8));
+            assertThat(read("src/test/java/com/carddemo/config/LocalStackBootstrapIT.java"))
+                    .as("and so must the bootstrap tier, which starts an emulator of its own with the "
+                            + "provisioning hook copied into it")
+                    .contains("\"" + EMULATOR_IMAGE_TAG + "@sha256:\"")
+                    .contains(EMULATOR_IMAGE.substring(EMULATOR_IMAGE.indexOf("@sha256:") + 8));
         }
 
         @Test
@@ -1056,6 +1118,167 @@ final class LocalStackBootstrapContractTest {
                         .isEqualTo("static: ${carddemo.aws.region}");
             }
         }
+    }
+
+    @Nested
+    @DisplayName("the property keys the header's table names")
+    final class ThePropertyKeysTheHeaderNames {
+
+        /**
+         * The five resources the bootstrap concerns itself with, each paired with the key path the
+         * application binds it from.
+         *
+         * <p>Read from the settings type's own published constants rather than written out as literals.
+         * That is the whole mechanism: a rename in {@code AwsProperties} moves these values, the table in
+         * the script does not move with them, and this suite fails until someone edits the table. Written
+         * as literals, this map would have drifted in exactly the way the table drifted.
+         */
+        private Map<String, String> boundKeyByResource() {
+            final Map<String, String> keys = new LinkedHashMap<>();
+            keys.put("object-store bucket", AwsProperties.S3.BATCH_STAGING_BUCKET_PROPERTY);
+            keys.put("submission queue", AwsProperties.Sqs.JOB_QUEUE_PROPERTY);
+            keys.put("message group id", AwsProperties.Sqs.MESSAGE_GROUP_ID_PROPERTY);
+            keys.put("notification topic", AwsProperties.Sns.JOB_NOTIFICATION_TOPIC_PROPERTY);
+            keys.put("region", AwsProperties.REGION_PROPERTY);
+            return keys;
+        }
+
+        @Test
+        @DisplayName("the table names the key path of every resource, taken from the settings type")
+        void theTableNamesTheKeyPathOfEveryResource() throws IOException {
+            final Map<String, String> tabled = tabledKeys();
+
+            assertThat(tabled)
+                    .as("the table an operator reads to find out which key to set must name one key per"
+                            + " resource and no others")
+                    .containsExactlyInAnyOrderEntriesOf(boundKeyByResource());
+        }
+
+        @Test
+        @DisplayName("every key the table names is a key the shared baseline actually declares")
+        void everyTabledKeyIsDeclaredByTheSharedBaseline() throws IOException {
+            final Object baseline = new Yaml().load(read("src/main/resources/application.yml"));
+
+            for (final String key : tabledKeys().values()) {
+                assertThat(resolves(baseline, key))
+                        .as("%s is named in the bootstrap header, so some profile must declare it -"
+                                + " and the shared baseline is the document the header calls"
+                                + " authoritative", key)
+                        .isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("a key the header names that no profile declares must say on its own line that it "
+                + "is withdrawn")
+        void aKeyNoProfileDeclaresMustSayItIsWithdrawn() throws IOException {
+            final List<Object> profiles = new ArrayList<>();
+            for (final String overlay : OVERLAYS_BINDING_THE_NAMES) {
+                profiles.add(new Yaml().load(read(overlay)));
+            }
+            final List<String> unexplained = new ArrayList<>();
+
+            for (final String line : read(SCRIPT_PATH).split("\n", -1)) {
+                final Matcher key = CONFIGURATION_KEY.matcher(line);
+                while (key.find()) {
+                    final String named = key.group();
+                    final boolean declared = profiles.stream()
+                            .anyMatch(profile -> resolves(profile, named));
+                    if (!declared && !line.contains("withdrawn")) {
+                        unexplained.add(named + " -> " + line.strip());
+                    }
+                }
+            }
+
+            assertThat(unexplained)
+                    .as("naming a key that binds nothing sends a reader to a setting that has no effect;"
+                            + " if the header has to mention one for history, the line must say so")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the two withdrawn spellings survive only as history, never in the table")
+        void theTwoWithdrawnSpellingsSurviveOnlyAsHistory() throws IOException {
+            final List<String> withdrawn =
+                    List.of("carddemo.aws.s3.bucket", "carddemo.aws.sqs.job-submission-queue");
+
+            for (final String spelling : withdrawn) {
+                assertThat(tabledKeys().values())
+                        .as("%s named nothing for a whole checkpoint; it must never return to the table",
+                                spelling)
+                        .doesNotContain(spelling);
+            }
+        }
+
+        @Test
+        @DisplayName("the account and endpoint keys are deliberately outside the table, and the header "
+                + "says why")
+        void theAccountAndEndpointKeysAreOutsideTheTable() throws IOException {
+            final String script = read(SCRIPT_PATH);
+
+            assertThat(tabledKeys().values())
+                    .as("neither provisions a resource here, so neither belongs in a resource table")
+                    .doesNotContain(AwsProperties.ENDPOINT_OVERRIDE_PROPERTY,
+                            AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY);
+            assertThat(script)
+                    .as("a reader who does not find the endpoint override in the table must be told it"
+                            + " exists elsewhere rather than left to conclude it was forgotten")
+                    .contains(AwsProperties.ENDPOINT_OVERRIDE_PROPERTY)
+                    .contains(AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("the document the header calls authoritative is the one that declares all five")
+        void theAuthoritativeDocumentDeclaresAllFive() throws IOException {
+            assertThat(read(SCRIPT_PATH))
+                    .as("the local overlay states outright that it inherits the region rather than"
+                            + " restating it, so it cannot be the authority for all five")
+                    .contains("src/main/resources/application.yml is their authoritative");
+
+            final Object localOverlay = new Yaml().load(read("src/main/resources/application-local.yml"));
+            assertThat(resolves(localOverlay, AwsProperties.REGION_PROPERTY))
+                    .as("if the local overlay ever does declare the region, this reasoning changes and"
+                            + " the header should be revisited rather than quietly left standing")
+                    .isFalse();
+        }
+    }
+
+    /**
+     * Reads the resource-to-key table out of the bootstrap header.
+     *
+     * @return the resource description of each table row, mapped to the key path that row names
+     * @throws IOException if the script cannot be read
+     */
+    private static Map<String, String> tabledKeys() throws IOException {
+        final Map<String, String> tabled = new LinkedHashMap<>();
+        for (final String line : read(SCRIPT_PATH).split("\n", -1)) {
+            final Matcher row = KEY_TABLE_ROW.matcher(line);
+            if (row.matches()) {
+                tabled.put(row.group(1).strip(), row.group(2).strip());
+            }
+        }
+        assertThat(tabled)
+                .as("the header's resource-to-key table must be present and parseable")
+                .isNotEmpty();
+        return tabled;
+    }
+
+    /**
+     * Reports whether a dotted key path resolves to a declared entry in a parsed configuration document.
+     *
+     * @param document the parsed document, or {@code null} for an empty one
+     * @param keyPath  the dotted key path to resolve
+     * @return {@code true} when every segment resolves and the last one names a value
+     */
+    private static boolean resolves(final Object document, final String keyPath) {
+        Object node = document;
+        for (final String segment : keyPath.split("\\.")) {
+            if (!(node instanceof Map<?, ?> map) || !map.containsKey(segment)) {
+                return false;
+            }
+            node = map.get(segment);
+        }
+        return !(node instanceof Map<?, ?>);
     }
 
     /**

@@ -20,6 +20,8 @@ import com.carddemo.util.SecureStagedFiles;
 
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
@@ -47,6 +49,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import org.slf4j.Logger;
@@ -91,7 +95,7 @@ import org.springframework.stereotype.Component;
  *
  * <h2>An abnormal end discards what it allocated</h2>
  *
- * <p>{@link #discardLocalArtifactsOf(JobExecution)} removes the local files one non-completing execution
+ * <p>{@link #discardLocalArtifactsOf(JobExecution, Path)} removes the local files one non-completing execution
  * created: its completed generations, whose publication was skipped, and any working file its steps left
  * half composed. Only files carrying that execution's own generation token are touched, so a concurrently
  * running job's artifacts cannot be caught by it. This is the abnormal disposition of the legacy
@@ -154,10 +158,14 @@ import org.springframework.stereotype.Component;
  *
  * <p>Every registered source is validated before the first upload. Uploads and fixed-name alias
  * replacements then run as a single compensated unit: if any of them fails, every alias this publication
- * advanced is put back, every object it uploaded is deleted, and the exception is returned to the boundary
- * listener, which marks the job failed before the framework persists its terminal status. <strong>A failed
- * job therefore leaves nothing externally visible</strong> - neither a durable object nor a fixed-name
- * local view naming a generation that was never published.
+ * advanced is put back, every object key the publication <em>attempted</em> is purged of every version and
+ * delete marker, and the exception is returned to the boundary listener, which marks the job failed before
+ * the framework persists its terminal status. Compensation deliberately covers the attempted keys rather
+ * than the keys whose upload was observed to succeed: an upload whose bytes the store accepted but whose
+ * response never reached this process throws without ever being recorded as published, so a
+ * succeeded-only compensation would walk past the one durable object the failure actually left behind.
+ * <strong>A failed job therefore leaves nothing externally visible</strong> - neither a durable object nor
+ * a fixed-name local view naming a generation that was never published.
  *
  * <p>The commit point is the moment every upload and every alias replacement has succeeded. Only two acts
  * follow it, and both are deliberately incapable of failing the job. Clearing the registry marks the
@@ -170,8 +178,9 @@ import org.springframework.stereotype.Component;
  * <p>Alias replacement itself goes through a private temporary sibling and an atomic rename, so a reader
  * sees either the previous complete file or the new complete file and never a partly copied one.
  *
- * <p>See {@code docs/decision-log.md} entry DL-180 for the commit boundary and DL-181 for why exclusion is
- * per base rather than per job.
+ * <p>See {@code docs/decision-log.md} entry DL-180 for the commit boundary, DL-181 for why exclusion is
+ * per base rather than per job, and DL-303 for why compensation covers the attempted keys rather than the
+ * acknowledged ones.
  */
 @Component
 public final class StagedGenerationStore {
@@ -248,6 +257,53 @@ public final class StagedGenerationStore {
     /** Serializes publication per generation base so two publications cannot interleave. */
     private final GenerationPublicationLock publicationLock;
 
+    /** The registry every outbound object-store call this class makes is observed against. */
+    private final ObservationRegistry observationRegistry;
+
+    /**
+     * Observation name every outbound object-store call this class makes is recorded under.
+     *
+     * <h2>Why this class needed its own</h2>
+     *
+     * <p>{@code service/BatchStagingService} observes every call it makes, but it is a different surface:
+     * it serves a step that reads or writes one named staging object. The durable generation boundary is
+     * this class, and every call it makes - the listing that allocates the next generation number, the
+     * upload that publishes it, the version listing and version-qualified deletes that compensate a failed
+     * pass and enforce retention - was unobserved. That is the whole of the object-store work a batch job
+     * performs at its most consequential moment, and none of it appeared in a trace.
+     *
+     * <p>A separate name from the staging family rather than a shared one, because the two answer different
+     * questions: one is "how is the staging area behaving", the other is "how is generation publication
+     * behaving". Merging them would average a retention prune into a step's read.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-305.
+     */
+    public static final String OBSERVATION_NAME = "carddemo.batch.generation";
+
+    /** Tag naming which object-store operation was made. */
+    public static final String TAG_OPERATION = "operation";
+
+    /** Operation tag value for the listing that measures a base. */
+    public static final String OPERATION_LIST = "list";
+
+    /** Operation tag value for publishing one generation's bytes. */
+    public static final String OPERATION_UPLOAD = "upload";
+
+    /** Operation tag value for the version listing that precedes a version-qualified removal. */
+    public static final String OPERATION_LIST_VERSIONS = "listVersions";
+
+    /** Operation tag value for removing one exact version of one key. */
+    public static final String OPERATION_DELETE_VERSION = "deleteVersion";
+
+    /**
+     * Tag carrying the key or prefix a call named.
+     *
+     * <p>High cardinality deliberately: a generation key is unique per execution, so it belongs on the
+     * span where it identifies the object, and never on a meter dimension where it would create one
+     * series per generation.
+     */
+    public static final String TAG_OBJECT_KEY = "objectKey";
+
     /**
      * @param objectStore object-store operations; must not be {@code null}
      * @param versionedObjectStore version-aware object-store client, used for the rollback and retention
@@ -255,15 +311,23 @@ public final class StagedGenerationStore {
      *                             be {@code null}
      * @param configuredBucket configured batch-staging bucket; must not be blank
      * @param publicationLock per-base publication lock; must not be {@code null}
+     * @param observationRegistry the registry every outbound object-store call is observed against;
+     *                            must not be {@code null}. Required rather than optional on purpose: a
+     *                            store constructed with the no-op registry would publish, compensate and
+     *                            prune with none of it appearing in a trace, which is indistinguishable
+     *                            from a store that made no calls at all
      */
     public StagedGenerationStore(final S3Operations objectStore,
             final S3Client versionedObjectStore,
             @Value("${" + BATCH_STAGING_BUCKET_PROPERTY + "}")
             final String configuredBucket,
-            final GenerationPublicationLock publicationLock) {
+            final GenerationPublicationLock publicationLock,
+            final ObservationRegistry observationRegistry) {
         this.objectStore = Objects.requireNonNull(objectStore, "objectStore");
         this.versionedObjectStore =
                 Objects.requireNonNull(versionedObjectStore, "versionedObjectStore");
+        this.observationRegistry =
+                Objects.requireNonNull(observationRegistry, "observationRegistry");
         final String requiredBucket =
                 Objects.requireNonNull(configuredBucket, BATCH_STAGING_BUCKET_PROPERTY);
         if (requiredBucket.isBlank()) {
@@ -476,9 +540,12 @@ public final class StagedGenerationStore {
         // and then advances within the pass, so two artifacts registered under one base receive two
         // generations rather than the same key twice.
         final Map<String, Long> allocatedByBase = new HashMap<>();
+        // Every key this pass ATTEMPTS, recorded before its bytes are sent. See rollbackAttemptedKeys
+        // for why the attempted set and not the succeeded set is what compensation has to cover.
+        final List<String> attemptedKeys = new ArrayList<>();
         try {
             for (final ArtifactRegistration registration : registrations) {
-                published.add(upload(bucket, registration, allocatedByBase));
+                published.add(upload(bucket, registration, allocatedByBase, attemptedKeys::add));
             }
             for (final ArtifactRegistration registration : registrations) {
                 final AliasSnapshot snapshot = replaceAlias(registration);
@@ -487,12 +554,12 @@ public final class StagedGenerationStore {
                 }
             }
         } catch (final RuntimeException failure) {
-            // Compensation now spans every step that precedes the commit, not just the uploads. An
-            // earlier revision rolled back uploads only, so an alias that failed on the third artifact
-            // left the first two objects in the bucket and the first two fixed-name views advanced,
-            // while the job was marked FAILED - a failed job with externally visible output.
+            // Compensation spans every step that precedes the commit, not just the uploads. An earlier
+            // revision rolled back uploads only, so an alias that failed on the third artifact left the
+            // first two objects in the bucket and the first two fixed-name views advanced, while the job
+            // was marked FAILED - a failed job with externally visible output.
             restoreAliases(advancedAliases);
-            rollbackUploads(bucket, published);
+            rollbackAttemptedKeys(bucket, attemptedKeys);
             published.clear();
             throw failure;
         }
@@ -572,15 +639,26 @@ public final class StagedGenerationStore {
             try {
                 size = Files.size(source);
                 try (InputStream body = Files.newInputStream(source)) {
-                    this.objectStore.upload(bucket, key, body);
+                    observed(OPERATION_UPLOAD, key, () -> this.objectStore.upload(bucket, key, body));
                 }
-            } catch (final IOException failure) {
+            } catch (final IOException | RuntimeException failure) {
+                // The key is reconciled rather than assumed empty. An earlier revision stated that "a
+                // failed upload uploaded nothing" and therefore compensated nothing; that is true of
+                // every failure except the one that matters, an upload whose bytes the service accepted
+                // and whose response was lost, which throws while leaving an ordinary visible current
+                // generation of this base behind. The reasoning is developed in full on
+                // rollbackAttemptedKeys, and the reconciliation is the same one: empty the key of every
+                // version and delete marker, which removes nothing when nothing was written.
+                rollbackAttemptedKeys(bucket, List.of(key));
+                if (failure instanceof RuntimeException unchecked) {
+                    throw unchecked;
+                }
                 throw new UncheckedIOException("completed batch artifact could not be published for "
-                        + base, failure);
+                        + base, (IOException) failure);
             }
             // Nothing after this line may fail the step: the object is durable and visible, so a
             // retention problem is an over-depth base to be corrected next run, not an unpublished
-            // artifact. There is no compensation to perform because a failed upload uploaded nothing.
+            // artifact.
             result.set(new PublishedGeneration(bucket, key, size));
             enforceRetentionQuietly(bucket, Set.of(new RetentionPolicy(base, retentionLimit)));
         });
@@ -621,7 +699,7 @@ public final class StagedGenerationStore {
         final String prefix = logicalBase + OBJECT_KEY_SEPARATOR;
         long highest = FIRST_GENERATION_NUMBER - 1L;
         final List<S3Resource> resources = Objects.requireNonNull(
-                this.objectStore.listObjects(bucket, prefix),
+                observed(OPERATION_LIST, prefix, () -> this.objectStore.listObjects(bucket, prefix)),
                 "objectStore.listObjects must not return null");
         for (final S3Resource resource : resources) {
             if (resource == null || resource.getLocation() == null) {
@@ -666,7 +744,7 @@ public final class StagedGenerationStore {
     /**
      * Resolves one logical base's current generation on the local staging filesystem.
      *
-     * <p>The local counterpart of {@link #currentGenerationKey(String, String)}, for a deployment whose
+     * <p>The local counterpart of {@link #currentGenerationKey(String)}, for a deployment whose
      * predecessor jobs have staged their generations locally and not yet published them - which is
      * exactly the state the five-link chain is in while it runs. Local names carry the same generation
      * token after a {@value #LOCAL_NAME_SEPARATOR} separator, so the highest token is the current
@@ -907,20 +985,31 @@ public final class StagedGenerationStore {
      * rather than from a bare open of the registered path, so the bytes uploaded are the bytes of the file
      * that was verified and not of whatever the name resolves to by the time the upload runs.
      *
+     * <p><strong>The key is handed to the ledger before the bytes are sent</strong>, and that ordering
+     * is the whole of what {@code attemptedKey} is for. See
+     * {@link #rollbackAttemptedKeys(String, List)} for why recording it afterwards leaves a hole that no
+     * amount of exception handling closes.</p>
+     *
      * @param  bucket          the destination bucket
      * @param  registration    the artifact to publish
      * @param  allocatedByBase the pass's own generation ledger, so two artifacts of one base get two keys
+     * @param  attemptedKey    receives the composed key before the upload is attempted
      * @return what was published
      */
     private PublishedGeneration upload(final String bucket,
-            final ArtifactRegistration registration, final Map<String, Long> allocatedByBase) {
+            final ArtifactRegistration registration, final Map<String, Long> allocatedByBase,
+            final Consumer<String> attemptedKey) {
         final String key = registration.logicalBase() + OBJECT_KEY_SEPARATOR
                 + allocateGeneration(bucket, registration.logicalBase(), allocatedByBase);
+        // BEFORE the send, deliberately. A key recorded after the call returns is a key that is not
+        // recorded when the call does not return.
+        attemptedKey.accept(key);
         final long size;
         try {
             try (VerifiedSource source = openVerifiedSource(registration)) {
                 size = source.byteCount();
-                this.objectStore.upload(bucket, key, source.body());
+                observed(OPERATION_UPLOAD, key,
+                        () -> this.objectStore.upload(bucket, key, source.body()));
             }
         } catch (final IOException failure) {
             throw new UncheckedIOException("completed batch artifact could not be published for "
@@ -1021,38 +1110,87 @@ public final class StagedGenerationStore {
     }
 
     /**
-     * Deletes uploads made earlier in the same failed publication pass, <em>version by version</em>.
+     * Runs one outbound object-store call inside an observation, and returns what it returned.
      *
-     * <p>The bucket carries object versioning, because versioning is what carries the retained-generation
-     * semantics of the legacy output data sets. Against such a bucket an unqualified delete is not a
-     * delete: it writes a delete marker, hides the key from an ordinary listing, and leaves every version
-     * of the object fetchable by version identifier. Rolling back that way would satisfy the class's own
-     * statement that a failed job leaves nothing externally visible only for a reader who never asks for a
-     * version - which is exactly the reader that matters least. The published bytes of a job that failed
-     * have to stop existing, so each key this pass created is emptied of every version and every delete
-     * marker it holds.
+     * <p>{@code observe} opens the scope, records a failure on the span before rethrowing it, and stops
+     * the observation, so a refused call is visible as a failure rather than as a gap. The shape is the
+     * one {@code service/BatchStagingService} already uses for the staging surface, so the two families
+     * read alike even though they answer different questions.
      *
-     * <p>Every version under the key is removed rather than only the one this pass wrote, and that is
-     * deliberate: a generation number is allocated as one more than the highest the base currently holds,
-     * so a key this pass allocated held nothing beforehand, and anything found under it now either came
-     * from this pass or is residue that no correct publication could have left. Best-effort by necessity -
-     * the publication is already failing and this must not replace the reason it failed - but each failure
-     * is reported rather than absorbed.
-     *
-     * @param bucket    the bucket the pass uploaded into
-     * @param published the generations the pass had already uploaded, in upload order
+     * @param  <T>       the call's result type
+     * @param  operation the operation tag value
+     * @param  key       the key or prefix the call names, carried on the span
+     * @param  call      the call to make
+     * @return whatever the call returned
      */
-    private void rollbackUploads(final String bucket,
-            final List<PublishedGeneration> published) {
-        for (final PublishedGeneration generation : published) {
+    private <T> T observed(final String operation, final String key, final Supplier<T> call) {
+        return Observation.createNotStarted(OBSERVATION_NAME, this.observationRegistry)
+                .lowCardinalityKeyValue(TAG_OPERATION, operation)
+                .highCardinalityKeyValue(TAG_OBJECT_KEY, key)
+                .observe(call);
+    }
+
+    /**
+     * Empties every key a failed publication pass <em>attempted</em>, <em>version by version</em>.
+     *
+     * <h2>Why the attempted set and not the succeeded set</h2>
+     *
+     * <p>An earlier revision compensated the list of generations the pass had successfully published,
+     * built by appending each entry after its upload call returned. That list is exactly one entry short
+     * in the case that matters most: an upload whose bytes the object store accepted and whose
+     * <em>response</em> was lost. The call throws - a connection reset, a read timeout, an expiring call
+     * budget - the entry is never appended, and the compensation that follows walks every key but that
+     * one. The failed job then leaves an ordinary, visible, current generation of its base behind, and
+     * nothing distinguishes it from real output: the generation-number allocation counts it, so the next
+     * run allocates past it, and a reader asking the store for the current generation of that base is
+     * handed the artefact of a job that failed.
+     *
+     * <p>No amount of exception handling closes that hole, because the information the handler needs -
+     * whether the service kept the bytes - is precisely what a lost response does not carry. The
+     * ordering is the fix: the key is recorded in {@link #upload} <em>before</em> the send, so the set
+     * compensated here is the set of keys that <em>might</em> hold bytes rather than the set known to.
+     *
+     * <p>Emptying a key that holds nothing is harmless and is the normal case: an upload that failed
+     * before the service accepted anything leaves the key empty, the listing returns nothing, and the
+     * pass over it removes nothing. Reconciling is therefore cheap in the ordinary failure and correct in
+     * the ambiguous one, which is the trade a compensation should make.
+     *
+     * <h2>Why each key is emptied of every version rather than deleted</h2>
+     *
+     * <p>Developed below in {@link #purgeEveryVersionOf(String, String)}: against a versioned bucket an
+     * unqualified delete is not a delete. Every version and every delete marker under the key is
+     * removed, which is what makes a failed job leave nothing externally visible rather than nothing
+     * visible to a reader who never asks for a version.
+     *
+     * <p>Removing <em>every</em> version under the key rather than only what this pass wrote is
+     * deliberate and safe: a generation number is allocated as one more than the highest the base
+     * currently holds, so a key this pass allocated held nothing beforehand, and anything under it now
+     * either came from this pass or is residue no correct publication could have left.
+     *
+     * <p>Best-effort by necessity - the publication is already failing and this must not replace the
+     * reason it failed - but each failure is reported rather than absorbed.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-303 for the whole of this reasoning, including why no
+     * exception handling can substitute for the ordering and how the ambiguous outcome is tested.
+     *
+     * @param bucket        the bucket the pass uploaded into
+     * @param attemptedKeys every key the pass attempted, in attempt order
+     */
+    private void rollbackAttemptedKeys(final String bucket, final List<String> attemptedKeys) {
+        for (final String objectKey : attemptedKeys) {
             try {
-                final int removed = purgeEveryVersionOf(bucket, generation.objectKey());
-                LOGGER.info("Rolled back object {} after batch artifact publication failed, removing"
-                        + " {} version(s) and delete marker(s)", generation.objectKey(), removed);
+                final int removed = purgeEveryVersionOf(bucket, objectKey);
+                if (removed > 0) {
+                    LOGGER.info("Rolled back object {} after batch artifact publication failed,"
+                            + " removing {} version(s) and delete marker(s)", objectKey, removed);
+                } else {
+                    LOGGER.debug("Attempted object {} held nothing after batch artifact publication"
+                            + " failed, so the upload left no bytes to remove", objectKey);
+                }
             } catch (final RuntimeException rollbackFailure) {
                 LOGGER.warn("Could not roll back object {} after batch artifact publication failed;"
-                        + " the object may remain retrievable by version identifier."
-                        + " rollbackFailure={}", generation.objectKey(),
+                                + " the object may remain retrievable by version identifier."
+                                + " rollbackFailure={}", objectKey,
                         rollbackFailure.getClass().getSimpleName());
             }
         }
@@ -1090,8 +1228,9 @@ public final class StagedGenerationStore {
             if (versionIdMarker != null) {
                 request.versionIdMarker(versionIdMarker);
             }
-            final ListObjectVersionsResponse listed =
-                    this.versionedObjectStore.listObjectVersions(request.build());
+            final ListObjectVersionsRequest versionListing = request.build();
+            final ListObjectVersionsResponse listed = observed(OPERATION_LIST_VERSIONS, key,
+                    () -> this.versionedObjectStore.listObjectVersions(versionListing));
 
             for (final ObjectVersion version : listed.versions()) {
                 if (key.equals(version.key())) {
@@ -1124,11 +1263,13 @@ public final class StagedGenerationStore {
      * @param versionId the version or delete-marker identifier to remove
      */
     private void deleteExactVersion(final String bucket, final String key, final String versionId) {
-        this.versionedObjectStore.deleteObject(DeleteObjectRequest.builder()
+        final DeleteObjectRequest removal = DeleteObjectRequest.builder()
                 .bucket(bucket)
                 .key(key)
                 .versionId(versionId)
-                .build());
+                .build();
+        observed(OPERATION_DELETE_VERSION, key,
+                () -> this.versionedObjectStore.deleteObject(removal));
     }
 
     /**
@@ -1270,7 +1411,7 @@ public final class StagedGenerationStore {
         final String prefix = policy.logicalBase() + OBJECT_KEY_SEPARATOR;
         final List<RemoteGeneration> generations = new ArrayList<>();
         final List<S3Resource> resources = Objects.requireNonNull(
-                this.objectStore.listObjects(bucket, prefix),
+                observed(OPERATION_LIST, prefix, () -> this.objectStore.listObjects(bucket, prefix)),
                 "objectStore.listObjects must not return null");
         for (final S3Resource resource : resources) {
             if (resource == null || resource.getLocation() == null) {

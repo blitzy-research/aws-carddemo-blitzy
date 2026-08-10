@@ -37,7 +37,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParametersIncrementer;
@@ -46,6 +45,7 @@ import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.JobScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -61,6 +61,7 @@ import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.StatementProcessor;
+import com.carddemo.config.BatchConfig.ConditionCodeGate;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.TransactionScanRepository;
@@ -68,6 +69,8 @@ import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
+import com.carddemo.service.StatementLineSummary;
+import com.carddemo.service.StatementOutputSink;
 import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.ExternalStringSorter;
@@ -126,15 +129,19 @@ import com.carddemo.util.TransactionRecordMapper;
  * single one; {@link com.carddemo.config.BatchConfig.ConditionCodeGate} therefore carries that one
  * constant and no looser alternative beside it.
  *
- * <p><strong>Why the strict ceiling is expressed as three step transitions rather than three
- * placements of that shared constant.</strong> The constant is an enumeration singleton, and the
- * framework's flow builder keys the flow state it creates by the object handed to it, so one singleton
- * placed at three points of one flow yields one shared decision state with contradictory outgoing
- * transitions rather than three independent gates. The sibling backup job places the constant exactly
- * once and can therefore use it directly; this job needs three, so each gate is expressed as a
- * failure-ending transition out of the step it follows, paired with a catch-all transition to the step
- * it guards. The semantics are the measured ones: a step that did not complete successfully ends the
- * flow, and the steps behind the gate do not run.
+ * <p><strong>Why each of the three gates is a separate placement of that one shared constant.</strong>
+ * The constant is an enumeration singleton, and the framework's flow builder keys the decision state it
+ * creates by the object handed to it - creating a state only when that key is absent. Handing it the
+ * singleton at three points of one flow therefore yields <em>one</em> shared decision state carrying all
+ * three pairs of outgoing transitions, and every gate routes wherever the first registered pair pointed:
+ * back into the step just run rather than onward to the next, which runs that step a second time and
+ * abends it on input the first pass already consumed. Each gate is therefore wired as its own placement
+ * of the constant, obtained from
+ * {@link com.carddemo.config.BatchConfig.ConditionCodeGate#atOnePlacement()}, so all three ask the
+ * identical numeric question while occupying three independent states. The sibling backup job places
+ * the constant exactly once and can use it directly. The semantics are the measured ones on both axes: a
+ * step reached only when every earlier step returned zero, and a refused gate that carries the abend out
+ * to the job's own status rather than ending the flow cleanly.
  *
  * <h2>The reprojection, which is this file's own parity obligation</h2>
  *
@@ -331,7 +338,7 @@ public final class CreateStatementJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = BatchJobCatalog.CREATE_STATEMENT_JOB_NAME;
+    public static final String JOB_NAME = BatchJobCatalog.CREATE_STATEMENT_JOB;
 
     /** Name of the first step: order the master and reproject every record. */
     public static final String ORDER_AND_REPROJECT_STEP_NAME =
@@ -374,22 +381,46 @@ public final class CreateStatementJobConfig {
     public static final int CONDITION_CODE_GATE_COUNT = 3;
 
     /**
+     * The gate this job's three guarded steps are routed through.
+     *
+     * <p><strong>{@code COND=(0,NE)} is a numeric test, and this is the numeric decider.</strong> The
+     * measured condition on {@code app/jcl/CREASTMT.JCL} lines 56, 66 and 79 runs the guarded step only
+     * when <em>every</em> earlier step returned exactly zero - it does not ask whether the previous step
+     * carried one particular status name. Routing on the framework's {@code FAILED} exit code against a
+     * wildcard alternative asked the wrong question: a step ending with a nonzero code that is not spelled
+     * {@code FAILED} - a declared warning code, or an exit code a step set for itself - matched the
+     * wildcard and the guarded step ran, which the legacy gate would have refused. The shared decider
+     * evaluates the highest return code any earlier step produced against a ceiling of zero, which is the
+     * condition as written, and it is the same decider the estate's fourth gate on
+     * {@code app/jcl/TRANBKP.jcl:51} uses, so all four gates are one rule. See
+     * {@code docs/decision-log.md} entries DL-145 and DL-208.
+     *
+     * <p><strong>This constant states the rule; it is not what the flow is wired with.</strong> The flow
+     * takes one {@link ConditionCodeGate#atOnePlacement() placement} of it per gated step, because a flow
+     * builder keys its decision states by the object handed to it and one singleton handed over three
+     * times becomes one state with three pairs of transitions. The rule is published here so it can be
+     * asserted, and so the identity with the backup job's gate stays visible.
+     */
+    public static final ConditionCodeGate CONDITION_CODE_GATE =
+            ConditionCodeGate.ALL_PRIOR_STEPS_ZERO;
+
+    /**
      * The outcome a gate refuses to continue past.
      *
-     * <p>Taken from the framework's own status rather than written as a literal, so a rename on that
-     * side cannot leave a transition matching a pattern nothing produces.
+     * <p>The decider's own refusing verdict rather than a framework status name, so a gate verdict cannot
+     * be confused with an ordinary step outcome inside the same flow.
      *
      * <p><strong>This outcome ends the flow as a failure, not as a completion.</strong> The measured
-     * gates bypass every later step, and on the job entry system they replace the submission's own
-     * completion code is the <em>highest</em> step code it reached - so a step that abended produced an
-     * abended submission and never a clean one. Routing this outcome to a plain end would have reported
-     * a job whose first step abended as COMPLETED, which is invisible to an operator, to the batch
-     * metadata and to the completion notification alike. See {@code docs/decision-log.md} entry DL-208.
+     * gates bypass every later step, and on the job entry system the submission's own completion code is
+     * the <em>highest</em> step code it reached - so a step that abended produced an abended submission
+     * and never a clean one. Routing this outcome to a plain end would have reported a job whose first
+     * step abended as COMPLETED, which is invisible to an operator, to the batch metadata and to the
+     * completion notification alike. See {@code docs/decision-log.md} entry DL-208.
      */
-    public static final String GATE_FAILURE_OUTCOME = ExitStatus.FAILED.getExitCode();
+    public static final String GATE_FAILURE_OUTCOME = ConditionCodeGate.REFUSED;
 
-    /** The outcome a gate routes onward to the step it guards: anything that is not the failure. */
-    public static final String GATE_ONWARD_OUTCOME = "*";
+    /** The outcome a gate routes onward to the step it guards: the decider's permitting verdict. */
+    public static final String GATE_ONWARD_OUTCOME = ConditionCodeGate.PERMITTED;
 
     // -----------------------------------------------------------------------------------------------
     // Record geometry. Every offset and every length is taken from the layout owner in the utility
@@ -502,9 +533,6 @@ public final class CreateStatementJobConfig {
 
     /** Data definition the second step writes: the transient work resource. */
     private static final String DD_LOAD_OUTPUT = "OUTFILE";
-
-    /** Layout name the projected record reports in diagnostics. */
-    private static final String WORK_ARTEFACT = StatementWorkRecordMapper.ARTEFACT;
 
     /** Legacy field name of the first ordering key. */
     private static final String FIELD_TRAN_CARD_NUM = "TRAN-CARD-NUM";
@@ -726,9 +754,13 @@ public final class CreateStatementJobConfig {
     /**
      * The job: four steps in strict sequence, the last three behind a gate, and nothing else.
      *
-     * <p>Each of the {@value #CONDITION_CODE_GATE_COUNT} gates is a pair of transitions out of the step
-     * it follows: the failure outcome <strong>ends the flow as a failure</strong>, and every other
-     * outcome proceeds to the guarded step. That reproduces the measured semantics on both axes at once -
+     * <p>Each of the {@value #CONDITION_CODE_GATE_COUNT} gates is its own placement of
+     * {@link #CONDITION_CODE_GATE} carrying a pair of transitions: the refusing outcome <strong>ends the
+     * flow as a failure</strong>, and the permitting outcome proceeds to the guarded step. Three
+     * placements rather than three uses of the one constant, because the flow builder keys a decision
+     * state by the object it is handed and would otherwise give all three gates one shared state whose
+     * first transition pair answers for every one of them. That reproduces the measured semantics on both
+     * axes at once -
      * the guarded step runs only when everything before it completed cleanly, and a submission whose step
      * abended is reported as having failed, because the job entry system's completion code is the highest
      * step code the submission reached. Ending the flow as a <em>completion</em> would have satisfied the
@@ -766,20 +798,36 @@ public final class CreateStatementJobConfig {
         Objects.requireNonNull(clearStatementOutputsStep, "clearStatementOutputsStep");
         Objects.requireNonNull(generateStatementsStep, "generateStatementsStep");
 
+        // Each gated step is reached through the numeric decider rather than through a status-name
+        // transition on its predecessor: the condition is "every earlier step returned zero", which is a
+        // property of the whole execution so far and not of the step immediately before.
+        //
+        // One placement of the shared gate per gated step, and never the shared constant itself at more
+        // than one point of this flow. The flow builder keys the decision state it creates by the object
+        // it is handed, so handing it one enumeration singleton three times yields a single state holding
+        // all three pairs of transitions, and every gate then routes wherever the first pair pointed -
+        // back into the step just run rather than onward to the next.
+        final JobExecutionDecider gateBeforeLoad = CONDITION_CODE_GATE.atOnePlacement();
+        final JobExecutionDecider gateBeforeClear = CONDITION_CODE_GATE.atOnePlacement();
+        final JobExecutionDecider gateBeforeGenerate = CONDITION_CODE_GATE.atOnePlacement();
+
         return new JobBuilder(JOB_NAME, this.jobRepository)
                 .incrementer(this.jobRunIncrementer)
                 .listener(this.jobBoundaryListener)
                 .start(orderAndReprojectStep)
+                .next(gateBeforeLoad)
                     .on(GATE_FAILURE_OUTCOME).fail()
-                .from(orderAndReprojectStep)
+                .from(gateBeforeLoad)
                     .on(GATE_ONWARD_OUTCOME).to(loadWorkResourceStep)
                 .from(loadWorkResourceStep)
+                    .next(gateBeforeClear)
                     .on(GATE_FAILURE_OUTCOME).fail()
-                .from(loadWorkResourceStep)
+                .from(gateBeforeClear)
                     .on(GATE_ONWARD_OUTCOME).to(clearStatementOutputsStep)
                 .from(clearStatementOutputsStep)
+                    .next(gateBeforeGenerate)
                     .on(GATE_FAILURE_OUTCOME).fail()
-                .from(clearStatementOutputsStep)
+                .from(gateBeforeGenerate)
                     .on(GATE_ONWARD_OUTCOME).to(generateStatementsStep)
                 .end()
                 .build();
@@ -2268,7 +2316,7 @@ public final class CreateStatementJobConfig {
 
     /**
      * One statement generation: open both outputs, hand a frozen snapshot of the projected work resource
-     * to the stage, and write every record of both streams at its declared width.
+     * and both output handles to the stage, and write every record it streams back at its declared width.
      *
      * <p>The two outputs are the only resources this lifecycle opens, because the program it stands in
      * for declares only those two in its own file section: all four of its inputs are opened by the
@@ -2282,6 +2330,10 @@ public final class CreateStatementJobConfig {
      * the mandatory re-entry after each phase transition, the bounded card table and both literal layouts
      * belong to the generator and its stage. This lifecycle composes them, proves the width of every
      * record that reaches a destination, and reports the counts.
+     *
+     * <p>Records arrive one at a time through the two sinks this lifecycle supplies, in the order the
+     * legacy program writes them, so the two outputs receive their bytes interleaved exactly as the two
+     * {@code WRITE} statements interleave them and neither output is ever held whole in memory.
      *
      * <p>An empty run is a legitimate outcome and is not converted into a failure: a cross-reference file
      * with no records produces the two empty outputs the legacy program produces for it.
@@ -2326,6 +2378,15 @@ public final class CreateStatementJobConfig {
 
         /** HTML records written. */
         private long htmlRecordsWritten;
+
+        /**
+         * Per-line transaction summaries the run emitted. Counted and dropped: the legacy program writes
+         * no summary to any dataset, and a count is bounded where the summaries are not.
+         */
+        private long transactionSummariesObserved;
+
+        /** Dispatcher entries the run emitted, counted for the completion diagnostic. */
+        private long dispatcherEntriesObserved;
 
         /**
          * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
@@ -2376,33 +2437,82 @@ public final class CreateStatementJobConfig {
             });
         }
 
+        /**
+         * Runs the generation, writing each record to its resource at the moment the run emits it.
+         *
+         * <p><strong>&#9733; Nothing is accumulated between the run and the writers.</strong> The run
+         * emits through {@link StatementOutputSink}, this lifecycle's implementation of that sink writes
+         * the record it is handed and forgets it, and the value the run returns is seven tallies. The
+         * working set is therefore one record however many statements the cross-reference file produces -
+         * the superseded shape held both whole streams, copied them into the run's result and only then
+         * wrote them, so heap use scaled with the output.
+         *
+         * <p>Both resources are execution-scoped <em>working</em> files that
+         * {@link CreateStatementJobConfig#generateStatements} seals into generations only once this
+         * lifecycle has completed. That is what contains the one consequence of streaming: a run that
+         * fails a closing proof has already written records, and those records are in an unsealed working
+         * file that is never published and is discarded with the execution.
+         *
+         * @param source the frozen projected transaction source, the lifecycle's single item
+         */
         @Override
         protected void processRecord(final StatementTransactionSource source) {
-            this.run = Objects.requireNonNull(this.statementProcessor.process(source),
+            this.run = Objects.requireNonNull(this.statementProcessor.process(
+                            new StatementProcessor.StatementRunRequest(source, new OutputWriterSink())),
                     () -> StatementGenerationService.PROGRAM_NAME + " reported no result for the "
                             + StatementProcessor.INPUT_DD_TRNXFILE + " work resource");
+        }
 
-            for (final String statementRecord : this.run.statementRecords()) {
+        /**
+         * This lifecycle's destination: it writes each emitted record to its own resource through the
+         * step template's write accounting, and retains nothing.
+         *
+         * <p>Each record's encoded width is proved once more here, at the destination. That is not
+         * duplication for its own sake: the stage proves what it forwards, and this proves what actually
+         * reaches the resource whose record length is declared, so a destination wired to the wrong
+         * resource is caught by the resource's own contract.
+         *
+         * <p>The two items the legacy program writes to no dataset - the per-line transaction summary and
+         * the dispatcher entry - are counted and dropped. Counting them is what lets the completion
+         * diagnostic report them without holding them.
+         */
+        private final class OutputWriterSink implements StatementOutputSink {
+
+            @Override
+            public void statementRecord(final String record) {
                 writeRecord(StatementProcessor.OUTPUT_DD_STMTFILE, () -> {
                     // Proved again at the destination: the stage proves what it hands on, and this proves
                     // what actually reaches the resource the record length is declared for.
-                    requireEncodedWidth(statementRecord, STATEMENT_RECORD_LENGTH,
+                    requireEncodedWidth(record, STATEMENT_RECORD_LENGTH,
                             StatementProcessor.OUTPUT_DD_STMTFILE);
-                    this.statementWriter.write(statementRecord);
-                    this.statementRecordsWritten++;
+                    GenerateStatementsProgram.this.statementWriter.write(record);
+                    GenerateStatementsProgram.this.statementRecordsWritten++;
                     return FileStatus.SUCCESS.getCode();
                 });
             }
 
-            for (final String htmlRecord : this.run.htmlRecords()) {
+            @Override
+            public void htmlRecord(final String record) {
                 writeRecord(StatementProcessor.OUTPUT_DD_HTMLFILE, () -> {
                     // The resolved width, not the superseded one the scratch step declares.
-                    requireEncodedWidth(htmlRecord, HTML_RECORD_LENGTH,
+                    requireEncodedWidth(record, HTML_RECORD_LENGTH,
                             StatementProcessor.OUTPUT_DD_HTMLFILE);
-                    this.htmlWriter.write(htmlRecord);
-                    this.htmlRecordsWritten++;
+                    GenerateStatementsProgram.this.htmlWriter.write(record);
+                    GenerateStatementsProgram.this.htmlRecordsWritten++;
                     return FileStatus.SUCCESS.getCode();
                 });
+            }
+
+            @Override
+            public void transactionSummary(final StatementLineSummary summary) {
+                Objects.requireNonNull(summary, "summary");
+                GenerateStatementsProgram.this.transactionSummariesObserved++;
+            }
+
+            @Override
+            public void dispatchedPhase(final String phase) {
+                Objects.requireNonNull(phase, "phase");
+                GenerateStatementsProgram.this.dispatcherEntriesObserved++;
             }
         }
 
@@ -2439,7 +2549,7 @@ public final class CreateStatementJobConfig {
                     this.run.transactionsTabulated(), this.statementRecordsWritten,
                     STATEMENT_RECORD_LENGTH, StatementProcessor.OUTPUT_DD_STMTFILE,
                     this.htmlRecordsWritten, HTML_RECORD_LENGTH,
-                    StatementProcessor.OUTPUT_DD_HTMLFILE, this.run.dispatchedPhases().size());
+                    StatementProcessor.OUTPUT_DD_HTMLFILE, this.run.dispatcherEntries());
             LOGGER.info("{} READ ITS TRANSACTIONS IN THE KEY SEQUENCE OF {}, WHICH HELD {} RECORD(S)"
                             + " KEYED AT OFFSET {} FOR {} BYTE(S); THE CARD TABLE BOUNDS ARE {} CARD(S)"
                             + " AND {} TRANSACTION(S) PER CARD",
@@ -2479,6 +2589,25 @@ public final class CreateStatementJobConfig {
          */
         long htmlRecordsWritten() {
             return this.htmlRecordsWritten;
+        }
+
+        /**
+         * Per-line transaction summaries this pass observed, for a caller that drives the lifecycle
+         * directly.
+         *
+         * @return the count, never negative
+         */
+        long transactionSummariesObserved() {
+            return this.transactionSummariesObserved;
+        }
+
+        /**
+         * Dispatcher entries this pass observed, for a caller that drives the lifecycle directly.
+         *
+         * @return the count, never negative
+         */
+        long dispatcherEntriesObserved() {
+            return this.dispatcherEntriesObserved;
         }
     }
 }

@@ -50,8 +50,6 @@ import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
-import com.carddemo.repository.RecordWriter;
-import com.carddemo.support.RecordWriterDoubles;
 import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.support.TraceabilityMatrixCensus;
@@ -272,8 +270,6 @@ class CardUpdateServiceTest {
      * the turn recognised that - rather than committing a half-written row - is the mark on this
      * collaborator.
      */
-    private RecordWriter recordWriter;
-
     private CardUpdateService service;
 
     private Logger serviceLogger;
@@ -289,16 +285,20 @@ class CardUpdateServiceTest {
      */
     private Logger navigationLogger;
 
+    /** The centralised abend category, which carries the online abend record. */
+    private Logger abendLogger;
+
+    /** That category's level before this class pinned it, restored in teardown. */
+    private Level originalAbendLevel;
+
     private ListAppender<ILoggingEvent> capturedLog;
 
     @BeforeEach
     void setUp() {
         this.cardRepository = Mockito.mock(CardRepository.class);
         this.abendService = Mockito.mock(AbendService.class);
-        this.recordWriter = RecordWriterDoubles.passthrough();
         this.service = new CardUpdateService(this.cardRepository, this.abendService,
                 new MessageCatalogService(), new NavigationService(), new OnlineTransactionBoundary(),
-                this.recordWriter,
                 Clock.fixed(Instant.parse("2024-03-14T15:09:26Z"), ZoneOffset.UTC));
 
         this.capturedLog = new ListAppender<>();
@@ -309,12 +309,26 @@ class CardUpdateServiceTest {
         this.navigationLogger = (Logger) LoggerFactory.getLogger(NavigationService.class);
         this.navigationLogger.addAppender(this.capturedLog);
         this.navigationLogger.setLevel(Level.TRACE);
+        // The abend this class reaches - an unresolvable navigation target - now records through the
+        // centralised online abend diagnostic, which writes under the abend category rather than under the
+        // navigating service's own. Captured by the same appender so the emit-then-raise assertion below
+        // keeps reading the record that actually carries the abend. See docs/decision-log.md entry DL-312.
+        this.abendLogger = (Logger) LoggerFactory.getLogger(AbendService.class);
+        this.originalAbendLevel = this.abendLogger.getLevel();
+        this.abendLogger.addAppender(this.capturedLog);
+        this.abendLogger.setLevel(Level.TRACE);
     }
 
     @AfterEach
     void tearDown() {
         this.serviceLogger.detachAppender(this.capturedLog);
         this.navigationLogger.detachAppender(this.capturedLog);
+        this.abendLogger.detachAppender(this.capturedLog);
+        // The level is put back as well as the appender. This category is shared with every other suite
+        // that reads an abend record, so a pinned level left behind here decides what a later suite sees -
+        // which is how a class asserting an INHERITED level fails for a reason that has nothing to do with
+        // its subject. The two categories above belong to this class alone and need no such care.
+        this.abendLogger.setLevel(this.originalAbendLevel);
         this.capturedLog.stop();
     }
 
@@ -735,7 +749,6 @@ class CardUpdateServiceTest {
             // count - not elapsed time - is what proves there was none.
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
                     .saveAndFlush(Mockito.any());
-            Mockito.verify(CardUpdateServiceTest.this.recordWriter).markRollbackOnly();
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
 
@@ -857,13 +870,11 @@ class CardUpdateServiceTest {
             // Attempted once and not retried: a write failure is answered with a screen, not another write.
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
                     .saveAndFlush(Mockito.any());
-            Mockito.verify(CardUpdateServiceTest.this.recordWriter).markRollbackOnly();
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
 
         @Test
-        @DisplayName("a completed rewrite is attempted exactly once, commits, and marks nothing for "
-                + "rollback")
+        @DisplayName("a completed rewrite is attempted exactly once and commits")
         void aCompletedRewriteIsAttemptedExactlyOnce() {
             Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
@@ -883,8 +894,6 @@ class CardUpdateServiceTest {
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
                     .saveAndFlush(Mockito.any());
             Mockito.verifyNoMoreInteractions(CardUpdateServiceTest.this.cardRepository);
-            Mockito.verify(CardUpdateServiceTest.this.recordWriter, Mockito.never())
-                    .markRollbackOnly();
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
     }
@@ -1250,33 +1259,28 @@ class CardUpdateServiceTest {
         @DisplayName("every collaborator is mandatory")
         void everyCollaboratorIsMandatory() {
             final Clock clock = Clock.systemUTC();
-            final RecordWriter recordWriter = RecordWriterDoubles.passthrough();
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(null,
                     CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
-                    new NavigationService(), new OnlineTransactionBoundary(), recordWriter, clock));
+                    new NavigationService(), new OnlineTransactionBoundary(), clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository, null, new MessageCatalogService(),
-                    new NavigationService(), new OnlineTransactionBoundary(), recordWriter, clock));
+                    new NavigationService(), new OnlineTransactionBoundary(), clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository,
                     CardUpdateServiceTest.this.abendService, null, new NavigationService(),
-                    new OnlineTransactionBoundary(), recordWriter, clock));
+                    new OnlineTransactionBoundary(), clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository,
                     CardUpdateServiceTest.this.abendService, new MessageCatalogService(), null,
-                    new OnlineTransactionBoundary(), recordWriter, clock));
+                    new OnlineTransactionBoundary(), clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository,
                     CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
-                    new NavigationService(), null, recordWriter, clock));
+                    new NavigationService(), null, clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository,
                     CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
-                    new NavigationService(), new OnlineTransactionBoundary(), null, clock));
-            assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
-                    CardUpdateServiceTest.this.cardRepository,
-                    CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
-                    new NavigationService(), new OnlineTransactionBoundary(), recordWriter, null));
+                    new NavigationService(), new OnlineTransactionBoundary(), null));
         }
     }
 
@@ -2324,7 +2328,7 @@ class CardUpdateServiceTest {
                     .as("the diagnostic was emitted before the abend was raised")
                     .isNotEmpty()
                     .anyMatch(event -> event.getLevel() == Level.ERROR
-                            && event.getFormattedMessage().contains("abending"));
+                            && event.getFormattedMessage().contains("ABENDING PROGRAM"));
 
             assertThat(renderedLog())
                     .doesNotContain(VERIFICATION_CODE)

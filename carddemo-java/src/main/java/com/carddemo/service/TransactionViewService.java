@@ -289,7 +289,7 @@ public class TransactionViewService {
     // ==========================================================================================
 
     /**
-     * The transaction file, replacing {@code EXEC CICS READ DATASET('TRANSACT')} at lines 269 to 278.
+     * The transaction file, replacing the keyed read of the TRANSACT dataset at lines 269 to 278.
      *
      * <p>Only the inherited single-key lookup is used. The two methods this repository declares of its
      * own &mdash; the highest-key probe and the processing-date range slice &mdash; belong to the
@@ -352,7 +352,7 @@ public class TransactionViewService {
      * and {@code ERR-FLG-OFF} {@code VALUE 'N'} at line 42.
      *
      * <p>An enumeration rather than a character, so the two states are type checked and a third is not
-     * representable. Every {@code SET ERR-FLG-OFF TO TRUE} and {@code MOVE 'Y' TO WS-ERR-FLG} in the
+     * representable. Every clearing and every raising of the legacy error flag in the
      * member becomes an assignment of a constant, and the two {@code IF NOT ERR-FLG-ON} gates at lines
      * 158 and 176 become {@link #isOff()}.
      */
@@ -389,7 +389,7 @@ public class TransactionViewService {
      * at line 46 and {@code USR-MODIFIED-NO} {@code VALUE 'N'} at line 47.
      *
      * <p><strong>The raised state is unreachable in this member and is preserved rather than
-     * removed.</strong> The flag is declared at line 45, cleared by {@code SET USR-MODIFIED-NO TO TRUE}
+     * removed.</strong> The flag is declared at line 45, cleared to its not-modified state
      * at line 89, and then never tested and never raised anywhere in the remaining 240 lines &mdash; a
      * vestige of the update programs, where an equivalent flag guards a rewrite. A view transaction
      * modifies nothing, so there is nothing here to raise it. Both constants are declared because the
@@ -712,7 +712,7 @@ public class TransactionViewService {
      *
      * <p>This is the procedure division: it establishes the working storage the legacy declares at lines
      * 35 to 61, runs the main paragraph, and then performs the terminal
-     * {@code EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)} at lines 136 to 139 by
+     * the pseudo-conversational return that re-arms this transaction with the carried work area, at lines 136 to 139, by
      * re-arming the transaction. Nothing is retained between calls, so two concurrent turns are wholly
      * independent.
      *
@@ -742,7 +742,7 @@ public class TransactionViewService {
         final TurnState state = new TurnState();
         mainPara(state, input);
 
-        // EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) at lines 136 to 139. The
+        // Lines 136 to 139 re-arm this transaction and hand back the carried work area. The
         // transfer paths have already left the program, so the re-arm is suppressed for them.
         returnToCics(state);
 
@@ -795,11 +795,11 @@ public class TransactionViewService {
      * @param input the transmitted screen and echoed navigation state
      */
     private void mainPara(final TurnState state, final TransactionViewInput input) {
-        // SET ERR-FLG-OFF TO TRUE at line 88 and SET USR-MODIFIED-NO TO TRUE at line 89; MOVE SPACES TO
-        // WS-MESSAGE and to ERRMSGO OF COTRN1AO at lines 91 and 92. The state is constructed in exactly
+        // Line 88 sets ERR-FLG-OFF and line 89 sets USR-MODIFIED-NO; lines 91 and 92 blank
+        // WS-MESSAGE and ERRMSGO OF COTRN1AO. The state is constructed in exactly
         // that condition, so the clearing needs no separate statement.
         if (isNavigationStateAbsent(input.navigationContext())) {
-            // IF EIBCALEN = 0 at line 94, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 95. The
+            // Line 94 tests the commarea length for zero, then line 95 carries 'COSGN00C' into CDEMO-TO-PROGRAM. The
             // destination is the one the navigation rules hold for a turn carrying no state, so no
             // program name is written here as a literal.
             state.context = withNominatedProgram(ScreenNavigationState.empty(),
@@ -808,7 +808,7 @@ public class TransactionViewService {
             return;
         }
 
-        // MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA at line 98.
+        // Line 98 copies the passed commarea, for its transmitted length, into CARDDEMO-COMMAREA.
         state.context = input.navigationContext();
 
         if (state.context.firstEntry()) {
@@ -818,7 +818,7 @@ public class TransactionViewService {
 
         receiveTrnviewScreen(state, input);
 
-        // EVALUATE EIBAID at lines 112 to 132, clause order preserved and WHEN OTHER mapped to default.
+        // Lines 112 to 132 hold a multi-way selection on EIBAID, clause order preserved and WHEN OTHER mapped to default.
         switch (input.keyAction()) {
             case ENTER -> processEnterKey(state);
             case PFK03 -> {
@@ -833,7 +833,7 @@ public class TransactionViewService {
             }
             case PFK04 -> clearCurrentScreen(state);
             case PFK05 -> {
-                // WHEN DFHPF5 at lines 125 to 127: MOVE 'COTRN00C' TO CDEMO-TO-PROGRAM, the
+                // The PF5 arm at lines 125 to 127 nominates COTRN00C as the destination, the
                 // transaction-list screen this one is reached from, named through the navigation
                 // vocabulary rather than as a literal.
                 state.context = withNominatedProgram(state.context,
@@ -841,7 +841,7 @@ public class TransactionViewService {
                 returnToPrevScreen(state);
             }
             case null, default -> {
-                // WHEN OTHER at lines 128 to 131: MOVE 'Y' TO WS-ERR-FLG, then the catalogue message.
+                // The catch-all arm at lines 128 to 131 raises the error flag, then the catalogue message.
                 // It is carried at its full contractual width of fifty characters and is deliberately
                 // not trimmed.
                 state.raiseError(messageCatalogService.invalidKeyMessage(), FIELD_TRANSACTION_ID);
@@ -869,7 +869,7 @@ public class TransactionViewService {
      * never the selection. So a first entry whose selection is absent leaves the search field
      * <em>blank</em> and looks nothing up &mdash; the enter-key path at line 107 sits inside the
      * selection test at line 103 and is not reached &mdash; and the operator is shown the empty screen
-     * to key into, which is what {@code MOVE LOW-VALUES TO COTRN1AO} at line 101 puts on the wire.
+     * to key into, which is what the clearing of COTRN1AO at line 101 puts on the wire.
      * Carrying a transmitted value forward on this path instead would put a value on the screen that the
      * legacy blanked, so it is not done.
      *
@@ -877,21 +877,21 @@ public class TransactionViewService {
      * @param input the transmitted screen, for the carried selection
      */
     private void firstEntry(final TurnState state, final TransactionViewInput input) {
-        // SET CDEMO-PGM-REENTER TO TRUE at line 100.
+        // Line 100 sets CDEMO-PGM-REENTER.
         state.context = state.context.withReEntry();
 
         // MOVE -1 TO TRNIDINL OF COTRN1AI at line 102.
         state.focusField = FIELD_TRANSACTION_ID;
 
-        // IF CDEMO-CT01-TRN-SELECTED NOT = SPACES AND LOW-VALUES at lines 103 and 104.
+        // Lines 103 and 104 test the carried selection for neither blank nor empty.
         if (isSupplied(input.selectedTransactionId())) {
-            // MOVE CDEMO-CT01-TRN-SELECTED TO TRNIDINI OF COTRN1AI at lines 105 and 106: the carried
+            // Lines 105 and 106 carry CDEMO-CT01-TRN-SELECTED into TRNIDINI OF COTRN1AI: the carried
             // selection overwrites the search field, which is the whole of the precedence rule.
             state.searchTransactionId = input.selectedTransactionId();
             processEnterKey(state);
         }
 
-        // PERFORM SEND-TRNVIEW-SCREEN at line 109, reached whether or not the selection was consulted.
+        // Line 109 runs SEND-TRNVIEW-SCREEN, reached whether or not the selection was consulted.
         sendTrnviewScreen(state);
     }
 
@@ -905,7 +905,7 @@ public class TransactionViewService {
      * <p>Three sentences in the source and three stages here, each gated on the error flag exactly as the
      * source gates it.
      *
-     * <p><strong>Stage one, lines 146 to 156</strong>, is an {@code EVALUATE TRUE} with two arms whose
+     * <p><strong>Stage one, lines 146 to 156</strong>, is a multi-way selection with two arms whose
      * order is contractual. The first tests the search field for blankness &mdash;
      * {@code = SPACES OR LOW-VALUES}, so an untransmitted field counts as blank &mdash; and on a match
      * raises the flag, writes the emptiness text, positions the cursor and sends. The catch-all merely
@@ -945,10 +945,10 @@ public class TransactionViewService {
      * @param state the turn's working storage
      */
     private void processEnterKey(final TurnState state) {
-        // EVALUATE TRUE at line 146. Clause order preserved: the blank test at line 147 first, the
+        // Line 146 holds a multi-way selection. Clause order preserved: the blank test at line 147 first, the
         // catch-all at line 153 second.
         if (isBlankField(state.searchTransactionId)) {
-            // Lines 148 to 152: MOVE 'Y' TO WS-ERR-FLG, the emptiness text, MOVE -1 TO TRNIDINL, send.
+            // Lines 148 to 152 carry 'Y' into WS-ERR-FLG, the emptiness text, MOVE -1 TO TRNIDINL, send.
             faultField(state, MSG_TRAN_ID_EMPTY, ValidationException.FieldState.MISSING);
             return;
         }
@@ -969,11 +969,11 @@ public class TransactionViewService {
         // IF NOT ERR-FLG-ON at line 158. Reached only with the flag clear, since both failure paths
         // above have returned, but the gate is stated because the source states it.
         if (state.errorFlag.isOff()) {
-            // MOVE SPACES TO the thirteen display fields at lines 159 to 171. Holding no record is how
+            // Lines 159 to 171 blank the thirteen display fields. Holding no record is how
             // this state expresses a blank display, so clearing it is a single assignment.
             state.record = null;
 
-            // MOVE TRNIDINI OF COTRN1AI TO TRAN-ID at line 172. Character for character: the key is
+            // Line 172 carries TRNIDINI OF COTRN1AI into TRAN-ID. Character for character: the key is
             // alphanumeric and is never parsed, so a leading zero is part of it.
             state.tranId = state.searchTransactionId;
             readTransactFile(state);
@@ -981,7 +981,7 @@ public class TransactionViewService {
 
         // IF NOT ERR-FLG-ON at line 176, the second sentence's own gate.
         if (state.errorFlag.isOff()) {
-            // MOVE TRAN-AMT TO WS-TRAN-AMT at line 177, then the thirteen moves at lines 178 to 190.
+            // Line 177 carries TRAN-AMT into WS-TRAN-AMT, then the thirteen moves at lines 178 to 190.
             publishRecord(state);
             sendTrnviewScreen(state);
         }
@@ -1048,18 +1048,18 @@ public class TransactionViewService {
      * @param state the turn's working storage
      */
     private void returnToPrevScreen(final TurnState state) {
-        // IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES, MOVE 'COSGN00C' at lines 199 to 201. Both arms are
+        // Lines 199 to 201 nominate COSGN00C when the destination is empty or blank. Both arms are
         // the nominated-destination rule, with sign-on as this screen's default.
         final NavigationService.Route destination = navigationService
                 .resolveNominatedDestination(carriedState(state.context), NavigationService.Route.SIGN_ON);
 
-        // MOVE WS-TRANID TO CDEMO-FROM-TRANID, MOVE WS-PGMNAME TO CDEMO-FROM-PROGRAM and MOVE ZEROS TO
-        // CDEMO-PGM-CONTEXT at lines 202 to 204.
+        // Lines 202 to 204 carry this transaction id into CDEMO-FROM-TRANID, this program name into
+        // CDEMO-FROM-PROGRAM, and zero into CDEMO-PGM-CONTEXT.
         state.context = withOriginatingProgram(
                 withNominatedProgram(state.context, destination.getLegacyProgramName()))
                 .withFirstEntry();
 
-        // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA) at lines 205 to 208.
+        // Lines 205 to 208 transfer control to the nominated program with the carried work area.
         state.route = destination;
         state.transferred = true;
         LOG.debug("Transferring control from the transaction-view screen to route {}",
@@ -1094,10 +1094,10 @@ public class TransactionViewService {
      * @param state the turn's working storage
      */
     private void sendTrnviewScreen(final TurnState state) {
-        // PERFORM POPULATE-HEADER-INFO at line 215.
+        // Line 215 runs POPULATE-HEADER-INFO.
         populateHeaderInfo(state);
 
-        // MOVE WS-MESSAGE TO ERRMSGO OF COTRN1AO at line 217. The message is already held in the state
+        // Line 217 carries WS-MESSAGE into ERRMSGO OF COTRN1AO. The message is already held in the state
         // that the outcome publishes, so the move needs no second field here.
         state.screenSent = true;
     }
@@ -1157,17 +1157,17 @@ public class TransactionViewService {
      * @param state the turn's working storage
      */
     private void populateHeaderInfo(final TurnState state) {
-        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 245: one reading, both components.
+        // Line 245 carries the current date into WS-CURDATE-DATA: one reading, both components.
         final Instant reading = clock.instant();
         final LocalDate today = LocalDate.ofInstant(reading, clock.getZone());
         final LocalTime now = LocalTime.ofInstant(reading, clock.getZone());
 
-        // MOVE CCDA-TITLE01 and CCDA-TITLE02 at lines 247 and 248, each at its contractual width of
+        // Lines 247 and 248 carry CCDA-TITLE01 and CCDA-TITLE02, each at its contractual width of
         // forty characters and neither trimmed.
         state.title01 = messageCatalogService.screenTitle01();
         state.title02 = messageCatalogService.screenTitle02();
 
-        // MOVE WS-TRANID TO TRNNAMEO and MOVE WS-PGMNAME TO PGMNAMEO at lines 249 and 250.
+        // Lines 249 and 250 carry WS-TRANID into TRNNAMEO and WS-PGMNAME into PGMNAMEO.
         state.transactionName = WS_TRANID;
         state.programName = WS_PGMNAME;
 
@@ -1224,7 +1224,7 @@ public class TransactionViewService {
     private void readTransactFile(final TurnState state) {
         final Optional<Transaction> found;
         try {
-            // EXEC CICS READ DATASET(WS-TRANSACT-FILE) RIDFLD(TRAN-ID) KEYLENGTH(LENGTH OF TRAN-ID) at
+            // Lines 269 to 278 read the transaction dataset by the full-length record key at
             // lines 269 to 278. The key is passed as the sixteen characters it is.
             found = transactionRepository.findById(state.tranId);
         } catch (final DataAccessException failure) {
@@ -1239,12 +1239,12 @@ public class TransactionViewService {
         }
 
         if (found.isPresent()) {
-            // WHEN DFHRESP(NORMAL) at lines 281 and 282: CONTINUE, with the record in hand.
+            // The NORMAL-response arm at lines 281 and 282, which does nothing, with the record in hand.
             state.record = found.get();
             return;
         }
 
-        // WHEN DFHRESP(NOTFND) at lines 283 to 288. An outcome rather than an edit failure, so it writes
+        // The NOTFND-response arm at lines 283 to 288. An outcome rather than an edit failure, so it writes
         // the message and positions the cursor but adds no per-field entry.
         LOG.debug("Transaction lookup found no matching row: reporting the record-absent message");
         state.raiseError(MSG_TRAN_ID_NOT_FOUND, FIELD_TRANSACTION_ID);
@@ -1265,10 +1265,10 @@ public class TransactionViewService {
      * @param state the turn's working storage
      */
     private void clearCurrentScreen(final TurnState state) {
-        // PERFORM INITIALIZE-ALL-FIELDS at line 303.
+        // Line 303 runs INITIALIZE-ALL-FIELDS.
         initializeAllFields(state);
 
-        // PERFORM SEND-TRNVIEW-SCREEN at line 304.
+        // Line 304 runs SEND-TRNVIEW-SCREEN.
         sendTrnviewScreen(state);
     }
 
@@ -1296,7 +1296,7 @@ public class TransactionViewService {
         // MOVE -1 TO TRNIDINL OF COTRN1AI at line 311.
         state.focusField = FIELD_TRANSACTION_ID;
 
-        // MOVE SPACES TO TRNIDINI at line 312, to the thirteen display fields at lines 313 to 325, and
+        // Line 312 carries SPACES into TRNIDINI, to the thirteen display fields at lines 313 to 325, and
         // to WS-MESSAGE at line 326.
         state.searchTransactionId = NO_MESSAGE;
         state.tranId = NO_MESSAGE;
@@ -1311,7 +1311,7 @@ public class TransactionViewService {
 
     /**
      * The pseudo-conversational return at lines 136 to 139:
-     * {@code EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)}.
+     * the pseudo-conversational return that re-arms this transaction with its carried work area.
      *
      * <p>Not a paragraph &mdash; it is the closing statement of the main paragraph &mdash; so it adds no
      * row to the paragraph traceability matrix and is named here only so the re-arm has one place to
@@ -1357,7 +1357,7 @@ public class TransactionViewService {
 
     /**
      * Reports whether a field was supplied, reproducing the abbreviated combined relation
-     * {@code NOT = SPACES AND LOW-VALUES} at lines 103 and 104.
+     * the abbreviated combined relation at lines 103 and 104.
      *
      * <p>That relation expands to "is not all spaces <em>and</em> is not all low values", so a field is
      * supplied when it holds at least one character that is neither. The inverse of the blank test, and

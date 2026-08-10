@@ -135,6 +135,24 @@ import java.io.IOException;
  * fire and the field accepts any value. Attaching any constraint to either, even a width constraint,
  * would reject input the legacy system accepts. Decision log entry D-34 records the decision.
  *
+ * <p><strong>Where those two unconstrained components are bounded instead.</strong> Carrying no
+ * constraint means nothing here bounds their length, and the record fields they are stored into are
+ * twenty-five and fifty characters wide. The service therefore truncates each to its record width as it
+ * applies it, which is what an alphanumeric {@code MOVE} into a {@code PIC X(n)} item does with a longer
+ * source and what the terminal itself did by being unable to accept a further character. That is not a
+ * constraint by another name: nothing is rejected, no field error is composed and the turn does not
+ * fail. It exists because the alternative is worse - an unbounded value reaching a bounded column
+ * produces a refusal at the persistence boundary, which is the one outcome the source forbids for these
+ * two fields, arriving as a failed turn instead of a field error. Decision log entry DL-297 records it.
+ *
+ * <p><strong>The account group identifier is normalised rather than merely bounded.</strong> Its
+ * {@code @Size(max = 10)} is the map width like every other, and a <em>shorter</em> value is the danger
+ * here rather than a longer one: the identifier is the leading part of the disclosure-group composite
+ * key, whose reference data carries meaningful trailing spaces, so a seven-character spelling of a
+ * ten-character group matches no rate row and sends the interest run to its default-group fallback. The
+ * service therefore pads it to exactly ten as it applies it, the entity requires exactly ten before the
+ * write and the schema carries the same rule. Also DL-297.
+ *
  * <p>The credit score is carried as a string so that a value such as {@code 001} survives intact. Its
  * legacy range test is an inclusive 300-to-850 bound that fires only after the required-numeric stage
  * has passed. Because that gating is part of the ordered cascade, the bound is <strong>documented here

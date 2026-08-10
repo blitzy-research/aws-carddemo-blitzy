@@ -25,6 +25,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
 
 /**
@@ -72,6 +73,14 @@ public class Account {
     static final int MONEY_PRECISION = 12;
 
     /**
+     * Width of the account group identifier in characters: 10, from {@code ACCT-GROUP-ID PIC X(10)}.
+     *
+     * <p>Named so that the column declaration, the persistence-time rule and the check constraint in
+     * {@code V1__create_schema.sql} read the one figure rather than three copies of it.
+     */
+    static final int ACCT_GROUP_ID_WIDTH = 10;
+
+    /**
      * Primary key, and the row's persistent identity: never generated. The sample dataset zero-fills
      * the identifier to its full width, so the leading zeros are contractual and a numeric type would
      * discard them.
@@ -92,11 +101,77 @@ public class Account {
     @Column(name = "acct_curr_bal", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCurrBal;
 
+    /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code ACCT-CURR-BAL}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean acctCurrBalNegativeZero;
+
     @Column(name = "acct_credit_limit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCreditLimit;
 
+    /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code ACCT-CREDIT-LIMIT}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean acctCreditLimitNegativeZero;
+
     @Column(name = "acct_cash_credit_limit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCashCreditLimit;
+
+    /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code ACCT-CASH-CREDIT-LIMIT}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean acctCashCreditLimitNegativeZero;
 
     @Column(name = "acct_open_date", length = 10, nullable = false)
     private String acctOpenDate;
@@ -115,8 +190,52 @@ public class Account {
     @Column(name = "acct_curr_cyc_credit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCurrCycCredit;
 
+    /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code ACCT-CURR-CYC-CREDIT}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean acctCurrCycCreditNegativeZero;
+
     @Column(name = "acct_curr_cyc_debit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCurrCycDebit;
+
+    /**
+     * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
+     * all-zero {@code ACCT-CURR-CYC-DEBIT}.
+     *
+     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
+     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
+     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
+     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
+     * because inventing a column for it would put a representation artefact into the schema.
+     *
+     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
+     * and written back out re-emits the byte it arrived with rather than silently normalising
+     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
+     * that owns this layout is its only producer and its only consumer.
+     *
+     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
+     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
+     * of the value.
+     */
+    @Transient
+    private boolean acctCurrCycDebitNegativeZero;
 
     @Column(name = "acct_addr_zip", length = 10, nullable = false)
     private String acctAddrZip;
@@ -128,8 +247,16 @@ public class Account {
      * database constraint could not express. Its trailing spaces are significant and are never trimmed,
      * or a padded identifier would compare equal to its unpadded form in Java while staying distinct in
      * the database.
+     *
+     * <p><strong>Exactly ten characters, enforced before the write.</strong> Not being a foreign key is
+     * what makes the width matter: nothing else would catch a short value, and a short value does not
+     * fail - it silently resolves the wrong rate. Two of the three seeded groups are seven characters
+     * followed by three spaces, so a nine-or-fewer-character value matches no group row at all, the
+     * lookup takes its documented not-found fallback, and an account whose own group carries a zero rate
+     * accrues interest at the default group's rate instead. Recorded as {@code DL-297} in
+     * {@code docs/decision-log.md}.
      */
-    @Column(name = "acct_group_id", length = 10, nullable = false)
+    @Column(name = "acct_group_id", length = ACCT_GROUP_ID_WIDTH, nullable = false)
     private String acctGroupId;
 
     /**
@@ -206,6 +333,27 @@ public class Account {
         this.acctCurrBal = acctCurrBal;
     }
 
+    /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CURR-BAL}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isAcctCurrBalNegativeZero() {
+        return acctCurrBalNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CURR-BAL}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param acctCurrBalNegativeZero the negative-zero bit the image carried
+     */
+    public void setAcctCurrBalNegativeZero(boolean acctCurrBalNegativeZero) {
+        this.acctCurrBalNegativeZero = acctCurrBalNegativeZero;
+    }
+
     public BigDecimal getAcctCreditLimit() {
         return acctCreditLimit;
     }
@@ -214,12 +362,54 @@ public class Account {
         this.acctCreditLimit = acctCreditLimit;
     }
 
+    /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CREDIT-LIMIT}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isAcctCreditLimitNegativeZero() {
+        return acctCreditLimitNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CREDIT-LIMIT}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param acctCreditLimitNegativeZero the negative-zero bit the image carried
+     */
+    public void setAcctCreditLimitNegativeZero(boolean acctCreditLimitNegativeZero) {
+        this.acctCreditLimitNegativeZero = acctCreditLimitNegativeZero;
+    }
+
     public BigDecimal getAcctCashCreditLimit() {
         return acctCashCreditLimit;
     }
 
     public void setAcctCashCreditLimit(BigDecimal acctCashCreditLimit) {
         this.acctCashCreditLimit = acctCashCreditLimit;
+    }
+
+    /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CASH-CREDIT-LIMIT}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isAcctCashCreditLimitNegativeZero() {
+        return acctCashCreditLimitNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CASH-CREDIT-LIMIT}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param acctCashCreditLimitNegativeZero the negative-zero bit the image carried
+     */
+    public void setAcctCashCreditLimitNegativeZero(boolean acctCashCreditLimitNegativeZero) {
+        this.acctCashCreditLimitNegativeZero = acctCashCreditLimitNegativeZero;
     }
 
     public String getAcctOpenDate() {
@@ -254,12 +444,54 @@ public class Account {
         this.acctCurrCycCredit = acctCurrCycCredit;
     }
 
+    /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CURR-CYC-CREDIT}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isAcctCurrCycCreditNegativeZero() {
+        return acctCurrCycCreditNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CURR-CYC-CREDIT}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param acctCurrCycCreditNegativeZero the negative-zero bit the image carried
+     */
+    public void setAcctCurrCycCreditNegativeZero(boolean acctCurrCycCreditNegativeZero) {
+        this.acctCurrCycCreditNegativeZero = acctCurrCycCreditNegativeZero;
+    }
+
     public BigDecimal getAcctCurrCycDebit() {
         return acctCurrCycDebit;
     }
 
     public void setAcctCurrCycDebit(BigDecimal acctCurrCycDebit) {
         this.acctCurrCycDebit = acctCurrCycDebit;
+    }
+
+    /**
+     * Whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CURR-CYC-DEBIT}.
+     *
+     * @return {@code true} only when the amount is zero and its image was negatively signed
+     */
+    public boolean isAcctCurrCycDebitNegativeZero() {
+        return acctCurrCycDebitNegativeZero;
+    }
+
+    /**
+     * Records whether the mapped image carried a negative overpunch on an all-zero {@code ACCT-CURR-CYC-DEBIT}.
+     *
+     * <p>Set by the record mapper that owns this layout, from the sign the image actually carried. It is
+     * never derived from the amount, because the amount cannot express it.
+     *
+     * @param acctCurrCycDebitNegativeZero the negative-zero bit the image carried
+     */
+    public void setAcctCurrCycDebitNegativeZero(boolean acctCurrCycDebitNegativeZero) {
+        this.acctCurrCycDebitNegativeZero = acctCurrCycDebitNegativeZero;
     }
 
     public String getAcctAddrZip() {
@@ -313,6 +545,7 @@ public class Account {
     @PreUpdate
     void normalizeAndValidateBeforeWrite() {
         StoredValueRules.requireFixedWidthDigits(acctId, ACCT_ID_WIDTH, "acctId");
+        StoredValueRules.requireFixedWidth(acctGroupId, ACCT_GROUP_ID_WIDTH, "acctGroupId");
         this.acctCurrBal = StoredValueRules.normalizedAmount(acctCurrBal, MONEY_PRECISION, "acctCurrBal");
         this.acctCreditLimit =
                 StoredValueRules.normalizedAmount(acctCreditLimit, MONEY_PRECISION, "acctCreditLimit");

@@ -21,7 +21,6 @@ import com.carddemo.api.dto.AccountUpdateResponse;
 import com.carddemo.api.dto.AccountViewResponse;
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Customer;
 import com.carddemo.domain.enums.KeyAction;

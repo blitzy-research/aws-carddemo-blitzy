@@ -17,6 +17,9 @@
 package com.carddemo.config;
 
 import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.ObservationPropagation;
+
+import io.micrometer.observation.ObservationRegistry;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.sns.core.SnsOperations;
 import io.awspring.cloud.sns.core.TopicArnResolver;
@@ -41,6 +44,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.services.sns.SnsClient;
@@ -129,6 +133,19 @@ public final class AwsResourceHealthConfig {
     /** Worst case for all three checks together, stated so the probe budget can be checked by reading. */
     static final long TOTAL_AWS_BUDGET_MILLIS = 3 * CHECK_DEADLINE_MILLIS;
 
+    /**
+     * The bean name of the bounded pool the two synchronous probes share.
+     *
+     * <p>Both probes name the pool rather than resolving it by type. An {@code ExecutorService}
+     * parameter resolved by type is satisfied by whichever executor bean the context happens to hold,
+     * so a second one appearing anywhere - a task executor added for an unrelated feature, an
+     * auto-configured one arriving with a starter - would either make both injections ambiguous or,
+     * worse, quietly give the readiness probes somebody else's threads and somebody else's queue. The
+     * deadline these probes depend on is a property of this pool's direct-handoff queue, not of any
+     * pool, so the pool is addressed by name.
+     */
+    static final String HEALTH_CHECK_EXECUTOR_BEAN = "awsHealthCheckExecutor";
+
     /** Component name of the object-store contributor, used only for its own diagnostics. */
     static final String COMPONENT_S3 = "awsS3";
 
@@ -175,13 +192,28 @@ public final class AwsResourceHealthConfig {
     private final AwsProperties awsProperties;
 
     /**
+     * The registry a probe's own observation is read from so a worker can continue it.
+     *
+     * <p>Held only to be handed to {@link ObservationPropagation}. Nothing on this class starts, names or
+     * stops an observation; the provider calls are observed by the clients that make them, and the point
+     * of carrying the context is that those observations attach to the probe that caused them instead of
+     * standing alone as one-span traces.
+     */
+    private final ObservationRegistry observationRegistry;
+
+    /**
      * Creates the readiness configuration over the already validated AWS settings.
      *
      * @param awsProperties the bound AWS resource inventory; must not be {@code null}
+     * @param observationRegistry the registry a probe's observation is carried from; must not be
+     *                            {@code null}
      */
-    public AwsResourceHealthConfig(final AwsProperties awsProperties) {
+    public AwsResourceHealthConfig(final AwsProperties awsProperties,
+            final ObservationRegistry observationRegistry) {
         this.awsProperties = Objects.requireNonNull(awsProperties,
                 "awsProperties must not be null");
+        this.observationRegistry = Objects.requireNonNull(observationRegistry,
+                "observationRegistry must not be null");
     }
 
     /**
@@ -205,7 +237,7 @@ public final class AwsResourceHealthConfig {
      *
      * @return a bounded, direct-handoff pool sized from the number of synchronous checks
      */
-    @Bean(destroyMethod = "shutdownNow")
+    @Bean(name = HEALTH_CHECK_EXECUTOR_BEAN, destroyMethod = "shutdownNow")
     public ExecutorService awsHealthCheckExecutor() {
         final AtomicInteger sequence = new AtomicInteger();
         final ThreadPoolExecutor executor = new ThreadPoolExecutor(
@@ -232,17 +264,19 @@ public final class AwsResourceHealthConfig {
      * Contributes the {@code awsS3} readiness component.
      *
      * @param s3Operations the auto-configured object-store facade
-     * @param workers      the bounded pool this synchronous check is given a deadline on
+     * @param workers      the bounded pool this synchronous check is given a deadline on, named rather
+     *     than resolved by type so no other executor bean can become the pool these probes run on
      * @return a read-only, deadline-bounded bucket existence check
      */
     @Bean
     public HealthIndicator awsS3HealthIndicator(final S3Operations s3Operations,
-            final ExecutorService workers) {
+            @Qualifier(HEALTH_CHECK_EXECUTOR_BEAN) final ExecutorService workers) {
         Objects.requireNonNull(s3Operations, "s3Operations must not be null");
         Objects.requireNonNull(workers, "workers must not be null");
         final String bucket = this.awsProperties.s3().batchStagingBucket();
         return existenceIndicator(COMPONENT_S3,
-                boundedByDeadline(workers, () -> s3Operations.bucketExists(bucket)));
+                boundedByDeadline(workers, this.observationRegistry,
+                        () -> s3Operations.bucketExists(bucket)));
     }
 
     /**
@@ -300,21 +334,24 @@ public final class AwsResourceHealthConfig {
      *
      * @param snsClient the auto-configured notification client used only for topic listing
      * @param snsOperations the auto-configured notification facade used for the attribute check
-     * @param workers   the bounded pool this synchronous check is given a deadline on
+     * @param workers   the bounded pool this synchronous check is given a deadline on, named rather
+     *     than resolved by type for the reason given on {@link #HEALTH_CHECK_EXECUTOR_BEAN}
      * @return a read-only, deadline-bounded topic existence check
      */
     @Bean
     public HealthIndicator awsSnsHealthIndicator(final SnsClient snsClient,
-            final SnsOperations snsOperations, final ExecutorService workers) {
+            final SnsOperations snsOperations,
+            @Qualifier(HEALTH_CHECK_EXECUTOR_BEAN) final ExecutorService workers) {
         Objects.requireNonNull(snsClient, "snsClient must not be null");
         Objects.requireNonNull(snsOperations, "snsOperations must not be null");
         Objects.requireNonNull(workers, "workers must not be null");
         final TopicArnResolver resolver = new TopicsListingTopicArnResolver(snsClient);
         final String topic = this.awsProperties.sns().jobNotificationTopic();
-        return existenceIndicator(COMPONENT_SNS, boundedByDeadline(workers, () -> {
-            final String topicArn = resolver.resolveTopicArn(topic).toString();
-            return snsOperations.topicExists(topicArn);
-        }));
+        return existenceIndicator(COMPONENT_SNS,
+                boundedByDeadline(workers, this.observationRegistry, () -> {
+                    final String topicArn = resolver.resolveTopicArn(topic).toString();
+                    return snsOperations.topicExists(topicArn);
+                }));
     }
 
     /**
@@ -326,15 +363,25 @@ public final class AwsResourceHealthConfig {
      * That is the whole of the distinction: the caller becomes bounded even though the call does not.
      *
      * @param workers the bounded pool to run the operation on
+     * @param observationRegistry the registry the probe's own observation is carried from, so the
+     *                            provider call the worker makes attaches to the probe instead of standing
+     *                            alone as a one-span trace
      * @param exists  the synchronous operation that reports whether its resource exists
      * @return a supplier that either answers inside the deadline or reports why it could not
      */
     private static BooleanSupplier boundedByDeadline(final ExecutorService workers,
-            final BooleanSupplier exists) {
+            final ObservationRegistry observationRegistry, final BooleanSupplier exists) {
         return () -> {
             final Future<Boolean> answer;
             try {
-                answer = workers.submit(exists::getAsBoolean);
+                // The work is wrapped so it runs inside the probe's own observation. A plain executor
+                // hands a worker a thread with nothing current, so the provider call the worker makes was
+                // becoming a detached root - a one-span trace with no link to the probe that asked for it.
+                // The pool itself is untouched: its direct handoff, its ceiling and its rejecting handler
+                // are what keep the deadline honest and none of them is a tracing concern. See
+                // docs/decision-log.md entry DL-305.
+                answer = workers.submit(ObservationPropagation.callInCurrentObservation(
+                        observationRegistry, exists::getAsBoolean));
             } catch (final RejectedExecutionException noCapacity) {
                 throw new HealthCheckCapacityExhaustedException(noCapacity);
             }

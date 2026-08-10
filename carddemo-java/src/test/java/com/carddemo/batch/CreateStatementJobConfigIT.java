@@ -45,6 +45,8 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.StatementDataAccessService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
+import com.carddemo.service.StatementLineSummary;
+import com.carddemo.service.StatementOutputSink;
 import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
@@ -71,7 +73,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.UnaryOperator;
-import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -1154,10 +1155,13 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
      * in key sequence, against a card that carries a cross-reference row - so the generator walks its
      * phases, matches the card and writes a whole statement, all over an input the test controls.
      *
+     * <p>The generator writes each record to a sink as it composes it, so the two streams are collected
+     * here rather than read off the result, and the result carries counts and the dispatch trace.
+     *
      * @param cardNumber the card the served records belong to
-     * @return the generator's own result, including its observed dispatcher entries
+     * @return the generator's own result together with the two streams its sinks received
      */
-    private StatementRun generateOver(final String cardNumber) {
+    private ObservedRun generateOver(final String cardNumber) {
         final List<String> served = new ArrayList<>();
         for (final String identifier : GENERATOR_PROBE_IDS) {
             served.add(projectIndependently(TestDataFactory.transaction()
@@ -1170,7 +1174,84 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                     .processingTimestamp(PROBE_PROCESSING_TIMESTAMP)
                     .image()));
         }
-        return this.statementProcessor.process(new ConstructedTransactionSource(List.copyOf(served)));
+        final CollectingSink sink = new CollectingSink();
+        final StatementRun tallies = this.statementProcessor.process(
+                new StatementProcessor.StatementRunRequest(
+                        new ConstructedTransactionSource(List.copyOf(served)), sink));
+        return new ObservedRun(List.copyOf(sink.statementRecords), List.copyOf(sink.htmlRecords),
+                List.copyOf(sink.transactionSummaries), List.copyOf(sink.dispatchedPhases), tallies);
+    }
+
+    /**
+     * Collects everything one generation forwards, so that content and order can be asserted.
+     *
+     * <p>The service and the stage retain nothing: each record leaves through a
+     * {@link StatementOutputSink} as it is produced. A test controls its own volume, so collecting the
+     * emission here is a bounded observation rather than the accumulation the production path no longer
+     * performs.
+     */
+    private static final class CollectingSink implements StatementOutputSink {
+
+        /** Plain records forwarded, in order. */
+        private final List<String> statementRecords = new ArrayList<>();
+
+        /** Markup records forwarded, in order. */
+        private final List<String> htmlRecords = new ArrayList<>();
+
+        /** Per-line summaries forwarded, in order. */
+        private final List<StatementLineSummary> transactionSummaries = new ArrayList<>();
+
+        /** Dispatcher entries forwarded, in order. */
+        private final List<String> dispatchedPhases = new ArrayList<>();
+
+        @Override
+        public void statementRecord(final String record) {
+            this.statementRecords.add(record);
+        }
+
+        @Override
+        public void htmlRecord(final String record) {
+            this.htmlRecords.add(record);
+        }
+
+        @Override
+        public void transactionSummary(final StatementLineSummary summary) {
+            this.transactionSummaries.add(summary);
+        }
+
+        @Override
+        public void dispatchedPhase(final String phase) {
+            this.dispatchedPhases.add(phase);
+        }
+    }
+
+    /**
+     * One generation's emitted content together with the tallies the stage returned.
+     *
+     * @param statementRecords     the plain records emitted, in order
+     * @param htmlRecords          the markup records emitted, in order
+     * @param transactionSummaries the per-line summaries emitted, in order
+     * @param dispatchedPhases     the dispatcher entries reported, in order
+     * @param tallies              the seven counts the stage returned
+     */
+    private record ObservedRun(List<String> statementRecords, List<String> htmlRecords,
+                               List<StatementLineSummary> transactionSummaries,
+                               List<String> dispatchedPhases, StatementRun tallies) {
+
+        /** @return how many statements the mainline produced */
+        int statementsWritten() {
+            return this.tallies.statementsWritten();
+        }
+
+        /** @return the total of the per-card counters */
+        int transactionsTabulated() {
+            return this.tallies.transactionsTabulated();
+        }
+
+        /** @return {@code CR-CNT} as the read phase left it */
+        int cardsTabulated() {
+            return this.tallies.cardsTabulated();
+        }
     }
 
     // ===============================================================================================
@@ -1617,7 +1698,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     @DisplayName("the dispatcher is entered six times, in the derived execution order, and its "
             + "catch-all terminates the run")
     void theDispatcherVisitsItsSixClausesInTheDerivedExecutionOrder() {
-        final StatementRun run = generateOver(SEEDED_CARD_WITH_CROSS_REFERENCE);
+        final ObservedRun run = generateOver(SEEDED_CARD_WITH_CROSS_REFERENCE);
 
         assertThat(run.dispatchedPhases())
                 .as("six clauses, whose order is the contract, observed at each dispatcher entry."
@@ -1671,7 +1752,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                 .isNotEqualTo(FileStatus.SUCCESS)
                 .isNotEqualTo(FileStatus.END_OF_FILE);
 
-        final StatementRun run = generateOver(SEEDED_CARD_WITH_CROSS_REFERENCE);
+        final ObservedRun run = generateOver(SEEDED_CARD_WITH_CROSS_REFERENCE);
         assertThat(run.transactionsTabulated())
                 .as("the success branch was taken for each served record before end-of-file ended the"
                         + " loop, so both of the two non-error outcomes were exercised on one pass:"
@@ -1745,7 +1826,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     @DisplayName("all six rule lines are emitted per statement and none of them is de-duplicated "
             + "away")
     void allSixRuleLinesAreEmittedPerStatement() {
-        final StatementRun run = generateOver(SEEDED_CARD_WITH_CROSS_REFERENCE);
+        final ObservedRun run = generateOver(SEEDED_CARD_WITH_CROSS_REFERENCE);
 
         assertThat(RULE_LINE.getBytes(StandardCharsets.US_ASCII).length)
                 .as("a rule line is eighty hyphens and nothing else")
@@ -2004,7 +2085,8 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
         assertThat(beyondTheBound)
                 .as("the constructed source carries one card more than the table has entries")
                 .hasSize(STRUCTURAL_CARD_TABLE_ENTRIES + 1);
-        assertThatThrownBy(() -> this.statementProcessor.process(pastCapacity))
+        assertThatThrownBy(() -> this.statementProcessor.process(
+                new StatementProcessor.StatementRunRequest(pastCapacity, new CollectingSink())))
                 .as("the fifty-second card is refused loudly - the run abends, exactly as the legacy"
                         + " program does when its tabulation area is full. This is asserted as a"
                         + " reproduction of legacy behaviour, not as a business limit on the migrated"

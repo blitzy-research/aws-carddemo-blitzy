@@ -236,7 +236,7 @@ class ControllerTimerFailurePathTest {
         when(add.processTransactionAdd(any())).thenThrow(failure);
 
         assertThatThrownBy(() -> controller.listTransactions(
-                mock(TransactionListRequest.class), null, 0, false, null)).isSameAs(failure);
+                mock(TransactionListRequest.class), null)).isSameAs(failure);
         assertThatThrownBy(() -> controller.viewTransaction(null, null, null, null, null))
                 .isSameAs(failure);
         assertThatThrownBy(() -> controller.addTransaction(

@@ -150,11 +150,18 @@ import org.springframework.transaction.interceptor.TransactionAttribute;
  * <p><strong>No retry, no backoff and no skip is configured on this step.</strong> The legacy performs
  * exactly one default-group probe, and a framework retry would silently turn one probe into several.
  *
- * <p><strong>The final account control break is driven explicitly, on the completing path, before
- * anything is closed.</strong> The break adds the accumulated interest to the account's current balance
- * and resets <strong>both</strong> cycle accumulators. The last account has no successor row to trigger
- * its own break, so omitting the end-of-file break would lose that account's interest entirely while
- * leaving every other figure of the run looking correct - a silent data-loss defect.
+ * <p><strong>The final account group is closed explicitly, on the completing path, before anything is
+ * closed - and closing it deliberately does <em>not</em> post the account.</strong> A key-change break
+ * adds the accumulated interest to the account's current balance and resets <strong>both</strong> cycle
+ * accumulators. The last group has no successor row to trigger a key change, and in the legacy the
+ * end-of-file arm that would have posted it is <em>unreachable</em>: it sits inside a test-before read
+ * loop whose own flag terminates the loop first. So the final group is closed with the withheld break -
+ * its interest is computed, every record it synthesizes is written to the generation and its total is
+ * reported, while its balance and both accumulators are left exactly as they were read. That asymmetry
+ * is the legacy's, it is reproduced rather than repaired, the withheld group is reported so an operator
+ * can explain an unmoved balance beside written records, and this module's own expected-output fixtures
+ * encode the unposted figure. Recorded as a preserved defect in {@code docs/decision-log.md} entry
+ * DL-207.
  *
  * <p><strong>The launch parameter reaches the service unaltered.</strong> It is the ten characters the
  * legacy step passes, and the synthesized identifier uses them verbatim, so it must not be reformatted
@@ -179,14 +186,17 @@ import org.springframework.transaction.interceptor.TransactionAttribute;
  *
  * <h2>Divergences, recorded rather than hidden</h2>
  *
- * <p><strong>The unit of work is the step, not the control break.</strong> The service commits at each
- * control break when it is called outside a transaction; driven from a step, its declarative boundary
- * joins the step's, so the relational effects of the whole pass commit together. The legacy had no
+ * <p><strong>The unit of work is the account group, not the pass.</strong> The tasklet runs under
+ * {@link TransactionDefinition#PROPAGATION_NOT_SUPPORTED}, so no transaction encompasses the pass and
+ * none can absorb what the groups commit; each closed account group enters the service through its own
+ * {@code REQUIRES_NEW} boundary and commits on its own. A failure at the twentieth account therefore
+ * leaves the first nineteen posted and durable, and only the twentieth rolls back. The legacy had no
  * commit point at all - its files were defined with no recovery and no journal, and every write was
- * immediate and unjournaled - so neither shape reproduces it exactly, and the whole-pass boundary is
- * the safer of the two: an abend cannot leave an interest run half posted. This is an improvement over
- * the baseline and is labelled as one so that a reviewer does not read the stronger guarantee as a
- * regression.
+ * immediate and unjournaled - so the group boundary is the closer of the two available shapes to it:
+ * work already completed for earlier accounts stays completed, exactly as the legacy's unjournaled
+ * writes did, while a failing account is not left half posted the way an unjournaled write could leave
+ * it. Grouping the whole pass into one transaction was considered and is not what is built; the choice
+ * is recorded here rather than left to be inferred from the step definition.
  *
  * <p><strong>An abend leaves the generation partially written.</strong> Records reach the generation as
  * they are produced, exactly as the legacy wrote one record at a time, so a failure mid-run leaves the
@@ -225,7 +235,7 @@ public final class InterestCalculationJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = BatchJobCatalog.INTEREST_CALCULATION_JOB_NAME;
+    public static final String JOB_NAME = BatchJobCatalog.INTEREST_CALCULATION_JOB;
 
     /**
      * Registered name of the one step. A configuration-time constant rather than a value derived from
@@ -832,12 +842,15 @@ public final class InterestCalculationJobConfig {
         }
 
         /**
-         * The close family, in the order the program closes: <strong>the final control break first</strong>,
-         * then the writer it wrote through, then the resources.
+         * The close family, in the order the program closes: <strong>the final group's closure
+         * first</strong>, then the writer it wrote through, then the resources.
          *
-         * <p>The final break is what posts the last account. It has no successor row to trigger it, so
-         * without this call the account would be read, accrued and never posted while every other figure
-         * of the run still looked correct. It runs before anything is closed because the program's
+         * <p>Closing the final group accrues it, writes every record it synthesizes and reports its
+         * total - and does <strong>not</strong> post its account, because the legacy arm that would have
+         * posted it is unreachable and that asymmetry is reproduced rather than repaired (DL-207). Without
+         * this call the group would not be accrued at all and its records would never be written, which
+         * <em>is</em> a difference from the legacy; with it, the only figure that stays behind is the one
+         * the legacy also left behind. It runs before anything is closed because the program's
          * end-of-file arm precedes its close paragraphs, and it is reached only on the completing path
          * because a legacy abend never reaches the closes at all - which is exactly what the template
          * guarantees by invoking this method on the completing path only. It writes its own records

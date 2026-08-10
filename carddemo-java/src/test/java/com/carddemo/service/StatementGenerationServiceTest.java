@@ -60,6 +60,7 @@ import com.carddemo.support.TestDataFactory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -856,6 +857,20 @@ class StatementGenerationServiceTest {
             return this;
         }
 
+        /**
+         * Releases the journals this script keeps of what it answered.
+         *
+         * <p>Used by the heap baseline only, and used before the measurement rather than after it: the
+         * journals are the test's bookkeeping, they grow with the volume the test chose to drive, and
+         * measuring them alongside the service's own retention would attribute the test's memory to the
+         * code under test.
+         */
+        private void forgetJournals() {
+            this.requests.clear();
+            this.snapshotsSeen.clear();
+            this.walksSeen.clear();
+        }
+
         private FileScript withCrossReferenceRecords(final List<String> images) {
             this.crossReferenceImages.clear();
             this.crossReferenceImages.addAll(images);
@@ -1128,10 +1143,116 @@ class StatementGenerationServiceTest {
         return this.script.answer(request, snapshot, walk);
     }
 
-    /** Drives one complete generation. */
-    private StatementGenerationService.StatementRun run() {
-        return this.service.generate(this.transactionSource, REGULATED_FIELD_REVEALER,
-                REGULATED_FIELD_SEALER);
+    /**
+     * Drives one complete generation and returns everything it emitted, together with its tallies.
+     *
+     * <p>The service retains no record: it hands each one to a {@link StatementOutputSink} as it is
+     * produced and returns seven counts. The assertions below need content and order, so this collects
+     * what the run emitted into a bounded, test-owned observation. The volume is whatever the scripted
+     * scenario produces, which is what makes collecting it here legitimate and collecting it inside the
+     * service not.
+     *
+     * @return the observed run
+     */
+    private ObservedRun run() {
+        final CollectingSink sink = new CollectingSink();
+        final StatementGenerationService.StatementRun tallies = this.service.generate(
+                this.transactionSource, REGULATED_FIELD_REVEALER, REGULATED_FIELD_SEALER, sink);
+        return new ObservedRun(List.copyOf(sink.statementRecords), List.copyOf(sink.htmlRecords),
+                List.copyOf(sink.transactionSummaries), List.copyOf(sink.dispatchedPhases), tallies);
+    }
+
+    /**
+     * Collects everything one run emits, in emission order, so that content and order can be asserted.
+     *
+     * <p>Deliberately in the test tree and not in the module. The service's contract is that it retains
+     * nothing; a caller that genuinely needs the content is free to retain it, and a test is such a
+     * caller because it controls the volume.
+     */
+    private static final class CollectingSink implements StatementOutputSink {
+
+        /** Plain statement records, in emission order. */
+        private final List<String> statementRecords = new ArrayList<>();
+
+        /** Markup statement records, in emission order. */
+        private final List<String> htmlRecords = new ArrayList<>();
+
+        /** Per-line transaction summaries, in emission order. */
+        private final List<StatementLineSummary> transactionSummaries = new ArrayList<>();
+
+        /** Dispatcher entries, in order. */
+        private final List<String> dispatchedPhases = new ArrayList<>();
+
+        /** Whether the run had returned by the time an item arrived. Must never become true. */
+        private boolean emittedAfterTheRunReturned;
+
+        /** Set once the run has returned, so a late emission is detectable. */
+        private boolean runReturned;
+
+        @Override
+        public void statementRecord(final String record) {
+            note();
+            this.statementRecords.add(record);
+        }
+
+        @Override
+        public void htmlRecord(final String record) {
+            note();
+            this.htmlRecords.add(record);
+        }
+
+        @Override
+        public void transactionSummary(final StatementLineSummary summary) {
+            note();
+            this.transactionSummaries.add(summary);
+        }
+
+        @Override
+        public void dispatchedPhase(final String phase) {
+            note();
+            this.dispatchedPhases.add(phase);
+        }
+
+        /** Records whether this item arrived while the run was still in flight. */
+        private void note() {
+            if (this.runReturned) {
+                this.emittedAfterTheRunReturned = true;
+            }
+        }
+    }
+
+    /**
+     * What a scripted run emitted, plus the tallies the service returned.
+     *
+     * <p>Exposes the same accessors the service's result used to carry, so an assertion about content
+     * reads the same as it did when the content came back from the call. The difference that matters is
+     * where the content lives: here, in a test-owned collection, rather than inside the service.
+     *
+     * @param statementRecords     the plain records the run emitted, in emission order
+     * @param htmlRecords          the markup records the run emitted, in emission order
+     * @param transactionSummaries the per-line summaries the run emitted, in emission order
+     * @param dispatchedPhases     the dispatcher entries the run reported, in order
+     * @param tallies              the seven counts the run returned
+     */
+    private record ObservedRun(List<String> statementRecords, List<String> htmlRecords,
+                               List<StatementLineSummary> transactionSummaries,
+                               List<String> dispatchedPhases,
+                               StatementGenerationService.StatementRun tallies) {
+
+        /** @return {@code CR-CNT} as the read phase left it */
+        int cardsTabulated() {
+            return this.tallies.cardsTabulated();
+        }
+
+        /** @return the total of the per-card counters */
+        int transactionsTabulated() {
+            return this.tallies.transactionsTabulated();
+        }
+
+        /** @return how many statements the mainline produced */
+        int statementsWritten() {
+            return this.tallies.statementsWritten();
+        }
     }
 
     /**
@@ -1351,7 +1472,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             // Each entry is one arrival at the dispatcher. A nested-call translation would arrive once,
             // run the phases inside one another and record a single entry - or, worse, record the same
@@ -1367,7 +1488,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.dispatchedPhases()).isNotEmpty();
             assertThat(run.dispatchedPhases().get(0)).isEqualTo("TRNXFILE");
@@ -1380,7 +1501,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             // The clauses as the source writes them: four opens, then the read phase, then the
             // catch-all that transfers to the program exit.
@@ -1451,7 +1572,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             final List<String> phases = run.dispatchedPhases();
             assertThat(phases.get(phases.indexOf("ACCTFILE") + 1)).isEqualTo("TERMINATED");
@@ -1467,7 +1588,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.cardsTabulated()).isEqualTo(1);
             assertThat(run.transactionsTabulated()).isEqualTo(3);
@@ -1482,9 +1603,9 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun first = run();
+            final ObservedRun first = run();
             this.resetScriptForSecondRun();
-            final StatementGenerationService.StatementRun second = run();
+            final ObservedRun second = run();
 
             assertThat(second.dispatchedPhases()).isEqualTo(first.dispatchedPhases());
             assertThat(second.statementRecords()).isEqualTo(first.statementRecords());
@@ -1515,7 +1636,7 @@ class StatementGenerationServiceTest {
             script.withTransactions(tabulatedTransactions(2))
                     .withCrossReferenceRecords(List.of(crossReferenceImage(CARD_NUMBER)));
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             // The priming read at L746 and the two loop reads at L835: the third of the three reports
             // at-end, which leaves the phase rather than failing it.
@@ -1572,7 +1693,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions().withOpenStatus(STATUS_RECORD_LENGTH_MISMATCH);
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementsWritten()).isEqualTo(1);
             assertThat(run.dispatchedPhases()).endsWith("TERMINATED");
@@ -1587,7 +1708,7 @@ class StatementGenerationServiceTest {
             oneStatementOfThreeTransactions()
                     .withPrimingReadStatus(STATUS_RECORD_LENGTH_MISMATCH);
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.transactionsTabulated()).isEqualTo(3);
             assertThat(run.statementRecords())
@@ -1602,7 +1723,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions().withCloseStatus(STATUS_RECORD_LENGTH_MISMATCH);
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementsWritten()).isEqualTo(1);
             verifyNoInteractions(abendService);
@@ -1616,7 +1737,7 @@ class StatementGenerationServiceTest {
             script.withTransactions(tabulatedTransactions(1))
                     .withCrossReferenceRecords(List.of());
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementsWritten()).isZero();
             assertThat(run.statementRecords()).isEmpty();
@@ -1846,7 +1967,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             // The shortest significant content in each stream is a four-character markup tag and an
             // eight-character address line; both must still occupy their whole record.
@@ -1864,7 +1985,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementRecords()).allSatisfy(record -> assertThat(
                     new String(record.getBytes(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII))
@@ -2156,7 +2277,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.htmlRecords()).doesNotContain(NEVER_WRITTEN_NAME_GROUP_IMAGE);
             assertThat(run.statementRecords()).doesNotContain(NEVER_WRITTEN_NAME_GROUP_IMAGE);
@@ -2175,7 +2296,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.htmlRecords()).doesNotContain(markup(MARKUP_CELL_OPEN_UNUSED));
             assertThat(run.htmlRecords()).contains(markup(MARKUP_CELL_CLOSE));
@@ -2188,7 +2309,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementRecords())
                     .noneSatisfy(record -> assertThat(record).contains(PROTECTED_ENVELOPE_PREFIX));
@@ -2371,7 +2492,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             BigDecimal accumulated = new BigDecimal("0.00");
             for (final StatementLineSummary summary : run.transactionSummaries()) {
@@ -2391,7 +2512,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementRecords().get(18)).isEqualTo(EXPECTED_THIRD_DETAIL_LINE);
             assertThat(EXPECTED_THIRD_DETAIL_LINE).endsWith("-");
@@ -2411,7 +2532,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.transactionSummaries())
                     .extracting(StatementLineSummary::amount)
@@ -2452,7 +2573,7 @@ class StatementGenerationServiceTest {
                             TestDataFactory.BLANK_PROCESSING_TIMESTAMP)))
                     .withCrossReferenceRecords(List.of(crossReferenceImage(LATER_CARD_NUMBER)));
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementRecords())
                     .hasSize(FIXED_STATEMENT_RECORDS_PER_STATEMENT)
@@ -2560,7 +2681,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.transactionSummaries())
                     .isNotEmpty()
@@ -2579,7 +2700,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.transactionSummaries())
                     .isNotEmpty()
@@ -2602,7 +2723,7 @@ class StatementGenerationServiceTest {
                             TestDataFactory.SEEDED_ORIGINAL_TIMESTAMP)))
                     .withCrossReferenceRecords(List.of(crossReferenceImage(CARD_NUMBER)));
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.transactionSummaries()).hasSize(1);
             final StatementLineSummary summary = run.transactionSummaries().get(0);
@@ -2644,7 +2765,7 @@ class StatementGenerationServiceTest {
         @DisplayName("a null transaction snapshot is rejected before any file is touched")
         void aNullTransactionSnapshotIsRejectedBeforeAnyFileIsTouched() {
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> service.generate(
-                    null, REGULATED_FIELD_REVEALER, REGULATED_FIELD_SEALER));
+                    null, REGULATED_FIELD_REVEALER, REGULATED_FIELD_SEALER, new CollectingSink()));
 
             verifyNoInteractions(dataAccess);
             verifyNoInteractions(abendService);
@@ -2654,9 +2775,11 @@ class StatementGenerationServiceTest {
         @DisplayName("a null revealing or sealing operation is rejected before any file is touched")
         void aNullRegulatedFieldOperationIsRejectedBeforeAnyFileIsTouched() {
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> service.generate(transactionSource, null, REGULATED_FIELD_SEALER));
+                    () -> service.generate(transactionSource, null, REGULATED_FIELD_SEALER,
+                            new CollectingSink()));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> service.generate(transactionSource, REGULATED_FIELD_REVEALER, null));
+                    () -> service.generate(transactionSource, REGULATED_FIELD_REVEALER, null,
+                            new CollectingSink()));
 
             verifyNoInteractions(dataAccess);
         }
@@ -2683,7 +2806,7 @@ class StatementGenerationServiceTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
                     () -> service.generate(transactionSource, REGULATED_FIELD_REVEALER,
-                            DROPPING_SEALER));
+                            DROPPING_SEALER, new CollectingSink()));
         }
 
         @Test
@@ -2693,7 +2816,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             // The seeded entity shape: the national identifier is absent while the
             // government-issued identifier is not.
@@ -2715,7 +2838,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             script.withTransactions(tabulatedTransactions(1)).withCrossReferenceRecords(List.of());
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementsWritten()).isZero();
             assertThat(run.statementRecords()).isEmpty();
@@ -2735,7 +2858,7 @@ class StatementGenerationServiceTest {
                             TestDataFactory.BLANK_PROCESSING_TIMESTAMP)))
                     .withCrossReferenceRecords(List.of(crossReferenceImage(CARD_NUMBER)));
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.transactionSummaries()).isEmpty();
             assertThat(run.statementRecords())
@@ -2752,7 +2875,7 @@ class StatementGenerationServiceTest {
             oneStatementOfThreeTransactions().withCrossReferenceRecords(
                     List.of(crossReferenceImage(CARD_NUMBER), crossReferenceImage(CARD_NUMBER)));
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(run.statementsWritten()).isEqualTo(2);
             assertThat(run.statementRecords())
@@ -2801,7 +2924,7 @@ class StatementGenerationServiceTest {
             script.withTransactions(tabulatedTransactions(REALISTIC_TRANSACTIONS_PER_CARD))
                     .withCrossReferenceRecords(List.of(crossReferenceImage(CARD_NUMBER)));
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             assertThat(REALISTIC_TRANSACTIONS_PER_CARD)
                     .isLessThan(StatementGenerationService.MAX_TRANSACTIONS_PER_CARD);
@@ -2824,39 +2947,64 @@ class StatementGenerationServiceTest {
         }
 
         @Test
-        @DisplayName("what one run yields is published unmodifiable, so a result cannot be altered "
-                + "after the fact")
-        void whatOneRunYieldsIsPublishedUnmodifiable() {
+        @DisplayName("what one run yields carries no record content at all - seven tallies and nothing "
+                + "else - so no caller can hold a run's output by holding its result")
+        void whatOneRunYieldsCarriesNoRecordContent() {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
+            final StatementGenerationService.StatementRun tallies = run.tallies();
 
-            assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> run.statementRecords().add(EXPECTED_RULE_LINE));
-            assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> run.htmlRecords().add(markup(MARKUP_ROW_OPEN)));
-            assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> run.dispatchedPhases().add("TRNXFILE"));
-            assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> run.transactionSummaries().clear());
+            // The tallies describe the output; they are not the output. Every figure here is a count,
+            // and the records themselves were observed at the sink above.
+            assertAll(
+                    () -> assertThat(tallies.statementRecordsEmitted())
+                            .isEqualTo(run.statementRecords().size()),
+                    () -> assertThat(tallies.htmlRecordsEmitted())
+                            .isEqualTo(run.htmlRecords().size()),
+                    () -> assertThat(tallies.transactionSummariesEmitted())
+                            .isEqualTo(run.transactionSummaries().size()),
+                    () -> assertThat(tallies.dispatcherEntries())
+                            .isEqualTo(run.dispatchedPhases().size()),
+                    () -> assertThat(tallies.statementRecordsEmitted()).isPositive(),
+                    () -> assertThat(tallies.htmlRecordsEmitted()).isPositive());
         }
 
         @Test
-        @DisplayName("a run result refuses a null record list, so no caller can publish one")
-        void aRunResultRefusesANullRecordList() {
+        @DisplayName("every record leaves through the sink while the run is still in flight, never "
+                + "afterwards, which is what makes the working set one record rather than one run")
+        void everyRecordLeavesThroughTheSinkDuringTheRun() {
+            installFileHandler();
+            oneStatementOfThreeTransactions();
+
+            final CollectingSink sink = new CollectingSink();
+            final StatementGenerationService.StatementRun tallies = service.generate(
+                    transactionSource, REGULATED_FIELD_REVEALER, REGULATED_FIELD_SEALER, sink);
+            sink.runReturned = true;
+
+            assertAll(
+                    () -> assertThat(sink.emittedAfterTheRunReturned).isFalse(),
+                    // Everything the run reported was already at the sink when the call returned.
+                    () -> assertThat(sink.statementRecords)
+                            .hasSize(tallies.statementRecordsEmitted()),
+                    () -> assertThat(sink.htmlRecords).hasSize(tallies.htmlRecordsEmitted()),
+                    () -> assertThat(sink.transactionSummaries)
+                            .hasSize(tallies.transactionSummariesEmitted()),
+                    () -> assertThat(sink.dispatchedPhases).hasSize(tallies.dispatcherEntries()));
+        }
+
+        @Test
+        @DisplayName("a null sink is rejected before any file is touched, because a run that emits "
+                + "nowhere is a run whose output was silently discarded")
+        void aNullSinkIsRejectedBeforeAnyFileIsTouched() {
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationService.StatementRun(null, List.of(), List.of(),
-                            List.of(), 0, 0, 0));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationService.StatementRun(List.of(), null, List.of(),
-                            List.of(), 0, 0, 0));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationService.StatementRun(List.of(), List.of(), null,
-                            List.of(), 0, 0, 0));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationService.StatementRun(List.of(), List.of(),
-                            List.of(), null, 0, 0, 0));
+                    () -> service.generate(transactionSource, REGULATED_FIELD_REVEALER,
+                            REGULATED_FIELD_SEALER, null))
+                    .withMessageContaining("outputSink");
+
+            verifyNoInteractions(dataAccess);
+            verifyNoInteractions(abendService);
         }
 
         @Test
@@ -2882,7 +3030,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             // Only three of the customer's attribute names carry the record prefix - the identifier,
             // the national identifier and the date of birth - and the name, address and phone
@@ -2905,7 +3053,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             final CardCrossReference crossReference = TestDataFactory.cardCrossReference()
                     .cardNumber(CARD_NUMBER).customerId(CUSTOMER_ID).accountId(ACCOUNT_ID).build();
@@ -2927,7 +3075,7 @@ class StatementGenerationServiceTest {
             installFileHandler();
             oneStatementOfThreeTransactions();
 
-            final StatementGenerationService.StatementRun run = run();
+            final ObservedRun run = run();
 
             final Transaction tabulated = TestDataFactory.transaction().id(FIRST_TRANSACTION_ID)
                     .description(FIRST_TRANSACTION_DESCRIPTION).amount(FIRST_TRANSACTION_AMOUNT)
@@ -2961,6 +3109,220 @@ class StatementGenerationServiceTest {
             assertThat(published.amount()).isEqualTo(summary.amount());
             assertThat(published.processingTimestamp()).isEqualTo(" ".repeat(TIMESTAMP_WIDTH));
             assertThat(summary).isNotInstanceOf(StatementSummary.class);
+        }
+    }
+
+    // ================================================================================================
+    // The bounded working set, and the high-volume figures that stand as its baseline
+    // ================================================================================================
+
+    @Nested
+    @DisplayName("a bounded working set: the run streams its output and retains none of it")
+    class BoundedWorkingSet {
+
+        /**
+         * Cross-reference records driven through one run.
+         *
+         * <p>The card table bounds the <em>tabulation</em> at 51 cards of 10 transactions, but nothing
+         * bounds the number of statements: the mainline produces one per cross-reference record it
+         * consumes. That is the dimension a buffered translation grew with, so it is the dimension these
+         * two cases drive. Two thousand statements of three transactions each emit several megabytes of
+         * fixed-width payload, which is enough that whole-output retention would be unmistakable and
+         * still small enough to run in a unit test.
+         */
+        private static final int HIGH_VOLUME_STATEMENTS = 2_000;
+
+        @Test
+        @DisplayName("a high-volume run emits every record through the sink and reports it as seven "
+                + "counts, and its result is equal to those seven counts and to nothing else")
+        void aHighVolumeRunRetainsNothingButItsCounts() {
+            installFileHandler();
+            script.withTransactions(threeTabulatedTransactions())
+                    .withCrossReferenceRecords(repeatedCrossReferenceRecords(HIGH_VOLUME_STATEMENTS));
+
+            final CountingSink sink = new CountingSink();
+            final long startedAt = System.nanoTime();
+            final StatementGenerationService.StatementRun tallies = service.generate(
+                    transactionSource, REGULATED_FIELD_REVEALER, REGULATED_FIELD_SEALER, sink);
+            final long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000L;
+
+            LoggerFactory.getLogger(StatementGenerationServiceTest.class).info(
+                    "STATEMENT STREAMING BASELINE: {} statement(s) produced {} record(s) of {} byte(s)"
+                            + " and {} record(s) of {} byte(s) - {} payload byte(s) emitted through the"
+                            + " sink in {} ms, with a working set of one record",
+                    tallies.statementsWritten(), sink.statementRecords, STATEMENT_RECORD_WIDTH,
+                    sink.htmlRecords, MARKUP_RECORD_WIDTH, sink.payloadBytes(), elapsedMillis);
+
+            assertAll(
+                    () -> assertThat(tallies.statementsWritten()).isEqualTo(HIGH_VOLUME_STATEMENTS),
+                    () -> assertThat(sink.statementRecords)
+                            .isEqualTo(tallies.statementRecordsEmitted()),
+                    () -> assertThat(sink.htmlRecords).isEqualTo(tallies.htmlRecordsEmitted()),
+                    () -> assertThat(sink.transactionSummaries)
+                            .isEqualTo(tallies.transactionSummariesEmitted()),
+                    () -> assertThat(sink.dispatchedPhases).isEqualTo(tallies.dispatcherEntries()),
+                    // The volume really is high: tens of thousands of records, megabytes of payload.
+                    () -> assertThat(sink.statementRecords).isGreaterThan(10_000),
+                    () -> assertThat(sink.payloadBytes()).isGreaterThan(4L * 1024L * 1024L),
+                    // And the whole of what the run handed back is seven counts. A record's equality is
+                    // structural, so an object equal to a seven-int tuple carries nothing beyond those
+                    // seven ints - which is a proof of the absence of content rather than a sample of it.
+                    () -> assertThat(tallies).isEqualTo(new StatementGenerationService.StatementRun(
+                            sink.statementRecords, sink.htmlRecords, sink.transactionSummaries,
+                            sink.dispatchedPhases, tallies.cardsTabulated(),
+                            tallies.transactionsTabulated(), HIGH_VOLUME_STATEMENTS)));
+        }
+
+        @Test
+        @DisplayName("the heap the run leaves behind is a small fraction of the payload it emitted, "
+                + "which is the figure a buffered translation could not produce")
+        void theHeapLeftBehindIsAFractionOfThePayloadEmitted() {
+            installFileHandler();
+            script.withTransactions(threeTabulatedTransactions())
+                    .withCrossReferenceRecords(repeatedCrossReferenceRecords(HIGH_VOLUME_STATEMENTS));
+
+            // One identical run first, so that class loading, the logging backend and the compiler's
+            // own warm-up are paid for before the baseline is taken. Without it the figure measures the
+            // first use of the JVM as much as it measures the run.
+            final CountingSink warmUp = new CountingSink();
+            service.generate(transactionSource, REGULATED_FIELD_REVEALER, REGULATED_FIELD_SEALER,
+                    warmUp);
+            forgetTestBookkeeping();
+
+            final long before = settledHeapInUse();
+            final CountingSink sink = new CountingSink();
+            final StatementGenerationService.StatementRun tallies = service.generate(
+                    transactionSource, REGULATED_FIELD_REVEALER, REGULATED_FIELD_SEALER, sink);
+            forgetTestBookkeeping();
+            final long retained = Math.max(0L, settledHeapInUse() - before);
+            final long emitted = sink.payloadBytes();
+
+            LoggerFactory.getLogger(StatementGenerationServiceTest.class).info(
+                    "STATEMENT STREAMING HEAP BASELINE: {} payload byte(s) emitted, {} byte(s) still"
+                            + " in use after the run settled, over {} record(s)",
+                    emitted, retained, sink.statementRecords + sink.htmlRecords);
+
+            assertAll(
+                    () -> assertThat(tallies.statementsWritten()).isEqualTo(HIGH_VOLUME_STATEMENTS),
+                    // Recorded as a baseline rather than tested against a service level, which is what
+                    // the plan requires of every performance figure. The bound asserted is the only one
+                    // that carries meaning: whatever remains in use must be a fraction of the output
+                    // itself, because retaining the output is precisely the defect this shape removed.
+                    // A quarter leaves room for collector behaviour that no test can command while
+                    // still failing outright against a run that buffered its two streams.
+                    () -> assertThat(retained).isLessThan(emitted / 4L));
+        }
+
+        /**
+         * Releases everything this test itself accumulated while the run executed.
+         *
+         * <p>Three things, and every one of them belongs to the test rather than to the service: the
+         * scripted file handler's journal of every request it answered; the log recorder this class
+         * attaches at debug level, which captures one event per record at these volumes; and the mocking
+         * framework's own record of every invocation, which retains each request object together with
+         * the record image it carried so that a later verification can inspect it. Each of the three
+         * grows with the volume the test chose to drive, and the third dominates the figure by several
+         * megabytes if it is left in place. Measuring any of them alongside the service's own retention
+         * would attribute the test harness's memory to the code under test.
+         */
+        private void forgetTestBookkeeping() {
+            script.forgetJournals();
+            recorder.list.clear();
+            Mockito.clearInvocations(dataAccess, abendService);
+        }
+
+        /**
+         * Builds one cross-reference record per statement the run should produce.
+         *
+         * @param  statements how many statements to drive
+         * @return that many identical cross-reference images
+         */
+        private List<String> repeatedCrossReferenceRecords(final int statements) {
+            final List<String> images = new ArrayList<>(statements);
+            for (int ordinal = 0; ordinal < statements; ordinal++) {
+                images.add(crossReferenceImage(CARD_NUMBER));
+            }
+            return images;
+        }
+
+        /**
+         * Settles the heap and reports what is in use.
+         *
+         * <p>A collection is requested rather than commanded, so this is a measurement and never a
+         * guarantee - which is exactly why the figure it feeds is recorded and the only assertion made
+         * against it has several megabytes of headroom.
+         *
+         * @return bytes in use after settling
+         */
+        private long settledHeapInUse() {
+            final Runtime runtime = Runtime.getRuntime();
+            for (int pass = 0; pass < 3; pass++) {
+                System.gc();
+                try {
+                    Thread.sleep(50L);
+                } catch (final InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("the heap measurement was interrupted",
+                            interrupted);
+                }
+            }
+            return runtime.totalMemory() - runtime.freeMemory();
+        }
+    }
+
+    /**
+     * Counts what one run emits and keeps none of it, which is what a destination that writes to a
+     * dataset does.
+     *
+     * <p>The counterpart of {@link CollectingSink}: that one is for assertions about content, this one is
+     * for the volumes at which retaining content would be the defect under test.
+     */
+    private static final class CountingSink implements StatementOutputSink {
+
+        /** Plain statement records received. */
+        private int statementRecords;
+
+        /** Markup statement records received. */
+        private int htmlRecords;
+
+        /** Per-line summaries received. */
+        private int transactionSummaries;
+
+        /** Dispatcher entries received. */
+        private int dispatchedPhases;
+
+        @Override
+        public void statementRecord(final String record) {
+            assertThat(record).hasSize(STATEMENT_RECORD_WIDTH);
+            this.statementRecords++;
+        }
+
+        @Override
+        public void htmlRecord(final String record) {
+            assertThat(record).hasSize(MARKUP_RECORD_WIDTH);
+            this.htmlRecords++;
+        }
+
+        @Override
+        public void transactionSummary(final StatementLineSummary summary) {
+            assertThat(summary).isNotNull();
+            this.transactionSummaries++;
+        }
+
+        @Override
+        public void dispatchedPhase(final String phase) {
+            assertThat(phase).isNotBlank();
+            this.dispatchedPhases++;
+        }
+
+        /**
+         * The fixed-width payload this sink was handed, in encoded bytes.
+         *
+         * @return the total, at the two declared record widths
+         */
+        private long payloadBytes() {
+            return (long) this.statementRecords * STATEMENT_RECORD_WIDTH
+                    + (long) this.htmlRecords * MARKUP_RECORD_WIDTH;
         }
     }
 }

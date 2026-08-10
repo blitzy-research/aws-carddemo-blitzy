@@ -57,7 +57,7 @@ import com.carddemo.util.StatementWorkRecordMapper;
  * names, widths and raw status codes are cited, and nothing else.
  *
  * <p><strong>This class replaces 13 static call sites.</strong> Every one of them is a
- * {@code CALL 'CBSTM03B' USING LK-M03B-AREA} inside {@code [app/cbl/CBSTM03A.CBL]}, at L351, L377, L401,
+ * call of CBSTM03B over the shared linkage area inside {@code [app/cbl/CBSTM03A.CBL]}, at L351, L377, L401,
  * L734, L746, L769, L787, L805, L835, L860, L877, L893 and L909. All 13 collapse into calls to
  * {@link #execute(StatementFileRequest, StatementTransactionSource, StatementCrossReferenceSource)} from
  * the statement generator, which is the sole consumer. This class injects <strong>no other
@@ -740,7 +740,7 @@ public final class StatementDataAccessService {
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * Runs {@code PERFORM 1000-TRNXFILE-PROC THRU 1999-EXIT}, the range invoked at
+     * Runs the 1000-TRNXFILE-PROC range through 1999-EXIT, invoked at
      * {@code [app/cbl/CBSTM03B.CBL:L120]}.
      *
      * <p>The range spans three paragraphs, so control does not simply return from the first: it falls
@@ -821,7 +821,7 @@ public final class StatementDataAccessService {
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * Runs {@code PERFORM 2000-XREFFILE-PROC THRU 2999-EXIT}, the range invoked at
+     * Runs the 2000-XREFFILE-PROC range through 2999-EXIT, invoked at
      * {@code [app/cbl/CBSTM03B.CBL:L122]}.
      *
      * <p>Three paragraphs, one intermediate status-publishing exit at
@@ -895,7 +895,7 @@ public final class StatementDataAccessService {
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * Runs {@code PERFORM 3000-CUSTFILE-PROC THRU 3999-EXIT}, the range invoked at
+     * Runs the 3000-CUSTFILE-PROC range through 3999-EXIT, invoked at
      * {@code [app/cbl/CBSTM03B.CBL:L124]}.
      *
      * <p>Three paragraphs, one intermediate status-publishing exit at
@@ -984,7 +984,7 @@ public final class StatementDataAccessService {
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * Runs {@code PERFORM 4000-ACCTFILE-PROC THRU 4999-EXIT}, the range invoked at
+     * Runs the 4000-ACCTFILE-PROC range through 4999-EXIT, invoked at
      * {@code [app/cbl/CBSTM03B.CBL:L126]}.
      *
      * <p>Three paragraphs, one intermediate status-publishing exit at
@@ -1179,7 +1179,7 @@ public final class StatementDataAccessService {
     }
 
     /**
-     * {@code READ TRNX-FILE INTO LK-M03B-FLDT} at {@code [app/cbl/CBSTM03B.CBL:L141]} - the sequential
+     * The transaction-file read into the linkage payload at {@code [app/cbl/CBSTM03B.CBL:L141]} - the sequential
      * read of the transaction file.
      *
      * <p>The statement job's first two steps have already sorted and projected the transaction input.
@@ -1204,7 +1204,7 @@ public final class StatementDataAccessService {
     }
 
     /**
-     * {@code READ XREF-FILE INTO LK-M03B-FLDT} at {@code [app/cbl/CBSTM03B.CBL:L165]} - the sequential
+     * The cross-reference-file read into the linkage payload at {@code [app/cbl/CBSTM03B.CBL:L165]} - the sequential
      * read of the card cross-reference file.
      *
      * <p>Ordered by the record key the file declares, which for this file is the card number alone. The

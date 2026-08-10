@@ -278,7 +278,7 @@ class CardDetailServiceTest {
     /** The decoration marker the source writes into a blank filter field at lines 543 and 549. */
     private static final String DECORATION_MARKER = "*";
 
-    /** {@code EXEC CICS ABEND ABCODE('9999')} at COCRDSLC line 875 to 876. */
+    /** The terminal abend carrying code 9999, at COCRDSLC line 875 to 876. */
     private static final String ONLINE_ABEND_CODE = "9999";
 
     /** The opening word of the abend diagnostic, which must be emitted before the raise. */
@@ -941,7 +941,7 @@ class CardDetailServiceTest {
 
             verify(cardRepository).findById(CARD_MIDDLE);
             verify(cardRepository, never()).findFirstByCardAcctIdOrderByCardNumAsc(anyString());
-            verify(cardRepository, never()).findByCardAcctId(anyString());
+            verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(anyString(), any());
         }
 
         @Test
@@ -1094,7 +1094,7 @@ class CardDetailServiceTest {
             service.getCardByAcct(state, ACCOUNT);
 
             verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
-            verify(cardRepository, never()).findByCardAcctId(anyString());
+            verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(anyString(), any());
             verify(cardRepository, never()).findById(anyString());
         }
 
@@ -1121,7 +1121,7 @@ class CardDetailServiceTest {
                             .isNotEqualTo(CARD_HIGHEST),
                     () -> assertThat(result.errorFlag()).isFalse(),
                     () -> assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS));
-            verify(cardRepository, never()).findByCardAcctId(anyString());
+            verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(anyString(), any());
         }
 
         @Test

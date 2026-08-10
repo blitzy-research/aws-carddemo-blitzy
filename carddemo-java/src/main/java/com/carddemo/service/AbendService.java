@@ -124,11 +124,100 @@ public final class AbendService {
      * @param terminalMessage the text the legacy routine sent to the terminal
      */
     public void abendOnline(String programName, String reason, String terminalMessage) {
-        logAbendDiagnostic(AbendException.ONLINE_ABEND_CODE, programName, reason, null, null, null);
-        AbendException abend = new AbendException(AbendException.ONLINE_ABEND_CODE, programName,
-                reason, terminalMessage, null);
-        emitContextImage(abend);
-        throw abend;
+        throw onlineAbend(programName, reason, terminalMessage);
+    }
+
+    /**
+     * Records the online abend diagnostic and returns the failure for the caller to raise.
+     *
+     * <h2>Why a method that returns the exception rather than throwing it</h2>
+     *
+     * <p>Three online abend sites cannot call {@link #abendOnline} and never did: they sit inside
+     * {@code Optional.orElseThrow} suppliers and inside a lookup that has to return, so they need the
+     * exception as a value. Before this method existed they built it themselves, which is why the online
+     * abend surface had three diagnostics and one of them was silence - {@code MenuService} logged nothing
+     * at all before raising, so a menu dispatch that abended left no record naming the culprit or the
+     * reason. Handing back the exception is what lets every one of those sites keep its shape and still
+     * produce the one record.
+     *
+     * <p>The legacy contract is unchanged and is the reason the order is fixed: the diagnostic is emitted
+     * before the failure is raised, exactly as the legacy routine displayed before abending, so a caller
+     * that throws what this returns preserves the ordering it always had.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-312.
+     *
+     * @param  programName the legacy member name to name as the culprit
+     * @param  reason the legacy display literal describing why the transaction is failing
+     * @param  terminalMessage the text the legacy routine sent to the terminal
+     * @return the failure to raise, already recorded
+     */
+    public static AbendException onlineAbend(String programName, String reason,
+            String terminalMessage) {
+        return onlineAbend(programName, reason, terminalMessage, null, null);
+    }
+
+    /**
+     * Records the online abend diagnostic with the two optional legacy fields, and returns the failure.
+     *
+     * <p>The operation and resource fields carry what the legacy display carried beside the culprit: the
+     * transfer rule being applied, and the destination that could not be resolved. They are the reason a
+     * caller that already had a richer diagnostic of its own loses nothing by routing through here.
+     *
+     * @param  programName the legacy member name to name as the culprit
+     * @param  reason the legacy display literal describing why the transaction is failing
+     * @param  terminalMessage the text the legacy routine sent to the terminal
+     * @param  operation the legacy description of the operation that failed, or {@code null}
+     * @param  resourceName the legacy destination or resource name, or {@code null}
+     * @return the failure to raise, already recorded
+     */
+    public static AbendException onlineAbend(String programName, String reason,
+            String terminalMessage, String operation, String resourceName) {
+        logAbendDiagnostic(AbendException.ONLINE_ABEND_CODE, programName, reason, null, operation,
+                resourceName);
+        return new AbendException(AbendException.ONLINE_ABEND_CODE, programName, reason,
+                terminalMessage, null);
+    }
+
+    /**
+     * Records the online abend naming a <em>description</em> of the culprit, and returns the failure
+     * carrying the culprit itself.
+     *
+     * <h2>Why the record and the exception name the culprit differently here</h2>
+     *
+     * <p>One online abend site names a culprit this module did not author: the navigation transfer whose
+     * destination could not be resolved names the destination a caller nominated, bounded to the legacy
+     * field width. That value must reach the exception, because the legacy abend area carries the name that
+     * failed and a caller-facing failure is where it belongs. It must not reach a log record, and eight
+     * characters is enough to explain why: this module's records are read as space-separated
+     * {@code key=value} pairs, and {@code route=CA} fits inside the legacy field width, so a nomination can
+     * imitate a field of the record it appears in. A separator or a control character inside the same eight
+     * characters can end the record early and present its remainder as a second, invented entry.
+     *
+     * <p>Refusing only the dangerous characters would close the splitting attack and leave the forging one
+     * open, so no caller text is published at all: the caller supplies the culprit, and the caller's own
+     * site supplies a fixed-shape description of it - its length, or the position and code point of the
+     * first character that is not printable. That description is what the record names.
+     *
+     * <p>Every other abend site names a culprit it authored, so for those sites the description and the
+     * value are the same thing and {@link #onlineAbend} is the method to use. This overload exists for the
+     * one site where they differ, and its name says so rather than leaving a reader to notice.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-312.
+     *
+     * @param  programName the culprit the exception carries, which may be caller-derived
+     * @param  describedCulprit the fixed-shape description of that culprit, which the record names; must
+     *                          contain no caller-supplied text
+     * @param  reason the legacy display literal describing why the transaction is failing
+     * @param  terminalMessage the text the legacy routine sent to the terminal
+     * @param  operation the legacy description of the operation that failed, or {@code null}
+     * @return the failure to raise, already recorded
+     */
+    public static AbendException onlineAbendWithDescribedCulprit(String programName,
+            String describedCulprit, String reason, String terminalMessage, String operation) {
+        logAbendDiagnostic(AbendException.ONLINE_ABEND_CODE, describedCulprit, reason, null, operation,
+                null);
+        return new AbendException(AbendException.ONLINE_ABEND_CODE, programName, reason,
+                terminalMessage, null);
     }
 
     /**
@@ -196,30 +285,90 @@ public final class AbendService {
         }
         StringBuilder line = new StringBuilder();
         line.append(ABENDING_PROGRAM)
-                .append(" abendCode=").append(orMarker(abendCode))
-                .append(" culprit=").append(orMarker(programName))
-                .append(" reason=").append(orMarker(reason));
+                .append(" abendCode=").append(fieldSafe(abendCode))
+                .append(" culprit=").append(fieldSafe(programName))
+                .append(" reason=").append(fieldSafe(reason));
         appendIfSupplied(line, " operation=", operation);
         appendIfSupplied(line, " resource=", resourceName);
         if (isSupplied(rawFileStatus)) {
-            line.append(" fileStatus=").append(rawFileStatus)
-                    .append(" statusName=").append(statusMnemonic(rawFileStatus));
+            line.append(" fileStatus=").append(fieldSafe(rawFileStatus))
+                    .append(" statusName=").append(fieldSafe(statusMnemonic(rawFileStatus)));
         }
         LOG.error(line.toString());
     }
 
     private static void appendIfSupplied(StringBuilder target, String label, String value) {
         if (isSupplied(value)) {
-            target.append(label).append(value);
+            target.append(label).append(fieldSafe(value));
         }
     }
 
-    private static void emitContextImage(AbendException abend) {
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("abendContext=[{}] contextLength={}",
-                    abend.toFixedWidthContext(), AbendException.CONTEXT_LENGTH);
+    /**
+     * Renders one field of the abend record so that a value this module did not author cannot change the
+     * record's shape.
+     *
+     * <h2>Why this is needed here and was not needed before</h2>
+     *
+     * <p>Every value that reached this record used to be a literal or a two-character status from a closed
+     * set. That stopped being true when the navigation abend was routed through this record, because the
+     * culprit it names is a caller-supplied program nomination bounded to the legacy field width - the one
+     * value on the abend surface whose content a caller chooses.
+     *
+     * <p>Two shapes are refused, and both are attacks on the reader rather than on this process. A value
+     * containing a character that is not printable US-ASCII can end the record early and present its
+     * remainder as a second, invented entry, so a carriage return inside an eight-character field
+     * manufactures a log line. A value containing {@code =} can imitate one of this record's own fields,
+     * and eight characters is enough: {@code route=CA} inside the culprit reads as a route assignment to
+     * anything parsing space-separated pairs. Neither is possible for a value this module authored, which
+     * is exactly why the check costs nothing on every other path.
+     *
+     * <p>A refused value is replaced by its length rather than dropped. The length is what distinguishes a
+     * padded or truncated field from a misspelled one, and it publishes nothing the caller chose. The value
+     * itself still travels on the exception, where it is structured data on a value object rather than
+     * syntax in a log record.
+     *
+     * <p>A plain value passes through byte for byte, so every record this class wrote before this method
+     * existed is unchanged. See {@code docs/decision-log.md} entry DL-312.
+     *
+     * @param  value the field value, possibly {@code null}
+     * @return the value when it is plain, the not-supplied marker when it is absent, and a fixed-shape
+     *         description carrying only its length when it is neither
+     */
+    private static String fieldSafe(String value) {
+        if (!isSupplied(value)) {
+            return NOT_SUPPLIED;
         }
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character == '=' || character < ' ' || character > '~') {
+                return "<not a plain field: length " + value.length() + ">";
+            }
+        }
+        return value;
     }
+
+    /*
+     * THE FIXED-WIDTH CONTEXT IMAGE IS DELIBERATELY NOT LOGGED, and its absence here is the fix rather
+     * than an omission.
+     *
+     * An earlier version of this class emitted AbendException#toFixedWidthContext at debug level, which
+     * rendered the whole 134-character legacy abend area into one log record: the four-character code, the
+     * eight-character culprit, the fifty-character reason and - the reason it had to go - the
+     * seventy-two-character operator message slot. That last field is the only part of the area whose
+     * content is not drawn from a fixed vocabulary this module owns. It is the text a caller-facing failure
+     * carries, so a single debug switch turned the abend path into a channel that copies an arbitrary
+     * seventy-two-character value into the log stream, in a format built for a 3270 screen rather than for
+     * a reader.
+     *
+     * What replaces it is the allow-listed record logAbendDiagnostic already writes: the abend code, the
+     * culprit, the reason, and where they exist the operation, the resource and the raw file status with
+     * its mnemonic. Every one of those is a value this module authored or a two-character status from a
+     * closed set. Nothing is lost by the removal that the structured record does not already say, and the
+     * image itself remains available on the exception, where it is structured data on a value object rather
+     * than text in a log record - which is where the legacy transmission of that area belongs.
+     *
+     * See docs/decision-log.md entry DL-312.
+     */
 
     private static void rejectNonErrorStatus(String rawFileStatus, String programName,
             String operation, String resourceName) {

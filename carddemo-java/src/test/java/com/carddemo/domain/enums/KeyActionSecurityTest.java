@@ -51,7 +51,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <p>The second is that there is deliberately no default constant. The legacy mapping lives in the
  * {@code YYYY-STORE-PFKEY} paragraph of procedural copybook {@code CSSTRPFY}, whose single
- * {@code EVALUATE TRUE} has 28 ordered {@code WHEN} clauses and zero {@code WHEN OTHER}. When the
+ * selection has 28 ordered arms and no catch-all. When the
  * incoming identifier matches none of them, no assignment happens and the work-area field retains
  * its prior value. Adding a synthetic {@code UNKNOWN} constant would manufacture a state the legacy
  * system cannot produce, so the absence of one is asserted rather than assumed.</p>

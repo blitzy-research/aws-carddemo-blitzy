@@ -92,13 +92,14 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * <p>A full production start is not attempted, and the reason is worth stating rather than leaving as
  * an omission: production points at a real database and a real trace collector, so a full start cannot
  * succeed here for reasons that have nothing to do with configuration. Every value would then be
- * asserted against a context that failed, and "all twelve variables supplied" would be unassertable.
- * The narrow context makes both directions observable.
+ * asserted against a context that failed, and "every variable supplied" would be unassertable. The
+ * narrow context makes both directions observable.
  *
  * <h2>Three ways a missing production variable manifests, all three covered</h2>
  *
- * <p>The twelve variables production requires are read by different kinds of consumer, and they fail
- * differently. All twelve are covered by the uniform resolution assertion, because strict resolution
+ * <p>The variables production requires are read by different kinds of consumer, and they fail
+ * differently. Every one of them is covered by the uniform resolution assertion, because strict
+ * resolution
  * against the environment is what every consumer of the key ultimately performs. Two are additionally
  * covered at refresh level through a strict {@code @Value} consumer, and one more through a consumer
  * that validates what binding produced:
@@ -124,23 +125,28 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  *
  * <p>{@link ProductionResolvesEverySecretFromTheEnvironment#theListUnderTestIsEveryNoFallbackVariable()}
  * reads the production document and requires the set of variables written without a fallback to equal
- * the set this test exercises. A thirteenth variable added to the document then fails the build rather
- * than joining it untested, which is the failure mode a hand-maintained list always eventually has.
+ * the set this test exercises, and
+ * {@link ProductionResolvesEverySecretFromTheEnvironment#theListUnderTestIsTheGuardedSet()} requires
+ * both to be the same size as the guard's own required-settings list. One more variable added to the
+ * document therefore fails the build rather than joining it untested, which is the failure mode a
+ * hand-maintained list always eventually has - and no prose here states the count, because a stated
+ * count is the same hand-maintained list in a sentence. The figure is
+ * {@code ProductionConfigurationValidator.REQUIRED_SETTINGS.size()} and is read from there.
  *
  * <h2>Which {@code application-test.yml} is read</h2>
  *
  * <p>Two documents carry that name: one under {@code src/main/resources} for a deployed test profile and
  * one under {@code src/test/resources} for this suite. Test classes precede main classes on the test
  * class path, so the second is the one resolved here - which is correct, because it is the one every
- * test in this module actually runs under. Both declare the same lifted migration pin, so the
+ * test in this module actually runs under. Both declare the same two migration locations, so the
  * assertions below hold for either.
  *
  * <h2>Independent expectations</h2>
  *
  * <p>Every expected value is a hand-typed literal, with one deliberate exception that is itself an
- * assertion: the delivered migration versions are read from the class path, so the claim that the
- * production pin withholds the seeds is made against the migrations that ship rather than against a
- * second copy of their numbering.
+ * assertion: the delivered migrations are read from the class path, so the claim that production
+ * resolves the schema half and withholds the seed half is made against the scripts that ship rather
+ * than against a second copy of their names.
  *
  * <h2>Provenance</h2>
  *
@@ -166,19 +172,31 @@ final class ApplicationProfileStartupTest {
     private static final String KEY_ACTIVE_PROFILES = "spring.profiles.active";
 
     /**
-     * The one location EVERY profile migrates from, holding all four delivered scripts flat.
+     * The one location production migrates from, holding the two schema scripts and no seed.
      *
-     * <p>There is no schema subdirectory and no seed subdirectory: the four scripts sit side by side
-     * in this one location, so what a profile resolves is never the difference between a seeded and an
-     * unseeded database. The version pin is that difference, and it is the only one.
+     * <p>WHAT A PROFILE RESOLVES IS THE DIFFERENCE between a seeded and an unseeded database. The two
+     * schema scripts and the two seed scripts ship from sibling directories whose shared parent holds
+     * no script at all, so a profile that resolves this location alone reaches the schema and nothing
+     * else - the seeds are not applied, not pending and not resolved. This replaced a version pin of
+     * {@code 2}, which excluded the seeds by arithmetic and froze the schema at the same version. See
+     * docs/decision-log.md DL-298.
      */
-    private static final String MIGRATION_LOCATION = "classpath:db/migration";
+    private static final String SCHEMA_LOCATION = "classpath:db/migration/schema";
 
-    /** The pin that applies the schema and leaves both seeds pending. */
-    private static final String SCHEMA_ONLY_TARGET = "2";
+    /** The sibling location the two seeding profiles add for themselves. */
+    private static final String SEED_LOCATION = "classpath:db/migration/seed";
 
-    /** The lifted pin, spelled as the migration tool's own head sentinel. */
+    /** The shared parent of the two, which no profile may resolve because scanning is recursive. */
+    private static final String SHARED_PARENT_LOCATION = "classpath:db/migration";
+
+    /** The descriptor prefix a class-path location carries, stripped to reach a resource pattern. */
+    private static final String CLASS_PATH_PREFIX = "classpath:";
+
+    /** The target EVERY profile resolves, spelled as the migration tool's own head sentinel. */
     private static final String HEAD_TARGET = "latest";
+
+    /** The version pin production no longer declares and which the resolution now refuses. */
+    private static final String WITHDRAWN_SCHEMA_PIN = "2";
 
     /** The complete delivered numbering, asserted rather than assumed. */
     private static final List<Integer> EXPECTED_DELIVERED_VERSIONS = List.of(1, 2, 3, 4);
@@ -186,6 +204,10 @@ final class ApplicationProfileStartupTest {
     /** The two migrations a production migration must never apply. */
     private static final List<String> SEEDS_WITHHELD_FROM_PRODUCTION =
             List.of("V3__seed_reference_data.sql", "V4__seed_user_security.sql");
+
+    /** The two migrations production must apply, being the ones the schema location carries. */
+    private static final List<String> SCHEMA_APPLIED_IN_PRODUCTION =
+            List.of("V1__create_schema.sql", "V2__create_indexes.sql");
 
     /** The production document, read as text for the exhaustiveness assertion. */
     private static final String PRODUCTION_DOCUMENT = "application-prod.yml";
@@ -315,6 +337,18 @@ final class ApplicationProfileStartupTest {
             "supplied-signing-secret-of-more-than-thirty-two-bytes";
 
     /**
+     * An operator credential above the production length floor.
+     *
+     * <p>{@code ProductionConfigurationValidator} refuses a management token shorter than
+     * {@value ProductionConfigurationValidator#MINIMUM_MANAGEMENT_TOKEN_LENGTH} characters, because that
+     * credential is presented as a bearer token with no sign-on, no lockout and no attempt counter behind
+     * it. The value below is a self-describing fixture at fifty-one characters, not a credential; the
+     * length is what matters, and a shorter fixture would fail the start it is here to prove succeeds.
+     */
+    private static final String SUPPLIED_OPERATOR_CREDENTIAL =
+            "supplied-operator-credential-long-enough-to-be-used";
+
+    /**
      * Every variable the production document references without a fallback, paired with the key that
      * carries the reference.
      *
@@ -335,9 +369,16 @@ final class ApplicationProfileStartupTest {
                     "supplied-keystore-password"),
             new RequiredSecret("CARDDEMO_TLS_KEYSTORE_TYPE", "server.ssl.key-store-type", "PKCS12"),
             new RequiredSecret("CARDDEMO_TLS_KEY_ALIAS", "server.ssl.key-alias", "carddemo"),
+            // The collector every span is posted to. The stand-in value has to satisfy the five rules
+            // ProductionConfigurationValidator#validateTraceCollectorAddress applies - https, no user
+            // information, no query, no fragment, the OTLP traces path, and a host that is not loopback -
+            // because those rules are checked before a bean is created, so a plain-http stand-in here
+            // would abort the context for a reason unrelated to what this class asserts. It was plain
+            // http until that rule existed, which is the finding in miniature: an address nobody had a
+            // reason to look at.
             new RequiredSecret("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-                    "management.otlp.tracing.endpoint",
-                    "http://collector.internal:4318/v1/traces"),
+                    ProductionConfigurationValidator.TRACE_COLLECTOR_ENDPOINT_KEY,
+                    "https://collector.internal:4318/v1/traces"),
             new RequiredSecret("CARDDEMO_SQS_QUEUE", "carddemo.aws.sqs.job-queue",
                     "JOBS.fifo"),
             new RequiredSecret("CARDDEMO_JWT_SECRET", "carddemo.security.jwt.secret",
@@ -348,7 +389,13 @@ final class ApplicationProfileStartupTest {
             // the same terms as the signing and encryption material, and for the same reason: it is
             // presented on every scrape, so a defaulted one would be a credential in the repository.
             new RequiredSecret("CARDDEMO_MANAGEMENT_TOKEN",
-                    SecurityConfig.MANAGEMENT_TOKEN_PROPERTY, "supplied-operator-credential"));
+                    SecurityConfig.MANAGEMENT_TOKEN_PROPERTY, SUPPLIED_OPERATOR_CREDENTIAL),
+            // The account this deployment declares it owns. Required from the environment because a
+            // defaulted account would be an account somebody else owns, and comparing against it would
+            // refuse every correct deployment while admitting exactly one wrong one. Twelve digits,
+            // because that is what the trust verifier's own rule requires of it.
+            new RequiredSecret("CARDDEMO_AWS_ACCOUNT_ID",
+                    AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY, "000000000000"));
 
     /** Registers the framework's own migration settings type, which the deployed application binds. */
     @Configuration(proxyBeanMethods = false)
@@ -363,25 +410,33 @@ final class ApplicationProfileStartupTest {
     }
 
     @Nested
-    @DisplayName("the migration target a profile resolves")
-    final class TheMigrationTargetAProfileResolves {
+    @DisplayName("the migration scope a profile resolves")
+    final class TheMigrationScopeAProfileResolves {
 
         @Test
-        @DisplayName("production binds the schema-only pin and the one location, so a production "
-                + "migration stops at the schema")
-        void productionBindsTheSchemaOnlyPin() {
+        @DisplayName("production binds the schema location alone, so a production migration reaches the "
+                + "schema and no seed exists for it to reach")
+        void productionBindsTheSchemaLocationAlone() {
             runner(MigrationSettings.class, PRODUCTION).run(context -> {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
-                assertThat(bound.getTarget())
-                        .as("this is the value the migration tool receives; the seeds are withheld by "
-                                + "it and by nothing else")
-                        .isEqualTo(SCHEMA_ONLY_TARGET);
                 assertThat(bound.getLocations())
-                        .as("the one shared location, which every profile resolves: all four scripts "
-                                + "are resolvable here and the pin above is what decides which of them "
-                                + "are applied")
-                        .containsExactly(MIGRATION_LOCATION);
+                        .as("this single entry is what the migration tool receives, and it IS the "
+                                + "exclusion: the seed scripts live in the sibling %s, which this "
+                                + "profile never resolves, so they are not applied, not pending and not "
+                                + "resolved", SEED_LOCATION)
+                        .containsExactly(SCHEMA_LOCATION);
+                assertThat(bound.getLocations())
+                        .as("and the shared parent is absent, which matters because a location is "
+                                + "scanned RECURSIVELY: %s would reach both children and apply the "
+                                + "seeds", SHARED_PARENT_LOCATION)
+                        .doesNotContain(SHARED_PARENT_LOCATION, SEED_LOCATION);
+                assertThat(bound.getTarget())
+                        .as("the target is the apply-everything marker rather than a version. A pin of "
+                                + "%s used to be the exclusion; it also froze the schema at that "
+                                + "version, so a script added later would never be applied and the "
+                                + "migration would still report success", WITHDRAWN_SCHEMA_PIN)
+                        .isEqualTo(HEAD_TARGET);
                 assertThat(bound.isCleanDisabled())
                         .as("a production migration must not be able to drop the schema it manages")
                         .isTrue();
@@ -390,34 +445,42 @@ final class ApplicationProfileStartupTest {
 
         @Test
         @DisplayName("a profile-less resolution is already the production posture, so an overlay silent "
-                + "about migrations inherits the pin rather than the convenience")
+                + "about migrations inherits the schema location rather than the convenience")
         void aProfileLessResolutionIsAlreadyTheProductionPosture() {
             runner(MigrationSettings.class).run(context -> {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
-                assertThat(bound.getTarget()).isEqualTo(SCHEMA_ONLY_TARGET);
-                assertThat(bound.getLocations()).containsExactly(MIGRATION_LOCATION);
+                assertThat(bound.getLocations()).containsExactly(SCHEMA_LOCATION);
+                assertThat(bound.getTarget()).isEqualTo(HEAD_TARGET);
                 assertThat(bound.isCleanDisabled()).isTrue();
             });
         }
 
-        @ParameterizedTest(name = "the {0} profile lifts the pin to the head")
+        @ParameterizedTest(name = "the {0} profile adds the seed location")
         @ValueSource(strings = {LOCAL, TEST})
-        @DisplayName("the two profiles that need reference rows lift the pin to the head, which is the "
-                + "only way a seed is ever applied")
-        void theTwoSeedingProfilesResolveTheHead(final String profile) {
+        @DisplayName("the two profiles that need reference rows add the seed location, which is the only "
+                + "way a seed is ever applied")
+        void theTwoSeedingProfilesResolveBothLocations(final String profile) {
             runner(MigrationSettings.class, profile).run(context -> {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
-                assertThat(bound.getTarget())
-                        .as("%s must lift the pin explicitly; inheriting a lifted one would mean every "
-                                + "profile seeded", profile)
-                        .isEqualTo(HEAD_TARGET);
                 assertThat(bound.getLocations())
-                        .as("%s resolves the SAME one location production resolves; with all four "
-                                + "scripts flat in it, the lifted pin above is the whole of the opt-in "
-                                + "and the location list carries none of it", profile)
-                        .containsExactly(MIGRATION_LOCATION);
+                        .as("%s must declare BOTH locations, in apply order. The shared baseline "
+                                + "declares the schema location alone, so naming the seed location here "
+                                + "is the whole of the opt-in; a profile that inherited the baseline "
+                                + "would migrate the schema and load none of the fixtures", profile)
+                        .containsExactly(SCHEMA_LOCATION, SEED_LOCATION);
+                assertThat(bound.getLocations())
+                        .as("and %s must not reach for the parent either: it would resolve the same "
+                                + "four scripts and record each one under a name relative to itself, so "
+                                + "the history would stop matching what the bring-up check reads",
+                                profile)
+                        .doesNotContain(SHARED_PARENT_LOCATION);
+                assertThat(bound.getTarget())
+                        .as("%s declares the same open target every other profile declares; the "
+                                + "difference between the profiles is the location list and nothing "
+                                + "else", profile)
+                        .isEqualTo(HEAD_TARGET);
                 assertThat(bound.isCleanDisabled())
                         .as("%s iterates on migrations, so dropping and re-applying is permitted here "
                                 + "and only here", profile)
@@ -426,9 +489,10 @@ final class ApplicationProfileStartupTest {
         }
 
         @Test
-        @DisplayName("the pin production resolves stops below every delivered seed, asserted against "
-                + "the migrations that ship rather than against their numbering restated")
-        void theResolvedPinStopsBelowEveryDeliveredSeed() {
+        @DisplayName("the location production resolves carries the schema half and none of the seed "
+                + "half, asserted against the scripts that ship rather than against their names "
+                + "restated")
+        void theResolvedLocationCarriesTheSchemaHalfAlone() {
             List<Integer> delivered = deliveredMigrationVersions();
 
             assertThat(delivered)
@@ -437,68 +501,116 @@ final class ApplicationProfileStartupTest {
                     .containsExactlyElementsOf(EXPECTED_DELIVERED_VERSIONS);
 
             runner(MigrationSettings.class, PRODUCTION).run(context -> {
-                int pin = Integer.parseInt(context.getBean(FlywayProperties.class).getTarget());
+                List<String> resolved = List.of(context.getBean(FlywayProperties.class)
+                        .getLocations().toArray(String[]::new));
 
-                assertThat(delivered.stream().filter(version -> version <= pin).toList())
-                        .as("production applies the schema pair and nothing else")
-                        .containsExactly(1, 2);
-                assertThat(delivered.stream().filter(version -> version > pin).toList())
-                        .as("production leaves %s pending; for the second of those, applying it would "
-                                + "mean ten known sign-on identities in production",
-                                SEEDS_WITHHELD_FROM_PRODUCTION)
-                        .containsExactly(3, 4);
+                assertThat(resolved).containsExactly(SCHEMA_LOCATION);
+                assertThat(deliveredMigrationsUnder(SCHEMA_LOCATION))
+                        .as("production applies the schema pair, and it applies them because they are "
+                                + "IN the location it resolves rather than because a number let them "
+                                + "through")
+                        .containsExactlyInAnyOrderElementsOf(SCHEMA_APPLIED_IN_PRODUCTION);
+                assertThat(deliveredMigrationsUnder(SCHEMA_LOCATION))
+                        .as("and it reaches neither of %s. For the second of those, applying it would "
+                                + "mean ten known sign-on identities in production. Note that this "
+                                + "holds however the seeds are NUMBERED - renumber one below the "
+                                + "withdrawn pin of %s and it is still excluded",
+                                SEEDS_WITHHELD_FROM_PRODUCTION, WITHDRAWN_SCHEMA_PIN)
+                        .doesNotContainAnyElementsOf(SEEDS_WITHHELD_FROM_PRODUCTION);
+                assertThat(deliveredMigrationsUnder(SEED_LOCATION))
+                        .as("while the location production does NOT resolve carries exactly the two "
+                                + "seeds, so the split accounts for every delivered script")
+                        .containsExactlyInAnyOrderElementsOf(SEEDS_WITHHELD_FROM_PRODUCTION);
             });
         }
 
         @Test
-        @DisplayName("the pin production resolves is the pin the production profile re-applies in code, "
-                + "so neither control is silently doing nothing")
-        void theResolvedPinIsThePinTheCodeReapplies() {
+        @DisplayName("a future schema migration would be applied by this posture, which is the property "
+                + "the withdrawn version pin made impossible")
+        void aFutureSchemaMigrationWouldStillBeApplied() {
+            runner(MigrationSettings.class, PRODUCTION).run(context -> {
+                FlywayProperties bound = context.getBean(FlywayProperties.class);
+
+                assertThat(bound.getTarget())
+                        .as("the target must be the head sentinel and NOT a number. Under the withdrawn "
+                                + "pin of %s a V5 schema script would have been resolved, skipped and "
+                                + "reported as a successful migration, and the pin could not be raised "
+                                + "because the resolution refused every other value. The head sentinel "
+                                + "applies whatever the resolved location carries, so the sequence can "
+                                + "grow", WITHDRAWN_SCHEMA_PIN)
+                        .isEqualTo(HEAD_TARGET);
+                assertThat(bound.getTarget())
+                        .as("and specifically it must not be parsable as a version ceiling, which is "
+                                + "the only shape that can silently stop applying scripts")
+                        .isNotEqualTo(WITHDRAWN_SCHEMA_PIN)
+                        .satisfies(target -> assertThat(target.chars().allMatch(Character::isDigit))
+                                .isFalse());
+                assertThat(bound.getLocations())
+                        .as("a future schema script is placed in %s, so the posture that applies it is "
+                                + "the same one that excludes the seeds - one control rather than two "
+                                + "pulling in opposite directions", SCHEMA_LOCATION)
+                        .containsExactly(SCHEMA_LOCATION);
+            });
+        }
+
+        @Test
+        @DisplayName("the target production resolves is the target the production profile re-applies in "
+                + "code, so neither control is silently doing nothing")
+        void theResolvedTargetIsTheTargetTheCodeReapplies() {
             runner(MigrationSettings.class, PRODUCTION).run(context -> assertThat(
                     context.getBean(FlywayProperties.class).getTarget())
-                    .as("FlywayConfig re-applies %s whenever the %s profile is active. A configured "
-                            + "value naming a different version would leave one of the two controls "
-                            + "ineffective", FlywayConfig.SCHEMA_ONLY_TARGET,
+                    .as("FlywayConfig re-applies %s whenever the %s profile is active and REFUSES any "
+                            + "numeric value. A configured number here would be refused at start-up "
+                            + "rather than silently corrected", FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
                             FlywayConfig.PRODUCTION_PROFILE)
-                    .isEqualTo(FlywayConfig.SCHEMA_ONLY_TARGET));
+                    .isEqualTo(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET));
 
             assertThat(FlywayConfig.PRODUCTION_PROFILE)
                     .as("the code control is scoped by profile name; a name matching no profile would "
-                            + "leave the configured pin unaccompanied")
+                            + "leave the configured posture unaccompanied")
                     .isEqualTo(PRODUCTION);
         }
 
-        @ParameterizedTest(name = "{0} resolves the one delivered location and nothing beneath it")
+        @ParameterizedTest(name = "{0} resolves only delivered locations and never their parent")
         @ValueSource(strings = {PRODUCTION, LOCAL, TEST})
-        @DisplayName("every profile resolves the same one delivered location, because the delivered "
-                + "directory is flat and there is no subdirectory to scope a profile to")
+        @DisplayName("every profile resolves only the two delivered locations, so no profile reaches a "
+                + "directory that ships nothing and none reaches the recursive parent")
         void everyProfileResolvesOnlyDeliveredLocations(final String profile) {
             runner(MigrationSettings.class, profile).run(context ->
                     assertThat(context.getBean(FlywayProperties.class).getLocations())
                             .isNotEmpty()
+                            .doesNotContain(SHARED_PARENT_LOCATION)
                             .allSatisfy(location -> assertThat(location)
-                                    .as("a subdirectory descriptor would name a directory that does "
-                                            + "not exist, so the migration would resolve no script at "
-                                            + "all and report success over an empty database")
-                                    .isEqualTo(MIGRATION_LOCATION)));
+                                    .as("a descriptor naming a directory that ships nothing would "
+                                            + "resolve no script and report success over an empty "
+                                            + "database, and the parent would resolve every script "
+                                            + "under a name nothing reads")
+                                    .isIn(SCHEMA_LOCATION, SEED_LOCATION)));
         }
 
         @Test
-        @DisplayName("the location every profile resolves is the location the code control admits, so "
+        @DisplayName("the locations every profile resolves are the locations the code control names, so "
                 + "the guard is not protecting a directory nothing ships from")
-        void theResolvedLocationIsTheLocationTheCodeAdmits() {
+        void theResolvedLocationsAreTheLocationsTheCodeNames() {
             runner(MigrationSettings.class, PRODUCTION).run(context ->
                     assertThat(context.getBean(FlywayProperties.class).getLocations())
                             .as("FlywayConfig refuses a production profile resolving any location other "
                                     + "than %s; a configured value naming a different one would leave "
                                     + "the deployment refused at start-up rather than migrated",
-                                    FlywayConfig.MIGRATION_LOCATION)
-                            .containsExactly(FlywayConfig.MIGRATION_LOCATION));
+                                    FlywayConfig.SCHEMA_LOCATION)
+                            .containsExactly(FlywayConfig.SCHEMA_LOCATION));
 
-            assertThat(FlywayConfig.MIGRATION_LOCATION)
+            assertThat(FlywayConfig.SCHEMA_LOCATION)
                     .as("and it must be the location the overlays declare, or the refusal would guard "
                             + "a directory nothing ships from")
-                    .isEqualTo(MIGRATION_LOCATION);
+                    .isEqualTo(SCHEMA_LOCATION);
+            assertThat(FlywayConfig.SEED_LOCATION)
+                    .as("and the location the two seeding profiles add must be the one the code "
+                            + "completes for them")
+                    .isEqualTo(SEED_LOCATION);
+            assertThat(FlywayConfig.SHARED_PARENT_LOCATION)
+                    .as("and the parent the code refuses must be the actual parent of the two")
+                    .isEqualTo(SHARED_PARENT_LOCATION);
         }
     }
 
@@ -558,6 +670,24 @@ final class ApplicationProfileStartupTest {
                             + "requirement is added. Reading the document instead makes the addition "
                             + "fail the build until it is exercised here too")
                     .containsExactlyInAnyOrderElementsOf(underTest);
+        }
+
+        @Test
+        @DisplayName("the list under test is the same size as the guard's own required-settings list, so "
+                + "no prose or summary anywhere can carry a stale count of it")
+        void theListUnderTestIsTheGuardedSet() {
+            assertThat(PRODUCTION_REQUIRED_SECRETS)
+                    .as("the guard refuses a production start when any of its required settings is "
+                            + "unusable, so its list IS the set of required production variables. A "
+                            + "count stated in prose - here, in a README, in a deck - is a second copy "
+                            + "of that list written as a number, and it goes stale silently rather than "
+                            + "failing anything. Asserting the size against the guard is what makes "
+                            + "every such figure derivable rather than remembered")
+                    .hasSameSizeAs(ProductionConfigurationValidator.REQUIRED_SETTINGS);
+            assertThat(noFallbackVariablesOf(PRODUCTION_DOCUMENT))
+                    .as("and the document declares exactly that many, so the three views - guard, "
+                            + "document and this test - cannot disagree")
+                    .hasSameSizeAs(ProductionConfigurationValidator.REQUIRED_SETTINGS);
         }
 
         @Test
@@ -775,13 +905,18 @@ final class ApplicationProfileStartupTest {
                 assertThat(environment.getProperty(KEY_BATCH_JOB_ENABLED, Boolean.class))
                         .as("restarting a deployment must not fire a posting run")
                         .isFalse();
-                assertThat(environment.getProperty(KEY_FLYWAY_TARGET)).isEqualTo(SCHEMA_ONLY_TARGET);
+                assertThat(environment.getProperty(KEY_FLYWAY_TARGET))
+                        .as("the open target, deliberately not a number: a number would freeze the "
+                                + "schema at its own version rather than protect anything, since the "
+                                + "seeds are held out by the location asserted immediately below")
+                        .isEqualTo(HEAD_TARGET);
                 assertThat(environment.getProperty(KEY_FLYWAY_LOCATIONS))
-                        .as("the one shared location; the pin asserted immediately above is what keeps "
-                                + "fifty synthetic customer rows and ten known sign-on identities out "
-                                + "of a production database, since all four scripts are resolvable "
-                                + "from this location in every profile")
-                        .isEqualTo(MIGRATION_LOCATION);
+                        .as("the schema location alone. THIS is what keeps fifty synthetic customer rows "
+                                + "and ten known sign-on identities out of a production database: the "
+                                + "seed scripts ship from the sibling %s, which this profile never "
+                                + "resolves, and the shared parent %s is refused because scanning is "
+                                + "recursive", SEED_LOCATION, SHARED_PARENT_LOCATION)
+                        .isEqualTo(SCHEMA_LOCATION);
             });
         }
 
@@ -969,7 +1104,35 @@ final class ApplicationProfileStartupTest {
     }
 
     /**
-     * Reads the versions of the migrations delivered on the migration location, ascending.
+     * Reads the migration file names one class-path location descriptor delivers, searched recursively.
+     *
+     * <p>Recursive because that is how Flyway resolves a location, so this answers the question the
+     * migration tool would answer rather than the question a directory listing answers. Read from the
+     * class path for the same reason: a stale copy under {@code target/} then fails an assertion here
+     * instead of hiding one.</p>
+     *
+     * @param locationDescriptor a location descriptor such as {@code classpath:db/migration/schema}
+     * @return the delivered file names under it, sorted; never {@code null}
+     */
+    private static List<String> deliveredMigrationsUnder(final String locationDescriptor) {
+        final String path = locationDescriptor.startsWith(CLASS_PATH_PREFIX)
+                ? locationDescriptor.substring(CLASS_PATH_PREFIX.length())
+                : locationDescriptor;
+        try {
+            Resource[] found = new PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:" + path + "/**/V*__*.sql");
+            return Stream.of(found)
+                    .map(Resource::getFilename)
+                    .filter(name -> name != null)
+                    .sorted()
+                    .toList();
+        } catch (IOException failure) {
+            throw new UncheckedIOException("migration location is unreadable: " + path, failure);
+        }
+    }
+
+    /**
+     * Reads the versions of every delivered migration, across both locations, ascending.
      *
      * <p>Read from the class path rather than the source tree, so the answer is what a migration would
      * find rather than what a directory listing suggests.</p>

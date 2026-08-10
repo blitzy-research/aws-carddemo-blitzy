@@ -40,7 +40,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -345,6 +347,26 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
 
     /** A path segment that is not a whole number, for the conversion arm of the status operation. */
     private static final String NON_NUMERIC_EXECUTION_ID = "not-a-number";
+
+    /**
+     * How long one admitted launch is given to reach a terminal state before this class calls it stalled.
+     *
+     * <p><strong>Why any wait at all.</strong> The launch surface reserves the execution on the caller's
+     * thread and hands the run to a worker, so the response arrives while the job is still running. Two
+     * things this specification asserts depend on the run having ended: that no execution of the nine is
+     * left in flight, and that a second submission of the same job is admitted rather than refused for
+     * overlapping an active one. Both are properties of the state <em>between</em> submissions, so every
+     * admitted launch is settled before the helper answers - which is exactly the sequencing an operator
+     * gets by polling the status operation, and the only thing a client of an asynchronous launch can do.
+     *
+     * <p>A stall budget rather than a performance target. Nothing here is compared against it; the jobs
+     * this class launches read the seeded estate and finish in well under a second, so this figure is the
+     * point at which the worker is judged never to have finished rather than a duration any job must meet.
+     */
+    private static final long LAUNCH_COMPLETION_BUDGET_MILLIS = 60_000L;
+
+    /** How often the framework's metadata is re-read while a launched job runs. */
+    private static final long LAUNCH_POLL_INTERVAL_MILLIS = 25L;
 
     /**
      * The measured shape of the accrual parameter: ten characters, every one a digit.
@@ -945,7 +967,16 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
     }
 
     /**
-     * Submits one launch that must be admitted, and answers the execution identifier it was given.
+     * Submits one launch that must be admitted, waits for the run it started to end, and answers the
+     * execution identifier it was given.
+     *
+     * <p>The wait is part of the helper rather than of each test because the launch surface answers before
+     * the run finishes: it reserves the execution on the caller's thread and hands the job to a worker. A
+     * specification that submitted and moved on would leave a run in flight, which both fails the
+     * nothing-is-running assertion and makes the very next submission of the same job collide with the
+     * one-active-execution guard - neither of which says anything about the boundary under test. Settling
+     * here is what a client of an asynchronous launch does, and it keeps every assertion below reading a
+     * finished run.
      *
      * @param  jobName    the name to address
      * @param  parameters the parameter document to submit
@@ -966,7 +997,41 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
         assertThat(executionId)
                 .as("the answer carries the execution identifier a caller asks after with")
                 .isNotNull();
+        awaitTerminalState(jobName, executionId.asLong());
         return executionId.asLong();
+    }
+
+    /**
+     * Reads one execution out of the framework's metadata until it is no longer running.
+     *
+     * <p>Polls, because polling is all a client of this surface can do: the launch hands the job to a
+     * worker and publishes nothing else to wait on. The identifier is the one the launch answered with, so
+     * the metadata row exists from the moment it was issued and an absent row is a defect rather than a
+     * race.
+     *
+     * @param  jobName     the job's registered name, for the diagnostic
+     * @param  executionId the identifier the launch answered with
+     * @throws InterruptedException if the wait is interrupted
+     */
+    private void awaitTerminalState(final String jobName, final long executionId)
+            throws InterruptedException {
+
+        final long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(LAUNCH_COMPLETION_BUDGET_MILLIS);
+        JobExecution execution = Objects.requireNonNull(
+                this.jobExplorer.getJobExecution(Long.valueOf(executionId)),
+                () -> "the launch reported execution " + executionId + " but the store has none");
+        while (execution.isRunning() && System.nanoTime() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(LAUNCH_POLL_INTERVAL_MILLIS);
+            execution = Objects.requireNonNull(
+                    this.jobExplorer.getJobExecution(Long.valueOf(executionId)),
+                    () -> "execution " + executionId + " disappeared from the store while it ran");
+        }
+        assertThat(execution.isRunning())
+                .as("%s (execution %d) was still running after %d ms, so the launch worker never "
+                                + "finished it", jobName, Long.valueOf(executionId),
+                        Long.valueOf(LAUNCH_COMPLETION_BUDGET_MILLIS))
+                .isFalse();
     }
 
     /**

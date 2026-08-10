@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.carddemo.domain.Transaction;
+import jakarta.persistence.EntityManagerFactory;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
@@ -29,8 +30,10 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -38,6 +41,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -225,7 +230,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * @see TransactionScanRepository
  * @see AbstractPostgresIT
  */
-@SpringBootTest(classes = TransactionRepositoryIT.PersistenceSlice.class)
+@SpringBootTest(classes = TransactionRepositoryIT.PersistenceSlice.class,
+        properties = "spring.jpa.properties.hibernate.generate_statistics=true")
 @DisplayName("Transaction repository: identifier allocation, record fidelity, browse and window "
         + "access path")
 final class TransactionRepositoryIT extends AbstractPostgresIT {
@@ -275,6 +281,14 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
     private static final List<String> WINDOW_IDS = List.of(
             "9900000000000210", "9900000000000220", "9900000000000230", "9900000000000240",
             "9900000000000250", "9900000000000260");
+
+    /**
+     * The identifier the window nest's upper-boundary row carries: midnight on the day after the window.
+     *
+     * <p>Held apart from {@code WINDOW_IDS} because only one test writes it, and its cleanup must be able
+     * to run without disturbing the six rows the rest of the nest shares.
+     */
+    private static final String BOUNDARY_ID = "9900000000000270";
 
     /** The identifier the rollback-gap test consumes, releases and then expects to see reissued. */
     private static final String GAP_BASE_ID = "9900000000000310";
@@ -391,6 +405,17 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    /**
+     * The provider's own statement counter, which is how a specification observes how many statements a
+     * finder actually caused rather than inferring it from the finder's shape.
+     *
+     * <p>Enabled for this class by a property on the annotation above. It is the only way to prove an
+     * absence: a finder that does not issue a count query is indistinguishable from one that does, unless
+     * the statements are counted.
+     */
+    @Autowired
+    private EntityManagerFactory entityManagerFactory;
 
     /**
      * The configuration this test boots, named explicitly so that no component scan of the base
@@ -1490,32 +1515,166 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
     }
 
     /**
-     * Proves the inclusive reporting window over the processing timestamp, and the trap inside it.
+     * Proves the highest-key read is a single-row read and issues no count.
      *
-     * <p>This is the most subtle contract the table carries. The reporting sort addresses the processing
-     * date as ten bytes at one-based 305 inside a twenty-six character field and orders by the card
-     * number at one-based 263 for sixteen bytes, admitting a record whose date is at or after the start
-     * bound and at or before the end bound. Because the addressed width is ten and the stored width is
-     * twenty-six, the comparison is over the date prefix - and a comparison over the whole column drops
-     * every record processed on the end date, because a longer string whose prefix equals a shorter one
-     * sorts above it.
+     * <p>The add screen positions its browse at the end of the key sequence and reads backward once
+     * [app/cbl/COTRN02C.cbl:L444, L475], which lands on the highest key present. An earlier revision
+     * expressed that as page zero of a descending sort at size one, and read only the page's content. A
+     * page carries a total, so the provider issued a second statement counting every row of the transaction
+     * master - on a screen that displays one row, on every copy-last and every add, with nothing ever
+     * reading the figure.
      *
-     * <p>That predicate is a <strong>declared repository contract</strong>, and every assertion below
-     * calls it: {@link TransactionRepository#findByProcessingDateWindowOrderedByCardNumber(String, String)}
-     * is the selection the reporting job's second step issues, and it is the only reader of the
-     * processing-timestamp alternate index in the module. What is proved here is therefore the callable
-     * contract and not a statement this class invented: that the prefix upper bound admits the end-date
-     * record while a whole-column bound does not, that both bounds are inclusive, that an unprocessed
-     * record is excluded by the lower bound alone with no emptiness test anywhere, that the ordering is by
-     * card number ascending, that a window matching nothing yields an empty list, and that the bare lower
-     * bound is the predicate able to drive the shipped index.
+     * <p>The difference is invisible in the result and visible only in the statement count, which is why
+     * this group counts statements rather than asserting a shape. Recorded as {@code DL-296}.
+     */
+    @Nested
+    @DisplayName("the highest-key read: one statement, and no count of a table nothing counts")
+    final class HighestKeyRead {
+
+        /** Creates the nest. */
+        HighestKeyRead() {
+        }
+
+        @Test
+        @DisplayName("the highest-key finder issues exactly ONE statement, while the descending page it "
+                + "replaced issues TWO - the second being a count nothing reads")
+        void theHighestKeyFinderIssuesOneStatementAndThePageIssuedTwo() {
+            try {
+                seedReservedRows();
+
+                final long forTheFinder = statementsIssuedBy(
+                        () -> assertThat(repository.findFirstByOrderByTranIdDesc()).isPresent());
+                final long forThePage = statementsIssuedBy(() -> assertThat(repository
+                        .findAll(PageRequest.of(0, 1, Sort.by(Sort.Direction.DESC, "tranId")))
+                        .getContent()).hasSize(1));
+
+                assertThat(forTheFinder)
+                        .as("one statement: the row, and nothing else")
+                        .isEqualTo(1L);
+                assertThat(forThePage)
+                        .as("THE MEASUREMENT THAT MATTERS. The shape it replaced cost a second statement "
+                                + "over the same window - a count of the whole master that nothing reads. "
+                                + "Were these equal, this specification would be vacuous and the finder "
+                                + "could be changed back without any test noticing.")
+                        .isEqualTo(2L)
+                        .isGreaterThan(forTheFinder);
+            } finally {
+                removeReservedRows();
+            }
+        }
+
+        @Test
+        @DisplayName("it returns the row with the highest identifier, and an empty result on an empty "
+                + "table - which is the end-of-file response that seeds zero")
+        void itReturnsTheHighestRowAndEmptyOnAnEmptyTable() {
+            try {
+                seedReservedRows();
+
+                assertThat(repository.findFirstByOrderByTranIdDesc())
+                        .get()
+                        .extracting(Transaction::getTranId)
+                        .as("the reserved identifiers sort above every seeded row, so the highest of them "
+                                + "is the table maximum")
+                        .isEqualTo(RESERVED_IDS.get(3));
+                assertThat(repository.findFirstByOrderByTranIdDesc()
+                        .map(Transaction::getTranId))
+                        .as("and it agrees with the identifier-only form the allocator uses, which is what "
+                                + "keeps two answers to one question from diverging")
+                        .isEqualTo(repository.findMaxId());
+            } finally {
+                removeReservedRows();
+            }
+
+            assertThat(repository.findFirstByOrderByTranIdDesc().map(Transaction::getTranId))
+                    .as("with the reserved rows removed, no reserved identifier is the maximum any more")
+                    .isNotPresent()
+                    .isNotEqualTo(Optional.of(RESERVED_IDS.get(3)));
+        }
+
+        @Test
+        @DisplayName("on a table holding exactly one row it returns that row, still in one statement - the "
+                + "boundary between the empty response and a browse")
+        void itReadsTheSoleRowOfAOneRowTableInOneStatement() {
+            try {
+                seedReservedRows(1);
+
+                final long forTheFinder = statementsIssuedBy(() -> assertThat(repository
+                        .findFirstByOrderByTranIdDesc()
+                        .map(Transaction::getTranId))
+                        .as("the sole row is both the first and the last of the descending sequence, so a "
+                                + "bound applied one row early would return nothing here and a bound "
+                                + "applied one row late would still return it - only the exact bound "
+                                + "yields this row from this table")
+                        .contains(RESERVED_IDS.get(0)));
+
+                assertThat(forTheFinder)
+                        .as("and the statement count does not depend on how many rows exist, which is the "
+                                + "whole of what a bound in the finder's name buys")
+                        .isEqualTo(1L);
+                assertThat(repository.findMaxId())
+                        .as("the identifier-only form agrees at this boundary too")
+                        .contains(RESERVED_IDS.get(0));
+            } finally {
+                removeReservedRows();
+            }
+        }
+    }
+
+    /**
+     * Counts the statements the provider issued while running an action.
+     *
+     * <p>Statistics are enabled for this class by a property on its annotation. The counter is cleared
+     * first, so the figure is this action's and not the accumulation of every specification before it.
+     *
+     * @param  action the action to run
+     * @return how many statements the provider prepared while it ran
+     */
+    private long statementsIssuedBy(final Runnable action) {
+        final Statistics statistics = entityManagerFactory
+                .unwrap(SessionFactory.class).getStatistics();
+        statistics.clear();
+        action.run();
+        return statistics.getPrepareStatementCount();
+    }
+
+    /**
+     * Proves the inclusive date window over the processing timestamp, and the two traps inside it.
+     *
+     * <p>This is the most subtle contract the table carries. The stored field is twenty-six characters and
+     * a date bound is ten, so an inclusive upper bound written against the whole column drops every record
+     * processed on the end date, because a longer string whose leading characters equal a shorter one sorts
+     * above it. That is the first trap, and it is a wrong-answer trap.
+     *
+     * <p>The second trap is the obvious repair. Wrapping the column in a ten-character prefix admits the
+     * end-date record and is <strong>unindexable</strong>, because a function of a column cannot drive an
+     * index over that column; the upper bound survives only as a filter applied to rows the server has
+     * already read. It gives the right answer by the wrong access path, which is why it is invisible in a
+     * result set and visible only in a plan.
+     *
+     * <p>The shipped contract avoids both by taking an <strong>exclusive bound at the day after</strong>
+     * the inclusive end date. Any instant on the end date compares below the next day's date; midnight on
+     * the next day compares above it. So the admitted set is exactly the inclusive one, and both bounds are
+     * bare column comparisons that one index range serves.
+     *
+     * <p>That predicate is a <strong>declared repository contract</strong>, and every assertion below calls
+     * it:
+     * {@link TransactionRepository#findByProcessingDateWindow(String, String,
+     * org.springframework.data.domain.Limit)} states the window in inclusive terms and derives the
+     * exclusive bound itself, so no caller performs that arithmetic. It is the module's only declared
+     * consumer of the processing-timestamp alternate index. What is proved here is therefore the callable
+     * contract and not a statement this class invented: that the end-date record is admitted while a
+     * whole-column bound drops it, that both dates are inclusive and neighbouring days are not, that an
+     * unprocessed record is excluded by the lower bound alone with no emptiness test anywhere, that the
+     * ordering is the processing timestamp's with the base key as tie-break, that the result is bounded by
+     * the caller's limit, that a window matching nothing yields an empty list, that BOTH bounds become
+     * index conditions, and that the superseded prefix form - which selects the same rows - does not.
      *
      * <p>Every row here is constructed. The table is seeded with no rows at all, and the delivered daily
      * fixture carries a blank processing timestamp on every one of its records, so no seeded data can
      * exercise a date window.
      */
     @Nested
-    @DisplayName("the inclusive ten-character reporting window and its access path")
+    @DisplayName("the inclusive date window over the processing timestamp, and its access path")
     final class ProcessingTimestampWindow {
 
         /** Creates the nest. */
@@ -1523,31 +1682,37 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("a record processed ON the end date IS selected by the prefix comparison, while a "
-                + "whole-column comparison against the same ten-character bound DROPS it")
-        void theEndDateRecordIsAdmittedOnlyByThePrefixComparison() {
+        @DisplayName("a record processed ON the end date IS selected by the exclusive next-day bound, "
+                + "while an inclusive whole-column comparison against the same date DROPS it")
+        void theEndDateRecordIsAdmittedByTheExclusiveNextDayBound() {
             try {
                 seedWindowRows();
 
-                // The contract as the reporting sort expresses it: prefix comparison on the upper bound.
+                // The shipped contract, stated in the inclusive terms the legacy condition states.
                 assertThat(selectWindow(WINDOW_START, WINDOW_END))
                         .as("the end-date record is admitted, which is the whole reason the upper bound "
-                                + "is taken over the ten-character prefix")
+                                + "is the day after rather than the end date itself")
                         .contains(WINDOW_IDS.get(3));
 
-                // The same selection written naively, which is the defect being guarded against.
+                // The same selection written naively, which is the wrong-answer defect.
                 assertThat(selectWindowNaively(WINDOW_START, WINDOW_END))
-                        .as("a whole-column upper bound silently drops the end-date record, and would "
-                                + "have under-reported every report run ending on a day with activity")
+                        .as("an inclusive whole-column upper bound silently drops the end-date record, "
+                                + "and would have under-reported every window ending on a day with "
+                                + "activity")
                         .doesNotContain(WINDOW_IDS.get(3));
 
-                // The same fact at the character level, independent of any server.
+                // The same facts at the character level, independent of any server.
                 assertThat(END_DATE_WITH_TIME.compareTo(WINDOW_END) <= 0)
-                        .as("as a whole string the stored value sorts ABOVE the ten-character bound")
+                        .as("as a whole string the stored value sorts ABOVE the ten-character end date")
                         .isFalse();
+                assertThat(END_DATE_WITH_TIME
+                        .compareTo(TransactionRepository.exclusiveUpperBoundOf(WINDOW_END)) < 0)
+                        .as("and BELOW the day after it, because the two differ within the first ten "
+                                + "characters - which is what makes the bare comparison correct")
+                        .isTrue();
                 assertThat(END_DATE_WITH_TIME.substring(0, DATE_PREFIX_WIDTH).compareTo(WINDOW_END) <= 0)
-                        .as("as a ten-character prefix it is equal to the bound, so an inclusive "
-                                + "comparison admits it")
+                        .as("the superseded prefix form was correct too, which is why it survived review "
+                                + "on its result set alone")
                         .isTrue();
                 assertThat(END_DATE_WITH_TIME)
                         .as("the stored value really does carry a time component beyond the date")
@@ -1557,6 +1722,62 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
             } finally {
                 removeWindowRows();
             }
+        }
+
+        @Test
+        @DisplayName("midnight on the day AFTER the window is excluded, so the exclusive bound admits "
+                + "the end date and nothing beyond it")
+        void midnightOnTheDayAfterTheWindowIsExcluded() {
+            final String midnightAfter = DAY_AFTER_WINDOW_END + " 00:00:00.000000";
+            try {
+                seedWindowRows();
+                repository.insertAndFlush(windowFixture(BOUNDARY_ID, midnightAfter,
+                        SEEDED_CARDS.get(0)));
+
+                assertThat(selectWindow(WINDOW_START, WINDOW_END))
+                        .as("the very first instant outside the window is outside it, which is the other "
+                                + "half of what makes an exclusive next-day bound equivalent to an "
+                                + "inclusive end date")
+                        .doesNotContain(BOUNDARY_ID);
+
+                assertThat(midnightAfter
+                        .compareTo(TransactionRepository.exclusiveUpperBoundOf(WINDOW_END)) < 0)
+                        .as("its leading ten characters EQUAL the bound and it is longer, so as a whole "
+                                + "string it sorts above the bound")
+                        .isFalse();
+            } finally {
+                repository.deleteById(BOUNDARY_ID);
+                removeWindowRows();
+            }
+        }
+
+        @Test
+        @DisplayName("the derived bound is the day after, across a month end, a year end and a leap "
+                + "day, and an impossible date is refused rather than shifted")
+        void theDerivedBoundIsTheDayAfter() {
+            assertThat(TransactionRepository.exclusiveUpperBoundOf("2022-06-30"))
+                    .as("a month end rolls into the next month")
+                    .isEqualTo("2022-07-01");
+            assertThat(TransactionRepository.exclusiveUpperBoundOf("2022-12-31"))
+                    .as("a year end rolls into the next year")
+                    .isEqualTo("2023-01-01");
+            assertThat(TransactionRepository.exclusiveUpperBoundOf("2024-02-28"))
+                    .as("a leap year has a twenty-ninth of February")
+                    .isEqualTo("2024-02-29");
+            assertThat(TransactionRepository.exclusiveUpperBoundOf("2023-02-28"))
+                    .as("a common year does not")
+                    .isEqualTo("2023-03-01");
+            assertThat(TransactionRepository.exclusiveUpperBoundOf("2022-06-01"))
+                    .as("and every result is exactly ten characters, which is what keeps the comparison "
+                            + "a like-for-like character comparison")
+                    .hasSize(DATE_PREFIX_WIDTH);
+
+            assertThatExceptionOfType(DateTimeParseException.class)
+                    .as("a date that does not exist is refused, never normalised into a neighbour - a "
+                            + "silently shifted bound would silently shift the window")
+                    .isThrownBy(() -> TransactionRepository.exclusiveUpperBoundOf("2023-02-29"));
+            assertThatExceptionOfType(DateTimeParseException.class)
+                    .isThrownBy(() -> TransactionRepository.exclusiveUpperBoundOf("2022-13-01"));
         }
 
         @Test
@@ -1613,33 +1834,75 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the selected records are ordered by CARD NUMBER ascending, which is neither their "
-                + "identifier order nor their date order")
-        void theSelectionIsOrderedByCardNumberAscending() {
+        @DisplayName("the selected records are ordered by PROCESSING TIMESTAMP ascending, which is the "
+                + "index this query exists to reach and not the card-number order the report applies")
+        void theSelectionIsOrderedByProcessingTimestampAscending() {
             try {
                 seedWindowRows();
 
                 final List<String> selected = selectWindow(WINDOW_START, WINDOW_END);
 
-                // The three admitted rows were given card numbers deliberately out of step with both
-                // their identifiers and their dates, so only a card-number ordering produces this
-                // sequence. Asserted as an ORDERED list, never a set.
+                // The three admitted rows carry card numbers deliberately out of step with their dates,
+                // so a card-number ordering and a timestamp ordering produce DIFFERENT sequences and the
+                // assertion below can only pass for one of them. Asserted as an ORDERED list, never a set.
                 assertThat(selected)
-                        .as("ascending by card number: the mid-window row carries the lowest card, the "
-                                + "start-date row the middle one and the end-date row the highest")
-                        .containsExactly(WINDOW_IDS.get(2), WINDOW_IDS.get(1), WINDOW_IDS.get(3));
+                        .as("ascending by processing timestamp: start date, then mid-window, then the "
+                                + "end-date row")
+                        .containsExactly(WINDOW_IDS.get(1), WINDOW_IDS.get(2), WINDOW_IDS.get(3));
                 assertThat(selected)
-                        .as("identifier order would have been a different sequence, so the ordering "
-                                + "really is the card number's")
-                        .isNotEqualTo(List.of(WINDOW_IDS.get(1), WINDOW_IDS.get(2), WINDOW_IDS.get(3)));
+                        .as("the card-number order would have been a different sequence, so the ordering "
+                                + "really is the timestamp's - the report's card ordering is applied by "
+                                + "the job over its own unloaded generation, not by this query")
+                        .isNotEqualTo(List.of(WINDOW_IDS.get(2), WINDOW_IDS.get(1), WINDOW_IDS.get(3)));
+            } finally {
+                removeWindowRows();
+            }
+        }
 
-                // One ascending ordering serves both consumers: the reporting procedure types those bytes
-                // as zoned decimal and the statement job types the same bytes as character, and for an
-                // unsigned zero-padded sixteen-digit lexeme the two orderings coincide.
-                assertThat(SEEDED_CARDS)
-                        .as("the fixture cards are themselves in ascending character order, which for "
-                                + "zero-padded digits is also ascending numeric order")
-                        .isSorted();
+        @Test
+        @DisplayName("records sharing a processing timestamp are ordered by IDENTIFIER, so the result is "
+                + "deterministic rather than dependent on the plan the server chose")
+        void aSharedTimestampIsBrokenByTheBaseKey() {
+            final String sharedTimestamp = processingTimestampFor(WITHIN_WINDOW);
+            try {
+                removeWindowRows();
+                // Written in DESCENDING identifier order, so returning them ascending cannot be an
+                // accident of insertion sequence.
+                repository.insertAndFlush(windowFixture(WINDOW_IDS.get(2), sharedTimestamp,
+                        SEEDED_CARDS.get(4)));
+                repository.insertAndFlush(windowFixture(WINDOW_IDS.get(1), sharedTimestamp,
+                        SEEDED_CARDS.get(0)));
+
+                assertThat(selectWindow(WINDOW_START, WINDOW_END))
+                        .as("the tie-break is the unique base cluster key, ascending")
+                        .containsExactly(WINDOW_IDS.get(1), WINDOW_IDS.get(2));
+            } finally {
+                removeWindowRows();
+            }
+        }
+
+        @Test
+        @DisplayName("the result is BOUNDED by the caller's limit, and the rows returned are the first "
+                + "ones in the ordering rather than an arbitrary subset")
+        void theResultIsBoundedByTheCallersLimit() {
+            try {
+                seedWindowRows();
+
+                assertThat(selectWindow(WINDOW_START, WINDOW_END, Limit.of(2)))
+                        .as("a window over a growing table has no safe unbounded shape, so the caller "
+                                + "states what it will accept and receives the leading rows of the "
+                                + "ordering")
+                        .containsExactly(WINDOW_IDS.get(1), WINDOW_IDS.get(2));
+                assertThat(selectWindow(WINDOW_START, WINDOW_END, Limit.of(1)))
+                        .containsExactly(WINDOW_IDS.get(1));
+                assertThat(selectWindow(WINDOW_START, WINDOW_END, Limit.of(3)))
+                        .as("a limit at or above the admitted count returns them all")
+                        .containsExactly(WINDOW_IDS.get(1), WINDOW_IDS.get(2), WINDOW_IDS.get(3));
+
+                assertThatExceptionOfType(NullPointerException.class)
+                        .as("an absent bound is refused rather than treated as unbounded")
+                        .isThrownBy(() ->
+                                repository.findByProcessingDateWindow(WINDOW_START, WINDOW_END, null));
             } finally {
                 removeWindowRows();
             }
@@ -1662,13 +1925,14 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the BARE LOWER BOUND drives the shipped index, while the prefix upper bound "
-                + "remains a filter - which is why only the upper bound is wrapped")
-        void theBareLowerBoundDrivesTheShippedIndex() {
+        @DisplayName("BOTH bounds become index conditions and NO predicate survives as a filter, which "
+                + "is the whole point of the exclusive bound")
+        void bothBoundsDriveTheShippedIndex() {
             try {
                 seedWindowRows();
 
-                assertThat(selectWindowByPlannedStatement(WINDOW_START, WINDOW_END))
+                assertThat(selectWindowByPlannedStatement(WINDOW_START,
+                        TransactionRepository.exclusiveUpperBoundOf(WINDOW_END)))
                         .as("the statement whose plan is read below selects exactly what the production "
                                 + "query selects, in exactly the same order, so the plan is evidence "
                                 + "about the shipped predicate and not about a lookalike")
@@ -1683,17 +1947,51 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
                         .as("reached by an index scan of some shape rather than by reading every row")
                         .containsPattern("(Index Scan|Index Only Scan|Bitmap Index Scan)");
                 assertThat(plan)
-                        .as("the BARE lower bound is the indexable predicate: wrapping it as well would "
-                                + "have made it unindexable and left the report reading the whole table")
+                        .as("both bounds are bare column comparisons, so both appear in the index "
+                                + "condition and the server reads one range instead of a wider one")
+                        .contains("Index Cond")
+                        .contains(WINDOW_START)
+                        .contains(TransactionRepository.exclusiveUpperBoundOf(WINDOW_END));
+                assertThat(plan)
+                        .as("no function of the column appears anywhere in the plan, so nothing is left "
+                                + "to be evaluated per row")
+                        .doesNotContain("substring");
+                assertThat(plan.lines().filter(line -> line.contains("Filter:")).toList())
+                        .as("and no predicate survives as a row filter at all")
+                        .isEmpty();
+            } finally {
+                removeWindowRows();
+            }
+        }
+
+        @Test
+        @DisplayName("the SUPERSEDED prefix form selects the same rows and leaves its upper bound as a "
+                + "row FILTER, which is why the result set could never have revealed the defect")
+        void theSupersededPrefixFormLeavesItsUpperBoundAsAFilter() {
+            try {
+                seedWindowRows();
+
+                assertThat(selectWindowByPrefixBound(WINDOW_START, WINDOW_END))
+                        .as("the superseded form is not WRONG - it selects exactly the same rows in the "
+                                + "same order, and that is precisely why a review of results rather than "
+                                + "of plans passed it")
+                        .isEqualTo(selectWindow(WINDOW_START, WINDOW_END));
+
+                final String plan =
+                        String.join(System.lineSeparator(), explainPrefixWindowSelection());
+
+                assertThat(plan)
+                        .as("the bare LOWER bound still reaches the index, so the defect was never a "
+                                + "whole-table scan - it was a wider index range than necessary")
                         .contains("Index Cond")
                         .contains(WINDOW_START);
                 assertThat(plan)
-                        .as("the prefix upper bound is applied as a filter, which is expected - it "
-                                + "cannot be an index condition, and it does not need to be")
+                        .as("but the wrapped UPPER bound cannot be an index condition, so it is applied "
+                                + "to rows the server has already read")
                         .contains("substring");
-                assertThat(plan)
-                        .as("and the ordering the reporting sort requires is the card number's")
-                        .contains("tran_card_num");
+                assertThat(plan.lines().filter(line -> line.contains("Filter:")).toList())
+                        .as("evidenced as a filter line in the plan, which the shipped form has none of")
+                        .isNotEmpty();
             } finally {
                 removeWindowRows();
             }
@@ -1708,38 +2006,63 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
     // =================================================================================================
 
     /**
-     * The selection the reporting window performs, written exactly as the contract requires.
+     * The selection the window query performs, written exactly as the contract requires.
      *
-     * <p>The lower bound is compared against the whole column and the upper bound against the
-     * ten-character date prefix. Both comparisons are inclusive. The bare lower bound is provably
-     * equivalent to a prefixed one - any twenty-six character value whose prefix is at or above the
-     * bound is itself at or above it - and leaving it bare is what keeps it able to drive the index.
-     * The ordering is the card number ascending and nothing else.
+     * <p><strong>Both bounds are bare column comparisons.</strong> The lower bound is inclusive and the
+     * upper bound is exclusive, and the upper bound is the day <em>after</em> the window's inclusive end
+     * date - which admits exactly the records an inclusive end date was meant to admit, because any
+     * instant on the end date compares below the next day's date while midnight on the next day compares
+     * above it. Neither operand is wrapped in a function, so the whole predicate is one index range.
+     *
+     * <p>The ordering is the processing timestamp ascending with the unique base key as the tie-break,
+     * which is the index this query exists to reach.
      */
     private static final String WINDOW_SELECT_SQL = """
             SELECT t.tran_id
             FROM transaction t
             WHERE t.tran_proc_ts >= ?
-              AND SUBSTRING(t.tran_proc_ts, 1, 10) <= ?
-            ORDER BY t.tran_card_num ASC, t.tran_id ASC
+              AND t.tran_proc_ts < ?
+            ORDER BY t.tran_proc_ts ASC, t.tran_id ASC
             """;
 
     /**
-     * The same selection with the upper bound taken over the whole column, which is the defect.
+     * The same selection with an inclusive whole-column upper bound taken against a ten-character date,
+     * which is the first defect the exclusive bound avoids.
      *
-     * <p>Retained deliberately and used in exactly one assertion: to demonstrate on this server that the
-     * naive form drops every record processed on the end date. It is never the contract.
+     * <p>Retained deliberately and used in exactly one assertion: to demonstrate on this server that this
+     * form drops every record processed on the end date. It is never the contract.
      */
     private static final String NAIVE_WINDOW_SELECT_SQL = """
             SELECT t.tran_id
             FROM transaction t
             WHERE t.tran_proc_ts >= ?
               AND t.tran_proc_ts <= ?
-            ORDER BY t.tran_card_num ASC
+            ORDER BY t.tran_proc_ts ASC
+            """;
+
+    /**
+     * The superseded form: correct row set, unindexable upper bound.
+     *
+     * <p>Retained deliberately and used in exactly one assertion, which compares its access plan against
+     * the shipped one. It admits the same rows as the contract - that is why it was written - but because
+     * the column is wrapped in a function the upper bound cannot be an index condition, so it survives
+     * only as a filter applied to rows the server has already read. That difference is the whole of the
+     * finding, and it is invisible in the result set and visible only in the plan.
+     */
+    private static final String PREFIX_WINDOW_SELECT_SQL = """
+            SELECT t.tran_id
+            FROM transaction t
+            WHERE t.tran_proc_ts >= ?
+              AND SUBSTRING(t.tran_proc_ts, 1, 10) <= ?
+            ORDER BY t.tran_proc_ts ASC, t.tran_id ASC
             """;
 
     /** The access plan for the window selection, taken as shape only and never as cost or duration. */
     private static final String EXPLAIN_WINDOW_SELECT_SQL = "EXPLAIN " + WINDOW_SELECT_SQL;
+
+    /** The access plan for the superseded prefix form, read only to contrast it with the shipped one. */
+    private static final String EXPLAIN_PREFIX_WINDOW_SELECT_SQL =
+            "EXPLAIN " + PREFIX_WINDOW_SELECT_SQL;
 
     /**
      * Inserts one row without an entity, so that a database-side constraint can be exercised directly.
@@ -1905,45 +2228,74 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         return String.format(Locale.ROOT, "%016d", Long.parseLong(maximum) + 1L);
     }
 
+    /** The bound every window assertion passes when it is not measuring the bound itself. */
+    private static final Limit AMPLE_WINDOW_LIMIT = Limit.of(100);
+
     /**
-     * Selects the reporting window through the PRODUCTION repository contract.
+     * Selects the date window through the PRODUCTION repository contract, stated in inclusive terms.
      *
-     * <p>This is the method the report job's record-selection step calls, so every window assertion in
-     * this class exercises the shipped query rather than a statement written here.
+     * <p>Every window assertion in this class calls the shipped default method rather than a statement
+     * written here, so what is proved is the callable contract including its derivation of the exclusive
+     * upper bound.
      *
      * @param startBound the inclusive ten-character lower bound
      * @param endBound   the inclusive ten-character upper bound
-     * @return the selected identifiers, ordered by card number ascending then identifier ascending
+     * @return the selected identifiers, ordered by processing timestamp then identifier, both ascending
      */
     private List<String> selectWindow(final String startBound, final String endBound) {
-        return identifiersOf(
-                repository.findByProcessingDateWindowOrderedByCardNumber(startBound, endBound));
+        return selectWindow(startBound, endBound, AMPLE_WINDOW_LIMIT);
     }
 
     /**
-     * Selects the reporting window through the statement whose access plan is asserted.
-     *
-     * <p>It exists so the plan assertion is about a statement provably equivalent to the production
-     * query: the equivalence is asserted, row for row and in order, rather than assumed.
+     * Selects the date window through the production contract under an explicit bound.
      *
      * @param startBound the inclusive ten-character lower bound
      * @param endBound   the inclusive ten-character upper bound
-     * @return the selected identifiers, ordered by card number ascending
+     * @param limit      the greatest number of records the caller will accept
+     * @return the selected identifiers, ordered by processing timestamp then identifier, both ascending
      */
-    private List<String> selectWindowByPlannedStatement(final String startBound,
-            final String endBound) {
-        return jdbcTemplate.queryForList(WINDOW_SELECT_SQL, String.class, startBound, endBound);
+    private List<String> selectWindow(final String startBound, final String endBound,
+            final Limit limit) {
+        return identifiersOf(repository.findByProcessingDateWindow(startBound, endBound, limit));
     }
 
     /**
-     * Selects the reporting window through a whole-column upper bound, which is the defect.
+     * Selects the window through the statement whose access plan is asserted.
+     *
+     * <p>It exists so the plan assertion is about a statement provably equivalent to the production
+     * query: the equivalence is asserted, row for row and in order, rather than assumed. It is given the
+     * DERIVED exclusive bound, exactly as the production query receives it.
+     *
+     * @param startBound        the inclusive ten-character lower bound
+     * @param endExclusiveBound the exclusive ten-character upper bound
+     * @return the selected identifiers, ordered by processing timestamp then identifier
+     */
+    private List<String> selectWindowByPlannedStatement(final String startBound,
+            final String endExclusiveBound) {
+        return jdbcTemplate.queryForList(WINDOW_SELECT_SQL, String.class, startBound,
+                endExclusiveBound);
+    }
+
+    /**
+     * Selects the window through an inclusive whole-column upper bound, which is the first defect.
      *
      * @param startBound the inclusive ten-character lower bound
      * @param endBound   the ten-character upper bound, compared against the whole column
-     * @return the selected identifiers, ordered by card number ascending
+     * @return the selected identifiers
      */
     private List<String> selectWindowNaively(final String startBound, final String endBound) {
         return jdbcTemplate.queryForList(NAIVE_WINDOW_SELECT_SQL, String.class, startBound, endBound);
+    }
+
+    /**
+     * Selects the window through the superseded ten-character prefix upper bound.
+     *
+     * @param startBound the inclusive ten-character lower bound
+     * @param endBound   the inclusive ten-character upper bound, compared against the date prefix
+     * @return the selected identifiers, ordered by processing timestamp then identifier
+     */
+    private List<String> selectWindowByPrefixBound(final String startBound, final String endBound) {
+        return jdbcTemplate.queryForList(PREFIX_WINDOW_SELECT_SQL, String.class, startBound, endBound);
     }
 
     /**
@@ -1964,11 +2316,34 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
      * @return the plan text, one element per line
      */
     private List<String> explainWindowSelection() {
+        return explainWith(EXPLAIN_WINDOW_SELECT_SQL, WINDOW_START,
+                TransactionRepository.exclusiveUpperBoundOf(WINDOW_END));
+    }
+
+    /**
+     * Returns the access plan for the superseded prefix form, as lines of plan text.
+     *
+     * @return the plan text, one element per line
+     */
+    private List<String> explainPrefixWindowSelection() {
+        return explainWith(EXPLAIN_PREFIX_WINDOW_SELECT_SQL, WINDOW_START, WINDOW_END);
+    }
+
+    /**
+     * Takes an access plan for a two-parameter window statement under identical planner conditions.
+     *
+     * @param explainStatement the {@code EXPLAIN} statement to run
+     * @param lowerBound       the lower bound to bind
+     * @param upperBound       the upper bound to bind
+     * @return the plan text, one element per line
+     */
+    private List<String> explainWith(final String explainStatement, final String lowerBound,
+            final String upperBound) {
+
         return transactionTemplate.execute(status -> {
             status.setRollbackOnly();
             jdbcTemplate.execute("SET LOCAL enable_seqscan = off");
-            return jdbcTemplate.queryForList(EXPLAIN_WINDOW_SELECT_SQL, String.class,
-                    WINDOW_START, WINDOW_END);
+            return jdbcTemplate.queryForList(explainStatement, String.class, lowerBound, upperBound);
         });
     }
 

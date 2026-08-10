@@ -104,20 +104,21 @@ public final class AccountProtectedDataAdapter {
     public static final String MASK_CHARACTER = "*";
 
     /**
-     * The masked form of the view screen's national identifier, retaining the final four digits.
+     * Everything of the view screen's composed national identifier that precedes its final four digits,
+     * masked: three mask characters, a separator, two mask characters and the second separator.
      *
-     * <p>Eleven characters wide, exactly as the revealed form is: the composition at
+     * <p>Seven characters, and the four retained digits appended by {@link #maskedComposedSsn(String)}
+     * bring the masked item to the eleven the revealed one occupies. The composition at
      * {@code app/cbl/COACTVWC.cbl:L495-L504} writes three digits, a separator, two digits, a separator
      * and four digits into a twelve-character screen item, so a mask of the same width occupies the
      * field identically and no client has to lay the screen out differently for a masked value.
+     *
+     * <p>A single literal rather than the three pieces assembled at each use. Per-position mask
+     * constants existed here and nothing read them: the assembly is only ever performed once, at one
+     * call site, so the pieces were a second declaration of the same fact and could have drifted from
+     * the literal that was actually emitted.
      */
     private static final String SSN_VIEW_MASK_PREFIX = "***-**-";
-
-    /** The masked form of the first screen position of the national identifier. */
-    private static final String SSN_PART_1_MASK = "***";
-
-    /** The masked form of the second screen position. */
-    private static final String SSN_PART_2_MASK = "**";
 
     /** The cipher that seals and reveals the two protected columns, injected rather than reimplemented. */
     private final SensitiveFieldEncryptionService encryption;
@@ -450,8 +451,8 @@ public final class AccountProtectedDataAdapter {
     /**
      * Composes the nine stored digits into the view screen's dashed item.
      *
-     * <p>Reproduces {@code STRING CUST-SSN(1:3) '-' CUST-SSN(4:2) '-' CUST-SSN(6:4) DELIMITED BY SIZE}
-     * at {@code app/cbl/COACTVWC.cbl:L495-L504} exactly: three digits, a separator, two digits, a
+     * <p>Reproduces the composition at {@code app/cbl/COACTVWC.cbl:L495-L504} that joins the SSN's own
+     * part-fields exactly: three digits, a separator, two digits, a
      * separator, four digits, into a field declared twelve characters wide.
      *
      * @param ssnDigits the nine stored digits, or {@code null}

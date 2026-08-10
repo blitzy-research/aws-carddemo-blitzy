@@ -38,6 +38,7 @@ import com.carddemo.service.AbendService;
 import com.carddemo.service.PostingRecordTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.SeededRecordFixture;
+import com.carddemo.support.TestDataFactory;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
@@ -498,9 +499,13 @@ class TransactionValidationProcessorTest {
      * @return the record
      */
     private static DailyTransaction recordOn(final String amount, final String cardNumber) {
-        return new DailyTransaction("0000000000000001", TYPE, CAT, "POS TERM  ", "purchase",
-                new BigDecimal(amount), "000000123", "MERCHANT NAME", "MERCHANT CITY", "12345",
-                cardNumber, ORIG_TS, BLANK_TS);
+        // Given the provenance a record read from the sequential input carries. A refused record's reject
+        // item is contracted on the exact bytes that were read, so a record with no image is refused
+        // rather than regenerated; these tests are about the cascade's verdicts, not about those bytes.
+        return TestDataFactory.withRecordProvenance(
+                new DailyTransaction("0000000000000001", TYPE, CAT, "POS TERM  ", "purchase",
+                        new BigDecimal(amount), "000000123", "MERCHANT NAME", "MERCHANT CITY",
+                        "12345", cardNumber, ORIG_TS, BLANK_TS));
     }
 
     /**

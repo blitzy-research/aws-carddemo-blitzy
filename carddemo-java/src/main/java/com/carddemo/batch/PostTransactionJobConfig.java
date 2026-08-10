@@ -378,7 +378,7 @@ public final class PostTransactionJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = BatchJobCatalog.POST_TRANSACTION_JOB_NAME;
+    public static final String JOB_NAME = BatchJobCatalog.POST_TRANSACTION_JOB;
 
     /** Stable name of the single chunk-oriented step, which is the whole of the job. */
     public static final String STEP_NAME = "postDailyTransactionsStep";
@@ -813,7 +813,8 @@ public final class PostTransactionJobConfig {
      * and none of it is restated here.
      *
      * @param  jobExecutionId the execution the generation belongs to, supplied by the framework
-     * @param  stagingArea the shared object-store staging boundary
+     * @param  stepExecution the running step, which the completing wrapper needs so that promotion of the
+     *                       finished generation happens on the step's own close
      * @return a writer over this execution's own generation, never {@code null}
      * @throws NullPointerException if the framework supplied no execution identifier
      * @throws UncheckedIOException if the containing directory cannot be created

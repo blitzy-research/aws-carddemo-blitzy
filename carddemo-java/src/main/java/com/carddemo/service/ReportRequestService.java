@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
-import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +39,7 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.util.CobolStringUtils;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.JclCardImageBuilder;
+import com.carddemo.util.ReportRetryTokens;
 
 /**
  * The transaction-report request screen: the online half of the estate's only online-to-batch bridge.
@@ -321,9 +321,6 @@ public final class ReportRequestService {
     /** Property name of the end-year screen part. */
     private static final String PROPERTY_END_YEAR = "endYear";
 
-    /** Property name of the confirmation field. */
-    private static final String PROPERTY_CONFIRM = "confirm";
-
     /** Width of the three report-type markers, {@code PIC X(1)} at symbolic-map lines 60, 66, 72. */
     private static final int SELECTION_WIDTH = 1;
 
@@ -438,10 +435,11 @@ public final class ReportRequestService {
      * Separator between the operator and the logical-request token inside the submission digest.
      *
      * <p>A unit separator, chosen because it cannot occur in either value: an operator identifier is the
-     * eight-character key of a user record and a token is header text the request contract bounds to
-     * printable characters. A separator that could occur in either would let one pair of values be
-     * rearranged into a different pair with the same digest, which is exactly the collision the operator
-     * component exists to prevent. It never reaches the queue, because only the digest does.
+     * eight-character key of a user record, and a token is bounded to visible ASCII by
+     * {@code api.ReportController#canonicalRetryToken}, which refuses a control byte before this service
+     * is entered. A separator that could occur in either would let one pair of values be rearranged into
+     * a different pair with the same digest, which is exactly the collision the operator component
+     * exists to prevent. It never reaches the queue, because only the digest does.
      */
     private static final char SUBMISSION_DIGEST_FIELD_SEPARATOR = '\u001f';
 
@@ -502,6 +500,11 @@ public final class ReportRequestService {
     private final Clock clock;
 
     /**
+     * Mints and checks the logical-request token, and owns the window over which one may be honoured.
+     */
+    private final ReportRetryTokenService retryTokens;
+
+    /**
      * Creates the service.
      *
      * @param dateValidationService the subprogram invoked for the operator-supplied range; mandatory
@@ -510,13 +513,16 @@ public final class ReportRequestService {
      * @param navigationService     the navigation rules; mandatory
      * @param clock                 the clock the derived periods and the screen header read;
      *                              mandatory
+     * @param retryTokens           mints and checks the logical-request token, and owns the window over
+     *                              which a presented one may still be honoured; mandatory
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public ReportRequestService(final DateValidationService dateValidationService,
             final JobSubmissionService jobSubmissionService,
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
-            final Clock clock) {
+            final Clock clock,
+            final ReportRetryTokenService retryTokens) {
         this.dateValidationService =
                 Objects.requireNonNull(dateValidationService, "dateValidationService must not be null");
         this.jobSubmissionService =
@@ -526,6 +532,7 @@ public final class ReportRequestService {
         this.navigationService =
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.retryTokens = Objects.requireNonNull(retryTokens, "retryTokens must not be null");
     }
 
     // ==========================================================================================
@@ -821,8 +828,11 @@ public final class ReportRequestService {
      * controller always names the authenticated operator.
      *
      * @param input the transmitted screen, decoded attention key and echoed navigation state
-     * @param retryToken token of an earlier attempt, or {@code null}/blank for a new submission
+     * @param retryToken the token an earlier attempt returned, or {@code null}/blank for a new
+     *                   submission; honoured for {@link ReportRetryTokens#VALIDITY} after that attempt
      * @return the outcome of the turn, carrying the effective token
+     * @throws ValidationException when a presented token was not issued by this deployment or is older
+     *                             than the enforced window
      */
     public ReportRequestResult processReportRequest(final ReportScreenInput input,
             final String retryToken) {
@@ -833,11 +843,20 @@ public final class ReportRequestService {
      * Runs one turn under an optional logical-request token, on behalf of a named operator.
      *
      * <p>The operator scopes the submission identity: a retry by the same operator with the same token and
-     * the same window reissues exactly the deduplication identifiers of its first attempt, so the queue
-     * completes a half-published stream rather than doubling it, while the same token presented by a
+     * the same reporting period reissues exactly the deduplication identifiers of its first attempt, so the
+     * queue completes a half-published stream rather than doubling it, while the same token presented by a
      * <em>different</em> operator is a different submission and publishes its own cards. Without that
      * scoping, two operators who happened to choose the same token collapsed into one submission and the
      * second was told its request had been submitted having published nothing.
+     *
+     * <p><strong>The retry is honoured for a bounded time, and the bound is enforced here.</strong> The
+     * collapse is performed by the queue service, which recognises a repeated deduplication identifier for
+     * {@link ReportRetryTokens#VALIDITY} and then forgets it, so beyond that horizon repeating a token
+     * reissues identifiers the broker treats as new and publishes the stream a second time. The token
+     * therefore carries the instant it was minted, under an authentication code this deployment holds the
+     * key to, and a presented token that this deployment did not mint or whose window has closed is refused
+     * before a card is published instead of being honoured as a retry it can no longer be. Submitting
+     * without a token remains a deliberate new request, which is what the legacy screen did unconditionally.
      *
      * <p>The operator must be the authenticated principal. Nothing echoed by the client is admissible here:
      * the navigation state a caller sends back is a value it can write anything into, and using it would let
@@ -845,10 +864,13 @@ public final class ReportRequestService {
      * from the other side.
      *
      * @param input the transmitted screen, decoded attention key and echoed navigation state
-     * @param retryToken token of an earlier attempt, or {@code null}/blank for a new submission
+     * @param retryToken the token an earlier attempt returned, or {@code null}/blank for a new
+     *                   submission; honoured for {@link ReportRetryTokens#VALIDITY} after that attempt
      * @param submissionPrincipal the authenticated operator this turn runs as, or {@code null} when no
      *                   identity was established; never a client-supplied value
      * @return the outcome of the turn, carrying the effective token
+     * @throws ValidationException when a presented token was not issued by this deployment or is older
+     *                             than the enforced window
      */
     public ReportRequestResult processReportRequest(final ReportScreenInput input,
             final String retryToken, final String submissionPrincipal) {
@@ -1319,11 +1341,11 @@ public final class ReportRequestService {
      * @return {@code true} when the date is accepted by either route
      */
     private static boolean isDateAccepted(final DateValidationService.SubprogramResult result) {
-        // Level one, lines 396 and 416: IF CSUTLDTC-RESULT-SEV-CD = '0000' CONTINUE.
+        // Level one, lines 396 and 416: a severity code of '0000' is accepted and nothing further is done.
         if (ACCEPTED_SEVERITY_CODE.equals(result.severityCode())) {
             return true;
         }
-        // Level two, lines 399 and 419: IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513' report the error.
+        // Level two, lines 399 and 419: a message number other than '2513' is reported as an error.
         if (!TOLERATED_MESSAGE_NUMBER.equals(result.messageNumber())) {
             return false;
         }
@@ -2029,7 +2051,9 @@ public final class ReportRequestService {
      * because a fresh identity on a retry defeats idempotency. The identity is therefore a pure function
      * of the date range, the stable token and the operator: a caller that resubmits an interrupted request
      * with the same token reissues exactly the identifiers the first pass used, so the queue collapses the
-     * cards that already landed and the stream is completed rather than doubled behind itself.
+     * cards that already landed and the stream is completed rather than doubled behind itself - for as long
+     * as the queue still remembers them, which is {@link ReportRetryTokens#VALIDITY} and is why the token is
+     * dated and its age enforced before this identity is composed at all.
      *
      * <p><strong>The operator is part of the identity, and it has to be.</strong> The token is a value a
      * caller chooses, and a caller naturally chooses something meaningful to itself - a period name, a run
@@ -2051,7 +2075,9 @@ public final class ReportRequestService {
      * <p>The legacy queue had no notion of identity at all: a second request for the same period was
      * appended and the job ran again. That remains reachable: a genuinely new submission of the same
      * period receives a different token, while a retry repeats the earlier token. The distinction is now
-     * explicit instead of being guessed from the dates, which are identical in those two cases.
+     * explicit instead of being guessed from the dates, which are identical in those two cases. Beyond the
+     * enforced window the distinction can no longer be honoured, so it is not silently abandoned: the
+     * request is refused and the operator decides whether to submit a new one.
      *
      * <p>Whitespace is removed because the slots are fixed-width values that may be space-padded while
      * the bridge requires an identity free of whitespace. Only the identity is condensed; no card is,
@@ -2079,13 +2105,27 @@ public final class ReportRequestService {
     /**
      * Uses the caller's stable retry token, or mints one for a deliberate new logical request.
      *
+     * <p><strong>A presented token is checked, not merely carried.</strong> It used to be taken verbatim,
+     * whatever it was and however old, which made the published promise - repeat the token and an
+     * interrupted submission is completed rather than doubled - unbounded in time while the only mechanism
+     * behind it, the queue service's deduplication of repeated identifiers, expires after
+     * {@link ReportRetryTokens#VALIDITY}. A token presented after that reissued exactly the same
+     * identifiers to a broker that no longer recognised any of them, so the whole stream, or the prefix
+     * already accepted, was published again and the caller was told its request had been submitted. The
+     * token is now minted by this deployment, carries the instant it was minted, and is authenticated so
+     * that instant cannot be moved; one that this deployment did not mint, or whose window has closed, is
+     * refused before any card is published rather than being honoured as a retry it can no longer be. See
+     * {@code docs/decision-log.md} entry DL-310.
+     *
      * @param retryToken caller-supplied token, possibly absent or blank
      * @return the effective token, never blank
+     * @throws com.carddemo.exception.ValidationException when a presented token was not issued by this
+     *                                                   deployment or is older than the enforced window
      */
-    private static String resolveSubmissionToken(final String retryToken) {
+    private String resolveSubmissionToken(final String retryToken) {
         return retryToken == null || retryToken.isBlank()
-                ? UUID.randomUUID().toString()
-                : retryToken;
+                ? this.retryTokens.mint()
+                : this.retryTokens.accept(retryToken);
     }
 
     /**
@@ -2094,8 +2134,8 @@ public final class ReportRequestService {
      *
      * <p>The two values are separated by a byte that cannot occur in either of them, so no pair of an
      * operator and a token can be rearranged into another pair with the same digest: an operator
-     * identifier is the eight-character key of a user record and a token is text a caller supplied over an
-     * HTTP header, and neither can carry a control byte. Digesting the pair rather than concatenating it
+     * identifier is the eight-character key of a user record and a token is a bounded visible-ASCII value
+     * the HTTP boundary canonicalised, and neither can carry a control byte. Digesting the pair rather than concatenating it
      * into the identity keeps the operator's identifier out of the queue, out of the bridge's diagnostics
      * and out of the identity's length.
      *

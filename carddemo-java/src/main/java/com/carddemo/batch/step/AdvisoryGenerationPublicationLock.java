@@ -60,11 +60,19 @@ import org.springframework.stereotype.Component;
  * are collapsed first; PostgreSQL advisory locks are re-entrant within a session, so a duplicate would be
  * harmless, but acquiring a lock twice for one publication would misreport what is held.
  *
- * <h2>Failure to acquire fails the publication</h2>
+ * <h2>Failure to acquire fails the publication; failure to release does not</h2>
  *
  * <p>A timed-out or refused acquisition raises. Proceeding unserialized is precisely the defect this class
  * exists to close, so it is never the fallback. The boundary listener turns the raised failure into the
  * job's terminal verdict, and the store's compensation guarantees nothing was left externally visible.
+ *
+ * <p>The commit that <em>releases</em> the bases is a different matter, because it runs after the
+ * publication has passed its own commit point. By then the objects are durable, the aliases name them,
+ * and retention has irreversibly removed what rolled off, so a release failure is evidence about the
+ * database and none at all about the publication. It is reported as an operational alert and the job's
+ * verdict is left alone - the same treatment retention already receives, and for the same reason.
+ * Developed on {@link #releaseHeldBases(Connection, List)} and recorded as {@code docs/decision-log.md}
+ * entry DL-304.
  *
  * <h2>No SQL is assembled</h2>
  *
@@ -153,17 +161,67 @@ public final class AdvisoryGenerationPublicationLock implements GenerationPublic
         final boolean restoreAutoCommit = connection.getAutoCommit();
         connection.setAutoCommit(false);
         try {
-            for (final String base : bases) {
-                acquire(connection, base);
+            try {
+                for (final String base : bases) {
+                    acquire(connection, base);
+                }
+                publication.run();
+            } catch (final SQLException | RuntimeException failure) {
+                // Everything up to here is genuinely reversible from the job's point of view: either
+                // nothing durable was published, or the store's own compensation has already emptied
+                // every key the failed pass attempted. The failure is therefore the verdict.
+                rollbackQuietly(connection, failure);
+                throw failure;
             }
-            publication.run();
-            connection.commit();
+            // ---- The publication is complete and irreversible from this line. ----
+            releaseHeldBases(connection, bases);
             return null;
-        } catch (final SQLException | RuntimeException failure) {
-            rollbackQuietly(connection, failure);
-            throw failure;
         } finally {
             restoreAutoCommit(connection, restoreAutoCommit);
+        }
+    }
+
+    /**
+     * Ends the coordinating transaction to release every held base, and never fails the publication.
+     *
+     * <h2>Why a failure here is an alert rather than a verdict</h2>
+     *
+     * <p>This commit runs only after {@code publication.run()} has returned, and by then the publication
+     * has passed its own commit point: every object is durable in the bucket, every fixed-name alias
+     * names the generation it published, the registry has been cleared so a repeated callback cannot
+     * publish twice, and retention has removed the generations that rolled off - a deletion that cannot
+     * be undone. This transaction holds no business data of its own; its entire content is the advisory
+     * locks. So a failure of this commit says nothing whatsoever about the publication, and raising it
+     * would mark FAILED a job whose artifacts are durable, visible and correct, while the boundary
+     * listener discarded the local generations that name them.
+     *
+     * <p>That is strictly the worse of the two available answers. A job reported FAILED is re-run, and the
+     * re-run publishes a second generation of every base - so treating a release fault as a publication
+     * fault does not protect anything; it duplicates output. The symmetry with retention is exact and
+     * deliberate: retention also runs after the commit point, is also irreversible, and is also reported
+     * rather than raised, for the same reason.
+     *
+     * <h2>Why declining to fail leaks nothing</h2>
+     *
+     * <p>The advisory locks are transaction-scoped, so they are released by the transaction ending in any
+     * way at all. A commit that fails leaves the transaction aborted by the server; restoring auto-commit
+     * on the way out ends it; and a connection returned to the pool in a broken state is reset or
+     * discarded. There is no path on which the locks survive this method, which is exactly why the
+     * blocking-and-transaction-scoped form was chosen over a session-scoped lock released by hand.
+     *
+     * @param connection the coordinating connection
+     * @param bases      the bases held, named in the alert so an operator knows what was published
+     */
+    private static void releaseHeldBases(final Connection connection, final List<String> bases) {
+        try {
+            connection.commit();
+        } catch (final SQLException releaseFailure) {
+            LOGGER.error("OPERATIONAL ALERT: the generation-publication guard could not be released"
+                            + " cleanly, but the publication had already completed and its generations"
+                            + " are durable, so the job's verdict is unchanged. The coordinating"
+                            + " transaction is abandoned, which is what releases the bases it held."
+                            + " bases={} releaseFailureType={}", bases,
+                    releaseFailure.getClass().getSimpleName());
         }
     }
 

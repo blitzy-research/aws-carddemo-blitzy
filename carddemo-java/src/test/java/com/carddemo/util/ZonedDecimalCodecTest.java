@@ -77,7 +77,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  * the rejected value. The assertions below therefore expect {@link IllegalArgumentException} on the
  * {@code null} paths as well.</p>
  *
- * <p><strong>Zero always renders its decimals.</strong> A search for {@code BLANK WHEN ZERO} across
+ * <p><strong>Zero always renders its decimals.</strong> A search for the blank-when-zero clause across
  * the estate returns zero occurrences, so a zero amount is never blanked. That is why a zero decodes
  * to {@code 0.00} at the monetary scale and re-encodes to an all-zero image rather than to spaces.</p>
  *
@@ -296,6 +296,132 @@ class ZonedDecimalCodecTest {
             assertThat(actual).isEqualTo(new BigDecimal("0.00"));
             assertThat(actual.scale()).isEqualTo(2);
             assertThat(actual.signum()).isZero();
+        }
+    }
+
+    @Nested
+    @DisplayName("Receiving-field stores :: a COBOL store truncates the high order too, not only the "
+            + "fraction")
+    class ReceivingFieldStores {
+
+        @Test
+        @DisplayName("the published integer digit counts are the PIC clauses' own, 10 / 9 / 4")
+        void publishesTheIntegerDigitCountOfEveryShape() {
+            assertThat(ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_10_V99).isEqualTo(10);
+            assertThat(ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99).isEqualTo(9);
+            assertThat(ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_04_V99).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("each integer digit count plus the two V99 decimals is that shape's encoded width")
+        void agreesWithTheEncodedWidthOfEveryShape() {
+            assertThat(ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_10_V99
+                    + ZonedDecimalCodec.MONETARY_SCALE)
+                    .isEqualTo(ZonedDecimalCodec.WIDTH_PIC_S9_10_V99);
+            assertThat(ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99
+                    + ZonedDecimalCodec.MONETARY_SCALE)
+                    .isEqualTo(ZonedDecimalCodec.WIDTH_PIC_S9_09_V99);
+            assertThat(ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_04_V99
+                    + ZonedDecimalCodec.MONETARY_SCALE)
+                    .isEqualTo(ZonedDecimalCodec.WIDTH_PIC_S9_04_V99);
+        }
+
+        @Test
+        @DisplayName("a value that fits the receiving field is stored unchanged, at the field's scale")
+        void storesAFittingValueUnchanged() {
+            BigDecimal stored = ZonedDecimalCodec.storeIntoMonetary(
+                    new BigDecimal("999999999.99"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL");
+
+            assertThat(stored).isEqualTo(new BigDecimal("999999999.99"));
+            assertThat(stored.scale()).isEqualTo(ZonedDecimalCodec.MONETARY_SCALE);
+        }
+
+        @Test
+        @DisplayName("the maximum a nine-integer-digit field holds is stored exactly, and one cent more "
+                + "wraps onto zero exactly as the digit positions would")
+        void storesTheMaximumAndWrapsOneCentBeyondIt() {
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("999999999.99"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-MONTHLY-INT"))
+                    .isEqualTo(new BigDecimal("999999999.99"));
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("1000000000.00"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-MONTHLY-INT"))
+                    .isEqualTo(new BigDecimal("0.00"));
+        }
+
+        @Test
+        @DisplayName("surplus high-order digits are dropped, keeping the low-order positions the field "
+                + "declares")
+        void dropsSurplusHighOrderDigits() {
+            // The ten-integer-digit account balance stored into a nine-integer-digit working field.
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("1234567890.12"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL"))
+                    .isEqualTo(new BigDecimal("234567890.12"));
+            // And far beyond the field, which keeps exactly the declared positions and no more.
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("98765432109876.54"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL"))
+                    .isEqualTo(new BigDecimal("432109876.54"));
+        }
+
+        @Test
+        @DisplayName("the operational sign belongs to the receiving field and survives the truncation")
+        void keepsTheOperationalSignThroughTheTruncation() {
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("-1234567890.12"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL"))
+                    .isEqualTo(new BigDecimal("-234567890.12"));
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("-1000000000.00"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL").signum())
+                    .as("a wrap whose surviving digits are all zero stores as zero, which is unsigned")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("both truncations apply together, and the fractional one is still toward zero")
+        void truncatesTheFractionAndTheHighOrderTogether() {
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("1234567890.129"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL"))
+                    .isEqualTo(new BigDecimal("234567890.12"));
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("-1234567890.129"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL"))
+                    .isEqualTo(new BigDecimal("-234567890.12"));
+        }
+
+        @Test
+        @DisplayName("a stored value always fits the field it was stored into, so it always encodes")
+        void producesAValueTheFieldCanAlwaysEncode() {
+            BigDecimal stored = ZonedDecimalCodec.storeIntoMonetary(
+                    new BigDecimal("98765432109876.54"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "TRAN-AMT");
+
+            assertThat(ZonedDecimalCodec.encodeMonetary(stored,
+                    ZonedDecimalCodec.TRANSACTION_AMOUNT_WIDTH, "TRAN-AMT"))
+                    .hasSize(ZonedDecimalCodec.TRANSACTION_AMOUNT_WIDTH);
+        }
+
+        @Test
+        @DisplayName("a rate store uses the rate's own four integer digits, not a monetary nine")
+        void storesARateAtItsOwnGeometry() {
+            assertThat(ZonedDecimalCodec.storeIntoMonetary(new BigDecimal("12345.67"),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_04_V99, "DIS-INT-RATE"))
+                    .isEqualTo(new BigDecimal("2345.67"));
+        }
+
+        @Test
+        @DisplayName("nothing is rejected for magnitude, because a COBOL store without ON SIZE ERROR "
+                + "does not fail; only an impossible geometry or an absent value is refused")
+        void refusesOnlyAnAbsentValueOrAnImpossibleGeometry() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.storeIntoMonetary(null,
+                            ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, "WS-TEMP-BAL"))
+                    .withMessageContaining("WS-TEMP-BAL");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.storeIntoMonetary(BigDecimal.ONE, 0,
+                            "WS-TEMP-BAL"))
+                    .withMessageContaining("at least one integer digit");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.storeInto(BigDecimal.ONE,
+                            ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, -1, "WS-TEMP-BAL"))
+                    .withMessageContaining("must not be negative");
         }
     }
 
@@ -861,7 +987,7 @@ class ZonedDecimalCodecTest {
         })
         @DisplayName("zero renders its decimals at every width and never blanks the field")
         void encodesZeroAtEveryWidth(int width, String image) {
-            // No field in the estate is declared BLANK WHEN ZERO, so a zero amount is written as
+            // No field in the estate carries a blank-when-zero clause, so a zero amount is written as
             // an all-zero image carrying the positive-zero overpunch, never as spaces.
             assertThat(ZonedDecimalCodec.encodeMonetary(BigDecimal.ZERO, width, DIS_INT_RATE))
                     .isEqualTo(image);
@@ -1332,7 +1458,7 @@ class ZonedDecimalCodecTest {
     }
 
     /**
-     * The screen-lexeme path: {@code COMPUTE ACUP-NEW-CREDIT-LIMIT-N = FUNCTION NUMVAL-C(...)} at
+     * The screen-lexeme path, where the edited credit-limit lexeme is converted to its numeric value, at
      * {@code [app/cbl/COACTUPC.cbl:L1075]} and its four peers at lines 1089, 1103, 1117 and 1132.
      *
      * <p>One monetary value in the estate never arrives as a field image: the five amounts typed at the

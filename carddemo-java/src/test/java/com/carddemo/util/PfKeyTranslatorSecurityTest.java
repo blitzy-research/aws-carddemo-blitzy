@@ -41,7 +41,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>The fold is the behaviour under test, and it is easy to get wrong in the plausible direction</h2>
  *
- * <p>The legacy {@code EVALUATE TRUE} has 28 ordered {@code WHEN} clauses, and the last twelve of them
+ * <p>The legacy multi-way selection has 28 ordered arms, and the last twelve of them
  * are a <em>fold</em>: the upper program-function keys 13 through 24 set the <em>same twelve flags</em>
  * as keys 1 through 12. A translation that treated them as twelve further distinct actions would
  * compile, would look more complete, and would be wrong - keys 13 to 24 are not distinct actions in this

@@ -35,8 +35,17 @@ html {
   scroll-padding-top: 12px;
 }
 /* The sticky control bar exists only once the script reveals it, so only then does
-   an anchor target need to clear its height. */
+   an anchor target need to clear its height. This value is only the starting point:
+   the bar's controls wrap onto extra rows on a narrow viewport, so the script measures
+   the rendered bar and keeps this offset in step with it. */
 html.enhanced { scroll-padding-top: 68px; }
+
+/* A reader who has asked the platform to reduce motion gets instant jumps instead of
+   animated ones. This governs anchor navigation, and the script reads the same query
+   so the scripted slide jumps cannot drift away from the preference. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
 *, *::before, *::after { box-sizing: inherit; }
 
 body {
@@ -79,11 +88,20 @@ h1 {
 .masthead dd { margin: 0; }
 /* The global `code` rule paints a near-white pill, which collides with the light
    text colour inherited here. Restate both so the provenance identifiers stay
-   legible on the dark masthead. */
+   legible on the dark masthead.
+   `overflow-wrap: anywhere` is load-bearing rather than cosmetic. These chips hold
+   unbreakable identifiers — a 40-character commit hash, a release stamp, a Maven
+   coordinate — and the `break-word` inherited from the global rule wraps a line but
+   does NOT reduce a box's intrinsic min-content width. Below the narrow breakpoint the
+   list becomes a single grid column, whose track and item both take min-content as
+   their automatic minimum, so the widest chip would pin the masthead wider than the
+   viewport and scroll the whole document sideways. `anywhere` reduces that intrinsic
+   minimum too, so the hash wraps instead. */
 .masthead code {
   background: #22375a;
   border-color: #40587a;
   color: #f2f7fd;
+  overflow-wrap: anywhere;
 }
 
 /* SECTION: table of contents */
@@ -248,9 +266,13 @@ dl.terms dd { margin: 3px 0 0; }
 
 /* SECTION: figures */
 
+/* The minimum track is capped at the available width: a bare minmax(300px, 1fr) cannot shrink below
+   300px, and on a 320px viewport the section padding and borders leave less than that, which pushes
+   the whole document into horizontal overflow. min() lets the track collapse to one full-width
+   column instead. */
 .gallery {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: 18px;
   margin: 14px 0 4px;
 }
@@ -328,8 +350,19 @@ html.enhanced .deckbar > div {
   padding: 5px 12px;
   cursor: pointer;
 }
-.deckbar button:hover, .deckbar button:focus { background: #e6eefb; border-color: #123a86; }
-html.presenting nav.toc { display: none; }
+.deckbar button:hover:enabled, .deckbar button:focus { background: #e6eefb; border-color: #123a86; }
+.deckbar button:active:enabled { background: #d3e1f7; border-color: #0b2a63; }
+/* At the first or last slide the corresponding control genuinely has nothing to do, so it
+   is disabled rather than left as a silent no-op. The muted treatment still clears 4.5:1
+   against its own background, so the label stays readable while reading as unavailable. */
+.deckbar button:disabled {
+  color: #54637a;
+  background: #eef1f6;
+  border-color: #dde4ee;
+  cursor: default;
+}
+/* The table of contents deliberately stays visible in presenter mode, where it doubles as
+   a slide selector: hiding it would leave its click handler unreachable through the UI. */
 html.presenting section.slide[hidden] { display: none; }
 html.presenting section.slide { min-height: 60vh; }
 
@@ -340,7 +373,10 @@ html.presenting section.slide { min-height: 60vh; }
   section.slide { padding: 20px 16px 22px; border-radius: 0; }
   section.slide > h2 { font-size: 20px; }
   main { padding: 14px 0 18px; }
-  .masthead dl { grid-template-columns: 1fr; gap: 0 0; }
+  /* minmax(0, 1fr) rather than a bare 1fr: the shorthand's automatic minimum is
+     min-content, which would let a single wide identifier hold the track open past the
+     viewport. Zero is the explicit floor. */
+  .masthead dl { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
   .masthead dt { margin-top: 6px; }
 }
 
@@ -363,6 +399,14 @@ html.presenting section.slide { min-height: 60vh; }
     break-after: page;
   }
   section.slide[hidden] { display: block; }
+  /* Presenter mode is transient screen state and must never subtract content from a printout. The
+     two presenter rules above are more specific than the plain `section.slide` print rules, so they
+     would otherwise win inside this block and print a single slide out of six. These two overrides
+     restate those exact selectors, which ties the specificity and lets source order decide — and
+     this block is last. Printing therefore yields the whole deck whether presenter mode happened to
+     be on or off. */
+  html.presenting section.slide[hidden] { display: block; }
+  html.presenting section.slide { min-height: 0; }
   a { color: #000000; text-decoration: underline; }
   figure img { max-height: 8cm; max-width: 100%; width: auto; }
 }
@@ -381,7 +425,8 @@ html.presenting section.slide { min-height: 60vh; }
       <dt>Upstream release stamp</dt>
       <dd><code>CardDemo_v1.0-15-g27d6c6f-68</code>, dated 2022-07-19</dd>
       <dt>Target module</dt>
-      <dd><code>carddemo-java/</code> &middot; <code>com.carddemo:carddemo-java:1.0.0</code></dd>
+      <dd><code>carddemo-java/</code> &middot; base package <code>com.carddemo</code> &middot; coordinate
+      <code>com.carddemo:carddemo-java:1.0.0</code></dd>
     </dl>
   </div>
 </header>
@@ -477,11 +522,22 @@ html.presenting section.slide { min-height: 60vh; }
   <div class="note">
     <p><strong>The legacy tree was never copied and never edited.</strong> The Java module is physically
     disjoint at <code>carddemo-java/</code>, and everything under <code>app/</code> remains byte-identical to
-    the analysed checkout — which is exactly what keeps the matrix verifiable against it. No COBOL, job
-    control, screen definition, copybook or resource-definition <em>source text</em> is reproduced in the
-    module or in this deck. Traceability is <strong>by citation, never by transcription</strong>: member
-    names, paragraph names, line numbers, record widths, byte offsets and key positions are metadata and
-    appear freely; source lines do not appear at all.</p>
+    the analysed checkout — which is exactly what keeps the matrix verifiable against it. <strong>No legacy
+    source text is reproduced in the module or in this deck for traceability purposes</strong> — not a
+    program, not a paragraph, not a statement, and not in a comment. Traceability is <strong>by citation,
+    never by transcription</strong>: member names, paragraph names, line numbers, record widths, byte offsets
+    and key positions are interface metadata and appear freely; source lines do not appear at all. The claim
+    is mechanically checkable rather than asserted — a grep over the module's Java comments for a COBOL or
+    CICS verb carrying one of the legacy program's own identifiers, literals or argument lists returns
+    nothing.</p>
+    <p><strong>One category of legacy text does appear in the module, and naming it is the point of a
+    certification.</strong> Where a preservation requirement obliges the module to <em>emit</em> legacy text
+    byte for byte, that text is present as <strong>contract data</strong> rather than as a transcription: the
+    seventeen fixed 80-column job-submission card images and their end-of-file sentinel in
+    <code>util/JclCardImageBuilder</code>, the 80- and 100-byte statement template literals, and the seven
+    sign-on message texts. Emitting those is what <em>"external system interfaces MUST maintain identical
+    contracts"</em> requires — the card images are verified by draining them back out of a real queue — and it
+    is a different act from carrying a paragraph's implementation across, which nothing here does.</p>
     <p>The repository carries no Git tags, so the checkout commit is the only precise anchor on the source
     side of every mapping. The release stamp is carried in the trailer of <strong>78</strong> legacy members,
     which is how the estate identifies its own vintage.</p>
@@ -556,7 +612,7 @@ html.presenting section.slide { min-height: 60vh; }
         <tr><th scope="row">Ten keyed VSAM clusters, three alternate indexes</th><td>PostgreSQL 16, eleven tables, Flyway <code>V1</code> to <code>V4</code></td><td>record layouts to the byte; business keys, never surrogates</td></tr>
         <tr><th scope="row">Sequential browse in both directions</th><td><code>Pageable</code> repository queries</td><td>page size <em>and</em> fill direction, which differ per screen</td></tr>
         <tr><th scope="row">29 job members</th><td>nine Spring Batch job configurations</td><td>step sequencing and the four condition-code gates</td></tr>
-        <tr><th scope="row">One transient-data-queue write</th><td>a first-in-first-out queue publish</td><td>80-character fixed records, append order, ignore-on-error</td></tr>
+        <tr><th scope="row">One transient-data-queue write</th><td>an <strong>SQS FIFO</strong> queue publish</td><td>80-character fixed records, append order, ignore-on-error</td></tr>
         <tr><th scope="row">27 static call sites</th><td>constructor-injected beans</td><td>the linkage areas, as typed parameter objects</td></tr>
         <tr><th scope="row">External sort utility specifications</th><td>per-job comparators and query predicates</td><td>per-job key <em>typing</em> — one field is typed two different ways by two jobs</td></tr>
         <tr><th scope="row">Terminal sign-on and a cleartext compare</th><td>Spring Security with hashed credentials</td><td>the role split carried by the delivered user type</td></tr>
@@ -617,7 +673,9 @@ html.presenting section.slide { min-height: 60vh; }
   <h2 id="module-h"><span class="n">3.</span> The target module</h2>
   <p class="lede">One self-contained Maven module at <code>carddemo-java/</code>, carrying everything needed
   to build, run, migrate, observe and verify itself. A clean checkout needs a JDK and a container runtime and
-  nothing else — no preinstalled build tool, no mainframe asset, no external procedure.</p>
+  nothing else — no preinstalled build tool, no mainframe asset, no external procedure. The base package is
+  <code>com.carddemo</code>, and the doubled <code>d</code> is deliberate: every package, every import and
+  every configuration key sits beneath that exact spelling.</p>
 
   <h3>The pinned toolchain</h3>
   <div class="scroller">
@@ -632,10 +690,10 @@ html.presenting section.slide { min-height: 60vh; }
         <tr><th scope="row">Build</th><td>Maven <strong>3.9.16</strong> through a committed wrapper</td><td>the wrapper is script-only, so the build is reproducible from a bare checkout</td></tr>
         <tr><th scope="row">Persistence</th><td>Spring Data JPA over <strong>PostgreSQL 16</strong>, schema by Flyway</td><td>eleven tables and four forward-only migrations replace ten cluster definitions</td></tr>
         <tr><th scope="row">Orchestration</th><td>Spring Batch</td><td>nine job configurations replace the application job steps</td></tr>
-        <tr><th scope="row">Cloud services</th><td>object storage, a queue and a notification topic</td><td>staging, the online-to-batch bridge and completion fan-out</td></tr>
+        <tr><th scope="row">Cloud services</th><td>AWS <strong>S3</strong>, <strong>SQS FIFO</strong> and <strong>SNS</strong>, through Spring Cloud AWS <strong>3.4.2</strong></td><td>S3 stages batch files, the SQS FIFO queue carries the single online-to-batch bridge, SNS fans out completion</td></tr>
         <tr><th scope="row">Test tier</th><td>JUnit 5, Mockito, AssertJ, Testcontainers <strong>1.21.4</strong></td><td>unit, container-backed integration and end-to-end tiers</td></tr>
         <tr><th scope="row">Coverage and supply chain</th><td>JaCoCo <strong>0.8.15</strong>, dependency check <strong>12.1.3</strong>, Surefire and Failsafe <strong>3.5.6</strong></td><td>a build-failing coverage floor and an executed vulnerability scan</td></tr>
-        <tr><th scope="row">Local stack</th><td>Compose bringing up PostgreSQL 16 and <strong>LocalStack Community</strong></td><td>every gate runs locally; the community edition needs no authorisation of any kind</td></tr>
+        <tr><th scope="row">Local stack</th><td>Compose bringing up PostgreSQL 16 and <strong>LocalStack Community</strong></td><td>every criterion runs locally; the Community edition needs no LocalStack licence and no authentication token, and no AWS account or cloud credential is involved at any point</td></tr>
       </tbody>
     </table>
   </div>
@@ -659,10 +717,10 @@ html.presenting section.slide { min-height: 60vh; }
       <tbody>
         <tr><th scope="row"><code>api</code>, <code>api.dto</code></th><td>service, domain, util, exception</td><td>controllers and the transport contracts derived from the symbolic maps</td></tr>
         <tr><th scope="row"><code>batch</code>, <code>batch.step</code></th><td>service, repository, domain, util, exception, config</td><td>nine job configurations and their step components over one shared template</td></tr>
-        <tr><th scope="row"><code>service</code></th><td>repository, domain, util, exception</td><td>twenty-six classes carrying the 544 procedure units, one method each</td></tr>
+        <tr><th scope="row"><code>service</code></th><td>repository, domain, util, exception</td><td>thirty-six classes: twenty-six translation-bearing, ten support. The 544 procedure units resolve to <strong>twenty-two</strong> owning classes &mdash; twenty-one of those services, plus one utility class &mdash; one method each</td></tr>
         <tr><th scope="row"><code>repository</code></th><td>domain <strong>only</strong></td><td>eleven Spring Data interfaces; the three alternate indexes became finders and one declared range query</td></tr>
         <tr><th scope="row"><code>domain</code>, <code>domain.id</code>, <code>domain.enums</code></th><td>itself</td><td>entities at their verified widths, composite business keys, and nine enums drawn from 508 condition names</td></tr>
-        <tr><th scope="row"><code>util</code>, <code>exception</code></th><td>domain, and nothing above</td><td>the zoned-decimal codec, eleven hand-written fixed-width mappers, formatters and the failure types</td></tr>
+        <tr><th scope="row"><code>util</code>, <code>exception</code></th><td>domain, and nothing above</td><td>the zoned-decimal codec, <strong>twelve</strong> hand-written fixed-width mappers over eleven persisted record layouts, formatters and the failure types</td></tr>
         <tr><th scope="row"><code>config</code></th><td>the layers it wires</td><td>security, batch, cloud clients, observability, auditing and migration locations</td></tr>
       </tbody>
     </table>
@@ -670,9 +728,25 @@ html.presenting section.slide { min-height: 60vh; }
   <p><strong>Nothing depends upward.</strong> Two isolations give that rule its meaning: fixed-width record
   knowledge — offsets, widths and the overpunched sign convention — lives only in <code>util</code>, so it
   never leaks into business logic, and <code>domain</code> imports no framework type beyond persistence
-  annotations. Every persistence and validation annotation is a <code>jakarta</code> import; there is no
-  legacy-namespace import and no wildcard import anywhere, which is what lets the unsafe-code audit be
-  performed by inspection.</p>
+  annotations. Every persistence and validation annotation is a <code>jakarta</code> import; the production
+  tree carries no legacy-namespace import line at all and no wildcard import anywhere, which is what lets the
+  unsafe-code audit be performed by inspection.</p>
+
+  <div class="note">
+    <p><strong>Where the 544 units actually live, because "twenty-six services own them all" is the tidy
+    version and it is wrong in two directions.</strong> Counted from the target-class column of
+    <a href="../traceability-matrix.md">traceability-matrix.md</a>, the rows resolve to
+    <strong>twenty-two</strong> owning classes: twenty-one services, plus <code>util.PfKeyTranslator</code>,
+    which owns the two paragraphs of the attention-key copybook and is a utility precisely because five
+    online programs include that copybook rather than one owning it.</p>
+    <p><strong>Five of the twenty-six translation-bearing services own no paragraph at all, and that is
+    correct rather than a gap.</strong> The validation-lookup, navigation, message-catalogue, abend and
+    job-submission services derive from copybooks and cross-cutting constructs rather than from procedure
+    divisions — a lookup table, a dispatch graph, a message catalogue, an abend structure and a queue write
+    are each data or a mechanism that paragraphs use, not paragraphs themselves. So saying twenty-six
+    services own all 544 would credit five classes with rows they do not have <em>and</em> hide the one
+    utility class that does own rows.</p>
+  </div>
 
   <h3>The batch tier is nine jobs, and the reason is a measurement</h3>
   <p>Most job steps in the estate do not run an application program at all: they define, delete, copy or
@@ -685,8 +759,11 @@ html.presenting section.slide { min-height: 60vh; }
     independently launchable, and the order in which the jobs are normally run is an <strong>operational
     convention</strong> documented in <a href="../architecture.md">architecture.md</a> — not a coded
     dependency between jobs. One job is defined without any legacy driver at all, because the program it
-    reproduces is complete but is invoked by no job member, procedure or resource definition; it is therefore
-    excluded from the default sequence and exercised only by tests.</p>
+    reproduces is complete but is invoked by no job member, procedure or resource definition. It is
+    <strong>registered as launchable by name like the other eight and excluded from every sequence</strong>:
+    nothing selects it implicitly, so it runs only when an operator or a test names it. Unsequenced is not
+    unreachable, and the decision log records the distinction so the job is not read as dead
+    configuration.</p>
   </div>
 </section>
 
@@ -739,7 +816,9 @@ html.presenting section.slide { min-height: 60vh; }
     legacy resource definition specifies.</dd>
 
     <dt>Record mappers are hand-written, because the reflection budget is zero</dt>
-    <dd>All <strong>eleven</strong> record layouts are sliced by explicit offset arithmetic. That is a design
+    <dd>All <strong>twelve</strong> mapper classes slice their record image by explicit offset arithmetic:
+    one per <strong>eleven</strong> persisted record layouts, plus one for the statement job&rsquo;s transient
+    work record, which is written and re-read inside a single job and never stored. That is a design
     constraint rather than a preference: a zero reflection count rules out every annotation-driven mapping
     library, and it is also why no annotation processor appears anywhere in the dependency set.</dd>
 
@@ -756,9 +835,15 @@ html.presenting section.slide { min-height: 60vh; }
     <li>An <strong>empty fee-computation paragraph</strong> is genuinely invoked and implements nothing. It
     survives as an explicitly documented no-op method. <strong>No fee logic was invented to fill it</strong>,
     because that would be feature expansion and would change what an interest run emits.</li>
-    <li>Two account-update fields — a middle-name field and a second address line — are
-    <strong>decorated for error display but never actually validated</strong>. The Java contract attaches no
-    validation constraint to either, because adding one would reject input the legacy system accepts.</li>
+    <li>Two account-update fields carry <strong>no validation constraint in the Java contract, for two
+    different reasons</strong>, and collapsing them would misrepresent both. The <strong>second address
+    line</strong> is genuinely never validated by the legacy program — decorated for error display and
+    nothing more — so attaching no constraint is <em>faithful translation</em>. The <strong>middle
+    name</strong> is not: the legacy program <em>does</em> validate it, through its optional-alphabetic edit,
+    and its not-OK flag is tested when the cursor is placed; the comment beside its decoration macro claims
+    no edits are coded and is wrong about the code it sits next to. Java attaches no constraint regardless,
+    because the migration direction said not to — so that one is a <strong>directive-driven
+    divergence</strong>, recorded as an exception rather than presented as fidelity.</li>
     <li>A commented-out alternative label for one menu option <strong>stays inactive</strong>, exactly as it
     is in the source.</li>
     <li>An alphabetic check written as blank-the-letters-and-trim therefore <strong>passes embedded
@@ -768,9 +853,11 @@ html.presenting section.slide { min-height: 60vh; }
     ASCII-only fold rather than a locale-sensitive, Unicode-aware case conversion.</li>
     <li>Identifier generation reads the highest existing key and adds one inside the same transaction. A
     database sequence would diverge permanently after the first rollback, so none is used.</li>
-    <li><strong>Fourteen source anomalies</strong> — misspelled field names, a duplicated paragraph label, a
-    duplicated step name, a conflicting generation limit, a dangling program definition — are recorded in the
-    anomaly register in <a href="../decision-log.md">the decision log</a>. Where correcting one would alter a
+    <li><strong>Thirty-one source anomalies</strong> — misspelled field names, a duplicated paragraph label,
+    a duplicated step name, a conflicting generation limit, a dangling program definition — are recorded in
+    the anomaly register in <a href="../decision-log.md">the decision log</a>. Fourteen of the thirty-one were
+    named in the migration plan, together with a fifteenth observation; the remaining sixteen were found at
+    the same checkout during translation. Where correcting one would alter a
     record layout or an external contract, it is preserved as-is and the defect is noted instead.</li>
   </ul>
 
@@ -802,8 +889,16 @@ html.presenting section.slide { min-height: 60vh; }
     documented as <strong>intentionally unmigrated, not dropped</strong>.</li>
     <li>One copybook has no inclusion anywhere in the estate. Migrating it would have created dead Java code,
     so it is recorded as a <strong>decision</strong> rather than an omission.</li>
-    <li>No browser interface, no application cache and no transport-termination layer: the first is outside
-    the named stack, and the other two would change characteristics the estate never had.</li>
+    <li>No browser interface and no application cache: the first is outside the named stack, and the second
+    would change latency and consistency characteristics the estate never had.</li>
+    <li><strong>Transport security needs a distinction, because one half of it <em>is</em> delivered.</strong>
+    The application terminates TLS itself on the production profile &mdash; the listener is switched on there
+    and it consumes externally supplied key-store material, resolved from the environment with no fallback, so
+    a missing value fails start-up rather than quietly serving plaintext. What is <em>not</em> in scope is the
+    infrastructure around it: no ingress or reverse proxy is provisioned, and no certificate is issued,
+    renewed or rotated here. Saying "no transport termination" would understate the delivery; saying transport
+    security is complete would overstate it. The application listens over TLS when configured to; the
+    surrounding estate is somebody else's provisioning step.</li>
   </ul>
 </section>
 
@@ -825,11 +920,13 @@ html.presenting section.slide { min-height: 60vh; }
         <tr>
           <th scope="row" class="num">1</th><td>End-to-end boundary</td>
           <td>that a production-representative input is processed end to end locally and the emitted records
-          are <strong>byte-equivalent</strong> to committed golden files at the four compared widths &mdash;
-          <strong>80</strong>, <strong>100</strong>, <strong>133</strong> and <strong>430</strong> bytes.
-          The comparison is byte-array equality on fixed-width records, so a trailing space or a sign
-          overpunch fails rather than passing quietly. <strong>Mocked input and output does not satisfy
-          it.</strong></td>
+          are <strong>byte-equivalent</strong> to committed golden files at all <strong>five compared widths</strong>,
+          which are the five contractual widths &mdash; <strong>40</strong>, <strong>80</strong>, <strong>100</strong>,
+          <strong>133</strong> and <strong>430</strong> bytes. Four are compared from a single seeded pipeline
+          pass; the 40-byte category-balance report line is compared from a dedicated run of the job that
+          emits it, because that job is the one emitter the primary pipeline does not drive. The comparison is
+          byte-array equality on fixed-width records, so a trailing space or a sign overpunch fails rather
+          than passing quietly. <strong>Mocked input and output does not satisfy it.</strong></td>
         </tr>
         <tr>
           <th scope="row" class="num">2</th><td>Zero-warning build</td>
@@ -840,9 +937,11 @@ html.presenting section.slide { min-height: 60vh; }
         </tr>
         <tr>
           <th scope="row" class="num">3</th><td>Performance baseline</td>
-          <td>that timers exist on every endpoint and every batch step and that their figures are recorded.
-          <strong>This criterion establishes the first Java baseline; it does not test a threshold</strong>
-          &mdash; see the note below.</td>
+          <td>that elapsed time, peak memory and records per second are measured inside the run that takes
+          them and recorded with the fixture volumes they were measured over. Timers on every endpoint and
+          every batch step <em>corroborate</em> the shape; the quoted figure comes from the run-scoped
+          recorder rather than from a scrape. <strong>This criterion establishes the first Java baseline; it
+          does not test a threshold</strong> &mdash; see the note below.</td>
         </tr>
         <tr>
           <th scope="row" class="num">4</th><td>Named validation artefacts</td>
@@ -865,7 +964,9 @@ html.presenting section.slide { min-height: 60vh; }
           <td>that the counts of raw query-string assembly, process launching, reflection, unchecked casts
           and suppressed warnings are <strong>documented</strong>. The audit is scoped to the production Java
           tree, which matters: an unscoped scan would count the versioned schema migrations as raw query text
-          and inflate the figure.</td>
+          and inflate the figure. The warning suppression is the single exception and is counted over
+          <strong>both</strong> source trees, because criterion 2 forbids the construct outright and the
+          annotation hides a warning wherever it is written.</td>
         </tr>
         <tr>
           <th scope="row" class="num">7</th><td>Scope matching</td>
@@ -875,9 +976,18 @@ html.presenting section.slide { min-height: 60vh; }
         </tr>
         <tr>
           <th scope="row" class="num">8</th><td>Integration sign-off</td>
-          <td>that all seven of the above hold together, plus a dependency vulnerability scan carrying
-          <strong>no critical or high finding</strong>, plus traceability covering <strong>100%</strong> of
-          the estate's procedure units.</td>
+          <td>that all seven of the above hold together, plus a dependency vulnerability scan whose exact
+          recorded result is <strong>zero unsuppressed critical</strong>, <strong>zero unsuppressed
+          high</strong>, <strong>one high finding covered by a written analyst determination</strong>
+          (<code>CVE-2026-66299</code>, CVSS 7.5, matched on <code>tomcat-embed-core</code>, scoped to that
+          identifier alone and self-expiring) and <strong>one visible below-threshold medium</strong>
+          (<code>CVE-2026-41178</code>, CVSS 5.3, reported and not suppressed) &mdash; stated that way rather
+          than as &ldquo;no critical or high finding&rdquo;, because a scanner finding that an analyst
+          determined to be a false match is still a finding, and a deck that rounds it away is the reason a
+          reader would stop checking. The dated report is published in
+          <a href="../gate-evidence.md#gate-8--integration-sign-off-checklist">Gate Evidence</a>, and a CVE
+          result ages, so the scan is re-run before any sign-off. Plus traceability covering
+          <strong>100%</strong> of the estate's procedure units.</td>
         </tr>
       </tbody>
     </table>
@@ -927,7 +1037,7 @@ html.presenting section.slide { min-height: 60vh; }
         <tr>
           <th scope="row">Why does it behave like that instead of the obvious way?</th>
           <td><a href="../decision-log.md">decision-log.md</a> &mdash; every judgement where faithful
-          reproduction and idiomatic Java diverged, the anomaly register for the fourteen legacy defects, and
+          reproduction and idiomatic Java diverged, the anomaly register at its thirty-one legacy defects, and
           the record of conflicts between legacy artifacts and how each was resolved.</td>
         </tr>
         <tr>
@@ -976,7 +1086,11 @@ html.presenting section.slide { min-height: 60vh; }
   licence to lower the standard: the work is held to enterprise-standard best practice instead, as a
   conscious position, and the two standards binding this page in particular are licence continuity, which is
   why the Apache-2.0 header opens the file, and the prohibition on credential values in source, which is why
-  no identifier, credential or key value appears anywhere on it.</p>
+  no credential, password, secret, token or key <em>value</em> appears anywhere on it — not a real one, and
+  not a placeholder shaped like one. <strong>Identifiers are the opposite case and appear freely</strong>:
+  the checkout commit, the release stamp, the module coordinate, transaction and program names, paragraph
+  names, record widths and byte offsets are all metadata, and naming them is precisely what makes a citation
+  checkable against the estate.</p>
 </section>
 
 </main>
@@ -1002,12 +1116,13 @@ html.presenting section.slide { min-height: 60vh; }
 
   var root = document.documentElement;
   var slides = Array.prototype.slice.call(document.querySelectorAll("main section.slide"));
+  var bar = document.querySelector(".deckbar");
   var toggle = document.getElementById("modeToggle");
   var previous = document.getElementById("prevSlide");
   var following = document.getElementById("nextSlide");
   var status = document.getElementById("deckStatus");
 
-  if (!slides.length || !toggle || !previous || !following || !status) {
+  if (!slides.length || !bar || !toggle || !previous || !following || !status) {
     return;
   }
 
@@ -1015,26 +1130,90 @@ html.presenting section.slide { min-height: 60vh; }
   var index = 0;
   var idleText = "Reading as one continuous document. Presenter mode shows one slide at a time and " +
     "responds to the arrow keys.";
+  /* The same query the stylesheet uses to relax scrolling, read here so a scripted jump and an
+     anchor jump honour the reader's motion preference identically. */
+  var calmed = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
   /* Reveal the control bar only now that the script is known to be running. */
   root.className = root.className ? root.className + " enhanced" : "enhanced";
 
+  /* The bar is sticky, and its controls plus its status sentence wrap onto extra rows as the
+     viewport narrows, so the height a jump has to clear is measured rather than assumed. The
+     stylesheet's 68px covers only the instant before this first runs. */
+  function syncOffset() {
+    root.style.scrollPaddingTop = (bar.offsetHeight + 6) + "px";
+  }
+
+  function jumpBehaviour() {
+    return calmed && calmed.matches ? "auto" : "smooth";
+  }
+
+  /* Moving focus to the heading keeps the reader's place visible after a keyboard jump, and keeps
+     focus out of a subtree that has just been hidden. The tabindex is what makes a heading
+     focusable at all; -1 keeps it out of the tab order, and it is removed again on blur so the
+     document is left as it was found. */
+  function focusSlide(slide) {
+    var target = slide.querySelector("h2") || slide;
+    if (!target.hasAttribute("tabindex")) {
+      target.setAttribute("tabindex", "-1");
+      target.addEventListener("blur", function () {
+        target.removeAttribute("tabindex");
+      }, { once: true });
+    }
+    target.focus({ preventScroll: true });
+  }
+
+  /* A shortcut must not be taken from a control or a text field that wants the same key. The
+     deck's own control bar is deliberately exempt: it exists to drive this navigation, it never
+     sits inside a slide, and so a shortcut fired from it can neither surprise the reader nor
+     strand focus. */
+  function claimsKeys(node) {
+    if (!node || node === document.body || !node.closest) {
+      return false;
+    }
+    if (bar.contains(node)) {
+      return false;
+    }
+    return node.isContentEditable ||
+      !!node.closest("a[href], button, input, select, textarea, [contenteditable]");
+  }
+
   function render() {
+    var active = document.activeElement;
+    var stranded = false;
+
     slides.forEach(function (slide, position) {
       if (presenting && position !== index) {
+        if (active && slide.contains(active)) {
+          stranded = true;
+        }
         slide.setAttribute("hidden", "hidden");
       } else {
         slide.removeAttribute("hidden");
       }
     });
 
+    /* At either end the control has nothing left to reach, so it reports that rather than
+       accepting a click and doing nothing. */
+    previous.disabled = !presenting || index <= 0;
+    following.disabled = !presenting || index >= slides.length - 1;
+
     status.textContent = presenting
       ? "Slide " + (index + 1) + " of " + slides.length +
         ". Arrow keys, Home and End move between slides; Escape leaves presenter mode."
       : idleText;
+
+    /* Focus was inside a slide that has just been hidden. Rescuing it is not optional: left
+       alone, the browser drops focus to the document and the reader loses their position. */
+    if (stranded) {
+      focusSlide(slides[index]);
+    }
+    /* Revealing or hiding the Previous and Next controls, and rewriting the status sentence,
+       both change the bar's height on a narrow viewport. */
+    syncOffset();
   }
 
-  function go(target) {
+  function go(target, moveFocus) {
     var bounded = target;
     if (bounded < 0) {
       bounded = 0;
@@ -1044,10 +1223,33 @@ html.presenting section.slide { min-height: 60vh; }
     }
     index = bounded;
     render();
-    slides[index].scrollIntoView({ block: "start" });
+    slides[index].scrollIntoView({ block: "start", behavior: jumpBehaviour() });
+    if (moveFocus) {
+      focusSlide(slides[index]);
+    }
+  }
+
+  /* Which slide is the reader actually on? Entering presenter mode at slide 1 when they have
+     scrolled to slide 4 throws their place away, so the slide whose top has passed the reading
+     line wins. This must be measured before any slide is hidden, because hiding collapses the
+     document and every rectangle after that describes a layout the reader never saw. */
+  function slideInView() {
+    var line = bar.offsetHeight + 12;
+    var chosen = 0;
+    slides.forEach(function (slide, position) {
+      if (slide.getBoundingClientRect().top <= line) {
+        chosen = position;
+      }
+    });
+    return chosen;
   }
 
   function setPresenting(on) {
+    /* Read the reader's place first, while the layout is still the one they were looking at:
+       revealing the Previous and Next controls can add a row to the bar, and that would move
+       every measurement taken after it. */
+    var entry = on ? slideInView() : index;
+
     presenting = on;
     toggle.setAttribute("aria-pressed", on ? "true" : "false");
     toggle.textContent = on ? "Leave presenter mode" : "Presenter mode";
@@ -1056,48 +1258,51 @@ html.presenting section.slide { min-height: 60vh; }
 
     if (on) {
       root.className = root.className + " presenting";
+      go(entry, false);
     } else {
       root.className = root.className.replace(/\s*presenting\b/, "");
+      render();
+      /* Every slide is back, which moves the one being read; keep it where the reader left it. */
+      slides[index].scrollIntoView({ block: "start", behavior: jumpBehaviour() });
     }
-    render();
   }
 
   toggle.addEventListener("click", function () {
     setPresenting(!presenting);
   });
+  /* A click leaves focus on the control the reader is using, so these do not move it. */
   previous.addEventListener("click", function () {
-    go(index - 1);
+    go(index - 1, false);
   });
   following.addEventListener("click", function () {
-    go(index + 1);
+    go(index + 1, false);
   });
 
   document.addEventListener("keydown", function (event) {
     if (!presenting || event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
-    var tag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
-    if (tag === "input" || tag === "textarea" || tag === "select") {
+    if (claimsKeys(event.target)) {
       return;
     }
 
     switch (event.key) {
       case "ArrowRight":
       case "PageDown":
-        go(index + 1);
+        go(index + 1, true);
         event.preventDefault();
         break;
       case "ArrowLeft":
       case "PageUp":
-        go(index - 1);
+        go(index - 1, true);
         event.preventDefault();
         break;
       case "Home":
-        go(0);
+        go(0, true);
         event.preventDefault();
         break;
       case "End":
-        go(slides.length - 1);
+        go(slides.length - 1, true);
         event.preventDefault();
         break;
       case "Escape":
@@ -1109,7 +1314,9 @@ html.presenting section.slide { min-height: 60vh; }
     }
   });
 
-  /* A table-of-contents link should leave presenter mode on the slide it points at. */
+  /* The table of contents stays on screen in presenter mode, where it works as a slide selector:
+     a link there has to bring its slide out of hiding before the anchor can reach it. With
+     presenter mode off the browser's own anchor handling is all that is needed. */
   Array.prototype.forEach.call(document.querySelectorAll('nav.toc a[href^="#"]'), function (link) {
     link.addEventListener("click", function () {
       if (!presenting) {
@@ -1118,11 +1325,14 @@ html.presenting section.slide { min-height: 60vh; }
       var id = link.getAttribute("href").slice(1);
       slides.forEach(function (slide, position) {
         if (slide.id === id) {
-          go(position);
+          go(position, false);
         }
       });
     });
   });
+
+  /* The bar also rewraps when the window resizes, with no state change to trigger it. */
+  window.addEventListener("resize", syncOffset);
 
   render();
 }());

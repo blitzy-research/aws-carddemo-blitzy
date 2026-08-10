@@ -21,15 +21,18 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
-import javax.sql.DataSource;
-
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
@@ -44,13 +47,15 @@ import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-import com.carddemo.batch.BatchLaunchCoordinator.LaunchRejectedException;
-import com.carddemo.batch.BatchLaunchCoordinator.RejectionReason;
+import com.carddemo.service.BatchJobCatalog;
+import com.carddemo.service.BatchLaunchGateway.LaunchRejectedException;
+import com.carddemo.service.BatchLaunchGateway.RejectionReason;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -70,11 +75,20 @@ final class BatchLaunchCoordinatorTest {
 
     private static final long EXECUTION_ID = 41L;
 
+    /**
+     * How long a verification waits for the launch worker before it gives up.
+     *
+     * <p>The job no longer runs on the thread that asked for it, so a verification of the execution has to
+     * allow the worker to be scheduled. Generous rather than tight: it is the point at which the test
+     * concludes the dispatch never happened, not a latency the machine is asked to meet.
+     */
+    private static final long WORKER_TIMEOUT_MILLIS = 10_000L;
+
     private JobRepository jobRepository;
 
     private JobExplorer jobExplorer;
 
-    private DataSource dataSource;
+    private javax.sql.DataSource dataSource;
 
     private Connection connection;
 
@@ -88,7 +102,7 @@ final class BatchLaunchCoordinatorTest {
     void setUp() throws Exception {
         this.jobRepository = mock(JobRepository.class);
         this.jobExplorer = mock(JobExplorer.class);
-        this.dataSource = mock(DataSource.class);
+        this.dataSource = mock(javax.sql.DataSource.class);
         this.connection = mock(Connection.class);
         this.lockStatement = mock(PreparedStatement.class);
         this.lockResult = mock(ResultSet.class);
@@ -102,6 +116,11 @@ final class BatchLaunchCoordinatorTest {
                 this.jobRepository,
                 this.jobExplorer,
                 new JdbcTemplate(this.dataSource));
+    }
+
+    @AfterEach
+    void stopAcceptingLaunches() {
+        this.coordinator.close();
     }
 
     @Test
@@ -123,7 +142,7 @@ final class BatchLaunchCoordinatorTest {
         verify(this.connection).setAutoCommit(false);
         verify(this.connection).commit();
         verify(this.jobRepository).createJobExecution(eq(JOB_NAME), parameters.capture());
-        verify(job).execute(reserved);
+        verify(job, timeout(WORKER_TIMEOUT_MILLIS)).execute(reserved);
         assertThat(executionId).isEqualTo(EXECUTION_ID);
         assertThat(parameters.getValue().getString("fixedWidth")).isEqualTo(" 2022-07-19 ");
         assertThat(parameters.getValue().getLong(
@@ -191,7 +210,7 @@ final class BatchLaunchCoordinatorTest {
                 .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
         verify(this.connection).rollback();
         verify(this.connection).commit();
-        verify(job).execute(reserved);
+        verify(job, timeout(WORKER_TIMEOUT_MILLIS)).execute(reserved);
     }
 
     @Test
@@ -285,6 +304,99 @@ final class BatchLaunchCoordinatorTest {
     }
 
     @Test
+    @DisplayName("the launch returns while the job is still running, so a long job cannot hold the "
+            + "thread that asked for it")
+    void theLaunchReturnsWhileTheJobIsStillRunning() throws Exception {
+        final Job job = launchableJob();
+        final JobExecution reserved = reservedExecution();
+        final CountDownLatch jobStarted = new CountDownLatch(1);
+        final CountDownLatch releaseJob = new CountDownLatch(1);
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenReturn(reserved);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            jobStarted.countDown();
+            releaseJob.await(WORKER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+            return null;
+        }).when(job).execute(reserved);
+
+        final long executionId = this.coordinator.start(job, Map.of());
+
+        // The launch answered while the job was still inside execute. Under the previous inline launch this
+        // could not happen: start did not return until the job had finished, so a job that reads a large
+        // dataset held the caller's thread - a servlet request thread in production - for its whole
+        // duration, and the identifier a client needs in order to ask after progress arrived only once
+        // there was no progress left to ask about.
+        assertThat(jobStarted.await(WORKER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS))
+                .as("the job must still run, just not on the caller's thread")
+                .isTrue();
+        assertThat(executionId)
+                .as("and the identifier is answered immediately, while the run is in flight")
+                .isEqualTo(EXECUTION_ID);
+        releaseJob.countDown();
+    }
+
+    @Test
+    @DisplayName("the worker bound is one per launchable job, derived from the inventory the guard admits "
+            + "rather than chosen")
+    void theWorkerBoundIsOnePerLaunchableJob() {
+        assertThat(BatchLaunchCoordinator.MAX_CONCURRENT_LAUNCHES)
+                .isEqualTo(BatchJobCatalog.LAUNCHABLE_JOB_NAMES.size())
+                .isEqualTo(9);
+        assertThat(BatchLaunchCoordinator.WORKER_KEEP_ALIVE_SECONDS).isPositive();
+    }
+
+    @Test
+    @DisplayName("a reservation the workers cannot accept is failed rather than left recorded as started, "
+            + "and the caller is refused")
+    void anUndispatchedReservationIsFailedAndRefused() throws Exception {
+        final Job job = launchableJob();
+        final JobExecution reserved = reservedExecution();
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenReturn(reserved);
+        // Closing is the reachable way to make the workers refuse: the pool is sized to the inventory the
+        // per-job guard admits, so a full queue cannot occur while the guard holds.
+        this.coordinator.close();
+
+        assertRejected(RejectionReason.ACTIVE_EXECUTION, () -> this.coordinator.start(job, Map.of()));
+
+        verify(job, never()).execute(reserved);
+        // The metadata row already exists, so leaving it started would report a run that will never
+        // advance and would make the guard refuse every later launch of the same job.
+        verify(reserved).setStatus(BatchStatus.FAILED);
+        final ArgumentCaptor<ExitStatus> exitStatus = ArgumentCaptor.forClass(ExitStatus.class);
+        verify(reserved).setExitStatus(exitStatus.capture());
+        assertThat(exitStatus.getValue().getExitCode()).isEqualTo(ExitStatus.FAILED.getExitCode());
+        assertThat(exitStatus.getValue().getExitDescription())
+                .isEqualTo(BatchLaunchCoordinator.DISPATCH_REFUSED_EXIT_DESCRIPTION);
+        verify(this.jobRepository).update(reserved);
+    }
+
+    @Test
+    @DisplayName("a store that cannot record the failed reservation does not replace the refusal with an "
+            + "error about the recording")
+    void aStoreThatCannotRecordTheFailureStillRefuses() throws Exception {
+        final Job job = launchableJob();
+        final JobExecution reserved = reservedExecution();
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenReturn(reserved);
+        org.mockito.Mockito.doThrow(new DataIntegrityViolationException("metadata unavailable"))
+                .when(this.jobRepository).update(reserved);
+        this.coordinator.close();
+
+        assertRejected(RejectionReason.ACTIVE_EXECUTION, () -> this.coordinator.start(job, Map.of()));
+    }
+
+    @Test
+    @DisplayName("close is idempotent, because the container may call it after a manual close")
+    void closeIsIdempotent() {
+        this.coordinator.close();
+        this.coordinator.close();
+    }
+
+    @Test
     @DisplayName("constructor and operation reject absent collaborators")
     void absentCollaboratorsAreRejected() {
         assertThatNullPointerException().isThrownBy(() ->
@@ -329,6 +441,6 @@ final class BatchLaunchCoordinatorTest {
             final org.assertj.core.api.ThrowableAssert.ThrowingCallable operation) {
         assertThatThrownBy(operation)
                 .isInstanceOfSatisfying(LaunchRejectedException.class,
-                        rejected -> assertThat(rejected.reason()).isEqualTo(expected));
+                        rejected -> assertThat(rejected.rejectionReason()).isEqualTo(expected));
     }
 }

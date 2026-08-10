@@ -146,8 +146,12 @@ import org.springframework.core.io.WritableResource;
  *
  * <p>The record count has a direct legacy antecedent. The program counts rejects as it writes them
  * and, at {@code app/cbl/CBTRN02C.cbl} lines 229 to 231, sets a non-zero return code when the count
- * is above zero. {@link #recordsWritten()} exposes the same figure so the owning job configuration
- * can reproduce that outcome without recounting the dataset. The count is a {@code long} throughout;
+ * is above zero. That outcome is <strong>not</strong> reproduced from a figure this class publishes: the
+ * framework already counts what a chunk-oriented step wrote, so the owning job configuration reads
+ * {@code StepExecution.getWriteCount()} and this class publishes no accessor competing with it. Two
+ * figures for one quantity is how the two drift apart, and the framework's is the one that survives a
+ * restart correctly. What this class keeps its own count for is the monotonic meter above and the
+ * completion diagnostic below, both of which are its own. The count is a {@code long} throughout;
  * no value in this class is ever a floating-point type, and no decimal is scaled here - the amount
  * carried by the source record is encoded by the mapper and its codec, which own the estate's
  * truncating rounding policy.
@@ -349,25 +353,76 @@ public final class RejectRecordWriter implements ItemStreamWriter<RejectRecordWr
      * processor produces it and the job configuration wires it, and neither needs anything else from
      * it.
      *
-     * <p>It is immutable and total: both components are mandatory, so an item can never reach the
-     * writer describing a rejection without saying which record was rejected or without saying why.
-     * The source record is carried by reference and is never modified here - the writer only reads it,
-     * and reads it through the mapper - so the image written is the image that was read.
+     * <p>It is immutable and total: every component is mandatory, so an item can never reach the writer
+     * describing a rejection without saying which record was rejected, without saying why, or without
+     * carrying the exact bytes the input held for it. <strong>The image is a component rather than
+     * something the writer derives.</strong> The source paragraph copies the record it read, and a prefix
+     * re-encoded from the mapped fields is not that record: the copybook's filler run is uninitialised so
+     * a resource may hold any byte there, and the amount's final byte carries a negative zero that no
+     * numeric type holds. Both survive here because the bytes travel rather than being rebuilt.
      *
      * @param sourceRecord the daily-transaction record that was rejected, never {@code null}
      * @param reason       why it was rejected, never {@code null}
+     * @param sourceImage  the exact {@value #SOURCE_IMAGE_LENGTH}-byte image the input resource held for
+     *                     that record, never {@code null} and never a re-encoding of it
      */
-    public record RejectedTransaction(DailyTransaction sourceRecord, RejectReason reason) {
+    public record RejectedTransaction(DailyTransaction sourceRecord, RejectReason reason,
+            String sourceImage) {
 
         /**
          * Rejects an incomplete item at the point it is created rather than at the point it is
          * written, so a defect upstream cannot present itself as a malformed dataset downstream.
          *
-         * @throws NullPointerException if either component is {@code null}
+         * @throws NullPointerException     if any component is {@code null}
+         * @throws IllegalArgumentException if the image is not exactly {@value #SOURCE_IMAGE_LENGTH}
+         *                                  encoded bytes
          */
         public RejectedTransaction {
             Objects.requireNonNull(sourceRecord, ARTEFACT + " source record must not be null");
             Objects.requireNonNull(reason, ARTEFACT + " reject reason must not be null");
+            requireExactWidth("REJECT-TRAN-DATA",
+                    Objects.requireNonNull(sourceImage,
+                            ARTEFACT + " source record image must not be null"),
+                    SOURCE_IMAGE_LENGTH);
+        }
+
+        /**
+         * Pairs a record with its reject reason, taking the source image from the record itself.
+         *
+         * <p>The convenience the validation cascade uses. The image comes from the record's own
+         * provenance - the bytes the mapper sliced it from - and <strong>a record that carries none is
+         * refused here</strong> rather than silently regenerated: a regenerated prefix normalises the
+         * uninitialised filler run and the amount's overpunched sign byte, which is precisely the byte
+         * parity the reject dataset is contracted on. A record with no image was never read from a
+         * sequential resource, and the posting program has no such record.
+         *
+         * @param  sourceRecord the daily-transaction record that was rejected; must not be {@code null}
+         * @param  reason       why it was rejected; must not be {@code null}
+         * @throws NullPointerException  if either argument is {@code null}
+         * @throws IllegalStateException if the record carries no source image
+         */
+        public RejectedTransaction(final DailyTransaction sourceRecord, final RejectReason reason) {
+            this(sourceRecord, reason, imageOf(sourceRecord));
+        }
+
+        /**
+         * Returns a record's own source image, refusing a record that has none.
+         *
+         * @param  sourceRecord the record whose provenance is being read
+         * @return the image the record was mapped from
+         * @throws IllegalStateException if the record carries no image
+         */
+        private static String imageOf(final DailyTransaction sourceRecord) {
+            Objects.requireNonNull(sourceRecord, ARTEFACT + " source record must not be null");
+            final String image = sourceRecord.getSourceRecordImage();
+            if (image == null) {
+                throw new IllegalStateException(ARTEFACT + " cannot write a reject record for a"
+                        + " daily-transaction record that carries no source image: the reject dataset's"
+                        + " leading " + SOURCE_IMAGE_LENGTH + " bytes are the bytes that were read, and"
+                        + " re-encoding the mapped fields would normalise the uninitialised filler run"
+                        + " and the amount's overpunched sign byte");
+            }
+            return image;
         }
     }
 
@@ -391,11 +446,16 @@ public final class RejectRecordWriter implements ItemStreamWriter<RejectRecordWr
 
     /**
      * Reject records written by the current execution, which is the figure the legacy program's own
-     * reject counter holds and the figure its return-code rule is stated in.
+     * reject counter holds.
+     *
+     * <p>Read by this class alone - by the completion diagnostic, which reports what the execution that
+     * is closing wrote. The job's return-code rule is stated from the framework's own write count
+     * instead, so this is not a second authority for the same decision.
      *
      * <p>Held in an atomic long so the reference can be final and the value can be read without
      * synchronisation. It is reset when the stream opens, so it always describes the execution in
-     * progress and never accumulates across a restart.
+     * progress and never accumulates across a restart - which is exactly what the monotonic meter beside
+     * it deliberately does not do.
      */
     private final AtomicLong recordsWritten = new AtomicLong();
 
@@ -464,10 +524,26 @@ public final class RejectRecordWriter implements ItemStreamWriter<RejectRecordWr
      *
      * <p>Reproduces {@code app/cbl/CBTRN02C.cbl} paragraph {@code 2500-WRITE-REJECT-REC} lines 447 and
      * 448: the source record is placed into the leading segment and the assembled trailer into the
-     * segment that follows it, in that order and with nothing between them. The source segment is
-     * produced by the mapper that owns the daily-transaction layout, so no offset, field width or
-     * padding rule of that layout is restated here; this method contributes the trailer and the
-     * concatenation, and nothing else.
+     * segment that follows it, in that order and with nothing between them. No offset, field width or
+     * padding rule of the daily-transaction layout is restated here; this method contributes the trailer
+     * and the concatenation, and nothing else.
+     *
+     * <p><strong>&#9733; The leading segment is the input's own bytes, not a rendering of them.</strong>
+     * {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA} moves the record area the {@code READ} filled, so the
+     * legacy reject record carries the input verbatim - unaltered, and unexamined. This method therefore
+     * uses the image the mapper captured when it sliced the record, and re-renders only when there is no
+     * such image because the item never came from one.
+     *
+     * <p>Rendering is not equivalent, and the gap is one byte wide in a place no width check can see. The
+     * amount is a zoned-decimal image whose final byte carries both a digit and a sign, and
+     * {@code 0000000000}} and {@code 0000000000{} decode to the same value because a decimal has no
+     * negative zero. A render must pick one of the two bytes and would emit it where the input held the
+     * other. The 20-byte trailing filler is reconstructed from the declared width and carries the same
+     * exposure. Recorded as {@code DL-295} in {@code docs/decision-log.md}.
+     *
+     * <p>The render fallback is a defined behaviour rather than a concession: an item assembled by a caller
+     * has no original bytes to echo, so the rendering <em>is</em> its image. Every item the posting step
+     * rejects came from the sequential reader and therefore carries one.
      *
      * <p>Both segments and the finished image are measured in encoded US-ASCII bytes. The record is
      * returned as text carrying no terminator, because record separation belongs to the destination and
@@ -486,8 +562,11 @@ public final class RejectRecordWriter implements ItemStreamWriter<RejectRecordWr
      */
     public static String rejectRecordImage(final RejectedTransaction item) {
         Objects.requireNonNull(item, ARTEFACT + " rejected transaction must not be null");
-        final String sourceSegment = requireExactWidth("REJECT-TRAN-DATA",
-                DailyTransactionRecordMapper.toRecord(item.sourceRecord()), SOURCE_IMAGE_LENGTH);
+        // THE IMAGE THAT WAS READ, not a re-encoding of the entity. The source's own paragraph copies the
+        // record it read; regenerating it from the mapped fields would normalise the uninitialised filler
+        // run and the amount's overpunched sign byte, and either difference is a byte-parity failure.
+        final String sourceSegment = requireExactWidth("REJECT-TRAN-DATA", item.sourceImage(),
+                SOURCE_IMAGE_LENGTH);
         final String trailerSegment = validationTrailer(item.reason());
         return requireExactWidth("REJECT-RECORD", sourceSegment + trailerSegment,
                 REJECT_RECORD_LENGTH);
@@ -704,24 +783,6 @@ public final class RejectRecordWriter implements ItemStreamWriter<RejectRecordWr
         this.destination.close();
         LOGGER.debug("Closed the {}-byte reject dataset behind legacy DD {} after {} reject record(s)",
                 REJECT_RECORD_LENGTH, LEGACY_DD_NAME, this.recordsWritten.get());
-    }
-
-    /**
-     * Returns how many reject records the current execution has written.
-     *
-     * <p>The Java equivalent of the legacy program's own reject counter, and exposed because the legacy
-     * program's outcome depends on it: at {@code app/cbl/CBTRN02C.cbl} lines 229 to 231 a non-zero
-     * count raises the job's return code. The owning job configuration reads this rather than
-     * recounting the dataset.
-     *
-     * <p>Counted at the moment the destination accepts a chunk, which is where the legacy program
-     * counts as well. The figure covers the current execution only: it is reset when the stream opens,
-     * so a restart reports what the restarted execution wrote rather than a running total.
-     *
-     * @return the number of reject records written by this execution, never negative
-     */
-    public long recordsWritten() {
-        return this.recordsWritten.get();
     }
 
     /**

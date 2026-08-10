@@ -38,8 +38,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Locale;
+import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -97,6 +101,17 @@ class SignOnAbuseResistanceTest {
 
     /** Ceiling on tracked subjects, small enough that the bound can be driven. */
     private static final int TRACKED_SUBJECTS = 4;
+
+    /**
+     * A ceiling roomy enough that no specification about the allowance itself also saturates the
+     * tracking table.
+     *
+     * <p>The two properties are separate and are tested separately. A governor whose ceiling equals its
+     * allowance reaches both limits on the same attempt, so an assertion about one is silently also an
+     * assertion about the other - which is how the per-source isolation claim came to be written against
+     * a governor that was already saturated.
+     */
+    private static final int ROOMY_TRACKED_SUBJECTS = TRACKED_SUBJECTS * 8;
 
     /** One caller address, which is a fixture and identifies nothing. */
     private static final String SOURCE = "203.0.113.7";
@@ -230,17 +245,89 @@ class SignOnAbuseResistanceTest {
         @DisplayName("A SWEEP IS CAUGHT: every failure names a different identifier, so only the source "
                 + "subject accumulates - an identity-only counter would never refuse this")
         void anEnumerationSweepIsCaughtByTheSourceSubject() {
+            // A roomy ceiling, because this specification is about the source subject accumulating and
+            // not about the tracking table filling: a sweep of ALLOWANCE distinct identifiers produces
+            // ALLOWANCE + 1 subjects, which would saturate the shared four-slot governor and make the
+            // isolation assertion below a statement about saturation instead.
+            final SignOnAttemptGovernor roomy = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW,
+                    REFUSAL, ROOMY_TRACKED_SUBJECTS, clock, meters);
             for (int attempt = 0; attempt < ALLOWANCE; attempt++) {
-                governor.recordFailure("SWEEP" + String.format(Locale.ROOT, "%03d", attempt), SOURCE);
+                roomy.recordFailure("SWEEP" + String.format(Locale.ROOT, "%03d", attempt), SOURCE);
             }
 
-            assertThat(governor.isRefusing("NEVERSEEN", SOURCE))
+            assertThat(roomy.isRefusing("NEVERSEEN", SOURCE))
                     .as("an identifier this governor has never counted a failure for is refused, "
                             + "because the SOURCE has spent its allowance; this is the assertion that "
                             + "fails if the source namespace is ever removed")
                     .isTrue();
-            assertThat(governor.isRefusing("NEVERSEEN", OTHER_SOURCE))
+            assertThat(roomy.isRefusing("NEVERSEEN", OTHER_SOURCE))
                     .as("and the refusal is per source, so an unrelated caller is unaffected")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("SATURATION FAILS CLOSED: with the tracking table full, an attempt whose subjects "
+                + "are not in it is refused rather than admitted uncounted, because an attempt that "
+                + "cannot be counted is an attempt with no allowance at all")
+        void aSaturatedTableRefusesRatherThanStopsCounting() {
+            for (int subject = 0; subject < TRACKED_SUBJECTS * 8; subject++) {
+                governor.recordFailure("FLOOD" + String.format(Locale.ROOT, "%03d", subject),
+                        "192.0.2." + subject);
+            }
+
+            assertThat(governor.trackedSubjectCount())
+                    .as("the premise: the table is at its ceiling")
+                    .isEqualTo(TRACKED_SUBJECTS);
+            assertThat(governor.isRefusing("NEVERSEEN", OTHER_SOURCE))
+                    .as("before this behaviour existed the governor turned itself off here: the attempt "
+                            + "was neither counted nor refused, so guessing continued at full rate "
+                            + "against the credential store and the hasher for as long as the flood was "
+                            + "sustained")
+                    .isTrue();
+            assertThat(counted(meters, SignOnAttemptGovernor.SATURATED_METRIC,
+                    SignOnAttemptGovernor.SOURCE_NAMESPACE))
+                    .as("and the fail-closed state is counted, so an operator can tell a genuine "
+                            + "lockout from an attack that caused one")
+                    .isGreaterThan(0.0d);
+        }
+
+        @Test
+        @DisplayName("saturation does not refuse a subject the table already holds, so the fail-closed "
+                + "answer is proportional rather than a global lockout")
+        void aSaturatedTableStillAnswersForSubjectsItHolds() {
+            governor.recordFailure(KNOWN_ID, SOURCE);
+            for (int subject = 0; subject < TRACKED_SUBJECTS * 8; subject++) {
+                governor.recordFailure("FLOOD" + String.format(Locale.ROOT, "%03d", subject),
+                        "192.0.2." + subject);
+            }
+
+            assertThat(governor.trackedSubjectCount()).isEqualTo(TRACKED_SUBJECTS);
+            assertThat(governor.isRefusing(KNOWN_ID, SOURCE))
+                    .as("this identity has one counted failure out of an allowance of four and its "
+                            + "record was never swept, so it is answered on its own count")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the occupancy the ceiling is enforced against never drifts from the table itself, "
+                + "which is what makes an atomically reserved slot a real slot")
+        void theOccupancyNeverDriftsFromTheTable() {
+            for (int subject = 0; subject < TRACKED_SUBJECTS * 8; subject++) {
+                governor.recordFailure("FLOOD" + String.format(Locale.ROOT, "%03d", subject),
+                        "192.0.2." + subject);
+            }
+            assertThat(governor.trackedSubjectCount()).isEqualTo(TRACKED_SUBJECTS);
+
+            clock.advance(WINDOW.plus(REFUSAL).plusSeconds(1));
+            governor.recordFailure(KNOWN_ID, SOURCE);
+
+            assertThat(governor.trackedSubjectCount())
+                    .as("every expired entry released its slot as it was swept, so the two subjects of "
+                            + "this attempt are the only ones holding one")
+                    .isEqualTo(2);
+            assertThat(governor.isRefusing("NEVERSEEN", OTHER_SOURCE))
+                    .as("and the fail-closed state lifted of its own accord, because it is derived "
+                            + "from occupancy rather than latched")
                     .isFalse();
         }
 
@@ -468,6 +555,175 @@ class SignOnAbuseResistanceTest {
         }
     }
 
+    /**
+     * The tracked-subject ceiling is a hard bound, including when subjects arrive together.
+     *
+     * <h2>Why a sequential flood could not have caught this</h2>
+     *
+     * <p>The existing flood test invents thousands of subjects one after another and the ceiling holds,
+     * because on a single thread the read of the map's size and the insertion that follows it cannot be
+     * separated by anything. Concurrently they can: several first-attempts for different subjects each
+     * read a size below the ceiling and each then insert, so the bound is exceeded by as many subjects as
+     * there were threads in the gap. The bound is the only thing standing between an enumeration sweep
+     * across generated identifiers and unbounded growth of this map, so exceeding it is the failure of the
+     * protection rather than an untidiness in it.
+     *
+     * <p>Each round below is an independent race: every worker contributes two subjects nobody else uses,
+     * all of them start together, and the whole round competes for a ceiling far smaller than the number
+     * of subjects offered. Between rounds every subject is released, which both returns the map to empty
+     * and asserts the second half of the same fix - that a slot given up is genuinely given back. A
+     * counter that drifted upward would pass one round and starve every round after it.
+     */
+    @Nested
+    @DisplayName("the tracking ceiling under contention")
+    class TheCeilingUnderContention {
+
+        /** Deliberately far smaller than the number of subjects each round offers. */
+        private static final int CEILING = 8;
+
+        /** Workers released together, each contributing two subjects of its own. */
+        private static final int WORKERS = 32;
+
+        /** Independent races run in sequence, because one race can only be won or lost once. */
+        private static final int ROUNDS = 25;
+
+        /** How long a round may take before the wait is treated as a failure. */
+        private static final long WAIT_SECONDS = 10L;
+
+        private SimpleMeterRegistry meters;
+
+        private SignOnAttemptGovernor governor;
+
+        @BeforeEach
+        void createGovernor() {
+            this.meters = new SimpleMeterRegistry();
+            this.governor = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL, CEILING,
+                    new MovableClock(Instant.parse("2022-07-19T10:00:00Z")), this.meters);
+        }
+
+        @Test
+        @DisplayName("many distinct subjects arriving at once never take more slots than the ceiling "
+                + "allows, and every slot they took is returned")
+        void theHardCeilingHoldsWhenDistinctSubjectsArriveTogether() throws Exception {
+            for (int round = 0; round < ROUNDS; round++) {
+                final int currentRound = round;
+                final CountDownLatch start = new CountDownLatch(1);
+                final CountDownLatch finished = new CountDownLatch(WORKERS);
+                final List<Thread> workers = new ArrayList<>();
+                for (int worker = 0; worker < WORKERS; worker++) {
+                    final int currentWorker = worker;
+                    final Thread thread = new Thread(() -> {
+                        try {
+                            start.await(WAIT_SECONDS, TimeUnit.SECONDS);
+                            this.governor.recordFailure(identityOf(currentRound, currentWorker),
+                                    sourceOf(currentRound, currentWorker));
+                        } catch (final InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            finished.countDown();
+                        }
+                    }, "signon-flood-" + round + "-" + worker);
+                    workers.add(thread);
+                    thread.start();
+                }
+
+                start.countDown();
+                assertThat(finished.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .as("every worker must return. A sweep that ran inside the map's own computation "
+                                + "would be modifying the map it was computing in, which is not merely "
+                                + "untidy - it is permitted to fail to terminate")
+                        .isTrue();
+                for (final Thread thread : workers) {
+                    thread.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+                }
+
+                assertThat(this.governor.trackedSubjectCount())
+                        .as("round %d offered %d subjects against a ceiling of %d; a size read before an "
+                                + "insertion cannot bound what several threads insert between the two",
+                                currentRound, WORKERS * 2, CEILING)
+                        .isLessThanOrEqualTo(CEILING);
+
+                for (int worker = 0; worker < WORKERS; worker++) {
+                    this.governor.recordSuccess(identityOf(currentRound, worker),
+                            sourceOf(currentRound, worker));
+                }
+                assertThat(this.governor.trackedSubjectCount())
+                        .as("every subject of this round is released before the next one races")
+                        .isZero();
+            }
+
+            // The map is empty, so the ceiling must be entirely available again. It is only available if
+            // every slot handed out over twenty-five rounds came back: a counter that leaked even once
+            // would leave this final fill short, and no assertion on the map's size alone would show it.
+            for (int pair = 0; pair < CEILING / 2; pair++) {
+                this.governor.recordFailure(identityOf(ROUNDS, pair), sourceOf(ROUNDS, pair));
+            }
+            assertThat(this.governor.trackedSubjectCount())
+                    .as("the whole ceiling is available again, so no slot was retained by any round")
+                    .isEqualTo(CEILING);
+        }
+
+        @Test
+        @DisplayName("repeated failures for one subject occupy one slot, not one per failure")
+        void repeatedFailuresForOneSubjectConsumeOneSlot() {
+            for (int attempt = 0; attempt < ALLOWANCE - 1; attempt++) {
+                this.governor.recordFailure(KNOWN_ID, SOURCE);
+            }
+
+            for (int pair = 0; pair < CEILING / 2 - 1; pair++) {
+                this.governor.recordFailure(identityOf(0, pair), sourceOf(0, pair));
+            }
+
+            assertThat(this.governor.trackedSubjectCount())
+                    .as("two subjects for the repeating pair plus two for each further pair fills the "
+                            + "ceiling exactly; a slot taken per failure would have exhausted it early")
+                    .isEqualTo(CEILING);
+            assertThat(counted(this.meters, SignOnAttemptGovernor.UNTRACKED_METRIC,
+                    SignOnAttemptGovernor.IDENTITY_NAMESPACE))
+                    .as("and nothing was declined, because there was room for everything offered")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("a subject that has aged out yields its slot to a new one, which is the sweep doing "
+                + "its work from outside any computation")
+        void anExpiredSubjectYieldsItsSlotToANewOne() {
+            final MovableClock movable = new MovableClock(Instant.parse("2022-07-19T10:00:00Z"));
+            final SignOnAttemptGovernor aging = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW,
+                    REFUSAL, CEILING, movable, this.meters);
+            for (int pair = 0; pair < CEILING / 2; pair++) {
+                aging.recordFailure(identityOf(0, pair), sourceOf(0, pair));
+            }
+            assertThat(aging.trackedSubjectCount()).isEqualTo(CEILING);
+
+            movable.advance(WINDOW.plusMinutes(1));
+            aging.recordFailure(identityOf(1, 0), sourceOf(1, 0));
+
+            assertThat(aging.trackedSubjectCount())
+                    .as("the aged entries were swept and only the new pair remains, so the slots they "
+                            + "held were returned rather than merely vacated")
+                    .isEqualTo(2);
+        }
+
+        /**
+         * @param  round  the race round
+         * @param  worker the worker within the round
+         * @return an identifier used by exactly one worker of exactly one round
+         */
+        private static String identityOf(final int round, final int worker) {
+            return String.format(Locale.ROOT, "R%02dW%03d", round, worker);
+        }
+
+        /**
+         * @param  round  the race round
+         * @param  worker the worker within the round
+         * @return a source address used by exactly one worker of exactly one round
+         */
+        private static String sourceOf(final int round, final int worker) {
+            return String.format(Locale.ROOT, "198.51.%d.%d", round, worker);
+        }
+    }
+
     @Nested
     @DisplayName("the transaction, with the allowance and the equalised path in place")
     class TheTransaction {
@@ -507,6 +763,9 @@ class SignOnAbuseResistanceTest {
             subject = new AuthenticationService(repository, digests, new NavigationService(),
                     new MessageCatalogService(), clock, governor);
             when(digests.encode(any(CharSequence.class))).thenReturn(STORED_DIGEST_STANDIN);
+            // Every identity in this class holds a real digest; what is under test here is the
+            // allowance, not the integrity of the column.
+            when(digests.isDigest(anyString())).thenReturn(true);
         }
 
         @Test
@@ -558,6 +817,9 @@ class SignOnAbuseResistanceTest {
             }
             reset(repository, digests);
             when(digests.encode(any(CharSequence.class))).thenReturn(STORED_DIGEST_STANDIN);
+            // Every identity in this class holds a real digest; what is under test here is the
+            // allowance, not the integrity of the column.
+            when(digests.isDigest(anyString())).thenReturn(true);
 
             final AuthenticationService.SignOnScreen refused =
                     subject.handle(KeyAction.ENTER, KNOWN_ID, PRESENTED, SOURCE);

@@ -19,7 +19,6 @@ package com.carddemo.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -78,7 +77,7 @@ import org.springframework.batch.core.launch.NoSuchJobException;
 final class BatchJobLaunchServiceTest {
 
     /** A stable name the stubbed registry resolves. */
-    private static final String JOB_NAME = BatchJobCatalog.POST_TRANSACTION_JOB_NAME;
+    private static final String JOB_NAME = BatchJobCatalog.POST_TRANSACTION_JOB;
 
     /** The execution identifier the stubbed launch answers with. */
     private static final Long EXECUTION_ID = 8813L;
@@ -195,7 +194,7 @@ final class BatchJobLaunchServiceTest {
         @DisplayName("hands the framework exactly the names and values supplied, adding nothing, so a "
                 + "repeated launch is the same job identity")
         void handsTheFrameworkExactlyWhatWasSupplied() throws Exception {
-            final String jobName = BatchJobCatalog.TRANSACTION_REPORT_JOB_NAME;
+            final String jobName = BatchJobCatalog.TRANSACTION_REPORT_JOB;
             final Job job = mock(Job.class);
             when(jobRegistry.getJob(jobName)).thenReturn(job);
             when(batchLaunchGateway.start(eq(job), anyMap())).thenReturn(EXECUTION_ID);
@@ -239,7 +238,7 @@ final class BatchJobLaunchServiceTest {
         @DisplayName("builds a fresh carrier per launch, so no launch can observe or alter another's "
                 + "parameters")
         void buildsAFreshCarrierPerLaunch() throws Exception {
-            final String jobName = BatchJobCatalog.TRANSACTION_REPORT_JOB_NAME;
+            final String jobName = BatchJobCatalog.TRANSACTION_REPORT_JOB;
             final Job job = mock(Job.class);
             when(jobRegistry.getJob(jobName)).thenReturn(job);
             when(batchLaunchGateway.start(eq(job), anyMap())).thenReturn(EXECUTION_ID);

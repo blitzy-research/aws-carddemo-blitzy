@@ -411,7 +411,7 @@ public final class GlobalExceptionHandler {
      * {@code app/cbl/COACTUPC.cbl} lines 4203 to 4224 sends the abend area to the terminal with
      * {@code EXEC CICS SEND} and then abends under code {@code 9999}, so text carried under that
      * code was written to be read by the operator. The batch routine reached it differently: the
-     * nine {@code CALL 'CEE3ABD'} sites - among them {@code app/cbl/CBACT01C.cbl} line 173 - pass
+     * nine CEE3ABD call sites - among them {@code app/cbl/CBACT01C.cbl} line 173 - pass
      * the abort routine a code and no message at all, and the diagnostic that preceded them went to
      * {@code DISPLAY}, which is the job log. {@code app/cbl/CBACT01C.cbl} lines 110 to 113 are the
      * pattern: the program displays which file failed, moves the raw file status into the I/O status

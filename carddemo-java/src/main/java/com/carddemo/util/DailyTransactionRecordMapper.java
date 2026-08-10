@@ -58,11 +58,12 @@ import java.util.Objects;
  * the codec applies scale 2 with truncation toward zero because no arithmetic statement anywhere in
  * the estate specifies rounding, and a COBOL store without a rounding clause truncates. This class
  * never calls {@code setScale} and never names a rounding mode, which is what keeps the module's
- * rounding policy single-valued; no binary floating-point type appears here either. One asymmetry
- * follows: a {@link BigDecimal} cannot carry a negative zero, so a negatively-signed all-zero image
- * decodes to zero and re-emits with the positive sign. It is observable only where every digit is
- * zero, and a caller needing byte-exact preservation reads the field through the codec's signed
- * entry points.
+ * rounding policy single-valued; no binary floating-point type appears here either. A
+ * {@link BigDecimal} cannot carry a negative zero, so this mapper reads and writes the amount through
+ * the codec's <em>signed</em> entry points and carries the one missing bit on the entity's transient
+ * negative-zero marker. A negatively-signed all-zero image therefore round-trips to the byte it arrived
+ * as rather than being normalised to a positive zero, which is what the reject dataset's 350-byte source
+ * segment depends on.
  *
  * <p>Four field-level contracts must survive untouched, because each looks like something to tidy
  * up and none is. <strong>A 26-space processing timestamp is legitimate</strong>: an unposted record
@@ -305,14 +306,33 @@ public final class DailyTransactionRecordMapper {
         return toReader(record).toByteArray();
     }
 
+    /**
+     * Maps one reader's record onto an entity and records the image it was mapped from.
+     *
+     * <p>The image is retained on the entity because the reject dataset echoes it. The legacy write is
+     * {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA} [app/cbl/CBTRN02C.cbl:L447] - the record area the
+     * READ filled - so the leading 350 bytes of a reject record are the input bytes and not a rendering of
+     * the decoded fields. Decoding is lossy in one place that matters: a negatively signed all-zero
+     * zoned-decimal amount and a positively signed one decode to the same value, so a render cannot know
+     * which sign byte the input carried. Capturing the image here, at the one point where it is still in
+     * hand, is what removes the guess. Recorded as {@code DL-295}.
+     *
+     * <p>Every {@link FixedWidthFieldReader} factory owns a private copy of exactly its record's bytes, so
+     * {@code image()} is this record's 350 characters even when the reader was positioned inside a larger
+     * buffer - the separator and every neighbouring record are already excluded.
+     *
+     * @param  reader the reader positioned over one whole record
+     * @return the entity, carrying the image it was mapped from
+     */
     private static DailyTransaction fromReader(FixedWidthFieldReader reader) {
-        return new DailyTransaction(
+        ZonedDecimalCodec.ZonedValue amount = decodeAmount(reader);
+        DailyTransaction record = new DailyTransaction(
                 reader.field(DALYTRAN_ID, DALYTRAN_ID_OFFSET, DALYTRAN_ID_LENGTH),
                 reader.field(DALYTRAN_TYPE_CD, DALYTRAN_TYPE_CD_OFFSET, DALYTRAN_TYPE_CD_LENGTH),
                 reader.field(DALYTRAN_CAT_CD, DALYTRAN_CAT_CD_OFFSET, DALYTRAN_CAT_CD_LENGTH),
                 reader.field(DALYTRAN_SOURCE, DALYTRAN_SOURCE_OFFSET, DALYTRAN_SOURCE_LENGTH),
                 reader.field(DALYTRAN_DESC, DALYTRAN_DESC_OFFSET, DALYTRAN_DESC_LENGTH),
-                decodeAmount(reader),
+                amount.value(),
                 reader.field(DALYTRAN_MERCHANT_ID, DALYTRAN_MERCHANT_ID_OFFSET,
                         DALYTRAN_MERCHANT_ID_LENGTH),
                 reader.field(DALYTRAN_MERCHANT_NAME, DALYTRAN_MERCHANT_NAME_OFFSET,
@@ -324,6 +344,15 @@ public final class DailyTransactionRecordMapper {
                 reader.field(DALYTRAN_CARD_NUM, DALYTRAN_CARD_NUM_OFFSET, DALYTRAN_CARD_NUM_LENGTH),
                 reader.field(DALYTRAN_ORIG_TS, DALYTRAN_ORIG_TS_OFFSET, DALYTRAN_ORIG_TS_LENGTH),
                 reader.field(DALYTRAN_PROC_TS, DALYTRAN_PROC_TS_OFFSET, DALYTRAN_PROC_TS_LENGTH));
+        // The sign bit the amount cannot carry. Set after construction because it is not part of the
+        // record-image constructor's parameter order and is not persisted state.
+        record.setDalytranAmtNegativeZero(amount.negativeZero());
+        // The bytes the resource actually held, carried alongside the parsed fields. The reject dataset
+        // concatenates this image with its 80-byte trailer, so it must be the image and not a
+        // re-encoding: the filler run is uninitialised in the copybook and the amount's final byte
+        // carries a sign no numeric type holds, and a re-encoding normalises both.
+        record.setSourceRecordImage(reader.image());
+        return record;
     }
 
     private static FixedWidthFieldReader toReader(DailyTransaction record) {
@@ -340,7 +369,8 @@ public final class DailyTransactionRecordMapper {
                 .putAlphanumeric(DALYTRAN_DESC, DALYTRAN_DESC_OFFSET, DALYTRAN_DESC_LENGTH,
                         requirePresent(record.getDalytranDesc(), DALYTRAN_DESC))
                 .putNumeric(DALYTRAN_AMT, DALYTRAN_AMT_OFFSET, DALYTRAN_AMT_LENGTH,
-                        encodeAmount(record.getDalytranAmt()))
+                        encodeAmount(record.getDalytranAmt(),
+                                record.isDalytranAmtNegativeZero()))
                 .putNumeric(DALYTRAN_MERCHANT_ID, DALYTRAN_MERCHANT_ID_OFFSET,
                         DALYTRAN_MERCHANT_ID_LENGTH,
                         requirePresent(record.getDalytranMerchantId(), DALYTRAN_MERCHANT_ID))
@@ -364,15 +394,31 @@ public final class DailyTransactionRecordMapper {
                 .build();
     }
 
-    private static BigDecimal decodeAmount(FixedWidthFieldReader reader) {
-        return ZonedDecimalCodec.decodeMonetary(
+    /**
+     * Slices the amount and decodes it at the canonical monetary scale, together with the one bit of sign
+     * an amount cannot carry.
+     *
+     * <p>The <em>signed</em> codec entry point, deliberately: a negatively-signed all-zero image differs
+     * from a positively-signed one only in its final byte, and the plain entry point discards that
+     * difference, so a round trip would re-emit {@code '{'} where the record held {@code '}'}. That
+     * matters most on this layout, because a rejected record's leading 350 bytes are the source image and
+     * a re-encoded negative zero would be a byte-parity failure in the reject dataset.
+     */
+    private static ZonedDecimalCodec.ZonedValue decodeAmount(FixedWidthFieldReader reader) {
+        return ZonedDecimalCodec.decodeSigned(
                 reader.field(DALYTRAN_AMT, DALYTRAN_AMT_OFFSET, DALYTRAN_AMT_LENGTH),
-                DALYTRAN_AMT_LENGTH, DALYTRAN_AMT);
+                DALYTRAN_AMT_LENGTH, ZonedDecimalCodec.MONETARY_SCALE, DALYTRAN_AMT);
     }
 
-    private static String encodeAmount(BigDecimal amount) {
-        return ZonedDecimalCodec.encodeMonetary(requirePresent(amount, DALYTRAN_AMT),
-                DALYTRAN_AMT_LENGTH, DALYTRAN_AMT);
+    /**
+     * Encodes the amount into its declared width with the sign overpunched into the final byte, applying
+     * the entity's negative-zero marker while the amount is zero.
+     */
+    private static String encodeAmount(BigDecimal amount, boolean negativeZero) {
+        BigDecimal present = requirePresent(amount, DALYTRAN_AMT);
+        return ZonedDecimalCodec.encodeSigned(
+                new ZonedDecimalCodec.ZonedValue(present, negativeZero && present.signum() == 0),
+                DALYTRAN_AMT_LENGTH, ZonedDecimalCodec.MONETARY_SCALE, DALYTRAN_AMT);
     }
 
     private static void requireRecordWidth(int actualEncodedLength) {

@@ -81,10 +81,10 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * <h2>Seeded content, and the absence of any alternate access path</h2>
  * The reference-data migration seeds exactly 7 rows, derived from
  * {@code app/data/ASCII/trantype.txt} - 427 bytes, that is 7 records at the 60-byte record length plus
- * one line terminator each. Those rows reach the local and test profiles only: all four migrations are
- * delivered flat from {@code classpath:db/migration}, which every profile resolves, and a production
- * migration stops after the index script, so a production database receives the schema and the indexes
- * without the sample rows.
+ * one line terminator each. Those rows reach the local and test profiles only: the seed scripts ship
+ * from {@code classpath:db/migration/seed}, which only those two profiles resolve, while production
+ * resolves {@code classpath:db/migration/schema} alone - so a production database receives the schema
+ * and the indexes without the sample rows. See {@code DL-298} in {@code docs/decision-log.md}.
  * The index migration creates no index touching {@code transaction_type}, and no foreign key anywhere in
  * the schema originates from or targets it, so the primary key is the only access path that exists for a
  * finder to serve. Nor are the seeded rows held anywhere between calls: this module keeps no mutable

@@ -88,6 +88,18 @@
 #                                      previous key unreadable: that is a property of authenticated
 #                                      encryption, not a defect
 #     CARDDEMO_TLS_KEYSTORE_PASSWORD   credential protecting the server key store named below
+#     CARDDEMO_MANAGEMENT_TOKEN        the collector's credential for the management surface, and the
+#                                      only source of the monitoring authority. Held to a quality
+#                                      floor as well as to presence: at least 32 bytes, at least 16
+#                                      distinct characters, and none of a short list of words that
+#                                      appear only in typed values. GENERATE it - 32 bytes from a
+#                                      cryptographic source rendered as text - rather than composing
+#                                      one. Rotate by replacing this variable and restarting, updating
+#                                      the collector in the same change, and read the rotation against
+#                                      carddemo.management.authentication{outcome}. It was missing from
+#                                      this list until review, which is why the list says so now. The
+#                                      rules, the rotation expectation and what is deliberately not
+#                                      done are set out beside the setting itself below
 #
 #   REQUIRED - NOT SECRET, but deployment-specific. No fallback, because a guessed value would be
 #   worse than a failed start. Guarded on exactly the same terms as the secrets above: a location is
@@ -109,6 +121,12 @@
 #                                      cloud SDK reads it directly
 #     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  trace collector address. Also keeps its standard name, for
 #                                      the same reason
+#     CARDDEMO_AWS_ACCOUNT_ID          the twelve-digit account that must own every cloud resource this
+#                                      deployment reaches. Never defaulted and never inferred from a
+#                                      caller-supplied locator: it is the value every bucket, queue and
+#                                      topic is checked against at start-up, so inferring it would make
+#                                      the check agree with whatever it was given. It was missing from
+#                                      this list until review, alongside the management credential above
 #
 #   OPTIONAL. Each carries either a resource name mandated by the migration plan or a stated
 #   non-sensitive value, and each may still be redirected without editing this file.
@@ -373,23 +391,28 @@ spring:
     # migrations off there is no migration tool to carry the two refusals below or the seeded-database
     # refusal above. A control that one property can switch off is not a control.
     enabled: true
-    # See docs/decision-log.md DL-127.
+    # See docs/decision-log.md DL-298.
     #
-    # THE ONE PACKAGED LOCATION AND NOTHING ELSE, matched by equality rather than containment. All four
-    # delivered scripts are physically flat in this single directory, so the location is the same value
-    # every profile resolves and carries no part of the seed separation. It is still pinned by equality
-    # because another location would carry scripts the ceiling below never measured, and a look-alike
-    # directory on disk could carry its own V1 and V2 - so FlywayConfig refuses anything but this exact
-    # value, including a filesystem: descriptor, a bare path, a nested sub-path, a trailing separator
-    # and a second entry.
-    locations: classpath:db/migration
-    # THIS LINE IS THE PRODUCTION CONTROL. V1 and V2 are at or below "2" and are applied; the two seed
-    # scripts are numbered 3 and 4, sit above this ceiling, and are therefore never executed - so the
-    # fifty synthetic customer rows and the ten known sign-on identities cannot reach this database.
-    # FlywayConfig re-applies the pin after binding, so an inherited value, an operator override or a
-    # merged property source cannot lift it, and ProductionSeedRejectionCallback refuses a start
-    # against a database that was seeded before this profile was ever pointed at it.
-    target: "2"
+    # THIS LINE IS THE PRODUCTION CONTROL: THE PACKAGED SCHEMA LOCATION AND NOTHING ELSE, matched by
+    # equality rather than containment. The seed scripts live in the sibling classpath:db/migration/seed,
+    # which this profile never resolves, so the fifty synthetic customer rows and the ten known sign-on
+    # identities do not appear in any state at all here - not applied, not pending, not resolved.
+    #
+    # FlywayConfig refuses anything but this exact value: a filesystem: descriptor, a bare path, a
+    # deeper sub-path, a trailing separator, a second entry, the seed location itself, and above all the
+    # shared parent classpath:db/migration - which is scanned RECURSIVELY and would therefore reach the
+    # seed directory. A look-alike directory on disk could carry seed content under a schema-looking
+    # name, which is why containment will not do.
+    locations: classpath:db/migration/schema
+    # NO CEILING, AND A NUMBER HERE IS REFUSED. This key used to read "2" and was the production
+    # control. It held the seeds out and it also froze the schema at version 2: a V5 schema script would
+    # never have been applied and the migration would still have reported success, and the pin could not
+    # be raised because FlywayConfig refused every other value. The separation is the location list
+    # above, which an operator cannot widen, so FlywayConfig now refuses a numeric ceiling under this
+    # profile and re-applies `latest` after binding. ProductionSeedRejectionCallback remains the third
+    # control and refuses a start against a database that was seeded before this profile was pointed at
+    # it.
+    target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
@@ -636,20 +659,28 @@ server:
 # those two sibling files resolve it literally. Repeating it here would create a second place for it to
 # drift; inheriting it means there is exactly one.
 #
-# ONE INTERACTION WORTH RECORDING, because it is easy to misread as a break, and because an earlier
-# revision of this file recorded it as a REQUIREMENT ON THE DEPLOYMENT and then shipped nothing that
-# met it. This profile enables in-JVM transport security above, so a probe that speaks plaintext to
-# this port receives no status line at all and reports a perfectly healthy process as unhealthy - which
-# an orchestrator acts on by restarting it, indefinitely. Stating that the probe "must address the same
-# path over HTTPS" while the only shipped probe sent plaintext was a documented obligation with no
-# implementation behind it.
+# ONE INTERACTION WORTH RECORDING, because it is easy to misread as a break, and because two earlier
+# revisions of this file each described a resolution that the shipped probe did not implement. This
+# profile enables in-JVM transport security above, so a probe that speaks plaintext to this port
+# receives no status line at all and reports a perfectly healthy process as unhealthy - which an
+# orchestrator acts on by restarting it, indefinitely. The first revision stated that the probe "must
+# address the same path over HTTPS" while the only shipped probe sent plaintext: an obligation with no
+# implementation behind it. The second said the probe and the listener "read ONE value and cannot
+# disagree", naming the environment variable SERVER_SSL_ENABLED - and THIS FILE SETS NO VARIABLE. The
+# line above is a literal `true` in YAML, so a container running this profile with nothing exported
+# fell through to the probe's plaintext default and was reported unhealthy for its whole life. A
+# configuration key and an environment variable are not the same thing, and a claim that two files
+# share one value is only true when both actually read the same one.
 #
-# THE SHIPPED PROBE NOW READS THE TRANSPORT RATHER THAN ASSUMING IT. The Dockerfile HEALTHCHECK
-# branches on SERVER_SSL_ENABLED - which is the relaxed-binding environment form of the very
-# server.ssl.enabled key that switches the listener above, so the server and its probe read ONE value
-# and cannot disagree. A deployment that selects this profile sets that variable as part of enabling
-# transport security, and the probe speaks TLS by the same act. It needs nothing installed: the runtime
-# image already carries openssl, so no HTTP client and no additional package enters the image.
+# THE SHIPPED PROBE NOW OBSERVES THE LISTENER, so there is no shared value left to drift. The
+# Dockerfile HEALTHCHECK attempts plaintext and TLS and passes when EITHER returns a 200 status line,
+# taking its attempt ORDER from SERVER_SSL_ENABLED when that variable happens to be set and falling
+# back to the other transport regardless. So this profile needs to export nothing for its container to
+# be reported correctly, and a deployment that states the transport through a properties file, a
+# command-line argument or a configuration server is served equally well. It needs nothing installed
+# either: the runtime image already carries openssl, so no HTTP client and no additional package
+# enters the image. config/ContainerHardeningContractTest asserts both halves - that the probe carries
+# both attempts, and that this file's TLS setting requires no variable for the probe to succeed.
 #
 # THE PROBE ASKS FOR THE LIVENESS GROUP, not the aggregate. Liveness answers "should this process be
 # restarted", which never depends on another service, so the probe makes no external call and is
@@ -725,6 +756,14 @@ management:
   tracing:
     enabled: true
     sampling:
+      # THE RATIO IS NOW A CONTROL RATHER THAN A SUGGESTION. The framework's own sampler leaves its
+      # remote-parent-sampled arm wide open, so until config/ObservabilityConfig#traceSampler replaced it
+      # any caller presenting a traceparent with the sampled flag set had every span of its request
+      # recorded and exported - whatever this figure said, and before any credential was examined. One
+      # request in ten was this deployment's decision and the other nine were the caller's. The delivered
+      # sampler puts a REMOTE sampled parent through this same ratio and honours a remote unsampled parent
+      # as off, while following a LOCAL parent exactly so that one trace is never exported as a fragment.
+      # See docs/decision-log.md DL-311.
       probability: ${CARDDEMO_TRACING_SAMPLE_RATE:0.1}
   otlp:
     tracing:
@@ -746,12 +785,29 @@ management:
       #
       # That outcome is the required one - start-up aborts, and the message names this exact variable
       # - so nothing here needs correcting. What differs is only the WORDING: this one arrives as the
-      # framework's placeholder message instead of the guard's twelve-setting summary, and a deployer
+      # framework's placeholder message instead of the guard's required-setting summary, and a deployer
       # missing this variable alongside others learns about it in two messages rather than one. The
       # variable stays a bare reference regardless, because the alternative that would let the guard
       # report it first is a fallback value, and a defaulted collector address is exactly what the
       # no-fallback discipline exists to prevent. Measured against Spring Boot 3.5.16 / Spring
       # Framework 6.2.19; see docs/decision-log.md DL-105.
+      #
+      # PRESENCE IS NOT THE WHOLE CHECK ANY MORE. Every span of every authenticated request is posted to
+      # this address, so config/ProductionConfigurationValidator#validateTraceCollectorAddress holds the
+      # value it resolves to five rules, and refuses the start-up before a single bean is created if any
+      # is broken: the scheme must be https, so the exporter authenticates the collector and a banking
+      # request's route, timing and span attributes are not carried in clear text; the locator must carry
+      # no user information, because a credential in a locator is a credential everywhere a locator is
+      # written down; it must carry neither a query nor a fragment, which an OTLP receiver does not read
+      # and whose presence says the value came from something that is not an OTLP endpoint; the path must
+      # be /v1/traces, which the OTLP over HTTP specification fixes; and the host must not be loopback,
+      # which in production means the variable was never really set and every span is being discarded.
+      # The refusal names the rule and never repeats the configured value. Client-certificate
+      # authentication to the collector is NOT asserted - the framework's OTLP tracing properties expose
+      # no client key material - and that gap is recorded rather than implied. Also note that the
+      # collector's own text no longer reaches the log: the two exporter transports are pinned off in
+      # application.yml because they compose their failure messages out of the collector's response, and
+      # carddemo.tracing.export counts what was lost instead. See docs/decision-log.md DL-311.
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
 
 # Restated for the same reason as the management block above: both switches - the generated interface
@@ -846,6 +902,44 @@ carddemo:
     # a client at an emulator; with none, every client resolves the real service endpoint for the region
     # above. The local and test overlays are where an override belongs, and an inherited one here would
     # have to be blanked to undo - which is exactly the kind of correction that gets forgotten.
+    # -------------------------------------------------------------------------------------------
+    # THE ACCOUNT THIS DEPLOYMENT DECLARES IT OWNS. A bare environment reference with NO fallback,
+    # on the same terms as the signing material, and guarded by the same start-up check.
+    #
+    # WHY IT EXISTS. Every other check in this file judges the SHAPE of a configured value, and shape
+    # cannot tell this deployment's own bucket, queue and topic from identically-shaped resources in
+    # somebody else's account. That distinction is not academic here, because both outbound channels
+    # are defined to tolerate a failure rather than raise: the queue reproduces ERROROPTION(IGNORE),
+    # and the notification channel is non-fatal by construction. So a deployment pointed at another
+    # account's queue answers every report request normally while that account receives the
+    # eighty-column job-control cards; one pointed at another account's bucket accepts statements,
+    # reports and rejected records - carrying account identifiers, card numbers and monetary balances
+    # - just as quietly. A credential that can READ the right resources and not write them fails the
+    # same way: jobs report that they ran and produced nothing.
+    #
+    # WHAT IT BUYS, in three places. config/ProductionConfigurationValidator refuses a configured
+    # queue or topic locator whose account segment is not this one, before a single bean is created.
+    # config/AwsResourceTrustVerifier then asks the services themselves, before anything can publish:
+    # the bucket is head-requested with this account as its expected owner, so the object store - not
+    # this process - enforces ownership on the call; the bucket's versioning must be enabled, because
+    # versioning is what carries the retained-generation semantics of the legacy output datasets; a
+    # single zero-length probe object is written under a reserved key and then removed version by
+    # version, which is the only way to establish that this credential can write AND clean up; and the
+    # resolved queue and topic identifiers must carry this account, with the queue additionally
+    # first-in-first-out and content-based deduplication switched off. Anything unproven stops the
+    # start rather than reporting DOWN, because an instance that cannot address its own account is not
+    # temporarily unhealthy.
+    #
+    # A BARE NAME NEEDS NO CHECK AND IS THE PREFERRED FORM. A bare queue or topic name carries no
+    # account, so the client resolves it against this deployment's own credentials and nothing can be
+    # redirected. Requiring a resource identifier instead would be strictly weaker: it would replace a
+    # value that cannot be cross-account with one that can, and then check it.
+    #
+    # NOT A CREDENTIAL, and still not logged. An account identifier names an account and authorises
+    # nothing, but no diagnostic in this module repeats a configured value, so a refusal names the key
+    # and the property it could not establish and never the identifier. See docs/decision-log.md
+    # DL-302.
+    expected-account-id: ${CARDDEMO_AWS_ACCOUNT_ID}
     # BatchStagingArea checks and downloads staged inputs and uploads completed output generations
     # through this one pre-provisioned bucket. It creates no cloud resource, and local writer buffers
     # are published only after successful completion.
@@ -1003,9 +1097,61 @@ carddemo:
     # material and guarded by the same start-up check. A defaulted operator credential would be a
     # credential in the repository, and this one is presented on every scrape.
     #
+    # AND IT MUST BE LONG ENOUGH TO BE UNGUESSABLE, WHICH IS A SEPARATE REQUIREMENT FROM BEING SUPPLIED.
+    # An earlier revision required only that this variable be set: the start-up check refused an absent,
+    # unresolved or blank value and accepted everything else, so a ONE-CHARACTER token started production
+    # and then fell to a few hundred guesses. Nothing else in the model catches that. There is no sign-on
+    # behind this credential, no account, no lockout and no attempt counter - deliberately, because a
+    # collector is not a user - so being unguessable is its whole defence, and the constant-time
+    # comparison that protects it from a timing side channel does nothing for a value short enough to
+    # enumerate. ProductionConfigurationValidator now refuses fewer than THIRTY-TWO characters after
+    # stripping, and reports the length it found without echoing the value.
+    #
+    # GENERATE IT, NEVER CHOOSE IT. `openssl rand -hex 16` or `openssl rand -base64 24` each produce a
+    # value exactly at the floor. The rule is a proxy for unpredictability rather than a measure of it -
+    # thirty-two repetitions of one letter would pass it - which is why the generator is named here
+    # instead of being left to improvisation. Rotating it is a restart with a new value; nothing stores
+    # it, and no request or log ever carries it back.
+    #
     # THE PROBES STAY ANONYMOUS AND THAT IS DELIBERATE. Their bodies are a status word - health detail
     # and components are withheld under this profile - and the container's own probe presents no
     # credential. What is closed here is the shape of the workload, which is a different kind of answer
     # from whether the process is alive.
+    #
+    # PRESENCE IS NOT THE WHOLE CHECK ANY MORE, for the same reason it is not enough for the collector
+    # address above. Review found this credential accepted on the strength of being non-blank, which made
+    # a single character a valid production credential for the surface described in this comment - and a
+    # long-lived one, because it is presented on every scrape and there is nothing to rotate it against.
+    # config/ProductionConfigurationValidator#validateManagementCredentialQuality now holds the supplied
+    # value to three rules and refuses the start-up before any bean is created if it breaks one: at least
+    # 32 bytes, which is the same floor this module applies to its signing material and the point at which
+    # guessing becomes arithmetic; at least 16 distinct characters, so a value of the required length built
+    # from a couple of repeated symbols is refused; and none of a short list of words that only appear in
+    # values somebody typed, which catches the credential left as the example. The refusal names the rule
+    # and never repeats the value - this is a live credential for the surface that publishes this
+    # deployment's metrics, and a refusal that echoed it would write a working credential into the log of
+    # the deployment that rejected it.
+    #
+    # GENERATE IT, DO NOT COMPOSE IT. Thirty-two bytes from a cryptographic source rendered as text is the
+    # intended shape, for example the output of a password manager's generator or of a system random
+    # source. Nothing here measures entropy or claims the value is random: randomness is not a property of
+    # a string, and a check that pretended otherwise would refuse legitimate credentials while passing
+    # crafted ones. What is guaranteed is that a value which obviously was not generated does not start.
+    #
+    # ROTATION IS AN OPERATIONAL PROCEDURE AND THIS IS ITS STATED EXPECTATION. Replace this variable and
+    # restart; the credential is read once at start-up and held for the process lifetime, so a rotation is
+    # a deployment rather than a signal, and the collector's configuration must be updated in the same
+    # change. Rotate on a fixed schedule and immediately on any suspicion, and read the rotation against
+    # carddemo.management.authentication{outcome} - a refused series that begins where a rotation happened
+    # is a collector that was not updated, and a refused series with no rotation behind it is somebody
+    # probing. There is no overlap window: one credential is configured at a time, which is a property of
+    # a single shared secret and is why the metric matters more than it would with two.
+    #
+    # WHAT IS DELIBERATELY NOT DONE, so it reads as a boundary rather than an oversight: no lockout after
+    # repeated failures. Closing the surface on a threshold would let any unauthenticated caller take this
+    # deployment's metrics away from its collector, with one shared secret and nothing to fall back to,
+    # and keying a lockout per caller would mean unbounded state driven by an unauthenticated header.
+    # Short-lived issued credentials or mutual TLS would be stronger than any of this and are infrastructure
+    # provisioning, which is outside this executor's authority. See docs/decision-log.md DL-312.
     management:
       token: ${CARDDEMO_MANAGEMENT_TOKEN}

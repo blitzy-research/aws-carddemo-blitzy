@@ -17,17 +17,19 @@
 package com.carddemo.service;
 
 import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.ObservationPropagation;
 import io.awspring.cloud.sns.core.SnsNotification;
 import io.awspring.cloud.sns.core.SnsOperations;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -72,6 +74,27 @@ import org.springframework.stereotype.Service;
  * the wrong behaviour for the queue bridge, which is why only this one does it: the job-submission queue
  * carries work that must happen, while this carries an operational notice that something already has.
  *
+ * <h2>Every notification this channel loses is counted, by the code that loses it</h2>
+ *
+ * <p>Shedding is only defensible if it is visible, and it was not. The pool's own
+ * {@code DiscardOldestPolicy} discards without reporting, and after {@link #close()} it discards
+ * <em>silently and unconditionally</em> - it checks whether the pool is shut down and, if it is, does
+ * nothing at all - while {@code execute} raises nothing, so the caller could not tell either. The loss
+ * was inferred instead from a queue-depth sample read before the hand-off, which is a different moment
+ * from the rejection and disagrees with it under concurrency in both directions: it reports a shed that
+ * did not happen when the worker drains between the sample and the offer, and misses one that did when
+ * another producer fills the queue in the same interval.
+ *
+ * <p>{@link #shedRatherThanQueue} replaces it. It runs <em>inside</em> the rejection, which is the only
+ * moment at which a loss is a fact rather than an estimate, and it counts exactly the notifications
+ * actually lost on {@link #SHED_METER_NAME}, tagged with why. {@link #close()} counts what it abandons
+ * on the same meter, on both of its paths - the grace period expiring and the wait being interrupted -
+ * so one number answers "how many completion notices did this instance lose, and to what".
+ *
+ * <p>None of this changes the verdict contract below, and that is the point: the meter exists so that a
+ * channel permitted to lose messages cannot lose them unaccountably. See {@code docs/decision-log.md}
+ * entry DL-306.
+ *
  * <h2>The dependency is optional on every surface, not only on this one</h2>
  *
  * <p>A dependency cannot be optional here and required elsewhere, and it was: this class documented
@@ -95,7 +118,16 @@ public final class JobCompletionNotificationService
     public static final String TOPIC_PROPERTY =
             "carddemo.aws.sns.job-notification-topic";
 
-    public static final int SCHEMA_VERSION = 1;
+    /**
+     * Version of the JSON body below, incremented when the body's shape or meaning changes.
+     *
+     * <p>Version 2 replaced the two zone-less local date-times with UTC instants rendered as ISO-8601
+     * with a trailing {@code Z}. Version 1's timestamps could not be ordered across two instances
+     * configured in different zones and were ambiguous either side of a daylight-saving transition, so
+     * the change is to the <em>meaning</em> of two fields and not only to their formatting - which is
+     * exactly what a subscriber needs the version to tell it.
+     */
+    public static final int SCHEMA_VERSION = 2;
 
     public static final String EVENT_TYPE = "carddemo.batch.job-completion";
 
@@ -120,6 +152,32 @@ public final class JobCompletionNotificationService
     public static final String SUBJECT = "CardDemo batch job completion";
 
     public static final int MAX_PAYLOAD_BYTES = 512;
+
+    /**
+     * Counter of completion notifications this channel lost rather than delivered.
+     *
+     * <p>A count and not a gauge, because the quantity that matters is cumulative loss rather than a
+     * present depth, and because the events being counted are individually irrecoverable. Read against
+     * the delivery count published by {@link #OBSERVATION_NAME}, it answers the only question a shedding
+     * channel owes an operator: what fraction of what happened was announced.
+     */
+    public static final String SHED_METER_NAME = "carddemo.job.completion.shed";
+
+    /** Description of {@link #SHED_METER_NAME}, stated once. */
+    private static final String SHED_METER_DESCRIPTION =
+            "CardDemo batch job-completion notifications lost rather than delivered, by reason";
+
+    /** Tag naming why a notification was lost. */
+    public static final String TAG_REASON = "reason";
+
+    /** {@link #TAG_REASON} value for a notification displaced from a full pending queue. */
+    public static final String REASON_QUEUE_FULL = "QUEUE_FULL";
+
+    /** {@link #TAG_REASON} value for a notification offered after the notifier was closed. */
+    public static final String REASON_NOTIFIER_CLOSED = "NOTIFIER_CLOSED";
+
+    /** {@link #TAG_REASON} value for a notification still pending when shutdown gave up waiting. */
+    public static final String REASON_SHUTDOWN = "SHUTDOWN";
 
     private static final int MAX_TOPIC_LENGTH = 512;
 
@@ -159,6 +217,9 @@ public final class JobCompletionNotificationService
 
     private final ObservationRegistry observationRegistry;
 
+    /** Where every lost notification is counted. */
+    private final MeterRegistry meterRegistry;
+
     /**
      * The single worker the listener path hands off to.
      *
@@ -176,16 +237,20 @@ public final class JobCompletionNotificationService
      * @param snsOperations       framework SNS publishing boundary
      * @param topic               configured topic name or ARN
      * @param observationRegistry registry for the actual outbound publish
+     * @param meterRegistry       registry the lost-notification count is published on
      */
     public JobCompletionNotificationService(
             final SnsOperations snsOperations,
             @Value("${" + TOPIC_PROPERTY + "}") final String topic,
-            final ObservationRegistry observationRegistry) {
+            final ObservationRegistry observationRegistry,
+            final MeterRegistry meterRegistry) {
         this.snsOperations = Objects.requireNonNull(
                 snsOperations, "snsOperations must not be null");
         this.topic = requireTopic(topic);
         this.observationRegistry = Objects.requireNonNull(
                 observationRegistry, "observationRegistry must not be null");
+        this.meterRegistry = Objects.requireNonNull(
+                meterRegistry, "meterRegistry must not be null");
         this.deliveryWorker = new ThreadPoolExecutor(
                 0, 1,
                 SHUTDOWN_GRACE_MILLIS, TimeUnit.MILLISECONDS,
@@ -195,7 +260,11 @@ public final class JobCompletionNotificationService
                     worker.setDaemon(true);
                     return worker;
                 },
-                new ThreadPoolExecutor.DiscardOldestPolicy());
+                // The pool's own DiscardOldestPolicy is replaced rather than wrapped: it is the component
+                // that discards silently, and after shutdown it discards without even the courtesy of a
+                // rejection. Everything else about this pool - one thread, this queue depth, this shed
+                // direction - is retained exactly. Only the reporting changes.
+                this::shedRatherThanQueue);
         // With a maximum of one thread and a core of zero, the worker must be allowed to be created on
         // demand and to retire when idle; without this the pool would keep no thread at all.
         this.deliveryWorker.allowCoreThreadTimeOut(true);
@@ -212,33 +281,119 @@ public final class JobCompletionNotificationService
      * releases {@code afterJob} at once.
      *
      * <p>A snapshot that cannot even be queued is shed rather than published inline, because publishing
-     * it inline is the behaviour being removed. The shed is logged so an operator can see that a
-     * notification was lost, and it names only authored identifiers.
+     * it inline is the behaviour being removed. Reporting the shed belongs to
+     * {@link #shedRatherThanQueue}, not here: this method cannot observe a rejection it does not receive,
+     * and the queue-depth sample it used to read instead was taken at a different moment from the one it
+     * described. Nothing is logged here about a loss, and nothing needs to be.
      *
      * @param event completed job snapshot
      */
     @Override
     public void onApplicationEvent(final JobCompletionEvent event) {
         Objects.requireNonNull(event, "event must not be null");
-        final String jobName = token(event.jobName(), MAX_JOB_NAME_LENGTH, UNKNOWN_TOKEN);
-        final String executionId =
-                event.jobExecutionId() == null ? UNKNOWN_TOKEN : event.jobExecutionId().toString();
-        final int pendingBefore = this.deliveryWorker.getQueue().size();
         try {
-            this.deliveryWorker.execute(() -> publishCompletion(event));
-        } catch (final RejectedExecutionException shuttingDown) {
-            LOGGER.warn("Job-completion notification was not handed off because the notifier is"
-                            + " closed: job={} jobExecutionId={} topic={}",
-                    jobName, executionId, this.topic);
+            // Wrapped so the publish runs inside whatever observation is current HERE. Without it the
+            // worker thread starts with nothing current and the SNS publish becomes a detached root - a
+            // one-span trace with no link to the launch that produced the job. The job's own span cannot
+            // be that parent: the framework stops it before the terminal callbacks, so what is carried is
+            // the context enclosing the launch, which is the strongest link still available and strictly
+            // better than dropping it. The executor itself is untouched: its queue, its ceiling and its
+            // rejection behaviour are all load-bearing and none of them is a tracing concern. See
+            // docs/decision-log.md entry DL-305.
+            this.deliveryWorker.execute(ObservationPropagation.inCurrentObservation(
+                    this.observationRegistry, () -> publishCompletion(event)));
+        } catch (final RuntimeException handOffFailure) {
+            // The headline contract of this class is that the batch verdict is never a function of this
+            // channel, and this is the boundary where that is enforced. The rejection handler below is
+            // written not to throw, so nothing is expected here; the guard is kept because it is the only
+            // thing standing between an unexpected fault in this optional channel and a completed job's
+            // afterJob callback, and it is answered with a diagnostic naming no caller content.
+            LOGGER.warn("A job-completion notification could not be handed off: topic={}"
+                            + " failureChain={}",
+                    this.topic, FailureDiagnostics.failureChainOf(handOffFailure));
+        }
+    }
+
+    /**
+     * Sheds a notification the bounded worker cannot take, and counts the loss from inside the rejection.
+     *
+     * <p>Three situations reach this method and they are not the same event, which is why the meter is
+     * tagged rather than plain:
+     *
+     * <ol>
+     *   <li><strong>The notifier is closed.</strong> The pool takes nothing more, so the arriving
+     *       snapshot is lost. This is the case the pool's own policy handled by doing literally nothing,
+     *       and it is the reason a shed after shutdown left no trace anywhere.</li>
+     *   <li><strong>The queue is full.</strong> The head is displaced so the arriving snapshot can take
+     *       its place - the same direction the previous policy chose, and the right one, because every
+     *       snapshot here describes a job that has already finished and an operator needs the most recent
+     *       completions rather than the oldest. The displaced snapshot is the loss.</li>
+     *   <li><strong>The queue refilled between the two operations.</strong> Another producer took the
+     *       space, so the arriving snapshot is lost too. It is not published inline as a consolation:
+     *       publishing inline on the caller's thread is precisely the behaviour this hand-off exists to
+     *       remove.</li>
+     * </ol>
+     *
+     * <p>Each branch counts only what it actually lost. A displacement that finds the queue already
+     * drained counts nothing, because nothing was lost - the case the discarded queue-depth sample used
+     * to report as a shed.
+     *
+     * <p>No identifier from the snapshot appears in any message here. The {@link Runnable} handed to the
+     * pool is an opaque unit of work by then, and reaching back into it for a job name would mean
+     * carrying the snapshot alongside the task purely to name it in a log. The topic, the capacity and
+     * the reason are enough to act on, and the meter carries the count.
+     *
+     * @param arriving the snapshot's delivery task, never {@code null}
+     * @param executor the pool that refused it, never {@code null}
+     */
+    private void shedRatherThanQueue(final Runnable arriving, final ThreadPoolExecutor executor) {
+        if (executor.isShutdown()) {
+            countShed(REASON_NOTIFIER_CLOSED, 1);
+            LOGGER.warn("A job-completion notification was not handed off because the notifier is"
+                    + " closed: topic={} reason={}", this.topic, REASON_NOTIFIER_CLOSED);
             return;
         }
-        if (pendingBefore >= PENDING_NOTIFICATION_CAPACITY) {
-            // DiscardOldestPolicy accepted this snapshot by dropping the head of a full queue. Reported
-            // because a silently shed notification is indistinguishable from one that was never
-            // produced, and an operator reading the topic would draw the wrong conclusion.
-            LOGGER.warn("The job-completion notifier queue was full, so an older notification was shed"
-                            + " to accept this one: job={} jobExecutionId={} topic={} capacity={}",
-                    jobName, executionId, this.topic, PENDING_NOTIFICATION_CAPACITY);
+        if (executor.getQueue().poll() != null) {
+            countShed(REASON_QUEUE_FULL, 1);
+            LOGGER.warn("The job-completion notifier queue was full, so the oldest pending notification"
+                            + " was shed to accept a newer one: topic={} capacity={} reason={}",
+                    this.topic, PENDING_NOTIFICATION_CAPACITY, REASON_QUEUE_FULL);
+        }
+        // Re-offered onto the queue rather than re-submitted through execute(). Submitting would re-enter
+        // this handler if the queue filled again, which is a recursion the previous policy carried and
+        // this one does not need: a rejection with a single-thread ceiling means exactly one worker is
+        // running, the pool re-creates a worker whenever it exits with a non-empty queue, and a worker
+        // never retires while the queue holds anything - so a queued task is always picked up.
+        if (!executor.getQueue().offer(arriving)) {
+            countShed(REASON_QUEUE_FULL, 1);
+            LOGGER.warn("The job-completion notifier queue refilled while a notification was being"
+                            + " shed, so the arriving notification was shed too: topic={} capacity={}"
+                            + " reason={}",
+                    this.topic, PENDING_NOTIFICATION_CAPACITY, REASON_QUEUE_FULL);
+        }
+    }
+
+    /**
+     * Records lost notifications on the one meter that counts them.
+     *
+     * <p>Registered on first use for each reason, which is how every other counter in this module is
+     * published. A meter fault is absorbed at debug: this method is called from a rejection handler and
+     * from shutdown, and neither is a place where a telemetry problem may become the caller's problem.
+     *
+     * @param reason the {@link #TAG_REASON} value
+     * @param lost   how many notifications were lost, always positive at every call site
+     */
+    private void countShed(final String reason, final int lost) {
+        try {
+            Counter.builder(SHED_METER_NAME)
+                    .description(SHED_METER_DESCRIPTION)
+                    .tag(TAG_REASON, reason)
+                    .register(this.meterRegistry)
+                    .increment(lost);
+        } catch (final RuntimeException meterFailure) {
+            LOGGER.debug("Could not count {} shed job-completion notification(s) with reason {}:"
+                            + " failureType={}",
+                    lost, reason, meterFailure.getClass().getSimpleName());
         }
     }
 
@@ -249,22 +404,45 @@ public final class JobCompletionNotificationService
      * notification already on the wire is not cut off by an orderly shutdown, and it is short because the
      * alternative to finishing it is losing an operational notice about a job that has already
      * completed - which is exactly the trade this whole channel is defined to make.
+     *
+     * <p>Both ways out of the wait abandon pending work and both now account for it. The interrupted path
+     * previously called {@code shutdownNow()} and discarded its answer, so an interrupted shutdown - the
+     * one that happens when a container is being torn down under pressure, and therefore the one most
+     * likely to be holding a backlog - lost notifications without recording that it had. A promise of
+     * diagnostics that only holds on the path that was not in a hurry is not a promise.
      */
     @Override
     public void close() {
         this.deliveryWorker.shutdown();
         try {
             if (!this.deliveryWorker.awaitTermination(SHUTDOWN_GRACE_MILLIS, TimeUnit.MILLISECONDS)) {
-                final int abandoned = this.deliveryWorker.shutdownNow().size();
-                if (abandoned > 0) {
-                    LOGGER.warn("{} job-completion notification(s) were abandoned at shutdown;"
-                            + " topic={}", abandoned, this.topic);
-                }
+                reportAbandoned(this.deliveryWorker.shutdownNow().size(),
+                        "the grace period expired");
             }
         } catch (final InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            this.deliveryWorker.shutdownNow();
+            reportAbandoned(this.deliveryWorker.shutdownNow().size(),
+                    "the shutdown wait was interrupted");
         }
+    }
+
+    /**
+     * Records notifications abandoned by a shutdown that stopped waiting.
+     *
+     * <p>Counted on the same meter as every other loss, because an operator asking how many completion
+     * notices went unannounced does not care which mechanism dropped them, and would be misled by a
+     * number that covered only some of them.
+     *
+     * @param abandoned how many pending notifications were discarded, possibly zero
+     * @param cause     why the shutdown stopped waiting, for the diagnostic
+     */
+    private void reportAbandoned(final int abandoned, final String cause) {
+        if (abandoned <= 0) {
+            return;
+        }
+        countShed(REASON_SHUTDOWN, abandoned);
+        LOGGER.warn("{} job-completion notification(s) were abandoned at shutdown because {}: topic={}"
+                + " reason={}", abandoned, cause, this.topic, REASON_SHUTDOWN);
     }
 
     /**
@@ -340,11 +518,22 @@ public final class JobCompletionNotificationService
         return value == null ? "null" : value.toString();
     }
 
-    private static String timestamp(final LocalDateTime value) {
+    /**
+     * Renders one boundary as an ISO-8601 instant in UTC, or as JSON {@code null}.
+     *
+     * <p>{@code ISO_INSTANT} always ends in {@code Z}, so a subscriber cannot read the value as local
+     * time by mistake, and two notices from two instances are directly comparable. An absent boundary
+     * stays absent rather than becoming an epoch or a placeholder, because the framework genuinely
+     * records no end time for an execution abandoned before it finished.
+     *
+     * @param  value the boundary, possibly {@code null}
+     * @return the quoted ISO-8601 UTC image, or the bare token {@code null}
+     */
+    private static String timestamp(final Instant value) {
         if (value == null) {
             return "null";
         }
-        return "\"" + DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(value) + "\"";
+        return "\"" + DateTimeFormatter.ISO_INSTANT.format(value) + "\"";
     }
 
     private static String exitCode(final String value) {

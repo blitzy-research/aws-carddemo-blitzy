@@ -1044,61 +1044,52 @@ class StatementTextTemplatesTest {
     }
 
     @Test
-    @DisplayName("an integer part of ten digits is REJECTED rather than truncated on the left, and "
-            + "the rejection names the mask and its nine-digit capacity")
-    void tenDigitIntegerPartIsRejectedAndNotLeftTruncated() {
+    @DisplayName("an integer part of ten digits is STORED into the mask's nine positions, exactly as "
+            + "the legacy MOVE of the ten-digit account balance into this field does")
+    void tenDigitIntegerPartIsStoredIntoTheNineDigitMask() {
+        // app/cbl/CBSTM03A.CBL line 484 moves ACCT-CURR-BAL - PIC S9(10)V99 - into ST-CURR-BAL, whose
+        // mask carries nine integer positions. A COBOL store keeps the low-order positions and the
+        // operational sign and drops the rest, so this value must print rather than be refused.
         BigDecimal tenIntegerDigits = new BigDecimal("1000000000.00");
         assertThat(tenIntegerDigits.scale()).isEqualTo(2);
 
-        assertThatThrownBy(
-                () -> StatementTextTemplates.formatAmountMaskWithoutZeroSuppression(
-                        tenIntegerDigits))
-                .isExactlyInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not fit mask 9(9).99-")
-                .hasMessageContaining("the mask provides 9 integer digits")
-                .hasMessageContaining("the value needs 10")
-                .hasMessageContaining("rejected rather than truncated on the left");
+        // 1_000_000_000.00 keeps its low-order nine integer digits, which are all zero.
+        assertThat(StatementTextTemplates.formatAmountMaskWithoutZeroSuppression(tenIntegerDigits))
+                .isEqualTo("000000000.00 ");
+        assertThat(StatementTextTemplates.formatAmountMaskWithZeroSuppression(tenIntegerDigits))
+                .isEqualTo("         .00 ");
 
-        assertThatThrownBy(
-                () -> StatementTextTemplates.formatAmountMaskWithZeroSuppression(tenIntegerDigits))
-                .isExactlyInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not fit mask Z(9).99-")
-                .hasMessageContaining("the mask provides 9 integer digits")
-                .hasMessageContaining("the value needs 10");
+        // A ten-digit value whose surviving digits are significant shows the truncation directly.
+        BigDecimal tenSignificantDigits = new BigDecimal("1234567890.12");
+        assertThat(StatementTextTemplates.formatAmountMaskWithoutZeroSuppression(
+                tenSignificantDigits)).isEqualTo("234567890.12 ");
+        assertThat(StatementTextTemplates.formatAmountMaskWithZeroSuppression(tenSignificantDigits))
+                .isEqualTo("234567890.12 ");
     }
 
     @Test
-    @DisplayName("an over-capacity value is rejected for a negative magnitude as well, and through "
-            + "the line builders")
-    void overCapacityValueIsRejectedWhenNegativeAndThroughTheLineBuilders() {
-        BigDecimal negativeOverCapacity = new BigDecimal("-1000000000.00");
+    @DisplayName("the store keeps the operational sign and is applied through the line builders too")
+    void overCapacityValueKeepsItsSignAndFlowsThroughTheLineBuilders() {
+        BigDecimal negativeOverCapacity = new BigDecimal("-1234567890.12");
         BigDecimal wellOverCapacity = new BigDecimal("12345678901234.99");
 
-        assertThatThrownBy(
-                () -> StatementTextTemplates.formatAmountMaskWithoutZeroSuppression(
-                        negativeOverCapacity))
-                .isExactlyInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("the value needs 10");
+        // The sign belongs to the receiving field, so it survives a truncation that removes digits.
+        assertThat(StatementTextTemplates.formatAmountMaskWithoutZeroSuppression(
+                negativeOverCapacity)).isEqualTo("234567890.12-");
+        assertThat(StatementTextTemplates.formatAmountMaskWithZeroSuppression(wellOverCapacity))
+                .isEqualTo("678901234.99 ");
 
-        assertThatThrownBy(
-                () -> StatementTextTemplates.formatAmountMaskWithZeroSuppression(wellOverCapacity))
-                .isExactlyInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("the value needs 14");
-
-        assertThatThrownBy(
-                () -> StatementTextTemplates.stLine8CurrentBalance(negativeOverCapacity))
-                .isExactlyInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not fit mask 9(9).99-");
-
-        assertThatThrownBy(() -> StatementTextTemplates.stLine14Transaction(
+        // And the same store is in force behind each line builder, so none of them refuses the value.
+        assertThat(StatementTextTemplates.stLine8CurrentBalance(negativeOverCapacity))
+                .contains("234567890.12-")
+                .hasSize(StatementTextTemplates.STATEMENT_RECORD_LENGTH);
+        assertThat(StatementTextTemplates.stLine14Transaction(
                 "0000000000000001", "PURCHASE AT STORE", negativeOverCapacity))
-                .isExactlyInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not fit mask Z(9).99-");
-
-        assertThatThrownBy(
-                () -> StatementTextTemplates.stLine14aTotalExpenditure(negativeOverCapacity))
-                .isExactlyInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not fit mask Z(9).99-");
+                .contains("234567890.12-")
+                .hasSize(StatementTextTemplates.STATEMENT_RECORD_LENGTH);
+        assertThat(StatementTextTemplates.stLine14aTotalExpenditure(negativeOverCapacity))
+                .contains("234567890.12-")
+                .hasSize(StatementTextTemplates.STATEMENT_RECORD_LENGTH);
     }
 
     @Test

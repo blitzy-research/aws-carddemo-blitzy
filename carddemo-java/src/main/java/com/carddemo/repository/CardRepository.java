@@ -47,9 +47,10 @@ import com.carddemo.domain.Card;
  * four copies of one selection rule, each paying for rows it threw away, over an index whose whole
  * point is that the account may own several cards. The rule is now stated once, here, in the name of
  * {@link #findFirstByCardAcctIdOrderByCardNumAsc(String)}: bounded to one row, ordered explicitly, and
- * impossible for a caller to get subtly wrong. {@link #findByCardAcctId(String)} stays for the callers
- * that genuinely need every card of an account, so the two contracts describe two different questions
- * rather than competing answers to one.
+ * impossible for a caller to get subtly wrong. {@link #findByCardAcctIdOrderByCardNumAsc(String, Limit)} stays for the
+ * callers that genuinely need more than one card of an account, bounded and ordered by the same base key
+ * the path itself orders by, so the two contracts describe two different questions rather than competing
+ * answers to one.
  *
  * <p><strong>Why the keyset finders exist, and why the card-list screen is not routed through the
  * account index.</strong> The card-list program {@code app/cbl/COCRDLIC.cbl} declares {@code CARDAIX}
@@ -74,26 +75,40 @@ import com.carddemo.domain.Card;
  */
 public interface CardRepository extends JpaRepository<Card, String> {
     /**
-     * Every card of one account.
+     * The cards of one account, ascending by card number, limited to the number of rows the caller asks
+     * for: the {@code CARDAIX} alternate-index access path.
      *
      * <p>The return type is a list because the alternate key is non-unique: an account may own several
      * cards, and a single-valued derived query would raise an incorrect-result-size failure the moment
      * it owned two - a failure the legacy read of a duplicate-bearing path cannot produce.
      *
-     * <p><strong>Order is the caller's to impose.</strong> No ordering term is declared, so a caller
-     * that depends on sequence sorts what it receives. A service reproducing the legacy keyed read
-     * takes the row with the lowest card number, which is the record that read would have returned;
-     * a service that genuinely needs every card in order sorts on the card number before using them.
-     * Declaring the order here would read as though the sequence were a property of the index rather
-     * than of the legacy access path being reproduced.
+     * <p><strong>&#9733; The bound is required, not optional.</strong> Nothing in the schema bounds how
+     * many cards an account may own: there is no unique constraint on the account identifier and no
+     * cardinality rule anywhere. An unbounded finder over a non-unique index is therefore a query whose
+     * result size is a property of the data, and the reference seed - one card per account across fifty
+     * accounts - is precisely the shape that would never reveal it. The caller states what it will
+     * accept, so the cost is visible at the call site rather than latent in the table.
+     *
+     * <p><strong>&#9733; The ordering is the access path's, not the caller's.</strong> An earlier revision
+     * declared no ordering term, on the reasoning that a caller depending on sequence should sort what it
+     * receives. That reasoning does not survive contact with the index: a read of a {@code NONUNIQUEKEY}
+     * path yields duplicates in ascending base-key order, and the base key of this cluster is the card
+     * number. Ascending card number is what the path <em>does</em>, which is why the sibling
+     * {@link #findFirstByCardAcctIdOrderByCardNumAsc(String)} already declares it. Leaving it undeclared
+     * meant the rows arrived in whatever order the plan produced, so a bound could not even be applied
+     * meaningfully - "the first n" has no referent without an order. The two finders now describe the
+     * same path at two depths rather than one declaring its order and the other disclaiming it.
+     * Recorded as {@code DL-296} in {@code docs/decision-log.md}.
      *
      * <p>An empty list is the analogue of the legacy not-found response and is not an error here; the
      * decision whether absence is an error belongs to the service tier.
      *
      * @param cardAcctId the eleven-character account identifier, matched exactly as supplied
-     * @return the matching rows, possibly empty, never {@code null}
+     * @param limit      the greatest number of rows to return; never absent
+     * @return the matching rows in ascending card-number order, at most {@code limit} of them, possibly
+     *         empty, never {@code null}
      */
-    List<Card> findByCardAcctId(String cardAcctId);
+    List<Card> findByCardAcctIdOrderByCardNumAsc(String cardAcctId, Limit limit);
 
     /**
      * The one card of an account that a legacy keyed read of the alternate-index path would return.
@@ -107,10 +122,11 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * whether absence is an error belongs to the service tier, which reports it with that screen's own
      * message.
      *
-     * <p>Callers needing every card of the account use {@link #findByCardAcctId(String)} instead. The
-     * two exist side by side deliberately: one answers "which card does a keyed read return", the
-     * other "which cards does this account own", and collapsing them would lose the distinction the
-     * non-unique index exists to represent.
+     * <p>Callers needing more than one card of the account use
+     * {@link #findByCardAcctIdOrderByCardNumAsc(String, Limit)} instead. The two exist side by side
+     * deliberately: one answers "which card does a keyed read return", the other "which cards does this
+     * account own", and collapsing them would lose the distinction the non-unique index exists to
+     * represent. Both order by the card number, because that is the order the path yields duplicates in.
      *
      * @param cardAcctId the eleven-character account identifier, matched exactly as supplied
      * @return the card with the lowest card number among the account's cards, or empty when it owns

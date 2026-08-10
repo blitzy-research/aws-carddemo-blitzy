@@ -33,18 +33,37 @@
 # second run appends state - which mirrors the legacy provisioning stream, where each
 # generation-data-group definition was followed by an explicit reset of the already-exists condition.
 #
-# THE NAMES ARE MANDATED, NOT CHOSEN. src/main/resources/application-local.yml is their authoritative
-# source, and the same strings are bound byte-identically in application.yml, in the test and
-# production overlays, in docker-compose.yml - which passes them into this container - and here,
-# where the resources are created. A disagreement has no fail-fast signal: the legacy queue write was
-# defined errors-ignored, so the stack would start cleanly and come up short at the first submission
+# THE NAMES ARE MANDATED, NOT CHOSEN. src/main/resources/application.yml is their authoritative
+# source - it is the one document that declares all five, and the local overlay states outright that it
+# inherits the region rather than restating it - and the same strings are bound byte-identically in the
+# local, test and production overlays, in docker-compose.yml, which passes them into this container, and
+# here, where the resources are created. A disagreement has no fail-fast signal: the legacy queue write
+# was defined errors-ignored, so the stack would start cleanly and come up short at the first submission
 # with nothing in the start-up log naming the cause.
 #
-#   carddemo-batch-staging       object-store bucket        -> carddemo.aws.s3.bucket
-#   JOBS.fifo                    submission queue           -> carddemo.aws.sqs.job-submission-queue
+# THE KEY PATHS BELOW ARE THE ONES THE APPLICATION BINDS, and a test holds this table to them. Two of
+# them named nothing until this checkpoint: the settings type renamed the bucket key and the queue key,
+# every overlay followed, and this table did not. The superseded spellings are deliberately NOT repeated
+# here - they are recorded in docs/decision-log.md - because a plausible key path written anywhere in
+# this repository is a path a reader will grep for, and finding it in a comment is what made the stale
+# table convincing in the first place. The two current spellings are one line further down each.
+#
+# The values were right throughout, so nothing failed and nothing could - a comment binds no property -
+# which is exactly why the table is now asserted rather than maintained by hand: an operator reading it
+# to find out which variable to set was being sent to a key no profile declares.
+#
+#   carddemo-batch-staging       object-store bucket        -> carddemo.aws.s3.batch-staging-bucket
+#   JOBS.fifo                    submission queue           -> carddemo.aws.sqs.job-queue
 #   carddemo-job-submission      message group id           -> carddemo.aws.sqs.message-group-id
 #   carddemo-job-notifications   notification topic         -> carddemo.aws.sns.job-notification-topic
 #   us-east-1                    region                     -> carddemo.aws.region
+#
+# Two further keys live under the same prefix and are deliberately absent from the table, because this
+# script provisions no resource for either: carddemo.aws.endpoint-override, which only the local and
+# test overlays declare and which aims the clients at this emulator, and
+# carddemo.aws.expected-account-id, which production requires so that the trust check can refuse a
+# queue, topic or bucket outside the account the deployment declares it owns. See
+# docs/decision-log.md DL-302 and DL-314.
 #
 # The .fifo suffix is required rather than decoration: the queue service refuses a first-in-first-out
 # queue whose name omits it. The message group id provisions nothing - the publisher puts it on each

@@ -67,6 +67,11 @@ import org.springframework.messaging.support.GenericMessage;
  * exclusion the second stream's cards land in the middle of the first's and the contiguity assertion
  * fails; with exclusion the second thread waits at the lock and the two runs come out whole.
  *
+ * <p>The exclusion the second thread waits at is observed rather than assumed: the coordinator this
+ * test builds reports when a caller is enqueued on it, and every proof of non-entry waits for that state
+ * instead of sleeping. A sleep followed by "not finished yet" is satisfied by a thread the scheduler has
+ * not run, so it would pass with the exclusion deleted.
+ *
  * <p>The assertion is on the recorded order of arrival at the queue - which is what a real drain would
  * read back - and it is expressed as contiguity of each submission's ordinals rather than as an
  * expected sequence, because either submission may legitimately be first.
@@ -315,25 +320,70 @@ class JobSubmissionServiceConcurrencyTest {
     }
 
     /**
+     * A coordinator that serializes submissions and can be <em>asked</em> whether a caller is waiting.
+     *
+     * <h3>Why the observability matters</h3>
+     *
+     * <p>A test that wants to prove a second caller was excluded has to establish that the second caller
+     * actually reached the exclusion. Sleeping and then finding it unfinished does not establish that: a
+     * thread the scheduler never ran is also unfinished, so the observation passes on a loaded machine even
+     * with the exclusion deleted. {@link ReentrantLock#hasQueuedThreads()} answers the question directly -
+     * it is true exactly when a thread is enqueued on the lock, which is the boundary the contender has to
+     * have reached - so the wait below is a wait for a <em>state</em> rather than for a duration.
+     */
+    private static final class SerializingCoordinator implements JobSubmissionCoordinator {
+
+        /** The exclusion itself, fair so that a queued caller is admitted in arrival order. */
+        private final ReentrantLock lock = new ReentrantLock(true);
+
+        /** Creates the coordinator. */
+        SerializingCoordinator() {
+            // Intentionally empty: the lock is the whole of the state.
+        }
+
+        @Override
+        public JobSubmissionService.SubmissionResult serialize(
+                final Supplier<JobSubmissionService.SubmissionResult> submission) {
+            this.lock.lock();
+            try {
+                return submission.get();
+            } finally {
+                this.lock.unlock();
+            }
+        }
+
+        /**
+         * Waits until at least one caller is provably enqueued on the lock.
+         *
+         * <p>Polls a monotone condition rather than sleeping for a guess: once a thread is enqueued it
+         * stays enqueued until the holder releases, so the only thing that varies between machines is how
+         * soon the condition is observed, never whether it holds. A machine so loaded that the contender
+         * never runs at all fails here with a message that says so, instead of passing as though the
+         * exclusion had been observed.
+         *
+         * @throws InterruptedException if the wait is interrupted
+         */
+        void awaitAContenderEnqueued() throws InterruptedException {
+            final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+            while (!this.lock.hasQueuedThreads()) {
+                assertThat(System.nanoTime() < deadline)
+                        .as("no caller reached the exclusion within %d seconds, so nothing about "
+                                + "exclusion can be concluded from what follows", WAIT_SECONDS)
+                        .isTrue();
+                TimeUnit.MILLISECONDS.sleep(5L);
+            }
+        }
+    }
+
+    /**
      * Builds the service over a test-owned coordinator. Production uses the PostgreSQL advisory-lock
      * implementation; this focused unit test supplies the same whole-stream contract without booting a
      * database.
      */
-    private static JobSubmissionService serviceOver(final RecordingQueue queue) {
-        final ReentrantLock lock = new ReentrantLock(true);
-        final JobSubmissionCoordinator coordinator = submission -> serialized(lock, submission);
+    private static JobSubmissionService serviceOver(final RecordingQueue queue,
+            final SerializingCoordinator coordinator) {
         return new JobSubmissionService(queue.operations, QUEUE_NAME, MESSAGE_GROUP, coordinator,
                 ObservationRegistry.NOOP);
-    }
-
-    private static JobSubmissionService.SubmissionResult serialized(final ReentrantLock lock,
-            final Supplier<JobSubmissionService.SubmissionResult> submission) {
-        lock.lock();
-        try {
-            return submission.get();
-        } finally {
-            lock.unlock();
-        }
     }
 
     @Nested
@@ -346,7 +396,8 @@ class JobSubmissionServiceConcurrencyTest {
                 + "submission is deliberately held inside its emitting loop")
         void eachSubmissionArrivesContiguously() throws Exception {
             final RecordingQueue queue = new RecordingQueue();
-            final JobSubmissionService service = serviceOver(queue);
+            final SerializingCoordinator coordinator = new SerializingCoordinator();
+            final JobSubmissionService service = serviceOver(queue, coordinator);
             queue.blockFirstSend = true;
 
             final ExecutorService submitters = Executors.newFixedThreadPool(2);
@@ -363,9 +414,17 @@ class JobSubmissionServiceConcurrencyTest {
                 final var second = submitters.submit(() ->
                         service.submitJobStream(SECOND_SUBMISSION, streamFor(SECOND_SUBMISSION)));
 
-                // Give the second submitter a genuine opportunity to interleave before releasing the
-                // first. Without exclusion this is where its cards would land among the first's.
-                Thread.sleep(250L);
+                // THE SECOND SUBMITTER IS OBSERVED AT THE EXCLUSION, not merely given time to reach it.
+                // A sleep here would have proved nothing: a contender the scheduler had not yet run is
+                // also one that has published no card, so the contiguity below would have held on a
+                // loaded machine with the exclusion deleted. Waiting until the coordinator reports a
+                // queued caller establishes that the contender arrived, tried, and is being held - which
+                // is the state whose consequences the assertions after this describe.
+                coordinator.awaitAContenderEnqueued();
+                assertThat(second.isDone())
+                        .as("the contender reached the exclusion and must still be held by it, because "
+                                + "the first submission has not left its first send")
+                        .isFalse();
                 queue.releaseFirstSend.countDown();
 
                 final JobSubmissionService.SubmissionResult firstResult =
@@ -397,7 +456,7 @@ class JobSubmissionServiceConcurrencyTest {
                 + "preserves the append ordering rather than only separating the streams")
         void eachRunKeepsItsOwnCardOrder() throws Exception {
             final RecordingQueue queue = new RecordingQueue();
-            final JobSubmissionService service = serviceOver(queue);
+            final JobSubmissionService service = serviceOver(queue, new SerializingCoordinator());
 
             final ExecutorService submitters = Executors.newFixedThreadPool(4);
             try {

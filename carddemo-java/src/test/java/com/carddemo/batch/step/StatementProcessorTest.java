@@ -45,6 +45,7 @@ import com.carddemo.service.StatementDataAccessService.StatementFileResponse;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
 import com.carddemo.service.StatementLineSummary;
+import com.carddemo.service.StatementOutputSink;
 import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
@@ -78,6 +79,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.stubbing.Answer;
 import org.mockito.InOrder;
 
 /**
@@ -1101,6 +1103,16 @@ class StatementProcessorTest {
     /** The frozen projected work source that arrives as the step's item. */
     private final StatementTransactionSource item = position -> Optional.empty();
 
+    /**
+     * The destination every request in this file names, so that what the stage forwarded can be
+     * asserted.
+     *
+     * <p>The stage retains no stream: it proves one record and forwards it. Content assertions therefore
+     * observe the destination rather than the stage's return value, and the return value is the run's
+     * tallies.
+     */
+    private CollectingSink sink;
+
     @BeforeEach
     void setUp() {
         statementGenerationService = mock(StatementGenerationService.class);
@@ -1111,6 +1123,7 @@ class StatementProcessorTest {
         sealer = value -> "sealed:" + value;
         processor = new StatementProcessor(statementGenerationService, revealer, sealer,
                 meterRegistry);
+        sink = new CollectingSink();
         plannedStatuses.clear();
         journal.clear();
         when(statementDataAccessService.openCrossReferenceSource()).thenReturn(crossReferenceSource);
@@ -1213,51 +1226,145 @@ class StatementProcessorTest {
     }
 
     /**
-     * Builds a run that satisfies all four properties the stage checks.
+     * Names this test's destination alongside a frozen source, which is what one batch item now is.
      *
-     * @param statementRecords the plain records the run produced
-     * @param markupRecords    the markup records the run produced
+     * @param  source the frozen projected work source
+     * @return the request the stage is handed
+     */
+    private StatementProcessor.StatementRunRequest request(
+            final StatementTransactionSource source) {
+        return new StatementProcessor.StatementRunRequest(source, this.sink);
+    }
+
+    /**
+     * Scripts a generation that emits the given output to whatever sink the stage passes in, and then
+     * reports it as tallies.
+     *
+     * <p>This is what a stubbed generation has to look like once the service streams: the records leave
+     * through the sink argument and the return value counts them. The dispatch trail is emitted first,
+     * because the source reports a dispatcher entry before the phase that entry selects writes anything,
+     * and because the stage proves the trail entry by entry as it arrives.
+     *
+     * @param  statementRecords the plain records to emit
+     * @param  markupRecords    the markup records to emit
+     * @param  summaries        the per-line summaries to emit
+     * @param  trail            the dispatcher entries to report
+     * @param  cards            how many distinct cards were tabulated
+     * @param  transactions     how many transactions were tabulated
+     * @param  statements       how many statements were written
+     * @return the scripted generation
+     */
+    private static Answer<StatementRun> emitting(final List<String> statementRecords,
+            final List<String> markupRecords, final List<StatementLineSummary> summaries,
+            final List<String> trail, final int cards, final int transactions,
+            final int statements) {
+        return invocation -> {
+            final StatementOutputSink destination = invocation.getArgument(3);
+            for (final String phase : trail) {
+                destination.dispatchedPhase(phase);
+            }
+            for (final String record : statementRecords) {
+                destination.statementRecord(record);
+            }
+            for (final String record : markupRecords) {
+                destination.htmlRecord(record);
+            }
+            for (final StatementLineSummary summary : summaries) {
+                destination.transactionSummary(summary);
+            }
+            return new StatementRun(statementRecords.size(), markupRecords.size(), summaries.size(),
+                    trail.size(), cards, transactions, statements);
+        };
+    }
+
+    /**
+     * Scripts a generation that satisfies every property the stage checks.
+     *
+     * @param statementRecords the plain records the run emits
+     * @param markupRecords    the markup records the run emits
      * @param cards            how many distinct cards were tabulated
      * @param transactions     how many transactions were tabulated
      * @param statements       how many statements were written
-     * @return the run
+     * @return the scripted generation
      */
-    private static StatementRun run(final List<String> statementRecords,
+    private static Answer<StatementRun> run(final List<String> statementRecords,
             final List<String> markupRecords, final int cards, final int transactions,
             final int statements) {
-        return new StatementRun(statementRecords, markupRecords, List.<StatementLineSummary>of(),
+        return emitting(statementRecords, markupRecords, List.<StatementLineSummary>of(),
                 completeDispatchTrail(), cards, transactions, statements);
     }
 
     /**
-     * Builds a well-formed run of one card, one transaction and one statement.
+     * Scripts a well-formed generation of one card, one transaction and one statement.
      *
-     * @return the run
+     * @return the scripted generation
      */
-    private static StatementRun wellFormedRun() {
+    private static Answer<StatementRun> wellFormedRun() {
         return run(List.of(statementRecord()), List.of(markupPlaceholderRecord()), 1, 1, 1);
     }
 
     /**
-     * Builds a run whose dispatch trail is the supplied one, with everything else well formed.
+     * Scripts a generation whose dispatch trail is the supplied one, with everything else well formed.
      *
-     * @param trail the dispatch trail to report
-     * @return the run
+     * @param  trail the dispatch trail to report
+     * @return the scripted generation
      */
-    private static StatementRun runWithTrail(final List<String> trail) {
-        return new StatementRun(List.of(statementRecord()), List.of(markupPlaceholderRecord()),
+    private static Answer<StatementRun> runWithTrail(final List<String> trail) {
+        return emitting(List.of(statementRecord()), List.of(markupPlaceholderRecord()),
                 List.<StatementLineSummary>of(), trail, 1, 1, 1);
     }
 
     /**
-     * Builds a run carrying the supplied transaction summaries, with everything else well formed.
+     * Scripts a generation carrying the supplied transaction summaries, with everything else well
+     * formed.
      *
-     * @param summaries the summaries the run hands on
-     * @return the run
+     * @param  summaries the summaries the run emits
+     * @return the scripted generation
      */
-    private static StatementRun runWithSummaries(final List<StatementLineSummary> summaries) {
-        return new StatementRun(List.of(statementRecord()), List.of(markupPlaceholderRecord()),
-                summaries, completeDispatchTrail(), 1, summaries.size(), 1);
+    private static Answer<StatementRun> runWithSummaries(final List<StatementLineSummary> summaries) {
+        return emitting(List.of(statementRecord()), List.of(markupPlaceholderRecord()), summaries,
+                completeDispatchTrail(), 1, summaries.size(), 1);
+    }
+
+    /**
+     * Collects everything the stage forwards, in the order it forwards it.
+     *
+     * <p>The volume is whatever the scripted scenario emits, which is what makes collecting it here a
+     * bounded test observation rather than the unbounded accumulation the stage no longer performs.
+     */
+    private static final class CollectingSink implements StatementOutputSink {
+
+        /** Plain records forwarded to this destination, in order. */
+        private final List<String> statementRecords = new ArrayList<>();
+
+        /** Markup records forwarded to this destination, in order. */
+        private final List<String> htmlRecords = new ArrayList<>();
+
+        /** Per-line summaries forwarded to this destination, in order. */
+        private final List<StatementLineSummary> transactionSummaries = new ArrayList<>();
+
+        /** Dispatcher entries forwarded to this destination, in order. */
+        private final List<String> dispatchedPhases = new ArrayList<>();
+
+        @Override
+        public void statementRecord(final String record) {
+            this.statementRecords.add(record);
+        }
+
+        @Override
+        public void htmlRecord(final String record) {
+            this.htmlRecords.add(record);
+        }
+
+        @Override
+        public void transactionSummary(final StatementLineSummary summary) {
+            this.transactionSummaries.add(summary);
+        }
+
+        @Override
+        public void dispatchedPhase(final String phase) {
+            this.dispatchedPhases.add(phase);
+        }
     }
 
     /**
@@ -1388,9 +1495,9 @@ class StatementProcessorTest {
                 + "an item are opened by the generator through the injected data-access collaborator, "
                 + "which the stage never touches")
         void theStageNeverOpensAFileItself() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(wellFormedRun());
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(wellFormedRun());
 
-            processor.process(item);
+            processor.process(request(item));
 
             verifyNoInteractions(statementDataAccessService);
         }
@@ -1401,25 +1508,35 @@ class StatementProcessorTest {
     class CompletedRun {
 
         @Test
-        @DisplayName("the generator is driven with the two regulated-field operations the stage holds, "
-                + "and its run is handed on unchanged")
+        @DisplayName("the generator is driven with the two regulated-field operations the stage holds "
+                + "and with a sink, its records reach the destination and its tallies are handed on "
+                + "unchanged")
         void theGeneratorIsDrivenWithTheRegulatedFieldOperations() {
-            final StatementRun produced = wellFormedRun();
-            when(statementGenerationService.generate(same(item), same(revealer), same(sealer)))
-                    .thenReturn(produced);
+            when(statementGenerationService.generate(same(item), same(revealer), same(sealer), any()))
+                    .thenAnswer(wellFormedRun());
 
-            final StatementRun answered = processor.process(item);
+            final StatementRun answered = processor.process(request(item));
 
-            assertThat(answered).isSameAs(produced);
-            verify(statementGenerationService).generate(same(item), same(revealer), same(sealer));
+            assertAll(
+                    () -> assertThat(answered.statementRecordsEmitted()).isEqualTo(1),
+                    () -> assertThat(answered.htmlRecordsEmitted()).isEqualTo(1),
+                    () -> assertThat(answered.cardsTabulated()).isEqualTo(1),
+                    () -> assertThat(answered.transactionsTabulated()).isEqualTo(1),
+                    () -> assertThat(answered.statementsWritten()).isEqualTo(1),
+                    // The records themselves went to the destination, one at a time, during the run.
+                    () -> assertThat(sink.statementRecords).containsExactly(statementRecord()),
+                    () -> assertThat(sink.htmlRecords)
+                            .containsExactly(markupPlaceholderRecord()));
+            verify(statementGenerationService)
+                    .generate(same(item), same(revealer), same(sealer), any());
         }
 
         @Test
         @DisplayName("the run is timed as completed")
         void theRunIsTimedAsCompleted() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(wellFormedRun());
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(wellFormedRun());
 
-            processor.process(item);
+            processor.process(request(item));
 
             assertThat(timed("COMPLETED")).isEqualTo(1L);
             assertThat(timed("FAILED")).isZero();
@@ -1429,11 +1546,11 @@ class StatementProcessorTest {
         @DisplayName("both record streams and the statement tally are counted, each against the "
                 + "resource it belongs to")
         void bothRecordStreamsAndTheStatementTallyAreCounted() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(run(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(run(
                     List.of(statementRecord(), statementRecord(), statementRecord()),
                     List.of(markupPlaceholderRecord(), markupPlaceholderRecord()), 2, 5, 4));
 
-            processor.process(item);
+            processor.process(request(item));
 
             assertAll(
                     () -> assertThat(counted("carddemo.batch.statement.records")).isEqualTo(3L),
@@ -1445,10 +1562,10 @@ class StatementProcessorTest {
         @DisplayName("a run that produced no records at all is still a completed run, and the "
                 + "counters simply do not move")
         void aRunThatProducedNoRecordsIsStillCompleted() {
-            when(statementGenerationService.generate(any(), any(), any()))
-                    .thenReturn(run(List.of(), List.of(), 0, 0, 0));
+            when(statementGenerationService.generate(any(), any(), any(), any()))
+                    .thenAnswer(run(List.of(), List.of(), 0, 0, 0));
 
-            assertThat(processor.process(item)).isNotNull();
+            assertThat(processor.process(request(item))).isNotNull();
             assertThat(counted("carddemo.batch.statement.records")).isZero();
             assertThat(counted("carddemo.batch.statement.htmlRecords")).isZero();
             assertThat(timed("COMPLETED")).isEqualTo(1L);
@@ -1457,10 +1574,10 @@ class StatementProcessorTest {
         @Test
         @DisplayName("repeated runs accumulate rather than replacing each other")
         void repeatedRunsAccumulate() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(wellFormedRun());
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(wellFormedRun());
 
-            processor.process(item);
-            processor.process(item);
+            processor.process(request(item));
+            processor.process(request(item));
 
             assertThat(counted("carddemo.batch.statement.records")).isEqualTo(2L);
             assertThat(timed("COMPLETED")).isEqualTo(2L);
@@ -1475,9 +1592,9 @@ class StatementProcessorTest {
         @DisplayName("a generator that reported no result at all fails the stage and is timed as a "
                 + "failure")
         void anAbsentResultFailsTheStage() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(null);
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenReturn(null);
 
-            assertThatNullPointerException().isThrownBy(() -> processor.process(item))
+            assertThatNullPointerException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("CBSTM03A")
                     .withMessageContaining("TRNXFILE");
             assertThat(timed("FAILED")).isEqualTo(1L);
@@ -1573,10 +1690,10 @@ class StatementProcessorTest {
                 + "is handed on")
         void theTrailTheDerivedOrderProducesIsAccepted() {
             final List<String> trail = driveDerivedExecutionOrder(2, STATUS_SUCCESS);
-            when(statementGenerationService.generate(any(), any(), any()))
-                    .thenReturn(runWithTrail(trail));
+            when(statementGenerationService.generate(any(), any(), any(), any()))
+                    .thenAnswer(runWithTrail(trail));
 
-            assertThat(processor.process(item)).isNotNull();
+            assertThat(processor.process(request(item))).isNotNull();
             assertThat(timed("COMPLETED")).isEqualTo(1L);
         }
 
@@ -1585,10 +1702,10 @@ class StatementProcessorTest {
                 + "order is refused - the divergence is the contract, and a test written against the "
                 + "clause order would pass against a wrong implementation")
         void aRunReportingTheClauseOrderIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any()))
-                    .thenReturn(runWithTrail(DISPATCHER_CLAUSE_ORDER));
+            when(statementGenerationService.generate(any(), any(), any(), any()))
+                    .thenAnswer(runWithTrail(DISPATCHER_CLAUSE_ORDER));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("entry 1")
                     .withMessageContaining("'" + SELECTOR_XREFFILE + "'")
                     .withMessageContaining("'" + SELECTOR_READTRNX + "'");
@@ -1600,14 +1717,14 @@ class StatementProcessorTest {
                 + "and the terminal marker is none of the five phase selectors")
         void theCatchAllClauseExitsTheRunCleanly() {
             final List<String> trail = completeDispatchTrail();
-            when(statementGenerationService.generate(any(), any(), any()))
-                    .thenReturn(runWithTrail(trail));
+            when(statementGenerationService.generate(any(), any(), any(), any()))
+                    .thenAnswer(runWithTrail(trail));
 
             assertAll(
                     () -> assertThat(trail).hasSize(DISPATCHER_CLAUSE_COUNT),
                     () -> assertThat(trail).last().isEqualTo(TERMINAL_CLAUSE),
                     () -> assertThat(DERIVED_PHASE_ORDER).doesNotContain(TERMINAL_CLAUSE),
-                    () -> assertThat(processor.process(item)).isNotNull());
+                    () -> assertThat(processor.process(request(item))).isNotNull());
         }
     }
 
@@ -1618,10 +1735,10 @@ class StatementProcessorTest {
         @Test
         @DisplayName("a trail with too few entries is refused, and the expected count is reported")
         void aTrailWithTooFewEntriesIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(runWithTrail(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(runWithTrail(
                     List.of(SELECTOR_TRNXFILE, SELECTOR_READTRNX, SELECTOR_XREFFILE)));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("entered 3 time(s) rather than 6");
         }
 
@@ -1630,10 +1747,10 @@ class StatementProcessorTest {
         void aTrailWithTooManyEntriesIsRefused() {
             final List<String> tooMany = new ArrayList<>(completeDispatchTrail());
             tooMany.add(TERMINAL_CLAUSE);
-            when(statementGenerationService.generate(any(), any(), any()))
-                    .thenReturn(runWithTrail(tooMany));
+            when(statementGenerationService.generate(any(), any(), any(), any()))
+                    .thenAnswer(runWithTrail(tooMany));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("entered 7 time(s) rather than 6");
         }
 
@@ -1641,11 +1758,11 @@ class StatementProcessorTest {
         @DisplayName("a trail whose phases ran in the wrong order is refused, naming the entry and "
                 + "both the observed and the expected phase")
         void aTrailInTheWrongOrderIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(runWithTrail(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(runWithTrail(
                     List.of(SELECTOR_TRNXFILE, SELECTOR_READTRNX, SELECTOR_CUSTFILE,
                             SELECTOR_XREFFILE, SELECTOR_ACCTFILE, TERMINAL_CLAUSE)));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("entry 2")
                     .withMessageContaining("'" + SELECTOR_CUSTFILE + "'")
                     .withMessageContaining("'" + SELECTOR_XREFFILE + "'");
@@ -1655,11 +1772,11 @@ class StatementProcessorTest {
         @DisplayName("a trail that ended on a phase selector rather than the catch-all clause is "
                 + "refused, which is how an early termination is told from a complete run")
         void aTrailEndingOnAPhaseSelectorIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(runWithTrail(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(runWithTrail(
                     List.of(SELECTOR_TRNXFILE, SELECTOR_READTRNX, SELECTOR_XREFFILE,
                             SELECTOR_CUSTFILE, SELECTOR_ACCTFILE, SELECTOR_ACCTFILE)));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("phase selector '" + SELECTOR_ACCTFILE + "'");
         }
 
@@ -1667,10 +1784,10 @@ class StatementProcessorTest {
         @DisplayName("a failed proof is timed as a failure and moves no counter, so the job's "
                 + "accounting is never credited for a run it rejected")
         void aFailedProofMovesNoCounter() {
-            when(statementGenerationService.generate(any(), any(), any()))
-                    .thenReturn(runWithTrail(List.of(SELECTOR_TRNXFILE)));
+            when(statementGenerationService.generate(any(), any(), any(), any()))
+                    .thenAnswer(runWithTrail(List.of(SELECTOR_TRNXFILE)));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item));
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)));
 
             assertAll(
                     () -> assertThat(timed("FAILED")).isEqualTo(1L),
@@ -1762,7 +1879,7 @@ class StatementProcessorTest {
                     "ERROR READING " + SELECTOR_TRNXFILE + " - RETURN CODE: "
                             + STATUS_RECORD_NOT_FOUND,
                     AbendException.DEFAULT_MESSAGE);
-            when(statementGenerationService.generate(any(), any(), any())).thenAnswer(invocation -> {
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(invocation -> {
                 plannedStatuses.add(STATUS_SUCCESS);
                 issue(SELECTOR_TRNXFILE, OPERATION_OPEN, 0);
                 plannedStatuses.add(STATUS_RECORD_NOT_FOUND);
@@ -1773,7 +1890,7 @@ class StatementProcessorTest {
             });
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> processor.process(item)).isSameAs(abend);
+                    .isThrownBy(() -> processor.process(request(item))).isSameAs(abend);
 
             assertAll(
                     () -> assertThat(journal).containsExactly(
@@ -1849,11 +1966,11 @@ class StatementProcessorTest {
             final CardTabulation tabulated = tabulate(List.of(SAMPLE_CARD_NUMBER, SAMPLE_CARD_NUMBER,
                     SAMPLE_SECOND_CARD_NUMBER, SAMPLE_SECOND_CARD_NUMBER, SAMPLE_SECOND_CARD_NUMBER,
                     SAMPLE_THIRD_CARD_NUMBER));
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of(markupPlaceholderRecord()),
                             tabulated.cards(), tabulated.totalTransactions(), tabulated.cards()));
 
-            final StatementRun answered = processor.process(item);
+            final StatementRun answered = processor.process(request(item));
 
             assertAll(
                     () -> assertThat(answered.cardsTabulated()).isEqualTo(3),
@@ -1910,11 +2027,11 @@ class StatementProcessorTest {
         void aRunAtExactlyCapacityIsAccepted() {
             final int cards = CARD_TABLE_OCCURRENCES;
             final int transactions = cards * TRANSACTIONS_PER_CARD_OCCURRENCES;
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of(markupPlaceholderRecord()), cards,
                             transactions, cards));
 
-            assertThat(processor.process(item)).isNotNull();
+            assertThat(processor.process(request(item))).isNotNull();
             assertThat(timed("COMPLETED")).isEqualTo(1L);
         }
 
@@ -1922,11 +2039,11 @@ class StatementProcessorTest {
         @DisplayName("more tabulated cards than the card table holds is refused")
         void tooManyCardsIsRefused() {
             final int overCapacity = CARD_TABLE_OCCURRENCES + 1;
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of(markupPlaceholderRecord()), overCapacity,
                             overCapacity, 1));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("card(s) tabulated");
         }
 
@@ -1934,10 +2051,10 @@ class StatementProcessorTest {
         @DisplayName("fewer transactions than cards is refused, because a card enters the table only "
                 + "when a transaction for it is read")
         void fewerTransactionsThanCardsIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of(markupPlaceholderRecord()), 5, 3, 1));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("transaction(s) tabulated across 5 card(s)");
         }
 
@@ -1945,11 +2062,11 @@ class StatementProcessorTest {
         @DisplayName("more transactions than the tabulated cards could carry is refused")
         void tooManyTransactionsForTheTabulatedCardsIsRefused() {
             final int beyondReach = 2 * TRANSACTIONS_PER_CARD_OCCURRENCES + 1;
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of(markupPlaceholderRecord()), 2,
                             beyondReach, 1));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("transaction(s) tabulated");
         }
 
@@ -1958,21 +2075,21 @@ class StatementProcessorTest {
                 + "count is not, because the mainline writes one statement per cross-reference record "
                 + "rather than one per tabulated card")
         void aNegativeStatementTallyIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of(markupPlaceholderRecord()), 1, 1, -1));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.process(item))
+            assertThatIllegalStateException().isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("statement(s) written");
         }
 
         @Test
         @DisplayName("a statement tally larger than the tabulated card count is accepted")
         void aStatementTallyLargerThanTheCardCountIsAccepted() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of(markupPlaceholderRecord()), 1, 1,
                             CARD_TABLE_OCCURRENCES + 9));
 
-            assertThat(processor.process(item)).isNotNull();
+            assertThat(processor.process(request(item))).isNotNull();
         }
     }
 
@@ -2794,21 +2911,22 @@ class StatementProcessorTest {
                     SAMPLE_TRANSACTION_ID, "01", "0005", "POS TERM", SAMPLE_DESCRIPTION,
                     SAMPLE_DETAIL_AMOUNT, "123456789", "SAMPLE MERCHANT", "SEATTLE", "99999",
                     TestDataFactory.SEEDED_ORIGINAL_TIMESTAMP, BLANK_TIMESTAMP);
-            when(statementGenerationService.generate(any(), any(), any()))
-                    .thenReturn(runWithSummaries(List.of(summary)));
+            when(statementGenerationService.generate(any(), any(), any(), any()))
+                    .thenAnswer(runWithSummaries(List.of(summary)));
 
-            final StatementRun answered = processor.process(item);
+            final StatementRun answered = processor.process(request(item));
 
             assertAll(
-                    () -> assertThat(answered.transactionSummaries()).hasSize(1),
-                    () -> assertThat(answered.transactionSummaries().get(0).processingTimestamp())
+                    () -> assertThat(answered.transactionSummariesEmitted()).isEqualTo(1),
+                    () -> assertThat(sink.transactionSummaries).hasSize(1),
+                    () -> assertThat(sink.transactionSummaries.get(0).processingTimestamp())
                             .isNotNull()
                             .isNotEmpty()
                             .isEqualTo(BLANK_TIMESTAMP)
                             .isEqualTo(TestDataFactory.BLANK_PROCESSING_TIMESTAMP),
-                    () -> assertThat(encodedWidthOf(answered.transactionSummaries().get(0)
+                    () -> assertThat(encodedWidthOf(sink.transactionSummaries.get(0)
                             .processingTimestamp())).isEqualTo(TIMESTAMP_WIDTH),
-                    () -> assertThat(answered.transactionSummaries().get(0).originationTimestamp())
+                    () -> assertThat(sink.transactionSummaries.get(0).originationTimestamp())
                             .isEqualTo(TestDataFactory.SEEDED_ORIGINAL_TIMESTAMP));
         }
 
@@ -2927,10 +3045,10 @@ class StatementProcessorTest {
         void theStageRethrowsTheAbendItObserved() {
             final AbendException abend =
                     new AbendException(StatementProcessor.LEGACY_PROGRAM, "STATEMENT RUN FAILED");
-            when(statementGenerationService.generate(any(), any(), any())).thenThrow(abend);
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenThrow(abend);
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> processor.process(item)).isSameAs(abend);
+                    .isThrownBy(() -> processor.process(request(item))).isSameAs(abend);
 
             assertAll(
                     () -> assertThat(abend.code()).isEqualTo(AbendException.BATCH_ABEND_CODE),
@@ -2947,14 +3065,14 @@ class StatementProcessorTest {
         void theDiagnosticIsRecordedBeforeTheExceptionIsRaised() {
             final AbendException abend = new AbendException(StatementProcessor.LEGACY_PROGRAM,
                     "ERROR READING " + SELECTOR_CUSTFILE);
-            when(statementGenerationService.generate(any(), any(), any())).thenAnswer(invocation -> {
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(invocation -> {
                 journal.add("diagnostic");
                 journal.add("exception");
                 throw abend;
             });
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> processor.process(item)).isSameAs(abend);
+                    .isThrownBy(() -> processor.process(request(item))).isSameAs(abend);
 
             assertThat(journal).containsExactly("diagnostic", "exception");
             assertThat(journal.indexOf("diagnostic")).isLessThan(journal.indexOf("exception"));
@@ -2968,23 +3086,23 @@ class StatementProcessorTest {
         @Test
         @DisplayName("a plain statement record narrower than eighty bytes is refused")
         void aNarrowStatementRecordIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of("TOO SHORT"), List.of(markupPlaceholderRecord()), 1, 1, 1));
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> processor.process(item))
+                    .isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("STMTFILE");
         }
 
         @Test
         @DisplayName("a plain statement record wider than eighty bytes is refused")
         void aWideStatementRecordIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of("S".repeat(TEXT_RECORD_WIDTH + 1)),
                             List.of(markupPlaceholderRecord()), 1, 1, 1));
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> processor.process(item))
+                    .isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("STMTFILE");
         }
 
@@ -2992,24 +3110,24 @@ class StatementProcessorTest {
         @DisplayName("a markup record of the wrong width is refused, and the message names its own "
                 + "dataset rather than the plain one")
         void aMarkupRecordOfTheWrongWidthIsRefused() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord()), List.of("H".repeat(MARKUP_RECORD_WIDTH - 1)), 1,
                             1, 1));
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> processor.process(item))
+                    .isThrownBy(() -> processor.process(request(item)))
                     .withMessageContaining("HTMLFILE");
         }
 
         @Test
         @DisplayName("a bad record in a later position is caught, not only the first one")
         void aBadRecordInALaterPositionIsCaught() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(
                     run(List.of(statementRecord(), statementRecord(), "SHORT"),
                             List.of(markupPlaceholderRecord()), 1, 1, 1));
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> processor.process(item));
+                    .isThrownBy(() -> processor.process(request(item)));
             assertThat(timed("FAILED")).isEqualTo(1L);
         }
 
@@ -3017,13 +3135,15 @@ class StatementProcessorTest {
         @DisplayName("records at exactly the declared widths are accepted, and the handed-on records "
                 + "measure eighty and one hundred ENCODED BYTES rather than characters")
         void recordsAtExactlyTheDeclaredWidthsAreAccepted() {
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(wellFormedRun());
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(wellFormedRun());
 
-            final StatementRun answered = processor.process(item);
+            final StatementRun answered = processor.process(request(item));
 
-            assertThat(answered.statementRecords()).allSatisfy(record ->
+            assertThat(answered.statementRecordsEmitted()).isEqualTo(sink.statementRecords.size());
+            assertThat(answered.htmlRecordsEmitted()).isEqualTo(sink.htmlRecords.size());
+            assertThat(sink.statementRecords).allSatisfy(record ->
                     assertThat(encodedWidthOf(record)).isEqualTo(TEXT_RECORD_WIDTH));
-            assertThat(answered.htmlRecords()).allSatisfy(record ->
+            assertThat(sink.htmlRecords).allSatisfy(record ->
                     assertThat(encodedWidthOf(record)).isEqualTo(MARKUP_RECORD_WIDTH));
         }
 
@@ -3032,19 +3152,23 @@ class StatementProcessorTest {
                 + "width proof, so the shapes this test assembled are shapes the stage accepts")
         void theHandBuiltArtifactsBothPassTheWidthProof() {
             final int transactions = 3;
-            when(statementGenerationService.generate(any(), any(), any())).thenReturn(new StatementRun(
+            when(statementGenerationService.generate(any(), any(), any(), any())).thenAnswer(emitting(
                     statementTextArtifact(transactions), statementMarkupArtifact(transactions),
                     List.<StatementLineSummary>of(), completeDispatchTrail(), 1, transactions, 1));
 
-            final StatementRun answered = processor.process(item);
+            final StatementRun answered = processor.process(request(item));
 
             assertAll(
-                    () -> assertThat(answered.statementRecords())
+                    () -> assertThat(sink.statementRecords)
                             .hasSize(1 + HEAD_EMISSION_COUNT + transactions + TAIL_EMISSION_COUNT),
-                    () -> assertThat(answered.htmlRecords())
+                    () -> assertThat(answered.statementRecordsEmitted())
+                            .isEqualTo(sink.statementRecords.size()),
+                    () -> assertThat(sink.htmlRecords)
                             .hasSize(MARKUP_HEADER_RECORD_COUNT + MARKUP_BASICS_RECORD_COUNT
                                     + (MARKUP_TRANSACTION_RECORD_COUNT * transactions)
                                     + MARKUP_TAIL_RECORD_COUNT),
+                    () -> assertThat(answered.htmlRecordsEmitted())
+                            .isEqualTo(sink.htmlRecords.size()),
                     () -> assertThat(counted("carddemo.batch.statement.records")).isEqualTo(
                             (long) (1 + HEAD_EMISSION_COUNT + transactions + TAIL_EMISSION_COUNT)),
                     () -> assertThat(timed("COMPLETED")).isEqualTo(1L));

@@ -23,6 +23,8 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import com.carddemo.config.ProductionConfigurationValidator.RequiredSetting;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -56,13 +58,19 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  *
  * <p>Two things had to be shown, and they need different instruments.
  *
- * <p><strong>Here:</strong> that each of the twelve required variables is judged independently, in each
- * of the three ways it can be unusable - absent, empty and whitespace - and that the report names the
+ * <p><strong>Here:</strong> that each required variable is judged independently, in each of the three
+ * ways any of them can be unusable - absent, empty and whitespace - and that the report names the
  * offending property and variable without blaming any other. This is done against a real environment
  * assembled from the real {@code application-prod.yml} and {@code application.yml}, so the keys, the
  * variable names and the fallback tails are the delivered ones rather than a copy of them. No container
- * and no application context are involved, which is why every one of the thirty-six independent cases
- * can be exercised.
+ * and no application context are involved, which is why every independent case can be exercised.
+ *
+ * <p>One variable is judged on a fourth ground as well. The operator credential at
+ * {@code carddemo.security.management.token} is refused for being TOO SHORT, because it is the module's
+ * one guessable secret: it is presented as a bearer token on the management surface with no sign-on, no
+ * lockout and no attempt counter behind it, so unguessability is its whole defence. That rule, its
+ * boundary, and the fact that no other setting acquires it are asserted alongside the three general
+ * ones.
  *
  * <p><strong>In {@code ProductionInfrastructureIsUntouchedTest}:</strong> that a real Spring context
  * activated on the production profile stops before any bean is created, and that no other profile is
@@ -81,7 +89,8 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * shape - it does not parse a location, decode a key or inspect a queue suffix, because the components
  * that consume those values already do - so a value that merely exists and is not blank is exactly the
  * right fixture, and deriving it from the variable name keeps anything credential-shaped out of the
- * repository.
+ * repository. That derivation also comfortably clears the operator credential's length floor, which is
+ * why the general cases need no special value for it and the length cases supply their own.
  *
  * @see ProductionConfigurationValidator
  */
@@ -109,6 +118,14 @@ final class ProductionConfigurationValidatorTest {
 
     /** Text a failure message must carry so a reader can find the recorded reasoning. */
     private static final String RECORDED_DECISION = "docs/decision-log.md DL-105";
+
+    /**
+     * The variable carrying the one required value that is also held to a minimum length.
+     *
+     * <p>Named here rather than inline because three assertions address it: the boundary is accepted, a
+     * value one character below it is refused, and padding cannot be used to reach it.
+     */
+    private static final String OPERATOR_CREDENTIAL_VARIABLE = "CARDDEMO_MANAGEMENT_TOKEN";
 
     /**
      * Builds the text that satisfies one variable.
@@ -354,6 +371,21 @@ final class ProductionConfigurationValidatorTest {
         }
 
         @Test
+        @DisplayName("a supplied operator credential at the floor is accepted, so the length rule "
+                + "refuses what is too short rather than everything")
+        void anOperatorCredentialAtTheFloorIsAccepted() {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put(OPERATOR_CREDENTIAL_VARIABLE,
+                    "x".repeat(ProductionConfigurationValidator.MINIMUM_MANAGEMENT_TOKEN_LENGTH));
+
+            assertThatCode(() -> ProductionConfigurationValidator
+                    .validateRequiredSettings(environmentWith(variables)))
+                    .as("exactly the minimum is enough; a rule that refused the boundary would be a "
+                            + "different rule from the one documented")
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
         @DisplayName("a null environment is rejected rather than silently passing")
         void aNullEnvironmentIsRejected() {
             assertThatExceptionOfType(NullPointerException.class)
@@ -411,6 +443,73 @@ final class ProductionConfigurationValidatorTest {
                             .validateRequiredSettings(environmentWith(variables)))
                     .withMessageContaining(reportLineFor(settingFor(propertyKey)))
                     .withMessageContaining("whitespace only");
+        }
+
+        @Test
+        @DisplayName("an operator credential one character below the floor stops the start, because a "
+                + "guessable machine credential is a credential in name only")
+        void aShortOperatorCredentialStopsTheStart() {
+            // THE DEFECT THIS PINS. The sweep used to refuse only an absent, unresolved or blank value, so
+            // a ONE-CHARACTER operator credential started production and then fell to a few hundred
+            // guesses. Nothing else in the module catches it: the comparison in SecurityConfig's
+            // management filter is constant-time, which defeats a timing side channel and does nothing
+            // whatever about a value short enough to enumerate, and there is no sign-on, no lockout and no
+            // attempt counter behind that surface by design. CWE-521, reachable in production with
+            // nothing else misconfigured.
+            final int floor = ProductionConfigurationValidator.MINIMUM_MANAGEMENT_TOKEN_LENGTH;
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put(OPERATOR_CREDENTIAL_VARIABLE, "x".repeat(floor - 1));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environmentWith(variables)))
+                    .withMessageContaining(reportLineFor(
+                            settingFor(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY)))
+                    .withMessageContaining("requires at least " + floor)
+                    .withMessageContaining("openssl rand -hex 16");
+        }
+
+        @Test
+        @DisplayName("a single character is refused, which is the value the earlier check accepted")
+        void aSingleCharacterOperatorCredentialStopsTheStart() {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put(OPERATOR_CREDENTIAL_VARIABLE, "x");
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environmentWith(variables)))
+                    .withMessageContaining("is 1 characters");
+        }
+
+        @Test
+        @DisplayName("padding cannot be used to reach the floor, because the surrounding whitespace is "
+                + "not part of the credential the filter compares")
+        void paddingDoesNotSatisfyTheFloor() {
+            final int floor = ProductionConfigurationValidator.MINIMUM_MANAGEMENT_TOKEN_LENGTH;
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put(OPERATOR_CREDENTIAL_VARIABLE, " ".repeat(floor) + "short" + " ".repeat(floor));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environmentWith(variables)))
+                    .as("SecurityConfig strips the configured token before comparing it, so an attacker "
+                            + "guessing this value does not have to guess the padding")
+                    .withMessageContaining("is 5 characters");
+        }
+
+        @Test
+        @DisplayName("and no other required setting acquires a length rule, so a region or a key alias "
+                + "is still judged only on being supplied")
+        void noOtherSettingIsHeldToALength() {
+            assertThat(ProductionConfigurationValidator.MINIMUM_LENGTH_BY_KEY)
+                    .as("a length floor is right for the one guessable machine credential and wrong for "
+                            + "a value whose length is dictated by what produces it")
+                    .containsOnlyKeys(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY);
+            assertThat(ProductionConfigurationValidator.MINIMUM_LENGTH_BY_KEY
+                    .get(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY))
+                    .as("thirty-two characters is the width `openssl rand -hex 16` and "
+                            + "`openssl rand -base64 24` each produce")
+                    .isEqualTo(32);
         }
 
         @ParameterizedTest(name = "only {0} is blamed when only {1} is missing")
@@ -563,6 +662,31 @@ final class ProductionConfigurationValidatorTest {
 
         static Stream<Arguments> settings() {
             return requiredSettings();
+        }
+
+        @Test
+        @DisplayName("every guarded variable also appears in the profile's own list of the variables it "
+                + "requires, which the list calls authoritative")
+        void everyGuardedVariableIsListedInTheDocument() throws IOException {
+            // The header of application-prod.yml states that its variable list is the authoritative one and
+            // that the module README and any deployment runbook are written from it. Nothing checked that
+            // until review, and one variable had already gone missing from it: CARDDEMO_MANAGEMENT_TOKEN,
+            // the collector's credential and the sole source of the monitoring authority, was guarded and
+            // bound but absent from the list a deployer reads. A list described as authoritative and not
+            // asserted is a list that drifts. See docs/decision-log.md entry DL-312.
+            final String document = Files.readString(
+                    Path.of("src", "main", "resources", PRODUCTION_DOCUMENT));
+            final String header = document.substring(0,
+                    document.indexOf("ENVIRONMENT VARIABLES THIS PROFILE REQUIRES")
+                            + document.substring(document.indexOf(
+                                    "ENVIRONMENT VARIABLES THIS PROFILE REQUIRES")).indexOf("\nspring:"));
+
+            for (final RequiredSetting setting : ProductionConfigurationValidator.REQUIRED_SETTINGS) {
+                assertThat(header)
+                        .as("%s is guarded, so the list a deployer reads must name it", 
+                                setting.environmentVariable())
+                        .contains(setting.environmentVariable());
+            }
         }
 
         @Test

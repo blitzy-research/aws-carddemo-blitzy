@@ -33,6 +33,12 @@ import io.awspring.cloud.s3.Location;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 
+import io.micrometer.common.KeyValue;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
+
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
@@ -62,7 +68,6 @@ import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.StepExecution;
-import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamWriter;
 
 /**
@@ -104,6 +109,12 @@ class StagedGenerationStoreTest {
     private Map<String, List<String>> versionsByKey;
 
     private RecordingPublicationLock publicationLock;
+
+    /** The registry every outbound object-store call is observed against. */
+    private ObservationRegistry observationRegistry;
+
+    /** Every observation the store stopped, in stop order. */
+    private final List<Observation.Context> observed = new ArrayList<>();
 
     /**
      * A publication lock that runs the publication directly and records what it was asked to hold.
@@ -190,8 +201,22 @@ class StagedGenerationStoreTest {
             return null;
         }).when(this.versionedObjectStore).deleteObject(any(DeleteObjectRequest.class));
 
+        this.observed.clear();
+        final ObservationRegistry recording = ObservationRegistry.create();
+        recording.observationConfig().observationHandler(new ObservationHandler<>() {
+            @Override
+            public void onStop(final Observation.Context context) {
+                observed.add(context);
+            }
+
+            @Override
+            public boolean supportsContext(final Observation.Context context) {
+                return true;
+            }
+        });
+        this.observationRegistry = recording;
         this.store = new StagedGenerationStore(this.objectStore, this.versionedObjectStore, BUCKET,
-                this.publicationLock);
+                this.publicationLock, this.observationRegistry);
     }
 
     /**
@@ -762,6 +787,341 @@ class StagedGenerationStoreTest {
     }
 
     /**
+     * Every outbound object-store call this store makes is observed.
+     *
+     * <p>The durable generation boundary is the most consequential object-store work a batch job performs,
+     * and none of it appeared in a trace: not the listing that decides the next generation number, not the
+     * upload that publishes it, not the version listing and version-qualified deletes that compensate a
+     * failed pass and enforce retention. A failed publication in particular showed nothing at all - the
+     * compensation is entirely object-store work, so an untraced compensation is indistinguishable from no
+     * compensation.</p>
+     */
+    @Nested
+    @DisplayName("every outbound object-store call is observed")
+    class ObservedCalls {
+
+        @Test
+        @DisplayName("a committed publication observes its listing and its upload")
+        void aCommittedPublicationObservesItsCalls() throws Exception {
+            final JobExecution execution = completedJob(51);
+            final StepExecution step = stepOf(execution);
+            final Path completed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 51);
+            Files.writeString(completed, "published", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            store.publishRegistered(execution);
+
+            assertThat(observed)
+                    .as("an empty list is exactly what the no-op registry produced before this store was "
+                            + "given a real one")
+                    .isNotEmpty();
+            assertThat(observed)
+                    .allSatisfy(context -> assertThat(context.getName())
+                            .isEqualTo(StagedGenerationStore.OBSERVATION_NAME));
+            assertThat(observed)
+                    .extracting(context -> lowTag(context, StagedGenerationStore.TAG_OPERATION))
+                    .as("the allocation lists the base before the upload publishes into it, in that order")
+                    .startsWith(StagedGenerationStore.OPERATION_LIST,
+                            StagedGenerationStore.OPERATION_UPLOAD);
+            assertThat(observed)
+                    .filteredOn(context -> StagedGenerationStore.OPERATION_UPLOAD
+                            .equals(lowTag(context, StagedGenerationStore.TAG_OPERATION)))
+                    .singleElement()
+                    .satisfies(context -> assertThat(
+                            highTag(context, StagedGenerationStore.TAG_OBJECT_KEY))
+                            .as("the key belongs on the span, where it identifies the object, and never "
+                                    + "on a meter dimension where it would fork a series per generation")
+                            .isEqualTo(BASE + "/G0000000001V00"));
+        }
+
+        @Test
+        @DisplayName("compensation observes its version listing and every version-qualified removal")
+        void compensationObservesItsRemovals() throws Exception {
+            final JobExecution execution = completedJob(52);
+            final StepExecution step = stepOf(execution);
+            final Path completed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 52);
+            Files.writeString(completed, "kept by the service", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            final String key = BASE + "/G0000000001V00";
+            // The ambiguous upload: the bytes are stored, then the call throws. So compensation has real
+            // work to do, and the removal it performs is what must be visible.
+            doAnswer(invocation -> {
+                try (InputStream body = invocation.getArgument(2, InputStream.class)) {
+                    uploaded.put(key, body.readAllBytes());
+                }
+                addVersion(key);
+                throw new IllegalStateException("the response never arrived");
+            }).when(objectStore).upload(eq(BUCKET), eq(key), any(InputStream.class));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            assertThat(observed)
+                    .extracting(context -> lowTag(context, StagedGenerationStore.TAG_OPERATION))
+                    .as("the failed upload, then the version listing that reconciles its key, then the "
+                            + "removal - a compensation nobody can see is indistinguishable from none")
+                    .containsSubsequence(StagedGenerationStore.OPERATION_UPLOAD,
+                            StagedGenerationStore.OPERATION_LIST_VERSIONS,
+                            StagedGenerationStore.OPERATION_DELETE_VERSION);
+            assertThat(observed)
+                    .filteredOn(context -> StagedGenerationStore.OPERATION_UPLOAD
+                            .equals(lowTag(context, StagedGenerationStore.TAG_OPERATION)))
+                    .singleElement()
+                    .satisfies(context -> assertThat(context.getError())
+                            .as("the refused call is a failure on its span rather than a gap in the trace")
+                            .isInstanceOf(IllegalStateException.class));
+        }
+
+        @Test
+        @DisplayName("an immediate publication observes its own upload")
+        void anImmediatePublicationObservesItsUpload() {
+            store.publishFile(BASE, completedFileHolding(new byte[] {1, 2, 3}),
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            assertThat(observed)
+                    .extracting(context -> lowTag(context, StagedGenerationStore.TAG_OPERATION))
+                    .contains(StagedGenerationStore.OPERATION_UPLOAD);
+        }
+
+        @Test
+        @DisplayName("every call is a child of whatever observation encloses the publication, which is "
+                + "the actual defect: a present-but-parentless span is a one-span trace nobody can "
+                + "follow back to the job that produced it")
+        void everyCallIsAChildOfTheEnclosingObservation() {
+            // Presence is not the property at stake. An unparented observation is recorded, timed and
+            // tagged exactly like a parented one; the only difference is that its trace begins and ends
+            // at the object-store call, which is why an untraced durable boundary looked healthy.
+            final Observation boundary =
+                    Observation.start("test.durable.boundary", observationRegistry);
+            final Observation.Scope scope = boundary.openScope();
+            try {
+                store.publishFile(BASE, completedFileHolding(new byte[] {4, 5, 6}),
+                        StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            } finally {
+                scope.close();
+                boundary.stop();
+            }
+
+            assertThat(observed)
+                    .filteredOn(context -> StagedGenerationStore.OBSERVATION_NAME
+                            .equals(context.getName()))
+                    .isNotEmpty()
+                    .allSatisfy(context -> assertThat(context.getParentObservation())
+                            .as("a store call made inside the boundary must hang off it")
+                            .isSameAs(boundary));
+        }
+    }
+
+    /**
+     * Reads one low-cardinality tag off an observation, or {@code null} when it carries none.
+     *
+     * @param  context the observation context
+     * @param  name    the tag key
+     * @return the tag value, or {@code null}
+     */
+    private static String lowTag(final Observation.Context context, final String name) {
+        for (final KeyValue keyValue : context.getLowCardinalityKeyValues()) {
+            if (name.equals(keyValue.getKey())) {
+                return keyValue.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Reads one high-cardinality tag off an observation, or {@code null} when it carries none.
+     *
+     * @param  context the observation context
+     * @param  name    the tag key
+     * @return the tag value, or {@code null}
+     */
+    private static String highTag(final Observation.Context context, final String name) {
+        for (final KeyValue keyValue : context.getHighCardinalityKeyValues()) {
+            if (name.equals(keyValue.getKey())) {
+                return keyValue.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The upload whose bytes were kept and whose answer was lost.
+     *
+     * <h2>Why this class exists separately from {@link TheCommitBoundary}</h2>
+     *
+     * <p>Every test above fails the publication at a point where the store <em>knows</em> what reached
+     * the bucket: an upload that threw is treated as an upload that wrote nothing, and an upload that
+     * returned is treated as an upload that wrote everything. Real object storage has a third outcome,
+     * and it is the only one a compensation can get wrong: the service accepted and durably stored the
+     * body, and the response never arrived. The call throws - a reset connection, a read timeout, the
+     * expiring per-call budget this module now sets - so the caller learns nothing, while a complete,
+     * current, ordinary generation of the base sits in the bucket.
+     *
+     * <p>Every fixture here therefore drives the failure through the object store's own behaviour rather
+     * than around it: {@link #acceptTheBytesThenLoseTheResponse(String)} reads the body, records the
+     * version exactly as a successful upload against a versioned bucket would, and only then throws. A
+     * compensation built from the keys whose upload was <em>observed to succeed</em> passes every test in
+     * the class above and fails every test in this one, because the entry for the ambiguous upload is
+     * never appended to that list. The property asserted is the same one stated for a failed job
+     * throughout - it leaves nothing externally visible - held against the case where the store cannot
+     * tell whether it published.</p>
+     */
+    @Nested
+    @DisplayName("an upload whose bytes were kept and whose response was lost")
+    class TheAmbiguousUpload {
+
+        @Test
+        @DisplayName("the key of the only artifact is emptied even though its upload reported failure")
+        void theKeyOfALostResponseIsEmptied() throws Exception {
+            final JobExecution execution = completedJob(31);
+            final StepExecution step = stepOf(execution);
+            final Path completed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 31);
+            Files.writeString(completed, "kept by the service", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            final String key = BASE + "/G0000000001V00";
+            acceptTheBytesThenLoseTheResponse(key);
+
+            assertThatExceptionOfType(ApiCallTimeoutException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            // The bytes WERE stored, so this is a removal and not a no-op: the version the upload
+            // created has to be gone, and gone by identifier rather than hidden behind a marker.
+            assertThat(versionsByKey)
+                    .as("the version the accepted-but-unacknowledged upload created is gone, so the "
+                            + "failed job left no current generation of this base behind")
+                    .doesNotContainKey(key);
+            verify(versionedObjectStore, times(1)).deleteObject(any(DeleteObjectRequest.class));
+            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
+            // And the registry survives, so the boundary reports an unpublished job rather than a
+            // published one, which is what makes the failure visible at all.
+            assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a lost response on the second artifact also scratches the first, which succeeded")
+        void aLostResponseScratchesTheArtifactsThatPrecededIt() throws Exception {
+            final JobExecution execution = completedJob(32);
+            final StepExecution step = stepOf(execution);
+            final Path first = StagedGenerationStore.generationPath(stagingDirectory, BASE, 32);
+            final Path second =
+                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 32);
+            Files.writeString(first, "first", StandardCharsets.US_ASCII);
+            Files.writeString(second, "second", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, first,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            StagedGenerationStore.register(step, OTHER_BASE, second,
+                    StagedGenerationStore.REPORT_RETENTION_LIMIT);
+            acceptTheBytesThenLoseTheResponse(OTHER_BASE + "/G0000000001V00");
+
+            assertThatExceptionOfType(ApiCallTimeoutException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            // One key from the succeeded set and one from the attempted-but-unacknowledged set. Both
+            // have to be emptied, which is why compensation walks the attempted set: it is a superset.
+            assertThat(versionsByKey)
+                    .as("both the acknowledged upload and the ambiguous one are gone")
+                    .doesNotContainKey(BASE + "/G0000000001V00")
+                    .doesNotContainKey(OTHER_BASE + "/G0000000001V00");
+            assertThat(uploaded)
+                    .doesNotContainKey(BASE + "/G0000000001V00")
+                    .doesNotContainKey(OTHER_BASE + "/G0000000001V00");
+            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
+        }
+
+        @Test
+        @DisplayName("reconciling a key that holds nothing removes nothing")
+        void anUploadThatLeftNothingIsReconciledWithoutDeleting() throws Exception {
+            final JobExecution execution = completedJob(33);
+            final StepExecution step = stepOf(execution);
+            final Path completed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 33);
+            Files.writeString(completed, "never accepted", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            // This upload refuses before it reads a byte, which is the ordinary failure.
+            doThrow(new IllegalStateException("the connection was refused"))
+                    .when(objectStore).upload(eq(BUCKET), eq(BASE + "/G0000000001V00"),
+                            any(InputStream.class));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            // Reconciliation still runs - it has to, because the store cannot distinguish this case
+            // from the ambiguous one - and finds the key empty, so it deletes nothing. That is what
+            // makes covering the attempted set cheap rather than destructive.
+            verify(versionedObjectStore).listObjectVersions(any(ListObjectVersionsRequest.class));
+            verify(versionedObjectStore, never()).deleteObject(any(DeleteObjectRequest.class));
+            assertThat(versionsByKey).isEmpty();
+            assertThat(uploaded).isEmpty();
+        }
+
+        @Test
+        @DisplayName("an immediate publication empties the key of its own lost response")
+        void immediatePublicationEmptiesTheKeyOfALostResponse() {
+            final Path completed =
+                    completedFileHolding("kept by the service".getBytes(StandardCharsets.US_ASCII));
+            final String key = BASE + "/G0000000001V00";
+            acceptTheBytesThenLoseTheResponse(key);
+
+            assertThatExceptionOfType(ApiCallTimeoutException.class)
+                    .isThrownBy(() -> store.publishFile(BASE, completed,
+                            StagedGenerationStore.STANDARD_RETENTION_LIMIT));
+
+            // The immediate path publishes at the end of the producing step rather than at the end of
+            // the job, so it has no later listener to compensate for it: the compensation is its own or
+            // it does not happen. An earlier revision asserted in a comment that "a failed upload
+            // uploaded nothing" and so did nothing here, which left exactly this object behind.
+            assertThat(versionsByKey)
+                    .as("the ambiguous object is gone, so the step that failed published nothing")
+                    .doesNotContainKey(key);
+            verify(versionedObjectStore, times(1)).deleteObject(any(DeleteObjectRequest.class));
+            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
+        }
+
+        @Test
+        @DisplayName("compensation reports the failure it compensated, not a failure of its own")
+        void theOriginalFailureSurvivesTheCompensation() {
+            final Path absent = stagingDirectory.resolve("was-removed-before-publication.dat");
+
+            // The file cannot be measured, so the failure is an IOException raised after the key was
+            // allocated and recorded. The compensation runs against an empty key and must leave the
+            // reported cause alone: the caller has to learn why publication failed, not that a rollback
+            // ran.
+            assertThatExceptionOfType(UncheckedIOException.class)
+                    .isThrownBy(() -> store.publishFile(BASE, absent,
+                            StagedGenerationStore.STANDARD_RETENTION_LIMIT))
+                    .withMessageContaining(BASE)
+                    .withCauseInstanceOf(IOException.class);
+
+            verify(versionedObjectStore, never()).deleteObject(any(DeleteObjectRequest.class));
+            assertThat(uploaded).isEmpty();
+        }
+
+        /**
+         * Makes one key's upload behave as the outcome no caller can observe: stored, then unanswered.
+         *
+         * <p>The order is the whole point. The body is read and the version recorded first, exactly as a
+         * successful upload against a versioned bucket leaves them, and the throw comes after - so the
+         * store's view is "the upload failed" while the bucket's view is "the object exists". The
+         * exception is the one the per-call budget on the object-store client actually raises when a call
+         * outlives it, so the fixture is the real shape of this failure rather than a stand-in.</p>
+         *
+         * @param key the object key whose upload keeps the bytes and loses the answer
+         */
+        private void acceptTheBytesThenLoseTheResponse(final String key) {
+            doAnswer(invocation -> {
+                try (InputStream body = invocation.getArgument(2, InputStream.class)) {
+                    uploaded.put(key, body.readAllBytes());
+                }
+                addVersion(key);
+                throw ApiCallTimeoutException.create(120_000L);
+            }).when(objectStore).upload(eq(BUCKET), eq(key), any(InputStream.class));
+        }
+    }
+
+    /**
      * Serialization: the store must name every base it touches and must publish inside the lock.
      *
      * <p>These assertions are about the store's side of the contract. That the named bases are then
@@ -811,7 +1171,7 @@ class StagedGenerationStoreTest {
             };
             final StagedGenerationStore refusedStore =
                     new StagedGenerationStore(objectStore, versionedObjectStore, BUCKET,
-                            refusingLock);
+                            refusingLock, observationRegistry);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> refusedStore.publishRegistered(execution));
@@ -848,7 +1208,7 @@ class StagedGenerationStoreTest {
             };
             final StagedGenerationStore refusedStore =
                     new StagedGenerationStore(objectStore, versionedObjectStore, BUCKET,
-                            refusingLock);
+                            refusingLock, observationRegistry);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> refusedStore.publishFile(BASE, completed,

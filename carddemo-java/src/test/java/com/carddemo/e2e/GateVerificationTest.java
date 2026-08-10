@@ -18,20 +18,25 @@
 package com.carddemo.e2e;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 import com.carddemo.api.dto.SignOnResponse;
 import com.carddemo.batch.CategoryBalanceReportJobConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.ValidationLookupService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.GateEvidenceProvenance;
+import com.carddemo.support.JavaSourceCensus;
 import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.JclCardImageBuilder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -41,7 +46,6 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -59,13 +63,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -223,6 +224,9 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** Module-relative test source tree, which a covering-test citation is resolved against. */
     private static final String TEST_TREE = "src/test/java";
 
+    /** Where the unit runner writes its per-class XML, and the row key the evidence page publishes it under. */
+    private static final String SUREFIRE_REPORT_DIRECTORY = "target/surefire-reports";
+
     private static final String GOLDEN_DIRECTORY = "/fixtures/expected/";
 
     /**
@@ -373,6 +377,49 @@ class GateVerificationTest extends AbstractPostgresIT {
     private static final Set<String> BATCH_PROGRAMS = Set.of("CBACT01C", "CBACT02C", "CBACT03C",
             "CBACT04C", "CBCUS01C", "CBTRN01C", "CBTRN02C", "CBTRN03C", "CBSTM03A", "CBSTM03B");
 
+    /**
+     * The final-boundary criteria, each paired with the suites the build executes to hold it.
+     *
+     * <p><strong>Why the sign-off carries this row.</strong> The checklist above enumerates the seven
+     * items the plan's own Gate 8 names, plus the two it adds for the named artefacts and the schema.
+     * Not one of them is about the boundary where this module talks to something outside itself, so a
+     * review that found every outbound call unbounded, every ambiguous upload uncompensated, the
+     * collector unauthenticated and half the boundary telemetry unwatched would have read a sign-off
+     * with every row PRESENT. A checklist that cannot express a class of failure will report a pass
+     * through it, which is what happened.
+     *
+     * <p><strong>What this row claims, exactly.</strong> That for each criterion there is a suite the
+     * build <em>executes</em>, holding it. It does not re-assert the behaviour - each named suite does
+     * that, in detail, and duplicating those assertions here would give two places to edit and one of
+     * them would drift. What it catches is the failure the sign-off could not see: a criterion with no
+     * guard at all, either because none was written or because one was deleted. A deleted suite turns
+     * this row MISSING and names the criterion it belonged to.
+     *
+     * <p>Keyed by criterion so the emitted narrative reads as the reviewer's own list rather than as a
+     * list of file names.
+     */
+    private static final Map<String, List<String>> FINAL_BOUNDARY_CRITERIA = Map.of(
+            "bounded cross-system coordination and non-fatal queue semantics",
+            List.of("service/PostgresJobSubmissionCoordinatorTest"),
+            "durable publication integrity under an ambiguous upload",
+            List.of("batch/step/StagedGenerationStoreTest"),
+            "explicit provider call budgets and pinned retry policies",
+            List.of("config/AwsConfigTest"),
+            "external resource trust, ownership and proven capability",
+            List.of("config/AwsResourceTrustVerifierTest", "config/AwsResourceHealthConfigTest"),
+            "trace continuity across the durable and notification boundaries",
+            List.of("util/ObservationPropagationTest", "config/BatchConfigTest"),
+            "no provider content or topology in a log record",
+            List.of("config/ProviderLogSuppressionTest"),
+            "truthful terminal batch verdict and refused-request telemetry",
+            List.of("config/SecurityConfigTest", "service/JobCompletionNotificationServiceTest"),
+            "a panel for every boundary meter, asserted in both directions",
+            List.of("config/GrafanaDashboardMetricsContractTest"),
+            "collector trust and a locally decided sampling policy",
+            List.of("config/TraceCollectorTrustTest", "config/TraceSamplingPolicyTest"),
+            "durable, attributable gate evidence",
+            List.of("support/GateEvidenceProvenanceTest", "config/BuildAndCiContractTest"));
+
     /** Where the sign-off summary is written for transcription into the recorded evidence. */
     private static final Path EVIDENCE_DIRECTORY = Path.of("target", "gate-evidence");
 
@@ -393,7 +440,16 @@ class GateVerificationTest extends AbstractPostgresIT {
      */
     private static final int GENERIC_CAST_BUDGET = 5;
 
-    /** Suppressed-warning budget the plan sets; the measured figure is zero. */
+    /**
+     * Suppressed-warning budget the plan sets; the measured figure is zero across both source trees.
+     *
+     * <p>Measured over <em>both</em> trees, unlike every other figure in the unsafe-code audit. Gate 6
+     * scopes that audit to the production tree and the plan says so in as many words, so this class keeps
+     * that scoping. Gate 2 is a separate requirement with a separate scope: it asks for a build that emits
+     * no warning <em>and</em> hides none, and a suppression in a test source hides one just as effectively
+     * as a suppression in a production source. Auditing only production would have left the entire test
+     * tree - the larger of the two - outside the one gate that actually forbids the construct.
+     */
     private static final int SUPPRESSION_BUDGET = 3;
 
     /** Recognises a static call to a named subprogram, which the linkage census counts by target. */
@@ -2256,6 +2312,217 @@ class GateVerificationTest extends AbstractPostgresIT {
         }
 
         /**
+         * Every covering test is a test a runner executes, and it is about the class the row names.
+         *
+         * <h2>What "covering test exists" used to mean, and why that was not enough</h2>
+         *
+         * <p>The cell was validated with {@link Files#isRegularFile(Path, java.nio.file.LinkOption...)} and
+         * nothing else. A file satisfies that predicate while being zero bytes long, while declaring nothing
+         * but a package, and while having no connection whatever to the class the row maps onto - and this
+         * repository has held all three at once. A twelve-source census found eleven package-only
+         * compilation units and one zero-byte source under a name the unit runner matches, so the runner
+         * opened it and executed nothing. Any row naming such a file recorded coverage that could not
+         * exist, and the row-count check stayed green throughout.
+         *
+         * <p>Four properties are asserted here, each catching a different way the cell can be true and
+         * meaningless:
+         *
+         * <ol>
+         *   <li><strong>Not blank.</strong> A zero-byte file is a name in a report and nothing behind
+         *       it.</li>
+         *   <li><strong>Declares a type.</strong> A compilation unit that declares none emits no class, so
+         *       there is nothing for a runner to instantiate.</li>
+         *   <li><strong>Declares something a runner executes.</strong> Any of the five discovered node
+         *       forms will do; a class of lifecycle methods and helpers is not a test.</li>
+         *   <li><strong>Names the class it claims to cover.</strong> A test that never mentions its target
+         *       is not about it. This is the weakest of the four as a proof of execution and the strongest
+         *       as a proof of <em>intent</em>: it is what distinguishes a considered mapping from a cell
+         *       filled in to make a row complete.</li>
+         * </ol>
+         *
+         * <p>The detectors are the shared ones in {@link JavaSourceCensus}, which the module's source census
+         * also reads and separately proves sound. Two copies of a detector drift apart and the looser copy
+         * decides; there is one copy.
+         *
+         * @throws IOException if the matrix or a covering test cannot be read
+         */
+        @Test
+        @DisplayName("every covering test is a non-blank source that declares a type, declares a test a "
+                + "runner executes, and names the class its row maps onto")
+        void everyCoveringTestIsARunnableTestThatNamesItsTarget() throws IOException {
+            final List<String> defects = new ArrayList<>();
+            final Map<String, String> testSources = new TreeMap<>();
+            int examined = 0;
+
+            for (final List<String> row : matrixRows()) {
+                final String targetClass = unquoted(row.get(3));
+                final String coveringTest = unquoted(row.get(5));
+                final String rowLabel = row.get(0) + " " + row.get(1);
+                final Path testFile = moduleFile(TEST_TREE, coveringTest);
+                examined++;
+
+                if (!Files.isRegularFile(testFile)) {
+                    defects.add(rowLabel + " -> no covering test at " + testFile.toAbsolutePath());
+                    continue;
+                }
+                if (Files.size(testFile) == 0L) {
+                    defects.add(rowLabel + " -> covering test " + coveringTest + " is a zero-byte file");
+                    continue;
+                }
+                if (!JavaSourceCensus.isDiscoveredByARunner(testFile)) {
+                    defects.add(rowLabel + " -> covering test " + coveringTest + " is named so that "
+                            + "neither runner's include pattern matches it, so nothing executes it");
+                }
+                final String declarations =
+                        testSources.computeIfAbsent(coveringTest, name -> declarationsOfOrFail(testFile));
+                if (!JavaSourceCensus.declaresAType(declarations)) {
+                    defects.add(rowLabel + " -> covering test " + coveringTest + " declares no type, so it "
+                            + "emits no class and a runner finds nothing in it");
+                    continue;
+                }
+                if (!JavaSourceCensus.declaresAnExecutableTest(declarations)) {
+                    defects.add(rowLabel + " -> covering test " + coveringTest + " declares no @Test, "
+                            + "@ParameterizedTest, @RepeatedTest, @TestFactory or @TestTemplate");
+                }
+                // The covering test's OWN name is removed before the search. By convention it is the
+                // target's name with a suffix - FileMaintenanceServiceTest contains
+                // FileMaintenanceService - so searching the source as it stands would be satisfied by
+                // the class's own declaration and by every self-qualified reference inside it. That was
+                // measured, not supposed: an unrelated test body planted under the conventional name
+                // passed the check until the name was stripped. What remains asks the question that was
+                // meant - does this test name the class anywhere other than in its own name.
+                final String simpleName = targetClass.substring(targetClass.lastIndexOf('.') + 1);
+                final String ownName = coveringTest.substring(coveringTest.lastIndexOf('.') + 1);
+                if (!declarations.replace(ownName, " ").contains(simpleName)) {
+                    defects.add(rowLabel + " -> covering test " + coveringTest + " names " + simpleName
+                            + " nowhere except in its own class name, so nothing connects it to the class "
+                            + "this row maps the paragraph onto");
+                }
+            }
+
+            assertThat(examined)
+                    .as("every row must be examined, or the absence asserted below is vacuous")
+                    .isEqualTo(TOTAL_PROCEDURE_UNITS);
+            assertThat(defects)
+                    .as("a covering test that is blank, declares no type, declares no executable test or "
+                            + "never names its target records coverage that does not exist. The row count "
+                            + "cannot see any of it: all four states satisfy 'the file is there'. "
+                            + "Offending: %s", defects)
+                    .isEmpty();
+        }
+
+        /**
+         * Every row's target method registers coverage, save for a closed set that provably cannot.
+         *
+         * <h2>Measured, not asserted - and measured honestly</h2>
+         *
+         * <p>The five properties above are read from source text, so they hold whenever this class runs.
+         * Execution is different on two counts, and both are stated here rather than papered over.
+         *
+         * <p><strong>First, the data arrives later than this tier.</strong> The merged coverage report is
+         * written at {@code post-integration-test}, after the runner that executes this class. So the
+         * linkage is reported in the same three states the supply-chain and performance rows carry:
+         * MEASURED when the report is present and reconciles, PENDING when it has not been written yet -
+         * a named state, never a skip, because a skipped test and a passing test read identically in a
+         * build summary - and MISSING when the report is present and a row is unaccounted for.
+         *
+         * <p><strong>Second, a covered-instruction count of zero does not mean "never ran".</strong> This
+         * was measured rather than assumed: {@code 11} of the {@code 544} rows show no covered instruction,
+         * and every one of them falls into a category where zero is the <em>correct</em> reading of a method
+         * that was either entered or faithfully preserved:
+         *
+         * <ul>
+         *   <li><strong>The method never completes.</strong> An abend handler's whole body is a call to a
+         *       collaborator that always throws. Coverage is recorded by probes, and a probe placed after
+         *       that call can never fire, so the method reads as uncovered however often it is entered.
+         *       {@code InterestCalculationService.abendProgram} is the proof: the suite verifies the abend
+         *       collaborator was called with that program's own name and status, which is reachable through
+         *       no other method - so it demonstrably ran, and coverage still shows zero. Requiring a
+         *       positive count here would be asserting a property of the instrumentation.</li>
+         *   <li><strong>The arm cannot be entered.</strong> Several paragraphs sit behind a legacy
+         *       {@code WHEN OTHER} whose condition the delivered representation cannot produce - a
+         *       {@code PIC 9(01)} context with condition names for two digits, or an enum whose constants
+         *       the clauses above exhaust. The specification requires the paragraph to be translated and
+         *       traced regardless, and deleting an arm because the type system made it redundant would
+         *       erase the record that the legacy had one.</li>
+         * </ul>
+         *
+         * <p>So the assertion is a <em>closed set</em> rather than a demand for zero: the unaccounted rows
+         * must be a subset of the exemptions declared in {@link #COVERAGE_EXEMPT_TARGETS}, each carrying its
+         * reason there. A twelfth row joining the set fails the build and has to be classified by a person;
+         * a row leaving it - because probe placement changed, say - does not, which is the direction it is
+         * safe to be lenient in. The exemptions are separately asserted to name real rows, so the list
+         * cannot rot into fiction.
+         *
+         * <p>Only the canonical report path is read. The {@code scoped-tests} profile redirects the report
+         * root precisely so a deliberately narrowed run cannot leave a partial report where a gate reads a
+         * full one, so a report at this path was produced by an unscoped run over the whole suite.
+         *
+         * <p>What this does <em>not</em> claim: that the named covering test is the thing that executed the
+         * method. Per-test attribution needs a coverage session per test, which this build does not
+         * configure and which would change what the coverage gate itself measures. The claim is the weaker
+         * and still material one - the mapped method is live code the suite reaches - and the five
+         * source-read properties above carry the attribution.
+         *
+         * @throws IOException if the matrix or the coverage report cannot be read
+         */
+        @Test
+        @DisplayName("every row's target method registers coverage in the merged report except a closed, "
+                + "individually justified set that provably cannot, and nothing may join that set")
+        void everyTargetMethodRegistersCoverageOutsideAClosedExemptSet() throws IOException {
+            final MethodExecutionEvidence evidence = methodExecutionEvidence();
+
+            assertThat(evidence.unaccounted())
+                    .as("these rows map a paragraph onto a method the merged report at %s records no "
+                            + "covered instruction for, and none of them is a declared exemption. Either "
+                            + "the method is dead code the matrix claims as an ordinary translation, or it "
+                            + "belongs in COVERAGE_EXEMPT_TARGETS with the reason it cannot register "
+                            + "coverage written beside it. Both need a person", evidence.report())
+                    .isEmpty();
+            assertThat(evidence.state())
+                    .as("the linkage stands at %s. MEASURED needs the merged report this build writes at "
+                            + "post-integration-test, a later phase than this tier, so PENDING is the "
+                            + "honest state within the run that produces it and does not fail. Report "
+                            + "looked for at %s; rows registering coverage: %d of %d, with %d exempt",
+                            evidence.state(), evidence.report(), evidence.reconciled(),
+                            TOTAL_PROCEDURE_UNITS, COVERAGE_EXEMPT_TARGETS.size())
+                    .isIn(EvidenceState.MEASURED, EvidenceState.PENDING);
+        }
+
+        /**
+         * Every declared coverage exemption names a row the matrix actually carries.
+         *
+         * <p>An exemption list is a licence to skip a check, so it has to be held to the same standard as
+         * the check. One that outlived the row it excused would silently widen the subset assertion above:
+         * the row would be gone, the exemption would remain, and a future row landing on the same class and
+         * method would inherit an excuse nobody wrote for it. Asserted unconditionally, because it reads the
+         * matrix and needs no coverage report.
+         *
+         * @throws IOException if the matrix cannot be read
+         */
+        @Test
+        @DisplayName("every declared coverage exemption still names a row the matrix carries, so no "
+                + "exemption can outlive the row it was written for")
+        void everyCoverageExemptionNamesARowTheMatrixCarries() throws IOException {
+            final Set<String> declared = new LinkedHashSet<>();
+            for (final List<String> row : matrixRows()) {
+                declared.add(unquoted(row.get(3)) + '.' + unquoted(row.get(4)));
+            }
+
+            assertThat(COVERAGE_EXEMPT_TARGETS.keySet())
+                    .as("each exemption must still resolve to a row, or it is excusing nothing and "
+                            + "silently widening the subset it participates in")
+                    .isNotEmpty()
+                    .allSatisfy(target -> assertThat(declared)
+                            .as("exemption '%s' (%s)", target, COVERAGE_EXEMPT_TARGETS.get(target))
+                            .contains(target));
+            assertThat(COVERAGE_EXEMPT_TARGETS.values())
+                    .as("and each must carry the reason it cannot register coverage, because an "
+                            + "unexplained exemption is indistinguishable from an oversight")
+                    .allSatisfy(reason -> assertThat(reason).isNotBlank());
+        }
+
+        /**
          * The rows a row count cannot vouch for: their covering test must name the method.
          *
          * <p><strong>Why this assertion exists, and what it would have caught.</strong> A covering test
@@ -2380,9 +2647,16 @@ class GateVerificationTest extends AbstractPostgresIT {
                             methodBodyStatements(owner, method))
                     .isEmpty();
             assertThat(invocationCountOf(owner, method))
-                    .as("and it must be called, because the estate calls the paragraph. A no-op nobody "
-                            + "invokes is a different program from the one being migrated")
-                    .isPositive();
+                    .as("and it must be called EXACTLY ONCE, because the estate invokes the paragraph from "
+                            + "exactly one site. A no-op nobody invokes is a different program from the one "
+                            + "being migrated, and the count is stated exactly rather than as 'at least "
+                            + "one' because the declaration used to satisfy 'at least one' on its own - "
+                            + "deleting the real call site left this assertion green")
+                    .isEqualTo(1);
+            assertThat(declarationLinesOf(owner, method))
+                    .as("and the method is declared once, so the single invocation counted above cannot be "
+                            + "the declaration of an overload")
+                    .hasSize(1);
         }
 
         /**
@@ -2839,18 +3113,37 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
-     * The unsafe and low-level code audit, executed over the production tree and scoped to exactly it.
+     * The unsafe and low-level code audit, plus the one construct whose audit is deliberately wider.
      *
      * <h2>The scoping rule is part of the measurement</h2>
-     * The audit examines {@code src/main/java} and nothing else, and both exclusions are deliberate rather
-     * than convenient. The four migration scripts are versioned schema definitions: an unscoped search for
-     * statement text would report them as dynamic query assembly and produce four violations that are in
-     * fact the deliverable. Test sources are excluded for the converse reason - an assertion helper may
-     * legitimately do things production code may not. Broadening the audit would not make it stricter; it
-     * would make it wrong.
+     * The unsafe-code audit examines {@code src/main/java} and nothing else, and both exclusions are
+     * deliberate rather than convenient. The four migration scripts are versioned schema definitions: an
+     * unscoped search for statement text would report them as dynamic query assembly and produce four
+     * violations that are in fact the deliverable. Test sources are excluded for the converse reason - an
+     * assertion helper may legitimately open a process, load a class by name or cast to a type variable in
+     * pursuit of a property production code is forbidden from having. Broadening <em>that</em> audit would
+     * not make it stricter; it would make it wrong.
+     *
+     * <h2>One construct is audited wider, because a different gate forbids it</h2>
+     * The warning suppression is the exception, and it is an exception on purpose. Gate 6 asks for counts of
+     * unsafe constructs in the code that ships; Gate 2 asks for a build that emits no warning and hides
+     * none, and the annotation that hides one does so identically wherever it is written. A test source is
+     * compiled by the same compiler under the same {@code -Xlint:all -Werror}, so a suppression there
+     * conceals exactly what a suppression in production conceals. That is not hypothetical: two of them sat
+     * in the test tree - on a raw generic mock and on a cast a correctly declared map made unnecessary -
+     * for as long as this audit read production alone and reported zero.
+     *
+     * <p>So the suppression figure is measured over both trees and budgeted whole-source, and it is the only
+     * figure here that is. The distinction is carried in the code, in the sign-off row's scope label and in
+     * the published evidence, because a reader who takes one scope for the other draws the wrong conclusion
+     * in whichever direction they read it.
+     *
+     * <p>Recorded as {@code DL-317} in {@code docs/decision-log.md}, which also records why {@code DL-160}'s
+     * production-only scoping remains correct for every other category measured here.
      */
     @Nested
-    @DisplayName("Gate 6 - the unsafe-code audit, executed over the production tree and scoped to it")
+    @DisplayName("Gate 6 - the unsafe-code audit over the production tree, and Gate 2's suppression audit "
+            + "over both trees")
     class UnsafeCodeAudit {
 
         UnsafeCodeAudit() {
@@ -2886,19 +3179,200 @@ class GateVerificationTest extends AbstractPostgresIT {
         }
 
         /**
-         * Suppressed warnings stay inside their budget, and in fact none is needed.
+         * No warning suppression exists in either source tree, and the audit can prove it looked.
          *
-         * @throws IOException if the tree cannot be walked
+         * <h4>Why both trees, and why not a grep</h4>
+         *
+         * <p>This assertion used to read the production tree only, by line containment, and reported zero.
+         * Both halves of that were weak. The scope was wrong for the gate being audited: Gate 2 requires a
+         * build with no warning and no suppressed warning, and a {@code @SuppressWarnings} in a test source
+         * hides a warning exactly as well as one in a production source - the test tree is the larger of
+         * the two and was entirely unaudited. Two suppressions were in fact sitting there, on a raw generic
+         * mock and on a cast that a correctly declared map made unnecessary. The production-only figure was
+         * zero and stayed zero the whole time they were there.
+         *
+         * <p>The measurement was wrong too. Line containment cannot tell an annotation from a mention of
+         * one, and this suite alone names the annotation in four string literals it asserts on. A grep that
+         * counted those would have to be tuned to ignore them, and a grep tuned to ignore its own findings
+         * is not an audit. The count is therefore taken over
+         * {@link JavaSourceCensus#codeOnlyLinesOf(Path)}, in which comments, literals and text blocks are
+         * blanked and line numbers still address the file, so a real annotation is found with its site and
+         * a discussion of one is not found at all.
+         *
+         * <p>The mentions are asserted to exist. Without that clause a detector that silently matched
+         * nothing - a broken pattern, a mis-typed tree, a scan that read no files - would report zero
+         * suppressions and read as a pass. Non-empty mentions prove the scan reached text that contains the
+         * name, and empty code sites then mean something.
+         *
+         * @throws IOException if either tree cannot be walked
          */
         @Test
-        @DisplayName("suppressed warnings stay within the budget of three, and the measured count is zero")
-        void suppressedWarningsStayWithinBudget() throws IOException {
-            assertThat(occurrencesIn(PRODUCTION_TREE, "@SuppressWarnings"))
-                    .as("the budget is three, each of which would need a stated reason. None is needed, "
-                            + "because every warning is already an error and so nothing accumulates to "
-                            + "be suppressed")
-                    .isLessThanOrEqualTo(SUPPRESSION_BUDGET)
-                    .isZero();
+        @DisplayName("no warning suppression exists in either source tree, measured over code with "
+                + "comments and literals blanked, and the mentions that remain are prose or asserted-on "
+                + "literals")
+        void noWarningSuppressionExistsInEitherSourceTree() throws IOException {
+            final List<String> inProduction = suppressionSitesIn(PRODUCTION_TREE);
+            final List<String> inTests = suppressionSitesIn(TEST_TREE);
+            final List<String> mentions = new ArrayList<>();
+            mentions.addAll(suppressionMentionsIn(PRODUCTION_TREE));
+            mentions.addAll(suppressionMentionsIn(TEST_TREE));
+
+            assertAll("the whole-source suppression audit",
+                    () -> assertThat(mentions)
+                            .as("the audit must reach text that names the annotation, or its zero measures "
+                                    + "nothing but its own silence. Mentions found in comments and "
+                                    + "literals: %s", mentions)
+                            .isNotEmpty(),
+                    () -> assertThat(inProduction)
+                            .as("%s carries no warning suppression. Sites: %s", PRODUCTION_TREE,
+                                    inProduction)
+                            .isEmpty(),
+                    () -> assertThat(inTests)
+                            .as("%s carries none either, which is the half this audit used to skip. "
+                                    + "Sites: %s", TEST_TREE, inTests)
+                            .isEmpty(),
+                    () -> assertThat(inProduction.size() + inTests.size())
+                            .as("the budget is %d whole-source, each of which would need a stated reason. "
+                                    + "None is needed: every warning is an error, so nothing accumulates "
+                                    + "to be suppressed", SUPPRESSION_BUDGET)
+                            .isLessThanOrEqualTo(SUPPRESSION_BUDGET));
+        }
+
+        /**
+         * The published suppression figures are the measured ones, per tree.
+         *
+         * <h4>Why the page is read rather than trusted</h4>
+         *
+         * <p>The evidence page carries a per-tree suppression table, and the paragraph around it tells a
+         * reader that this suite reconciles the two. Without this test that sentence would be the only thing
+         * making the claim, which is the shape of defect that put the wrong scope on the page in the first
+         * place: a figure asserted in prose, corroborated by nothing, and correct only until someone changed
+         * the code underneath it.
+         *
+         * <p>Only the code column is reconciled. The mention column is descriptive and moves whenever the
+         * annotation's name is written in prose - including by this javadoc - so gating it would fail builds
+         * for a reason unconnected to the property being gated. The page says which column is which, and
+         * this test enforces exactly the one the page calls gated.
+         *
+         * @throws IOException if the page or either tree cannot be read
+         */
+        @Test
+        @DisplayName("the evidence page's per-tree source and suppression figures are the measured ones, "
+                + "so neither the published zero nor the population it is taken over can outlive the code "
+                + "that earned it")
+        void thePublishedSuppressionFiguresAreTheMeasuredOnes() throws IOException {
+            final List<String> lines = Files.readAllLines(documentationFile(GATE_EVIDENCE),
+                    StandardCharsets.UTF_8);
+
+            for (final String tree : List.of(PRODUCTION_TREE, TEST_TREE)) {
+                final int publishedSuppressions =
+                        publishedTreeFigure(lines, tree, SUPPRESSION_COUNT_COLUMN);
+                final int publishedSources = publishedTreeFigure(lines, tree, SOURCE_COUNT_COLUMN);
+                assertThat(publishedSuppressions)
+                        .as("%s/%s must carry a per-tree suppression row for %s, in a table whose third "
+                                + "column is the code-only count. Without the row the page's own claim that "
+                                + "this figure is reconciled is unbacked", DOCUMENTATION_DIRECTORY,
+                                GATE_EVIDENCE, tree)
+                        .isNotNegative();
+                assertThat(publishedSuppressions)
+                        .as("the page publishes %d suppressions for %s and the tree measures %d. The page "
+                                + "is the deliverable a reader believes, so a disagreement is a defect in "
+                                + "the page even when the code is clean", publishedSuppressions, tree,
+                                suppressionSitesIn(tree).size())
+                        .isEqualTo(suppressionSitesIn(tree).size());
+                // The denominator is gated with the numerator. A zero over the wrong population is the
+                // same defect in a different place: the page carried 252 production sources for as long
+                // as eleven of them declared no type, and every figure derived from that number described
+                // a tree that did not exist.
+                assertThat(publishedSources)
+                        .as("the page publishes %d sources under %s and the tree holds %d. A count over a "
+                                + "population the page misstates is not a measurement of this module",
+                                publishedSources, tree, JavaSourceCensus.sourcesUnder(tree).size())
+                        .isEqualTo(JavaSourceCensus.sourcesUnder(tree).size());
+            }
+        }
+
+        /**
+         * The published unit-tier test figures are the ones this run's own report XML carries.
+         *
+         * <h4>Why only the unit tier, and why three states</h4>
+         *
+         * <p>The evidence page publishes a per-tier table of classes, tests, failures, errors and skips. It
+         * used to publish 26,235 unit and 1,601 integration tests as prose, transcribed from a run nobody
+         * could still identify, and the tree had moved underneath the numbers by the time they were read.
+         * Deriving them from the runners' XML is the fix; reconciling the published row against the derived
+         * one is what stops the fix decaying.
+         *
+         * <p>This tier is reconcilable here and the other is not. By the time the integration tier runs,
+         * {@code target/surefire-reports/} is complete - every unit class has been executed and written. The
+         * integration directory is not: this class is itself one of the classes in that tier, so its own
+         * report does not exist while it executes and neither do those of the classes after it. Asserting an
+         * integration total from in here would be asserting a partial count, so that row is reconciled by the
+         * CI step that runs after {@code verify}, where both directories are complete, and the page says so.
+         *
+         * <p>The third state is what makes the check usable. A scoped run - {@code -Dtest=SomeTest} - executes
+         * a subset by design, and demanding an exact match would fail every diagnostic run in the project.
+         * Completeness is detected rather than assumed: the number of report files is compared against the
+         * number of concrete unit test sources the runner's own include patterns discover, and only when
+         * those agree is the published row required to match exactly.
+         *
+         * @throws IOException if the page, the reports or the test tree cannot be read
+         */
+        @Test
+        @DisplayName("the published unit-tier figures are this run's own, measured from the report XML when "
+                + "the tier ran in full and reported as PENDING when the run was scoped")
+        void thePublishedUnitTierFiguresAreTheMeasuredOnes() throws IOException {
+            final List<String> lines = Files.readAllLines(documentationFile(GATE_EVIDENCE),
+                    StandardCharsets.UTF_8);
+            final TierFigures published = publishedTierFigures(lines, SUREFIRE_REPORT_DIRECTORY);
+            final TierFigures measured = measuredTierFigures(SUREFIRE_REPORT_DIRECTORY);
+            final int discoverable = discoverableUnitTestClassCount();
+
+            assertThat(published)
+                    .as("%s/%s must carry a per-tier row naming %s, with classes, tests, failures, errors "
+                            + "and skips in that order. Without the row there is nothing to reconcile and "
+                            + "the page's own claim that it derives these figures is unbacked",
+                            DOCUMENTATION_DIRECTORY, GATE_EVIDENCE, SUREFIRE_REPORT_DIRECTORY)
+                    .isNotNull();
+            assertThat(discoverable)
+                    .as("the runner's include patterns must discover unit test classes at all, or the "
+                            + "completeness signal below is meaningless")
+                    .isPositive();
+            assertThat(published.classes())
+                    .as("the page publishes %d unit classes and the runner's own include patterns discover "
+                            + "%d concrete ones. The population is part of the figure: a count over a "
+                            + "different set of classes is not this suite's count",
+                            published.classes(), discoverable)
+                    .isEqualTo(discoverable);
+
+            if (measured == null || measured.classes() != discoverable) {
+                // PENDING, and it says which of the two reasons applies. Not skipped: a skipped test and a
+                // passing test are indistinguishable in a build summary, which is the whole reason this
+                // class states an evidence state instead of calling Assumptions.
+                assertThat(measured == null ? 0 : measured.classes())
+                        .as("PENDING: the unit tier did not run in full in this selection (%d of %d classes "
+                                + "reported), so the published row is not reconciled here. It is reconciled "
+                                + "by the CI step that runs after verify, and by an unscoped local "
+                                + "./mvnw -B clean verify", measured == null ? 0 : measured.classes(),
+                                discoverable)
+                        .isLessThan(discoverable);
+                return;
+            }
+            assertAll("the published unit row equals the measured one",
+                    () -> assertThat(published.tests())
+                            .as("the page publishes %d unit tests and this run executed %d",
+                                    published.tests(), measured.tests())
+                            .isEqualTo(measured.tests()),
+                    () -> assertThat(measured.failures())
+                            .as("and the published zero failures must be a measured zero")
+                            .isEqualTo(published.failures()),
+                    () -> assertThat(measured.errors())
+                            .as("as must the published zero errors")
+                            .isEqualTo(published.errors()),
+                    () -> assertThat(measured.skips())
+                            .as("as must the published zero skips - a skipped test that the page does not "
+                                    + "disclose is a test a reader believes ran")
+                            .isEqualTo(published.skips()));
         }
 
         /**
@@ -2958,9 +3432,14 @@ class GateVerificationTest extends AbstractPostgresIT {
                     .as("and the reason the unchecked count is zero rather than merely small: an unchecked "
                             + "operation is a warning, every warning is an error, and the module compiles")
                     .contains("-Xlint:all", "-Werror");
-            assertThat(occurrencesIn(PRODUCTION_TREE, "@SuppressWarnings(\"unchecked\")"))
-                    .as("with nothing hiding one, which a suppression would")
-                    .isZero();
+            final List<String> hidingSites = new ArrayList<>();
+            hidingSites.addAll(suppressionSitesIn(PRODUCTION_TREE));
+            hidingSites.addAll(suppressionSitesIn(TEST_TREE));
+            assertThat(hidingSites)
+                    .as("with nothing hiding one, which a suppression would - and measured over both "
+                            + "trees, because an unchecked cast in a test source is where the two that "
+                            + "existed actually were. Sites: %s", hidingSites)
+                    .isEmpty();
         }
 
         /**
@@ -2974,23 +3453,29 @@ class GateVerificationTest extends AbstractPostgresIT {
         void theMigrationsAreExcludedByScopeRatherThanBySilence() throws IOException {
             final Path migrations = Path.of("src/main/resources/db/migration");
             assertThat(Files.isDirectory(migrations))
-                    .as("the migration location is flat and module-relative; expected at %s",
+                    .as("the migration tree is module-relative; expected at %s",
                             migrations.toAbsolutePath())
                     .isTrue();
 
             final List<String> scripts;
-            try (Stream<Path> entries = Files.list(migrations)) {
-                scripts = entries.map(path -> path.getFileName().toString()).sorted().toList();
+            try (Stream<Path> entries = Files.walk(migrations)) {
+                scripts = entries
+                        .filter(Files::isRegularFile)
+                        .map(path -> migrations.relativize(path).toString().replace('\\', '/'))
+                        .sorted()
+                        .toList();
             }
             assertThat(scripts)
-                    .as("four scripts, flat, in one location - which is what lets the audit's scoping "
-                            + "rule be stated in a single line")
-                    .containsExactly("V1__create_schema.sql", "V2__create_indexes.sql",
-                            "V3__seed_reference_data.sql", "V4__seed_user_security.sql");
+                    .as("four scripts, in the two profile-scoped locations the delivered arrangement "
+                            + "uses - which is what lets the audit's scoping rule stay a single line, "
+                            + "since it excludes src/main/resources wholesale rather than naming "
+                            + "directories")
+                    .containsExactly("schema/V1__create_schema.sql", "schema/V2__create_indexes.sql",
+                            "seed/V3__seed_reference_data.sql", "seed/V4__seed_user_security.sql");
             assertThat(scripts)
                     .as("the reference seed and the identity seed are separate versions, because the "
                             + "identity seed is profile-scoped and a combined script could not be")
-                    .doesNotContain("V3__seed_data.sql");
+                    .noneMatch(script -> script.endsWith("V3__seed_data.sql"));
         }
     }
 
@@ -3544,11 +4029,19 @@ class GateVerificationTest extends AbstractPostgresIT {
                             + "a finding was set aside by something other than a reviewed rule. %s",
                             SUPPRESSION_FILE, evidence.narrative())
                     .isEmpty();
-            assertThat(evidence.satisfied())
-                    .as("the supply-chain row is satisfied by the parsed enforcing mechanism together "
-                            + "with the inspected determinations, and by a current clean report when one "
-                            + "exists. It is never satisfied by an absent report. %s", evidence.narrative())
+            assertThat(evidence.mechanismEnforced())
+                    .as("the enforcing mechanism must be in place in the parsed build model whether or not "
+                            + "a report exists yet: check goal bound to verify, threshold %s, scan not "
+                            + "skipped, unused-determination failure on. %s",
+                            QUALIFYING_SCORE, evidence.narrative())
                     .isTrue();
+            assertThat(evidence.state())
+                    .as("the supply-chain row is MEASURED only when a current clean report was actually "
+                            + "read. Before the scan runs - which is the ordinary state at this tier, "
+                            + "because the scan is bound to a later phase - it is PENDING, and PENDING is "
+                            + "not a pass: it is the honest statement that this tier has not seen the "
+                            + "evidence. It is never MISSING. %s", evidence.narrative())
+                    .isIn(EvidenceState.MEASURED, EvidenceState.PENDING);
         }
 
         /**
@@ -3773,9 +4266,7 @@ class GateVerificationTest extends AbstractPostgresIT {
                 + "time, so a row cannot be written without having been measured")
         void everyRecordedRateFollowsFromItsOwnFigures() throws IOException {
             for (final PerformanceRow row : recordedPerformanceRows()) {
-                final BigDecimal derived = BigDecimal.valueOf(row.records())
-                        .multiply(BigDecimal.valueOf(1000L))
-                        .divide(BigDecimal.valueOf(row.elapsedMillis()), MEASUREMENT_PRECISION);
+                final BigDecimal derived = derivedRate(row.records(), row.elapsedMillis());
                 final BigDecimal tolerance = derived.multiply(RATE_TOLERANCE);
 
                 assertThat(row.recordsPerSecond().subtract(derived).abs())
@@ -3788,18 +4279,24 @@ class GateVerificationTest extends AbstractPostgresIT {
         }
 
         /**
-         * Whatever the build has measured in this run is itself well formed.
+         * Whatever the build has measured in this run is itself well formed, figure by figure.
          *
-         * <p>The generated files are the source the recorded rows are copied from, so they are checked in
-         * the same shape. They are read when present and their absence is not a failure: the tiers that
-         * take the measurements are separate classes, and requiring their output here would make this
-         * class depend on the order the tier happened to run in.
+         * <p>The generated files are the source the recorded rows are copied from, so they are held to the
+         * same standard as the rows copied out of them - which previously they were not. Checking a
+         * generated figure only for positivity accepts any number at all, so the arithmetic tie between
+         * the three figures is asserted here as well: a rate that does not follow from that row's own
+         * record count and elapsed time did not come out of a measurement, wherever it is written.
+         *
+         * <p>They are read when present and their absence is not a failure: the tiers that take the
+         * measurements are separate classes, and requiring their output here would make this class depend
+         * on the order the tier happened to run in. Their absence is instead what leaves the sign-off row
+         * for this gate PENDING, which is where it belongs.
          *
          * @throws IOException if a generated file cannot be read
          */
         @Test
-        @DisplayName("any run-scoped evidence this build produced carries the same four figures in the "
-                + "same shape, so the recorded rows and the generated ones cannot diverge")
+        @DisplayName("any run-scoped evidence this build produced carries four figures that are tied to "
+                + "each other by arithmetic, so a generated row cannot be a plausible-looking number")
         void anyGeneratedEvidenceCarriesTheSameFigures() throws IOException {
             final List<GeneratedBaseline> generated = generatedPerformanceEvidence();
 
@@ -3808,18 +4305,99 @@ class GateVerificationTest extends AbstractPostgresIT {
                         .as("%s exists, so it must carry at least one measured row", baseline.location())
                         .isNotEmpty();
                 for (final GeneratedRow row : baseline.rows()) {
+                    assertThat(row.run()).as("%s: run label", baseline.location()).isNotBlank();
                     assertThat(row.records()).as("%s: records", baseline.location()).isPositive();
                     assertThat(row.elapsedMillis()).as("%s: elapsed", baseline.location()).isPositive();
                     assertThat(row.peakHeapBytes()).as("%s: peak heap", baseline.location()).isPositive();
                     assertThat(row.recordsPerSecond())
                             .as("%s: throughput", baseline.location())
                             .isGreaterThan(BigDecimal.ZERO);
+                    final BigDecimal derived = derivedRate(row.records(), row.elapsedMillis());
+                    assertThat(row.recordsPerSecond().subtract(derived).abs())
+                            .as("%s publishes %s records per second for '%s', but %d records over %d ms "
+                                    + "is %s. The recorder divides the run's own two figures, so a "
+                                    + "generated rate that does not follow from them was not measured",
+                                    baseline.location(), row.recordsPerSecond(), row.run(), row.records(),
+                                    row.elapsedMillis(), derived)
+                            .isLessThanOrEqualTo(derived.multiply(RATE_TOLERANCE));
                 }
                 assertThat(baseline.namesItsFixtureVolumes())
                         .as("%s must state the fixture volumes its figures were measured over; a number "
                                 + "without them is not a baseline", baseline.location())
                         .isTrue();
             }
+        }
+
+        /**
+         * The generated rows and the recorded ones describe the same runs over the same volumes.
+         *
+         * <h2>Which of the five figures can be compared exactly, and why not all five</h2>
+         *
+         * <p>A row is five figures and they divide cleanly into two kinds. The run label and the record
+         * count are properties of <em>the code and the fixture</em>: this module measures
+         * {@code postTransactionJob} over the daily-transaction fixture's own record count, and it will
+         * measure the same count on any machine on any day. Elapsed time, peak heap and the quotient of
+         * the two are properties of <em>one run on one host</em> - which is exactly why the page records
+         * the date and the machine beside them and tells its reader to re-measure. Requiring a recorded
+         * millisecond figure to equal a freshly measured one would be requiring two runs on different
+         * hardware to take the same time, and a gate that fails whenever the hardware differs is not
+         * measuring the code.
+         *
+         * <p>So the reproducible pair is compared exactly, and the machine-scoped three are held to the
+         * arithmetic that ties them to each other. Three checks together close what positivity alone left
+         * open:
+         *
+         * <ul>
+         *   <li><strong>Every measured pair is published.</strong> A run this build measured that the page
+         *       does not carry is a measurement taken and dropped, and the page is short of what the build
+         *       produces.</li>
+         *   <li><strong>Every published run names a job this module defines.</strong> Asserted against
+         *       {@link BatchJobCatalog#launchableJobNames()}, the same inventory the launch surface
+         *       resolves against, so a row attributed to a job that does not exist cannot sit in the
+         *       table. This is the direction that catches invention: any record count divided by any
+         *       elapsed time is a self-consistent quotient, so arithmetic alone can never distinguish a
+         *       transcribed row from a fabricated one - only its attribution can.</li>
+         *   <li><strong>The gate is not fully signed off on the page alone.</strong> The state below is
+         *       MEASURED only when this build produced run-scoped evidence that reconciles with the page.
+         *       Without it the state is PENDING and the sign-off row says so.</li>
+         * </ul>
+         *
+         * <p>Nothing here is skipped when the measuring tier has not run. An absent measurement is
+         * reported as PENDING - a named state, published in the emitted record - rather than as a passing
+         * test, because a skipped test and a passing test read identically in a build summary.
+         *
+         * @throws IOException if either side cannot be read
+         */
+        @Test
+        @DisplayName("every run this build measured is published on the page, every published run names a "
+                + "job this module defines, and the page alone leaves the gate PENDING")
+        void theGeneratedAndRecordedRunsReconcileExactly() throws IOException {
+            final PerformanceEvidence evidence = performanceEvidence();
+
+            assertThat(evidence.published())
+                    .as("Gate 3 is discharged by a recorded measurement, so %s must publish at least one",
+                            documentationFile(GATE_EVIDENCE))
+                    .isNotEmpty()
+                    .allSatisfy(identity -> assertThat(BatchJobCatalog.launchableJobNames())
+                            .as("%s publishes a row for run '%s' at %d records, and no job of that name "
+                                    + "exists. Every arithmetic check such a row can face it passes by "
+                                    + "construction, so its attribution is the only thing that can be "
+                                    + "checked - and this one names nothing the module runs",
+                                    documentationFile(GATE_EVIDENCE), identity.run(), identity.records())
+                            .contains(identity.run()));
+            assertThat(evidence.unpublished())
+                    .as("this build measured runs that %s does not publish. A measurement taken and not "
+                            + "recorded leaves the page short of what the build produces: transcribe the "
+                            + "rows from %s, with the date and the machine named beside them",
+                            documentationFile(GATE_EVIDENCE), EVIDENCE_DIRECTORY.toAbsolutePath())
+                    .isEmpty();
+            assertThat(evidence.state())
+                    .as("the gate stands at %s. MEASURED needs run-scoped evidence from THIS build that "
+                            + "reconciles with the page; PENDING is the honest state before the measuring "
+                            + "tier has run and does not fail the sign-off; MISSING does. Measured here: "
+                            + "%s. Published: %s", evidence.state(), evidence.measured(),
+                            evidence.published())
+                    .isIn(EvidenceState.MEASURED, EvidenceState.PENDING);
         }
 
         /**
@@ -3925,21 +4503,41 @@ class GateVerificationTest extends AbstractPostgresIT {
                         .append(" ms at ").append(row.recordsPerSecond()).append("/s, peak heap ")
                         .append(row.peakHeapBytes()).append(" B on ").append(row.date());
             }
+            // Three states, for the same reason the supply-chain row below carries three. This row used to
+            // be PRESENT on the strength of the page alone, which signed the gate off against a
+            // transcription nothing in the build had corroborated. It is MEASURED only when this build's
+            // own run-scoped evidence reconciles with the page pair for pair, PENDING when the measuring
+            // tier has not run in this selection, and MISSING when the page carries no measurement or
+            // carries less than this build measured.
+            final PerformanceEvidence performance = performanceEvidence();
             rows.add(rowFor("Performance baseline",
                     DOCUMENTATION_DIRECTORY + "/" + GATE_EVIDENCE
-                            + " (measured by support/RunScopedPerformanceRecorder)",
-                    recordedEvidenceCoversPerformanceBaseline(),
+                            + " (measured by support/RunScopedPerformanceRecorder, reconciled against "
+                            + EVIDENCE_DIRECTORY + ")",
+                    performance.state(),
                     measured.isEmpty()
                             ? "NO MEASURED RUN IS RECORDED - the baseline is outstanding work"
-                            : baselines + ". No service level is asserted anywhere, because none is "
+                            : baselines + ". Reconciled against this build: "
+                                    + (performance.measured().isEmpty()
+                                            ? "the measuring tier has not run in this selection, so no "
+                                                    + "run-scoped evidence corroborates the page yet"
+                                            : performance.measured() + " measured here, all published")
+                                    + ". No service level is asserted anywhere, because none is "
                                     + "documented anywhere"));
-            // "warning suppressions" rather than "suppressions": this row counts @SuppressWarnings in the
-            // production tree, and the row below counts analyst determinations against vulnerability
-            // findings. Two unrelated things share the word, and a checklist that lets them share it too
-            // invites a reader to carry one row's zero across to the other.
+            // "warning suppressions" rather than "suppressions": this row counts the annotation, and the
+            // row below counts analyst determinations against vulnerability findings. Two unrelated things
+            // share the word, and a checklist that lets them share it too invites a reader to carry one
+            // row's zero across to the other.
+            // The scope label is deliberately precise, because this row now carries figures from two
+            // scopes. Every other category is production-only, which is the scope the plan states for
+            // Gate 6 in as many words. The suppression figure is reported for both trees and budgeted
+            // whole-source, because that is Gate 2's requirement rather than Gate 6's, and auditing only
+            // production is what let two suppressions sit in the test tree while this row read zero.
             final UnsafeCodeCensus unsafe = unsafeCodeCensus();
             rows.add(rowFor("Unsafe and low-level code audit",
-                    PRODUCTION_TREE + " (scoped: migrations and test sources excluded)",
+                    PRODUCTION_TREE + " (scoped: migrations and test sources excluded), except the "
+                            + "warning-suppression figure, measured over " + PRODUCTION_TREE + " and "
+                            + TEST_TREE + " because Gate 2 forbids the construct outright",
                     unsafe.withinBudget(),
                     unsafe.narrative()));
             final VulnerabilityEvidence supplyChain = vulnerabilityEvidence();
@@ -3953,12 +4551,20 @@ class GateVerificationTest extends AbstractPostgresIT {
             // so a row reading "zero critical or high" would claim more than the mechanism delivers. The
             // row's state therefore depends on the determination's scope as well as on the threshold: a
             // rule widened past one identifier on the named artefacts turns this row MISSING.
+            // Three states, not two. This row's evidence is the report the scan writes at verify, which is
+            // later than this tier, so before the scan has run the row is PENDING and says so. It used to be
+            // published as PRESENT on the strength of the configured mechanism alone - a sign-off row
+            // asserting a clean supply chain against no scan at all. PENDING does not fail the sign-off;
+            // MISSING does, and a stale or unclean report is MISSING.
+            final EvidenceState supplyChainState = determinationIsScopedToOneExaminedFinding()
+                    ? supplyChain.state()
+                    : EvidenceState.MISSING;
             rows.add(rowFor("Zero unsuppressed critical or high vulnerabilities, every determination "
                             + "scoped and disclosed",
                     BUILD_FILE + " dependency-check bound to verify, threshold " + QUALIFYING_SCORE
                             + " over compile, runtime and test scope; " + SUPPRESSION_FILE
                             + supplyChain.reportSuffix(),
-                    supplyChain.satisfied() && determinationIsScopedToOneExaminedFinding(),
+                    supplyChainState,
                     "1 determination: " + DETERMINED_IDENTIFIER + " on the three "
                             + DETERMINED_ARTIFACT_FAMILY + " artefacts, self-expiring; "
                             + supplyChain.narrative()));
@@ -3978,24 +4584,41 @@ class GateVerificationTest extends AbstractPostgresIT {
                     applicationTableNames().size() == APPLICATION_TABLE_COUNT,
                     APPLICATION_TABLE_COUNT + " tables, migrations "
                             + String.join(" ", MIGRATION_VERSIONS) + ", no floating-point column"));
+            final FinalBoundaryEvidence boundary = finalBoundaryEvidence();
+            rows.add(rowFor("Final-boundary criteria, each held by an executed suite",
+                    TEST_TREE + " (" + FINAL_BOUNDARY_CRITERIA.size() + " criteria)",
+                    boundary.satisfied(),
+                    boundary.narrative()));
 
             publishSignOff(rows);
 
-            final List<String> unsatisfied = new ArrayList<>();
+            final List<String> missing = new ArrayList<>();
+            final List<String> pending = new ArrayList<>();
             for (final ChecklistRow row : rows) {
-                if (!row.satisfied()) {
-                    unsatisfied.add(row.item() + " -> expected " + row.artefact());
+                if (row.state() == EvidenceState.MISSING) {
+                    missing.add(row.item() + " -> expected " + row.artefact());
+                } else if (row.state() == EvidenceState.PENDING) {
+                    pending.add(row.item());
                 }
             }
-            assertThat(unsatisfied)
-                    .as("every checklist item must name an artefact that is actually present. A row here "
-                            + "is a work item, not a warning: the sign-off is not discharged while one "
-                            + "remains")
+            assertThat(missing)
+                    .as("every checklist item must name an artefact that is actually present, or one a "
+                            + "later phase produces and has not produced yet. A MISSING row here is a work "
+                            + "item, not a warning: the sign-off is not discharged while one remains")
                     .isEmpty();
+            assertThat(pending)
+                    .as("and the only rows that may be outstanding at this tier are the two whose evidence "
+                            + "a LATER build phase writes - the vulnerability report the scan produces at "
+                            + "verify, and the run-scoped performance evidence the measuring tiers write. "
+                            + "A row outstanding here that is not one of those is a row whose artefact "
+                            + "should already exist. Outstanding: %s", pending)
+                    .allMatch(item -> item.startsWith("Zero unsuppressed critical")
+                            || item.startsWith("Performance baseline"));
             assertThat(rows)
-                    .as("the checklist covers the seven items the sign-off enumerates, plus the two the "
-                            + "plan adds for the named artefacts and the schema")
-                    .hasSize(9);
+                    .as("the checklist covers the seven items the sign-off enumerates, the two the plan "
+                            + "adds for the named artefacts and the schema, and the final-boundary row "
+                            + "that stops a sign-off passing through a class of failure it cannot state")
+                    .hasSize(10);
         }
 
         /**
@@ -4595,6 +5218,243 @@ class GateVerificationTest extends AbstractPostgresIT {
         return total;
     }
 
+    /**
+     * One tier's executed figures: how many classes reported, and what they reported.
+     *
+     * @param classes  test classes that produced a report
+     * @param tests    executed test count
+     * @param failures assertion failures
+     * @param errors   errors
+     * @param skips    skipped tests
+     */
+    private record TierFigures(int classes, int tests, int failures, int errors, int skips) {
+    }
+
+    /**
+     * Reads one tier's figures out of the evidence page's per-tier table.
+     *
+     * <p>The row is found by its report-directory cell, and the five figures are taken from the cells after
+     * it. Thousands separators and emphasis are stripped, because the page is written for a reader.
+     *
+     * @param  lines     the page's lines
+     * @param  directory the report directory naming the row
+     * @return the published figures, or {@code null} when the page carries no such row
+     */
+    private static TierFigures publishedTierFigures(final List<String> lines, final String directory) {
+        for (final String line : lines) {
+            if (!line.startsWith("|") || !line.contains(directory)) {
+                continue;
+            }
+            final String[] cells = line.split("\\|", -1);
+            if (cells.length < 8 || !cells[2].contains(directory)) {
+                continue;
+            }
+            final int[] figures = new int[5];
+            for (int index = 0; index < figures.length; index++) {
+                final String cell = cells[index + 3].replace("*", "").replace(",", "").trim();
+                if (!cell.matches("\\d+")) {
+                    return null;
+                }
+                figures[index] = Integer.parseInt(cell);
+            }
+            return new TierFigures(figures[0], figures[1], figures[2], figures[3], figures[4]);
+        }
+        return null;
+    }
+
+    /**
+     * Measures one tier's figures from the report XML this run wrote, by counting elements.
+     *
+     * <h4>Elements, not the {@code tests} attribute</h4>
+     *
+     * <p>One report file per top-level class, with nested classes rolled into their outer class's file, so the
+     * file count is the class count. The test count is the number of {@code <testcase>} elements, and that
+     * choice is measured rather than stylistic: the {@code tests} attribute on {@code <testsuite>} disagrees
+     * with the element count by <strong>146</strong> across this suite, because two nests may each declare a
+     * method of the same name and the attribute counts distinct names. The element count is what the runners'
+     * own console totals report, so it is the figure a reader of the build log sees, and it is the figure the
+     * evidence page publishes.
+     *
+     * <p>The same counting applies to the other three columns, for consistency and because it is exact: one
+     * {@code <failure>}, {@code <error>} or {@code <skipped>} element per occurrence. No rerun is configured,
+     * so no {@code <flakyFailure>} or {@code <rerunFailure>} element exists to double-count - and if one ever
+     * did, its element name does not begin with any of the three matched here.
+     *
+     * @param  directory the report directory, module-relative
+     * @return the measured figures, or {@code null} when the directory does not exist or holds no report
+     * @throws IOException if a report cannot be read
+     */
+    private static TierFigures measuredTierFigures(final String directory) throws IOException {
+        final Path root = Path.of(directory);
+        if (!Files.isDirectory(root)) {
+            return null;
+        }
+        int classes = 0;
+        int tests = 0;
+        int failures = 0;
+        int errors = 0;
+        int skips = 0;
+        try (Stream<Path> entries = Files.list(root)) {
+            for (final Path report : entries.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().startsWith("TEST-"))
+                    .filter(path -> path.getFileName().toString().endsWith(".xml"))
+                    .sorted().toList()) {
+                final String text = Files.readString(report, StandardCharsets.UTF_8);
+                classes++;
+                tests += elementCount(text, "testcase");
+                failures += elementCount(text, "failure");
+                errors += elementCount(text, "error");
+                skips += elementCount(text, "skipped");
+            }
+        }
+        return classes == 0 ? null : new TierFigures(classes, tests, failures, errors, skips);
+    }
+
+    /**
+     * Counts opening tags of one element name in a report.
+     *
+     * <p>The name is followed by a space, a slash or a closing angle bracket, so {@code failure} does not
+     * match {@code flakyFailure} and {@code error} does not match a longer name beginning with it.
+     *
+     * @param  report the report's text
+     * @param  name   the element name
+     * @return how many times it opens
+     */
+    private static int elementCount(final String report, final String name) {
+        final Matcher element = Pattern.compile("<" + name + "[\\s/>]").matcher(report);
+        int found = 0;
+        while (element.find()) {
+            found++;
+        }
+        return found;
+    }
+
+    /**
+     * Counts the concrete unit test classes the unit runner's own include patterns discover.
+     *
+     * <p>Read from the runner's patterns rather than from a constant: {@code **&#47;*Test.java} included,
+     * {@code **&#47;*IT.java}, {@code **&#47;*E2ETest.java} and everything under {@code e2e} excluded. An
+     * abstract class contributes its tests to its subclasses and produces no report of its own, so it is not
+     * counted. This is the completeness signal - equal to the reported class count exactly when the tier ran
+     * in full.
+     *
+     * @return the discoverable unit class count
+     * @throws IOException if the test tree cannot be walked
+     */
+    private static int discoverableUnitTestClassCount() throws IOException {
+        int discoverable = 0;
+        for (final Path source : JavaSourceCensus.sourcesUnder(TEST_TREE)) {
+            final String name = source.getFileName().toString();
+            final String path = source.toString().replace(java.io.File.separatorChar, '/');
+            if (!name.endsWith("Test.java") || name.endsWith("E2ETest.java")
+                    || path.contains("/e2e/")) {
+                continue;
+            }
+            if (!JavaSourceCensus.declaresAnAbstractClass(JavaSourceCensus.declarationsOf(source))) {
+                discoverable++;
+            }
+        }
+        return discoverable;
+    }
+
+    /** The annotation the whole-source Gate 2 audit forbids, written once. */
+    private static final String SUPPRESSION_ANNOTATION = "@SuppressWarnings";
+
+    /**
+     * Every real warning-suppression site beneath one module-relative tree, as {@code path:line}.
+     *
+     * <p>Real means the compiler reads it as an annotation. The line is taken from
+     * {@link JavaSourceCensus#codeOnlyLinesOf(Path)}, in which comments, string literals and text blocks
+     * have been blanked to spaces of equal length with newlines kept - so a match is code, and the index of
+     * the line it matched on is the line number in the file.
+     *
+     * @param  directory the tree to search, module-relative
+     * @return one {@code path:line} per site, in a stable order
+     * @throws IOException if the tree cannot be walked
+     */
+    private static List<String> suppressionSitesIn(final String directory) throws IOException {
+        return suppressionScan(directory, true);
+    }
+
+    /**
+     * Every mention of the annotation's name beneath one tree that is <em>not</em> code, as
+     * {@code path:line}.
+     *
+     * <p>These are the prose and the asserted-on literals - the population a line-containment grep cannot
+     * separate from a real annotation. They are collected so that {@link #suppressionSitesIn(String)}
+     * returning empty can be distinguished from a scan that matched nothing at all.
+     *
+     * @param  directory the tree to search, module-relative
+     * @return one {@code path:line} per mention, in a stable order
+     * @throws IOException if the tree cannot be walked
+     */
+    private static List<String> suppressionMentionsIn(final String directory) throws IOException {
+        return suppressionScan(directory, false);
+    }
+
+    /** Column of the evidence page's per-tree table that carries the source count. */
+    private static final int SOURCE_COUNT_COLUMN = 2;
+
+    /** Column of the same table that carries the code-only suppression count. */
+    private static final int SUPPRESSION_COUNT_COLUMN = 3;
+
+    /**
+     * Reads one numeric cell of the evidence page's per-tree table.
+     *
+     * <p>The row is found by its first cell naming the tree, and the figure is taken from the requested
+     * column. Emphasis markers and a parenthesised budget are stripped, because the page is written for a
+     * reader and the reader's formatting is not the data.
+     *
+     * @param  lines  the page's lines
+     * @param  tree   the tree whose row to read, module-relative
+     * @param  column the one-based cell index within the row
+     * @return the published figure, or {@code -1} when the page carries no such row or the cell is not a
+     *         number
+     */
+    private static int publishedTreeFigure(final List<String> lines, final String tree,
+            final int column) {
+        for (final String line : lines) {
+            if (!line.startsWith("|") || !line.contains(tree)) {
+                continue;
+            }
+            final String[] cells = line.split("\\|", -1);
+            if (cells.length <= column + 1 || !cells[1].contains(tree)) {
+                continue;
+            }
+            final String figure = cells[column].replace("*", "").replaceAll("\\(.*\\)", "").trim();
+            if (figure.matches("\\d+")) {
+                return Integer.parseInt(figure);
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Walks one tree and separates code occurrences of the annotation from non-code mentions of its name.
+     *
+     * @param  directory the tree to search, module-relative
+     * @param  inCode    {@code true} to return the code sites, {@code false} to return the mentions
+     * @return the requested sites, as {@code path:line}, in a stable order
+     * @throws IOException if the tree cannot be walked
+     */
+    private static List<String> suppressionScan(final String directory, final boolean inCode)
+            throws IOException {
+        final List<String> found = new ArrayList<>();
+        for (final Path source : JavaSourceCensus.sourcesUnder(directory)) {
+            final List<String> raw = Files.readAllLines(source, StandardCharsets.UTF_8);
+            final List<String> code = JavaSourceCensus.codeOnlyLinesOf(source);
+            for (int index = 0; index < raw.size(); index++) {
+                final boolean isCode = index < code.size()
+                        && code.get(index).contains(SUPPRESSION_ANNOTATION);
+                final boolean isMention = !isCode && raw.get(index).contains(SUPPRESSION_ANNOTATION);
+                if (inCode ? isCode : isMention) {
+                    found.add(source + ":" + (index + 1));
+                }
+            }
+        }
+        return found;
+    }
+
     // ===================================================================================================
     // HELPERS :: the traceability matrix
     // ===================================================================================================
@@ -4666,6 +5526,215 @@ class GateVerificationTest extends AbstractPostgresIT {
             throw new AssertionError("the matrix cites " + file.toAbsolutePath()
                     + ", which cannot be read: " + failure.getMessage(), failure);
         }
+    }
+
+    /**
+     * Reads a source with its comments and string literals blanked, failing the assertion when unreadable.
+     *
+     * <p>Used from inside a map-computing lambda, where a checked exception cannot be declared. Delegates to
+     * the shared reader so the blanking rules are the ones the module's source census proves sound.
+     *
+     * @param  file the file to read
+     * @return its text with comments and literals blanked
+     */
+    private static String declarationsOfOrFail(final Path file) {
+        try {
+            return JavaSourceCensus.declarationsOf(file);
+        } catch (final UncheckedIOException failure) {
+            throw new AssertionError("the matrix cites " + file.toAbsolutePath()
+                    + ", which cannot be read: " + failure.getMessage(), failure);
+        }
+    }
+
+    /** Where an unscoped build writes the merged coverage report; the scoped profile redirects its root. */
+    private static final Path MERGED_COVERAGE_REPORT =
+            Path.of("target", "site", "jacoco-merged", "jacoco.xml");
+
+    /**
+     * The target methods that cannot register a covered instruction, each with the reason.
+     *
+     * <p>Measured from the merged report rather than compiled from intuition: these are exactly the eleven
+     * of five hundred and forty-four rows that record zero covered instructions, and each was then read in
+     * source to establish why. Two reasons account for all eleven, and neither is a coverage gap that a test
+     * could close.
+     *
+     * <p><strong>Reason one: the method never completes.</strong> Coverage is recorded by probes. A method
+     * whose body is a call to a collaborator that always throws has no reachable probe, so it reads as
+     * uncovered however often it is entered. That the entry happens is separately proven by behaviour -
+     * the suite verifies the abend collaborator was called with the calling program's own name, which no
+     * other method can do.
+     *
+     * <p><strong>Reason two: the arm cannot be entered.</strong> The paragraph sits behind a legacy
+     * {@code WHEN OTHER} whose condition the delivered representation cannot produce, or after a call that
+     * always throws. The specification requires the paragraph to be translated and traced regardless;
+     * deleting an arm because the type system made it redundant would erase the record that the legacy had
+     * one.
+     */
+    private static final Map<String, String> COVERAGE_EXEMPT_TARGETS = Map.ofEntries(
+            Map.entry("service.InterestCalculationService.abendProgram",
+                    "never completes: its body is the abend collaborator's file-status entry point, which "
+                            + "always throws, so no probe in it is reachable. Entry is proven by behaviour "
+                            + "in InterestCalculationServiceTest, which verifies that collaborator was "
+                            + "called with this program's name and the raw status"),
+            Map.entry("service.TransactionReportService.abendProgram",
+                    "never completes: its whole body is the abend collaborator's batch entry point, which "
+                            + "always throws"),
+            Map.entry("service.AccountUpdateService.abendRoutine",
+                    "never completes: ends in the abend collaborator's online entry point, which always "
+                            + "throws. Its own caller is additionally an else arm over a typed action "
+                            + "whose constants the clauses above exhaust"),
+            Map.entry("service.AccountUpdateService.abendRoutineExit",
+                    "unreachable: performed only after the always-throwing abend call above it, and "
+                            + "preserved so the paragraph's fall-through into its own exit is expressed "
+                            + "rather than implied"),
+            Map.entry("service.CardUpdateService.abendRoutine",
+                    "never completes: ends in the abend collaborator's online entry point, which always "
+                            + "throws"),
+            Map.entry("service.CardUpdateService.abendRoutineExit",
+                    "unreachable: performed only after the always-throwing abend call above it"),
+            Map.entry("service.AccountViewService.sendPlainText",
+                    "unreachable: reached only from the unexpected-data arm, which needs a carried context "
+                            + "state the two-state representation cannot hold"),
+            Map.entry("service.AccountViewService.sendPlainTextExit",
+                    "unreachable: the terminator of the plain-text range above, reachable only from it"),
+            Map.entry("service.CardDetailService.mainParaExit",
+                    "unreachable: follows the legacy WHEN OTHER at line 373, whose context field is "
+                            + "PIC 9(01) with condition names for two digits and which nothing in the "
+                            + "estate stores a third digit into"),
+            Map.entry("service.CardDetailService.sendPlainText",
+                    "unreachable: inside that same WHEN OTHER arm"),
+            Map.entry("service.CardDetailService.sendPlainTextExit",
+                    "unreachable: the terminator of that arm's plain-text range"));
+
+    /**
+     * How the row-to-method coverage linkage stands.
+     *
+     * @param state       MEASURED when the report is present and every unaccounted row is a declared
+     *                    exemption, PENDING when the report has not been written yet, MISSING when a row is
+     *                    unaccounted for and unexcused
+     * @param report      where the report was looked for
+     * @param reconciled  how many rows resolved to a method with covered instructions
+     * @param unaccounted the rows recording no coverage that no exemption covers
+     */
+    private record MethodExecutionEvidence(EvidenceState state, Path report, int reconciled,
+            List<String> unaccounted) { }
+
+    /**
+     * Reconciles every matrix row's target method against the merged coverage report.
+     *
+     * <p>A method is counted as covered when the report holds an entry for it under its declaring class with
+     * a positive covered-instruction count. Overloads share a name and are reported by JaCoCo as separate
+     * entries with distinct descriptors; any one of them carrying coverage satisfies the row, because the
+     * matrix maps a paragraph onto a method name rather than onto a signature.
+     *
+     * @return the reconciliation
+     * @throws IOException if the matrix or the report cannot be read
+     */
+    private static MethodExecutionEvidence methodExecutionEvidence() throws IOException {
+        if (!Files.isRegularFile(MERGED_COVERAGE_REPORT)) {
+            return new MethodExecutionEvidence(EvidenceState.PENDING,
+                    MERGED_COVERAGE_REPORT.toAbsolutePath(), 0, List.of());
+        }
+
+        final Map<String, Set<String>> coveredMethodsByClass =
+                executedMethodsByClass(MERGED_COVERAGE_REPORT);
+        final List<String> unaccounted = new ArrayList<>();
+        int reconciled = 0;
+        for (final List<String> row : matrixRows()) {
+            final String targetClass = unquoted(row.get(3));
+            final String targetMethod = unquoted(row.get(4));
+            final Set<String> covered = coveredMethodsByClass.getOrDefault(
+                    BASE_PACKAGE_PATH + "/" + targetClass.replace('.', '/'), Set.of());
+            if (covered.contains(targetMethod)) {
+                reconciled++;
+            } else if (!COVERAGE_EXEMPT_TARGETS.containsKey(targetClass + '.' + targetMethod)) {
+                unaccounted.add(row.get(0) + " " + row.get(1) + " -> " + targetClass + '.' + targetMethod);
+            }
+        }
+        return new MethodExecutionEvidence(unaccounted.isEmpty() ? EvidenceState.MEASURED
+                : EvidenceState.MISSING, MERGED_COVERAGE_REPORT.toAbsolutePath(), reconciled,
+                List.copyOf(unaccounted));
+    }
+
+    /**
+     * Reads the coverage report and returns, per class, the names of the methods with covered instructions.
+     *
+     * <h2>Why this parser is configured differently from the other three in this class</h2>
+     *
+     * <p>The build file and the determination file carry no document type declaration, so those parsers
+     * refuse one outright. The coverage report does carry one - it references JaCoCo's own report DTD by
+     * public and system identifier - so refusing the declaration would make the report unparseable and turn
+     * a present measurement into a harness failure. The declaration is therefore permitted and the
+     * <em>fetch</em> is refused instead: secure processing on, external general and parameter entities off,
+     * and external DTD loading off. Nothing outside the file is ever read.
+     *
+     * @param  report the report to read
+     * @return class internal name to executed method names
+     * @throws IOException if the report cannot be read or parsed
+     */
+    private static Map<String, Set<String>> executedMethodsByClass(final Path report) throws IOException {
+        final Map<String, Set<String>> executed = new LinkedHashMap<>();
+        final javax.xml.parsers.DocumentBuilder builder;
+        try {
+            final javax.xml.parsers.DocumentBuilderFactory factory =
+                    javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            factory.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+            factory.setNamespaceAware(false);
+            factory.setXIncludeAware(false);
+            factory.setExpandEntityReferences(false);
+            builder = factory.newDocumentBuilder();
+        } catch (final javax.xml.parsers.ParserConfigurationException unconfigurable) {
+            throw new IOException("the XML reader could not be configured safely", unconfigurable);
+        }
+        final Document document;
+        try (InputStream stream = Files.newInputStream(report)) {
+            document = builder.parse(stream);
+        } catch (final SAXException malformed) {
+            throw new IOException(report.toAbsolutePath() + " is not readable as XML", malformed);
+        }
+
+        final NodeList classes = document.getElementsByTagName("class");
+        for (int index = 0; index < classes.getLength(); index++) {
+            final Element type = (Element) classes.item(index);
+            final Set<String> methods = new LinkedHashSet<>();
+            final NodeList children = type.getChildNodes();
+            for (int child = 0; child < children.getLength(); child++) {
+                if (!(children.item(child) instanceof Element candidate)
+                        || !"method".equals(candidate.getTagName())) {
+                    continue;
+                }
+                if (coveredInstructionsOf(candidate) > 0) {
+                    methods.add(candidate.getAttribute("name"));
+                }
+            }
+            executed.merge(type.getAttribute("name"), methods, (existing, added) -> {
+                final Set<String> union = new LinkedHashSet<>(existing);
+                union.addAll(added);
+                return union;
+            });
+        }
+        return Map.copyOf(executed);
+    }
+
+    /**
+     * Reads one method entry's covered-instruction count.
+     *
+     * @param  method the method element
+     * @return covered instructions, or zero when the counter is absent
+     */
+    private static int coveredInstructionsOf(final Element method) {
+        final NodeList children = method.getChildNodes();
+        for (int child = 0; child < children.getLength(); child++) {
+            if (children.item(child) instanceof Element counter
+                    && "counter".equals(counter.getTagName())
+                    && "INSTRUCTION".equals(counter.getAttribute("type"))) {
+                return Integer.parseInt(counter.getAttribute("covered"));
+            }
+        }
+        return 0;
     }
 
     /**
@@ -4876,15 +5945,16 @@ class GateVerificationTest extends AbstractPostgresIT {
                 .as("the build file is expected at %s, because the build's working directory is the "
                         + "module", build.toAbsolutePath())
                 .isTrue();
-        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        final javax.xml.parsers.DocumentBuilderFactory factory =
+                javax.xml.parsers.DocumentBuilderFactory.newInstance();
         try {
-            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setNamespaceAware(false);
             factory.setExpandEntityReferences(false);
-            final DocumentBuilder parser = factory.newDocumentBuilder();
+            final javax.xml.parsers.DocumentBuilder parser = factory.newDocumentBuilder();
             parsedBuildModel = parser.parse(build.toFile());
-        } catch (final ParserConfigurationException | SAXException malformed) {
+        } catch (final javax.xml.parsers.ParserConfigurationException | SAXException malformed) {
             throw new IllegalStateException("the build file at " + build.toAbsolutePath()
                     + " could not be parsed, so no gate that lives in the build can be verified",
                     malformed);
@@ -5184,6 +6254,45 @@ class GateVerificationTest extends AbstractPostgresIT {
     // ===================================================================================================
 
     /**
+     * What a tier can establish about an item of evidence a later build phase produces.
+     *
+     * <p>Three states rather than two, because "not yet" and "not so" are different facts and collapsing
+     * them is how a checklist comes to publish a pass it never established. Two rows of the sign-off depend
+     * on artefacts a LATER phase writes - the vulnerability report the scan produces at {@code verify}, and
+     * the run-scoped performance evidence the measuring tiers write - so at this tier those rows are
+     * legitimately unestablished rather than legitimately satisfied. MEASURED is the only state that
+     * discharges anything; MISSING is the only state that fails the sign-off.
+     */
+    private enum EvidenceState {
+
+        /** A current artefact was read and carried nothing outstanding. */
+        MEASURED("PRESENT"),
+
+        /** No artefact exists yet at this phase, and none is inferred from its absence. */
+        PENDING("**PENDING**"),
+
+        /** An artefact exists and is stale or unclean, or the enforcing mechanism is not in place. */
+        MISSING("**MISSING**");
+
+        /** How the state is rendered on the published evidence page. */
+        private final String published;
+
+        /**
+         * @param published how the state is rendered on the published evidence page
+         */
+        EvidenceState(final String published) {
+            this.published = published;
+        }
+
+        /**
+         * @return the published rendering
+         */
+        String published() {
+            return this.published;
+        }
+    }
+
+    /**
      * One analyst determination, reduced to the three properties that decide whether it is narrow enough.
      *
      * @param ordinal        its position in the file, one-based, so a failure names a place
@@ -5208,14 +6317,15 @@ class GateVerificationTest extends AbstractPostgresIT {
                 .isTrue();
 
         final Document parsed;
-        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        final javax.xml.parsers.DocumentBuilderFactory factory =
+                javax.xml.parsers.DocumentBuilderFactory.newInstance();
         try {
-            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setNamespaceAware(false);
             factory.setExpandEntityReferences(false);
             parsed = factory.newDocumentBuilder().parse(file.toFile());
-        } catch (final ParserConfigurationException | SAXException malformed) {
+        } catch (final javax.xml.parsers.ParserConfigurationException | SAXException malformed) {
             throw new IllegalStateException(file.toAbsolutePath()
                     + " could not be parsed, so its determinations cannot be inspected", malformed);
         }
@@ -5265,17 +6375,44 @@ class GateVerificationTest extends AbstractPostgresIT {
             boolean mechanismEnforced) {
 
         /**
-         * Reports whether the gate is discharged as far as this phase can discharge it.
+         * Reports whether the gate is <em>measured</em> and clean, which is the only state that signs off.
          *
-         * <p>An absent report never contributes a pass. What satisfies the row is the enforcing mechanism
-         * read out of the parsed build model together with the inspected determinations; a report, when one
-         * exists, must additionally be current and clean, and a stale one fails.
+         * <h4>Why the report's presence is part of this and used not to be</h4>
          *
-         * @return {@code true} when nothing outstanding was found
+         * <p>An earlier form omitted {@link #reportPresent()}. The consequence was that before the scan had
+         * ever run - which is the ordinary state at this tier, because the scan is bound to a later phase -
+         * the row was satisfied by the enforcing mechanism alone, and the sign-off checklist published a
+         * PRESENT supply-chain row against no scan at all. The mechanism being configured correctly is a
+         * statement about the build file; it is not a statement about the resolved graph, and only the
+         * latter can discharge a gate whose subject is that graph.
+         *
+         * <p>Absence is now reported as {@link #state()} PENDING rather than as either a pass or a failure,
+         * and only MEASURED signs off. That distinction is the whole design: a build that has not yet
+         * reached {@code verify} is not failing the gate, and it is not passing it either.
+         *
+         * @return {@code true} when a current, clean report was actually read
          */
         boolean satisfied() {
-            return mechanismEnforced() && !stale() && qualifyingFindings().isEmpty()
-                    && undocumentedSuppressions().isEmpty();
+            return state() == EvidenceState.MEASURED;
+        }
+
+        /**
+         * What this tier was able to establish, as one of three states.
+         *
+         * @return MEASURED when a current clean report was read, MISSING when a report exists but is stale
+         *         or carries something outstanding or the mechanism is not enforced, and PENDING when no
+         *         report exists yet and the mechanism is enforced
+         */
+        EvidenceState state() {
+            if (!mechanismEnforced()) {
+                return EvidenceState.MISSING;
+            }
+            if (!reportPresent()) {
+                return EvidenceState.PENDING;
+            }
+            return stale() || !qualifyingFindings().isEmpty() || !undocumentedSuppressions().isEmpty()
+                    ? EvidenceState.MISSING
+                    : EvidenceState.MEASURED;
         }
 
         /**
@@ -5474,6 +6611,93 @@ class GateVerificationTest extends AbstractPostgresIT {
             index = cursor - 1;
         }
         return List.copyOf(rows);
+    }
+
+    /**
+     * The reproducible half of a baseline row: which run, over how many records.
+     *
+     * <p>These two are properties of the code and the fixture rather than of the host, so they are the
+     * pair that can be compared exactly between a run taken here and a row recorded on another machine on
+     * another day. The other three figures belong to one run and are held to arithmetic instead.
+     *
+     * @param run     the run the figures were taken over
+     * @param records the record count that run processed
+     */
+    private record BaselineIdentity(String run, long records) {
+
+        @Override
+        public String toString() {
+            return run() + " at " + records() + " records";
+        }
+    }
+
+    /**
+     * Records per second, derived from one run's own two figures.
+     *
+     * <p>The single arithmetic definition both sides are held to: the recorded rows copied onto the page
+     * and the run-scoped rows this build generated. Two definitions of one quotient drift apart, and the
+     * looser one decides.
+     *
+     * @param  records       the record count
+     * @param  elapsedMillis the elapsed time in whole milliseconds
+     * @return records divided by elapsed seconds
+     */
+    private static BigDecimal derivedRate(final long records, final long elapsedMillis) {
+        return BigDecimal.valueOf(records)
+                .multiply(BigDecimal.valueOf(1000L))
+                .divide(BigDecimal.valueOf(elapsedMillis), MEASUREMENT_PRECISION);
+    }
+
+    /**
+     * How the performance baseline stands: what the page publishes, what this build measured, and whether
+     * the two reconcile.
+     *
+     * @param state       MEASURED with reconciling run-scoped evidence from this build, PENDING before the
+     *                    measuring tier has run, MISSING when the page carries no measurement or a
+     *                    measurement this build took is unpublished
+     * @param measured    the pairs this build measured, which is empty when the measuring tier has not run
+     * @param published   the pairs the evidence page publishes
+     * @param unpublished the pairs measured here that the page does not carry
+     */
+    private record PerformanceEvidence(EvidenceState state, Set<BaselineIdentity> measured,
+            Set<BaselineIdentity> published, List<BaselineIdentity> unpublished) { }
+
+    /**
+     * Reconciles the recorded baseline against whatever this build measured.
+     *
+     * <p>The state is deliberately three-valued. The tiers that take the measurements are separate
+     * classes, so a selection that runs this class alone produces no run-scoped evidence - and that is not
+     * the same condition as a page with no measurement on it. Collapsing the two would either fail a
+     * legitimate scoped run or let an unmeasured page sign the gate off; naming them separately does
+     * neither.
+     *
+     * @return the reconciliation
+     * @throws IOException if either side cannot be read
+     */
+    private static PerformanceEvidence performanceEvidence() throws IOException {
+        final Set<BaselineIdentity> measured = new LinkedHashSet<>();
+        for (final GeneratedBaseline baseline : generatedPerformanceEvidence()) {
+            for (final GeneratedRow row : baseline.rows()) {
+                measured.add(new BaselineIdentity(row.run(), row.records()));
+            }
+        }
+        final Set<BaselineIdentity> published = new LinkedHashSet<>();
+        for (final PerformanceRow row : recordedPerformanceRows()) {
+            published.add(new BaselineIdentity(row.run(), row.records()));
+        }
+        final List<BaselineIdentity> unpublished = measured.stream()
+                .filter(identity -> !published.contains(identity))
+                .toList();
+
+        final EvidenceState state;
+        if (!recordedEvidenceCoversPerformanceBaseline() || !unpublished.isEmpty()) {
+            state = EvidenceState.MISSING;
+        } else if (measured.isEmpty()) {
+            state = EvidenceState.PENDING;
+        } else {
+            state = EvidenceState.MEASURED;
+        }
+        return new PerformanceEvidence(state, Set.copyOf(measured), Set.copyOf(published), unpublished);
     }
 
     /**
@@ -5847,10 +7071,11 @@ class GateVerificationTest extends AbstractPostgresIT {
      * @param nativeQueries   native-query construction sites
      * @param assembledSql    query strings assembled from a non-literal
      * @param genericCasts    casts to a parameterised type or type variable
-     * @param suppressions    suppressed warnings
+     * @param suppressions    suppressed warnings in the production tree, which is Gate 6's scope
+     * @param testSuppressions suppressed warnings in the test tree, which is Gate 2's additional scope
      */
     private record UnsafeCodeCensus(long reflection, long processes, long nativeQueries,
-            int assembledSql, int genericCasts, long suppressions) {
+            int assembledSql, int genericCasts, long suppressions, long testSuppressions) {
 
         /**
          * Reports whether every measured category is inside its budget.
@@ -5858,12 +7083,12 @@ class GateVerificationTest extends AbstractPostgresIT {
          * <p>The conjunction is the point: a row that reported only one category would read as an audit
          * and cover a fraction of one.
          *
-         * @return {@code true} when all six hold
+         * @return {@code true} when all seven hold
          */
         boolean withinBudget() {
             return reflection() == 0L && processes() == 0L && nativeQueries() == 0L
                     && assembledSql() == 0 && genericCasts() <= GENERIC_CAST_BUDGET
-                    && suppressions() <= SUPPRESSION_BUDGET;
+                    && suppressions() + testSuppressions() <= SUPPRESSION_BUDGET;
         }
 
         /**
@@ -5875,8 +7100,10 @@ class GateVerificationTest extends AbstractPostgresIT {
             return "reflection " + reflection() + ", process execution " + processes()
                     + ", native query " + nativeQueries() + ", assembled SQL " + assembledSql()
                     + ", casts to a parameterised type " + genericCasts() + " (budget "
-                    + GENERIC_CAST_BUDGET + "), warning suppressions " + suppressions() + " (budget "
-                    + SUPPRESSION_BUDGET + ")";
+                    + GENERIC_CAST_BUDGET + "), warning suppressions " + suppressions()
+                    + " in " + PRODUCTION_TREE + " and " + testSuppressions() + " in " + TEST_TREE
+                    + ", " + (suppressions() + testSuppressions()) + " whole-source (budget "
+                    + SUPPRESSION_BUDGET + ", counted over code with comments and literals blanked)";
         }
     }
 
@@ -5895,7 +7122,8 @@ class GateVerificationTest extends AbstractPostgresIT {
                 occurrencesIn(PRODUCTION_TREE, "createNativeQuery"),
                 queryStringCensus().assembledSites().size(),
                 genericCastSites().size(),
-                occurrencesIn(PRODUCTION_TREE, "@SuppressWarnings"));
+                suppressionSitesIn(PRODUCTION_TREE).size(),
+                suppressionSitesIn(TEST_TREE).size());
     }
 
     // ===================================================================================================
@@ -6175,16 +7403,37 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
-     * Counts the invocations of a method within one source.
+     * Counts the invocations of a method within one source, counting no declaration.
+     *
+     * <h4>Why the declaration is excluded, and why it used to be counted</h4>
+     *
+     * <p>This is the instrument that establishes the empty fee paragraph is still <em>invoked</em>, which is
+     * the whole of what stops the migration from quietly dropping a call the estate makes. An earlier form
+     * counted a line such as {@code private void computeFees() {} as an invocation, because it accepted any
+     * site whose prefix ended in {@code void} or {@code private}. The consequence was that deleting the real
+     * call site left the count at one and the assertion green: the check reported a call graph it had not
+     * observed.
+     *
+     * <p>Two independent measures now exclude a declaration. The lines
+     * {@link #declarationLinesOf(String, String)} identifies are skipped outright, and the prefix rule
+     * accepts only the three shapes an <em>invocation</em> takes - nothing before the name, a qualifier
+     * ending in a dot or a method reference, or an expression context that is not type-and-modifier text.
+     * A declaration's prefix is exactly type-and-modifier text, so it satisfies none of them.
      *
      * @param  source the source text
      * @param  method the method name
-     * @return how many times it is called
+     * @return how many times it is called, excluding its own declaration
      */
     private static int invocationCountOf(final String source, final String method) {
         final Pattern call = Pattern.compile("(?<![\\w.])" + Pattern.quote(method) + "\\s*\\(");
+        final Set<Integer> declarations = new LinkedHashSet<>(declarationLinesOf(source, method));
+        final String[] lines = source.split("\n", -1);
         int invocations = 0;
-        for (final String line : source.split("\n", -1)) {
+        for (int index = 0; index < lines.length; index++) {
+            if (declarations.contains(Integer.valueOf(index))) {
+                continue;
+            }
+            final String line = lines[index];
             final String stripped = line.strip();
             if (stripped.startsWith("*") || stripped.startsWith("//") || stripped.startsWith("/*")) {
                 continue;
@@ -6192,8 +7441,8 @@ class GateVerificationTest extends AbstractPostgresIT {
             final Matcher found = call.matcher(line);
             while (found.find()) {
                 final String prefix = line.substring(0, found.start()).strip();
-                if (prefix.isEmpty() || !prefix.matches("[\\w.<>\\[\\],?@\\s]*")
-                        || prefix.endsWith("void") || prefix.endsWith("private")) {
+                if (prefix.isEmpty() || prefix.endsWith(".") || prefix.endsWith("::")
+                        || !prefix.matches("[\\w.<>\\[\\],?@\\s]*")) {
                     invocations++;
                 }
             }
@@ -6213,19 +7462,26 @@ class GateVerificationTest extends AbstractPostgresIT {
      * @param satisfied whether that artefact is actually present
      * @param evidence  what the artefact shows
      */
-    private record ChecklistRow(String item, String artefact, boolean satisfied, String evidence) {
+    private record ChecklistRow(String item, String artefact, EvidenceState state, String evidence) {
 
         /**
          * Renders the row for the evidence page.
          *
          * @return one Markdown table row, {@code "| item | artefact | status | evidence |"}, where the
-         *         status cell is {@code PRESENT} when the artefact was found and {@code **MISSING**}
-         *         when it was not
+         *         status cell is {@code PRESENT} when a current artefact was read, {@code **PENDING**}
+         *         when the artefact is produced by a later build phase and does not exist yet, and
+         *         {@code **MISSING**} when it should exist and does not or is not usable
          */
         @Override
         public String toString() {
-            return "| " + item + " | " + artefact + " | " + (satisfied ? "PRESENT" : "**MISSING**")
-                    + " | " + evidence + " |";
+            return "| " + item + " | " + artefact + " | " + state.published() + " | " + evidence + " |";
+        }
+
+        /**
+         * @return {@code true} when a current artefact was actually read
+         */
+        boolean satisfied() {
+            return this.state == EvidenceState.MEASURED;
         }
     }
 
@@ -6240,7 +7496,22 @@ class GateVerificationTest extends AbstractPostgresIT {
      */
     private static ChecklistRow rowFor(final String item, final String artefact,
             final boolean satisfied, final String evidence) {
-        return new ChecklistRow(item, artefact, satisfied, evidence);
+        return new ChecklistRow(item, artefact,
+                satisfied ? EvidenceState.MEASURED : EvidenceState.MISSING, evidence);
+    }
+
+    /**
+     * Builds a checklist row whose evidence is produced by a later build phase, so it has three states.
+     *
+     * @param  item     the checklist item
+     * @param  artefact the artefact that satisfies it
+     * @param  state    what this tier established about that artefact
+     * @param  evidence what the artefact shows, or why it could not be read
+     * @return the row
+     */
+    private static ChecklistRow rowFor(final String item, final String artefact,
+            final EvidenceState state, final String evidence) {
+        return new ChecklistRow(item, artefact, state, evidence);
     }
 
     /**
@@ -6573,6 +7844,70 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
+     * What the final-boundary row records.
+     *
+     * @param satisfied whether every criterion has at least one suite the build executes
+     * @param narrative the criteria and their holding suites, or the ones with none
+     */
+    private record FinalBoundaryEvidence(boolean satisfied, String narrative) { }
+
+    /**
+     * Establishes, per final-boundary criterion, that a suite the build executes holds it.
+     *
+     * <p>"Executes" is checked rather than assumed. A file can sit in the test tree and be run by
+     * nothing: the unit tier includes {@code **}{@code /*Test.java} and excludes the integration and
+     * end-to-end shapes, and the integration tier includes exactly those - so a suite named outside both
+     * sets is compiled, never run, and would satisfy a mere existence check while holding nothing.
+     *
+     * @return the row's state and its narrative
+     */
+    private static FinalBoundaryEvidence finalBoundaryEvidence() {
+        final List<String> unheld = new ArrayList<>();
+        final List<String> held = new ArrayList<>();
+        for (final String criterion : new TreeSet<>(FINAL_BOUNDARY_CRITERIA.keySet())) {
+            final List<String> executed = new ArrayList<>();
+            for (final String suite : FINAL_BOUNDARY_CRITERIA.get(criterion)) {
+                final Path source = Path.of(TEST_TREE, "com", "carddemo")
+                        .resolve(suite.replace('/', File.separatorChar) + ".java");
+                if (Files.isRegularFile(source) && isExecutedByTheBuild(suite)) {
+                    executed.add(suite);
+                }
+            }
+            if (executed.isEmpty()) {
+                unheld.add(criterion + " -> no executed suite among "
+                        + String.join(", ", FINAL_BOUNDARY_CRITERIA.get(criterion)));
+            } else {
+                held.add(criterion + " (" + String.join(", ", executed) + ")");
+            }
+        }
+        if (!unheld.isEmpty()) {
+            return new FinalBoundaryEvidence(false,
+                    "UNHELD CRITERIA: " + String.join("; ", unheld));
+        }
+        return new FinalBoundaryEvidence(true, FINAL_BOUNDARY_CRITERIA.size()
+                + " of " + FINAL_BOUNDARY_CRITERIA.size() + " held: " + String.join("; ", held));
+    }
+
+    /**
+     * Reports whether the build runs a suite at the given module-relative name.
+     *
+     * <p>Mirrors the two tiers {@code pom.xml} declares: the unit tier takes every {@code *Test} that is
+     * not an {@code *IT}, not an {@code *E2ETest} and not under the end-to-end package, and the
+     * integration tier takes exactly those three shapes.
+     *
+     * @param suite the suite's path beneath the base package, without its extension
+     * @return {@code true} when one of the two tiers would select it
+     */
+    private static boolean isExecutedByTheBuild(final String suite) {
+        final boolean endToEndPackage = suite.startsWith("e2e/");
+        final boolean integrationName = suite.endsWith("IT") || suite.endsWith("E2ETest");
+        if (integrationName || endToEndPackage) {
+            return integrationName || suite.endsWith("Test");
+        }
+        return suite.endsWith("Test");
+    }
+
+    /**
      * Writes the sign-off checklist to the build directory for transcription into the recorded evidence.
      *
      * <p>Written to the build directory rather than to the documentation tree on purpose. A test that edited
@@ -6591,6 +7926,11 @@ class GateVerificationTest extends AbstractPostgresIT {
                 .append("Checkout ").append(TestDataFactory.VERIFIED_CHECKOUT_COMMIT)
                 .append(", upstream release stamp ").append(TestDataFactory.UPSTREAM_RELEASE_STAMP)
                 .append(".\n\n")
+                // The two identifiers above name the LEGACY estate and are the same in every file this
+                // module will ever emit, so on their own they identify a migration rather than a run.
+                // This line names the build and the workflow run that produced this table, which is what
+                // lets a published bundle be attributed to the code it signed off. DL-315.
+                .append(GateEvidenceProvenance.stamp()).append("\n\n")
                 .append("Procedure-unit coverage: ").append(TOTAL_PROCEDURE_UNITS).append(" rows = ")
                 .append(PROGRAM_PARAGRAPHS).append(" program paragraphs + ")
                 .append(DATE_COPYBOOK_PARAGRAPHS).append(" + ").append(PFKEY_COPYBOOK_PARAGRAPHS)

@@ -185,9 +185,14 @@
          context the suite refreshes, is what makes a captured log unusable, while keeping the
          application category and the migration tool where a failure explains itself without a re-run.
 
-         The test profile deliberately has NO trace collector and switches tracing off, so a line may
-         carry an empty correlation field and nothing is exported. That is the intended configuration,
-         not a defect. -->
+         The test profile deliberately has NO trace collector, and what it switches off is EXPORT rather
+         than instrumentation: application-test.yml sets management.tracing.enabled to true and
+         management.otlp.tracing.export.enabled to false, so the tracer, the observation registry and
+         context propagation are all wired - a test can still assert on an observation - while no
+         exporter bean is created and nothing leaves the process. A line therefore carries a correlation
+         field whenever a span is in scope and an empty one when none is, which is the same behaviour as
+         any other profile; what differs is only that the identifiers go nowhere. That is the intended
+         configuration, not a defect. -->
     <springProfile name="test">
       <root level="INFO">
         <appender-ref ref="CONSOLE_READABLE"/>
@@ -404,6 +409,51 @@
        that check and would also hide a start-up that stopped short of the seeds. Every overlay keeps
        it here for the same reason. -->
   <logger name="org.flywaydb" level="INFO"/>
+
+  <!-- The migration tool's own executor, and the ONE Flyway category that must sit ABOVE its parent. At
+       INFO that class announces "Database: <jdbc url> (<product version>)", "Driver: <driver and version>"
+       and "Database Type: <type>" before any migration runs, so the host, the port, the database name and
+       the exact server and driver versions of the estate reach the stream that leaves the process. The
+       credential is already redacted from that URL, which is why the line reads as safe and is not:
+       topology is what a reader needs BEFORE a credential is worth anything, and a version pair is a
+       vulnerability lookup. The cross-file contract above survives the raise untouched, because every line
+       it depends on is emitted by a DIFFERENT category - org.flywaydb.core.internal.command.DbMigrate -
+       which stays at INFO through the parent, and because config/MigrationVersionRecordCallback now writes
+       an application-owned record of each applied version and of the version reached. Level lives in
+       application.yml per this file's ownership rule; declared INHERITED here so the two cannot conflict.
+       See docs/decision-log.md DL-311. -->
+  <logger name="org.flywaydb.core.FlywayExecutor" level="INHERITED"/>
+
+  <!-- The queue client's two send templates. Unlike every category above, these are switched OFF rather
+       than raised, and the reason is that the offending content and the useful content are the same
+       statement. Both classes format the whole outbound message - payload AND headers - into their own log
+       text: at TRACE and DEBUG on the way out and on success, and at ERROR together with the raw provider
+       exception and the resolved endpoint when a send fails. The payload of this module's one outbound
+       queue is an eighty-character job-control card, so the message IS the submitted job, and the endpoint
+       is the destination nothing else here prints. No level keeps the failure and drops the card.
+
+       Nothing is lost that this module does not say better itself. service/JobSubmissionService reports a
+       refused publish naming the card's ORDINAL and never its text, and carddemo.job.submission.publish
+       counts the outcome, so a failed submission is both legible and countable without a byte of the card
+       leaving the process. Measured against Spring Cloud AWS 3.4.2. See docs/decision-log.md DL-311. -->
+  <logger name="io.awspring.cloud.sqs.operations.AbstractMessagingTemplate" level="INHERITED"/>
+  <logger name="io.awspring.cloud.sqs.operations.SqsTemplate" level="INHERITED"/>
+
+  <!-- The trace exporter's two transports, switched off for a different reason again: the text is written
+       by somebody else. On a failed export both compose their message out of the COLLECTOR's own response -
+       the HTTP status line and the response body verbatim, or the transport exception's message - and the
+       collector is a remote party this deployment authenticates but does not author. Anything it returns
+       would be published into the machine-facing appender below, which is the output that leaves the
+       process, so a compromised or merely misconfigured collector would be choosing content in this
+       deployment's log stream.
+
+       An export failure stays visible: config/ObservabilityConfig counts every failed export batch on
+       carddemo.tracing.export, tagged by outcome, which is a bounded signal this module composes and which
+       a dashboard can alert on. Both categories log through java.util.logging and reach this configuration
+       by way of the JUL bridge the framework installs, which is why naming them here works at all.
+       Measured against OpenTelemetry 1.49.0. See docs/decision-log.md DL-311. -->
+  <logger name="io.opentelemetry.exporter.internal.http.HttpExporter" level="INHERITED"/>
+  <logger name="io.opentelemetry.exporter.internal.grpc.GrpcExporter" level="INHERITED"/>
 
   <!-- The two persistence provider categories that would otherwise put data into the log. The first
        writes the statement text, the second writes the bound parameter values, and both write only at

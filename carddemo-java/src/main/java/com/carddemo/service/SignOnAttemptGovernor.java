@@ -26,6 +26,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -123,6 +124,12 @@ public class SignOnAttemptGovernor {
     /** Metric counting subjects the ceiling declined to begin tracking. */
     public static final String UNTRACKED_METRIC = "carddemo.signon.subjects.untracked";
 
+    /**
+     * Metric counting attempts refused because the tracking table was full and neither of the attempt's
+     * subjects already had a record, so no failure could have been counted against them.
+     */
+    public static final String SATURATED_METRIC = "carddemo.signon.attempts.refused.saturated";
+
     /** Tag naming which of the two namespaces a counted event belongs to. */
     public static final String NAMESPACE_TAG = "namespace";
 
@@ -167,6 +174,26 @@ public class SignOnAttemptGovernor {
 
     /** Per-subject state, keyed by prefixed subject. */
     private final Map<String, AttemptRecord> records = new ConcurrentHashMap<>();
+
+    /**
+     * Slots taken in {@link #records}, held separately so the ceiling can be enforced atomically.
+     *
+     * <h2>Why a counter beside the map rather than the map's own size</h2>
+     *
+     * <p>{@code size()} answers a question about the past. Reading it, deciding there is room, and then
+     * inserting is three steps, and the ceiling is only respected if nothing else inserts in between -
+     * which is exactly what a burst of first-attempts from distinct subjects does. Each thread saw room
+     * and each thread took it, so the hard bound this governor exists to provide could be exceeded by as
+     * many subjects as there were threads. The bound matters because it is the only thing standing between
+     * an enumeration sweep across generated identifiers and unbounded growth of this map.
+     *
+     * <p>A slot is therefore <em>reserved</em> before the per-key computation runs and released if the
+     * computation turns out not to need it. Reservation is a compare-and-set against this counter, so two
+     * threads cannot both take the last slot however they interleave. The counter is maintained to equal
+     * the map's size exactly: every insertion consumes a reservation and every removal - the expiry sweep
+     * and a successful sign-on alike - returns one.
+     */
+    private final AtomicInteger reservedSlots = new AtomicInteger();
 
     /**
      * @param enabled         whether the governor refuses anything, default {@code true}
@@ -214,6 +241,18 @@ public class SignOnAttemptGovernor {
         if (!this.enabled) {
             return false;
         }
+        // Fail closed on saturation, before either namespace is consulted. A subject with no record
+        // cannot have a failure counted against it while the table is full, so admitting the attempt
+        // would be admitting an unlimited number of them - which is exactly the state the allowance
+        // exists to prevent, reached by generating enough distinct subjects to fill the table. Before
+        // this check the governor turned itself off at capacity: the attempt was neither counted nor
+        // refused, and guessing continued at full rate against the credential store and the hasher.
+        //
+        // The state is not sticky. It is re-derived on every call from the table's own occupancy, after
+        // a sweep, so it lifts of its own accord as windows expire and refusals end.
+        if (saturatedFor(identitySubject(userId), sourceSubject(sourceKey))) {
+            return true;
+        }
         if (refusing(identitySubject(userId), IDENTITY_NAMESPACE)) {
             return true;
         }
@@ -252,8 +291,46 @@ public class SignOnAttemptGovernor {
         if (!this.enabled) {
             return;
         }
-        this.records.remove(identitySubject(userId));
-        this.records.remove(sourceSubject(sourceKey));
+        releaseIfPresent(identitySubject(userId));
+        releaseIfPresent(sourceSubject(sourceKey));
+    }
+
+    /**
+     * Reports whether the tracking table is full and neither of an attempt's two subjects already has a
+     * record, which is the state in which counting a failure is impossible.
+     *
+     * <p>An attempt whose identity or source is already tracked is unaffected however full the table is:
+     * its record exists, its failures are still counted and its allowance still applies. Only an attempt
+     * that would need a new slot, at a moment when no slot can be produced, is refused. That is what
+     * keeps the fail-closed answer proportional - a subject-flooding attack locks out the operators who
+     * had not attempted a sign-on before it began, rather than every operator.
+     *
+     * <p>Read from the reservation counter rather than from the table's {@code size()}, for the same
+     * reason admission is: the counter is the authority on occupancy and {@code size()} is an estimate.
+     *
+     * @param  identitySubject the prefixed identity subject
+     * @param  sourceSubject   the prefixed source subject
+     * @return {@code true} when the attempt must be refused because it could not be counted
+     */
+    private boolean saturatedFor(final String identitySubject, final String sourceSubject) {
+        if (this.records.containsKey(identitySubject) || this.records.containsKey(sourceSubject)) {
+            return false;
+        }
+        if (this.reservedSlots.get() < this.trackedSubjects) {
+            return false;
+        }
+        sweepExpired();
+        if (this.reservedSlots.get() < this.trackedSubjects) {
+            return false;
+        }
+        count(SATURATED_METRIC, SOURCE_NAMESPACE,
+                "attempts refused because the tracking table could not begin counting the subject");
+        // No identifier and no address, for the same reason the refusal record carries neither.
+        LOG.warn("Sign-on refused because the governor's tracking table is at its configured maximum"
+                        + " of {} subjects and this attempt's subjects are not among them; raise {} if"
+                        + " this recurs outside an attack",
+                this.trackedSubjects, TRACKED_SUBJECTS_PROPERTY);
+        return true;
     }
 
     /**
@@ -315,11 +392,20 @@ public class SignOnAttemptGovernor {
     private void record(final String subject, final String namespace) {
         final Instant now = this.clock.instant();
         final boolean[] engaged = {false};
+        final boolean[] consumed = {false};
+        // Decided BEFORE the computation, and this is the whole of the fix. A mapping function can see
+        // one key; the ceiling is a property of the map. Deciding admission inside the computation meant
+        // two first-attempts for different subjects each observed room and each took it, and it also meant
+        // the sweep that frees room ran while a bin was locked - a mapping function is forbidden from
+        // modifying the map it is computing in, and doing so risks not terminating rather than merely
+        // being untidy. See docs/decision-log.md entry DL-308.
+        final Reservation reservation = reserveIfNeeded(subject);
         final AttemptRecord updated = this.records.compute(subject, (key, current) -> {
             if (current == null) {
-                if (!admits(subject)) {
+                if (reservation != Reservation.HELD) {
                     return null;
                 }
+                consumed[0] = true;
                 return new AttemptRecord(1, now, null);
             }
             // A refusal already in force is left exactly as it is: extending it on every further
@@ -340,9 +426,21 @@ public class SignOnAttemptGovernor {
             }
             return new AttemptRecord(failures, windowStart, null);
         });
+        if (reservation == Reservation.HELD && !consumed[0]) {
+            // The subject already existed, so the slot was not needed after all. Returning it is what
+            // keeps the counter equal to the map's size; keeping it would leak the ceiling downwards until
+            // no new subject could ever be tracked.
+            this.reservedSlots.decrementAndGet();
+        }
         if (updated == null) {
             count(UNTRACKED_METRIC, namespace,
                     "subjects the tracking ceiling declined to begin counting");
+            if (reservation == Reservation.REFUSED) {
+                LOG.warn("Sign-on governor is tracking its configured maximum of {} subjects, so one"
+                                + " further subject is not being counted; raise {} if this recurs"
+                                + " outside an attack",
+                        this.trackedSubjects, TRACKED_SUBJECTS_PROPERTY);
+            }
             return;
         }
         count(RECORDED_METRIC, namespace, "sign-on attempts recorded as failures by the governor");
@@ -357,24 +455,74 @@ public class SignOnAttemptGovernor {
         }
     }
 
+    /** What the caller of {@link #reserveIfNeeded} holds when the per-key computation runs. */
+    private enum Reservation {
+
+        /** A slot was taken and must be consumed by an insertion or returned. */
+        HELD,
+
+        /** The subject was already tracked, so no slot was taken and none is owed. */
+        NOT_NEEDED,
+
+        /** The ceiling was reached even after a sweep, so no new subject may be inserted. */
+        REFUSED
+    }
+
     /**
-     * Decides whether a new subject may begin to be tracked, sweeping expired entries first.
+     * Takes a tracking slot for a subject that does not yet have one.
      *
-     * @param  subject the prefixed subject about to be added
-     * @return {@code true} when the subject may be tracked
+     * <p>The probe for an existing subject is a fast path and not a correctness guarantee: an entry can
+     * be swept between the probe and the computation. When that happens the computation finds no mapping
+     * while holding no reservation and declines, so this attempt goes uncounted for that subject. That is
+     * a deliberate and immaterial loss - an entry is only ever swept once it is neither refusing nor
+     * inside its window, which is exactly the state in which the next failure restarts the count at one
+     * anyway - and it is the price of never inserting without a reservation, which is what keeps the
+     * bound absolute.
+     *
+     * @param  subject the prefixed subject about to be recorded
+     * @return what the caller holds
      */
-    private boolean admits(final String subject) {
-        if (this.records.size() < this.trackedSubjects) {
-            return true;
+    private Reservation reserveIfNeeded(final String subject) {
+        if (this.records.containsKey(subject)) {
+            return Reservation.NOT_NEEDED;
         }
+        if (tryReserveSlot()) {
+            return Reservation.HELD;
+        }
+        // Only here, outside every computation, is it safe to remove other mappings.
         sweepExpired();
-        if (this.records.size() < this.trackedSubjects) {
-            return true;
+        return tryReserveSlot() ? Reservation.HELD : Reservation.REFUSED;
+    }
+
+    /**
+     * Takes one slot if the ceiling leaves room, atomically.
+     *
+     * @return {@code true} when a slot was taken and is now owed back or consumed
+     */
+    private boolean tryReserveSlot() {
+        int taken = this.reservedSlots.get();
+        while (taken < this.trackedSubjects) {
+            if (this.reservedSlots.compareAndSet(taken, taken + 1)) {
+                return true;
+            }
+            taken = this.reservedSlots.get();
         }
-        LOG.warn("Sign-on governor is tracking its configured maximum of {} subjects, so one further"
-                + " subject is not being counted; raise {} if this recurs outside an attack",
-                this.trackedSubjects, TRACKED_SUBJECTS_PROPERTY);
-        return this.records.containsKey(subject);
+        return false;
+    }
+
+    /**
+     * Removes one subject and returns its slot, if it was there to remove.
+     *
+     * <p>Conditional on the removal actually happening, because two callers can ask to release the same
+     * subject and only one of them frees a slot. Decrementing unconditionally would drift the counter
+     * below the map's size and hand out slots that do not exist.
+     *
+     * @param subject the prefixed subject to release
+     */
+    private void releaseIfPresent(final String subject) {
+        if (this.records.remove(subject) != null) {
+            this.reservedSlots.decrementAndGet();
+        }
     }
 
     /**
@@ -387,13 +535,22 @@ public class SignOnAttemptGovernor {
         final Instant now = this.clock.instant();
         final Iterator<Map.Entry<String, AttemptRecord>> entries = this.records.entrySet().iterator();
         while (entries.hasNext()) {
-            final AttemptRecord record = entries.next().getValue();
+            final Map.Entry<String, AttemptRecord> entry = entries.next();
+            final AttemptRecord record = entry.getValue();
             final boolean stillRefusing =
                     record.refusedUntil() != null && now.isBefore(record.refusedUntil());
             final boolean insideWindow =
                     now.isBefore(record.windowStartedAt().plus(this.failureWindow));
-            if (!stillRefusing && !insideWindow) {
-                entries.remove();
+            if (stillRefusing || insideWindow) {
+                continue;
+            }
+            // Removed by key AND value rather than through the iterator, for two reasons. It reports
+            // whether it actually removed anything, which is what makes the slot release exact when two
+            // threads sweep at once; and it declines to remove an entry another thread has replaced since
+            // this iteration observed it - which could otherwise discard a refusal that had just engaged,
+            // letting a caller clear the record of its own abuse.
+            if (this.records.remove(entry.getKey(), record)) {
+                this.reservedSlots.decrementAndGet();
             }
         }
     }

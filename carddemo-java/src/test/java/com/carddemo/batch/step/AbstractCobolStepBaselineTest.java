@@ -406,7 +406,7 @@ class AbstractCobolStepBaselineTest {
 
             // The finding this asserts is unchanged: a failure must not leak whatever the step opened.
             // What it asserts through has changed, and correctly so. The legacy abend routine ends with
-            // CALL 'CEE3ABD' [app/cbl/CBACT01C.cbl:L173], which does not return, so PERFORM
+            // the CEE3ABD call [app/cbl/CBACT01C.cbl:L173], which does not return, so the close of
             // 9000-ACCTFILE-CLOSE at line 83 is unreachable once any guarded operation has abended.
             // Driving the observable close family from the failure path would therefore fabricate CLOSE
             // operations, with their statuses and diagnostics, that the mainframe never performs. The

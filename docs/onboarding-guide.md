@@ -38,6 +38,13 @@ never install, choose or bump a Maven version, you just run `./mvnw`. The wrappe
 downloads the pinned distribution, checks its digest and caches it, and every later invocation reuses the
 cache.
 
+The digest is not optional and the distribution URL must be `https` — both launchers stop rather than
+install something they cannot verify, so a first build behind a proxy that rewrites either will fail
+loudly instead of quietly. Two first builds started at once are safe: installation is serialised per
+distribution and the second waits for the first. Note what the wrapper does *not* do: it resolves Maven,
+never a JDK. `mvnw.cmd` additionally needs Windows PowerShell 5.1, which ships with Windows, or
+PowerShell 7 as `pwsh.exe`.
+
 That short list is the whole point of Standard 1, reproducible hermetic builds: a clean checkout must
 build with a JDK and Docker alone, which is exactly why the wrapper, the `Dockerfile` and the
 `docker-compose.yml` all live inside `carddemo-java/` rather than in an operations repository. There is no
@@ -87,8 +94,14 @@ The failsafe include list needs those extra two patterns because the three end-t
 `src/test/java/com/carddemo/e2e/`. Surefire's exclusions are the mirror image of those includes, so no
 class runs twice and none is silently skipped.
 
-So `./mvnw package` builds a jar and proves nothing about any gate. `./mvnw -B clean verify` is the
-command every gate is quoted against. Expect it to take several minutes on a warm machine and
+So `./mvnw package` builds a jar and **two gates' worth of evidence, not sign-off**. Be precise about
+which two, because "proves nothing" is the wrong shape of warning and invites the opposite mistake. On
+the way to `package` the compiler plugin runs under `-Xlint:all -Werror`, so a successful `package` does
+establish **Gate 2** — a zero-warning build — and Surefire runs, so it also establishes the **unit tier**
+result. What `package` reaches none of is the other three rows of the table above: the integration and
+end-to-end tier under Failsafe, the JaCoCo coverage check, and the CVE scan. Those are three of the four
+things the delivery is judged on, and every one of them is bound at `verify`. `./mvnw -B clean verify` is
+therefore the command every gate is quoted against. Expect it to take several minutes on a warm machine and
 considerably longer the first time, because the CVE scan builds its local vulnerability data once before
 it can evaluate anything — a long first run is the scan working, not the build hanging.
 
@@ -136,13 +149,36 @@ with a different fix.
 
 ## 3. Bring up the local stack
 
-The Compose project provisions everything the running application talks to:
+The Compose project provisions everything the running application talks to.
+
+**On a clean checkout, read this before you run anything.** The `app` service names an image that does not
+exist yet, so the first `up` has to build it — and that build is **deliberately refused** unless you
+supply real provenance, because the `Dockerfile` rejects the all-zero revision sentinel that
+`SOURCE_REVISION` defaults to. A newcomer who runs a bare `docker compose up -d` on a fresh clone
+therefore gets a build failure naming a forty-character requirement, which reads like a broken stack and
+is in fact the guard working. Export the three values first, and the first run succeeds:
 
 ```bash
 cd carddemo-java
-docker compose up -d
+export APP_VERSION="$(./mvnw -q -DforceStdout help:evaluate -Dexpression=project.version)"
+export SOURCE_REVISION="$(git rev-parse HEAD)"
+export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+docker compose up -d --build
 docker compose ps
 ```
+
+If you only want the backing services and not the application container — which is what you want while
+running the test tiers, or while running the app from your IDE — name them and skip the build entirely:
+
+```bash
+cd carddemo-java
+docker compose up -d postgres localstack jaeger prometheus grafana
+```
+
+Once an image exists, `docker compose up -d` on its own reuses it and needs no exports. So do
+`ps`, `logs`, `stop`, `restart` and `down`: every variable in `docker-compose.yml` carries a default
+precisely so that inspecting and tearing down a stack never demands the build provenance of an image it is
+only removing.
 
 | Service | Role | Host port |
 | :------ | :--- | --------: |
@@ -153,8 +189,13 @@ docker compose ps
 | `grafana` | Provisioned datasource and the `carddemo-overview` dashboard | 3000 |
 | `app` | The module itself, on the `local` profile | 8080 |
 
-Jaeger also publishes the two OTLP receiver ports, 4317 for gRPC and 4318 for HTTP. Every image is pinned
-by digest, and every published port binds to the loopback interface by default. The observability
+Jaeger also publishes the two OTLP receiver ports, 4317 for gRPC and 4318 for HTTP. Every
+**third-party** image is pinned by digest as well as by tag, so an upstream republish of a tag cannot
+change what the gates were validated against without appearing as a diff. The one exception is the `app`
+image, which this stack **builds** — its digest does not exist until the build that produces it has run, so
+it is referenced by tag; its inputs are pinned instead, both `Dockerfile` bases by digest and every
+dependency by exact version in `pom.xml`. Every published port binds to the loopback interface, and
+publishing the stack on a routable address is unsupported. The observability
 configuration the last three services mount lives under `carddemo-java/config/` — `config/prometheus/`
 and `config/grafana/`, including `config/grafana/dashboards/carddemo-overview.json`.
 
@@ -168,35 +209,47 @@ only reports healthy once all three exist.
 the AWS surface this module needs, so there is no licence token to supply and no Pro subscription to buy.
 Nothing in the module reads one.
 
-Starting, inspecting and tearing the stack down need no exports at all, because every variable in
-`docker-compose.yml` carries a default. **Building** the application image is the one operation that
-needs real provenance, and it is refused without it — the `Dockerfile` rejects the all-zero revision
-sentinel by name:
-
-```bash
-cd carddemo-java
-export APP_VERSION="$(./mvnw -q -DforceStdout help:evaluate -Dexpression=project.version)"
-export SOURCE_REVISION="$(git rev-parse HEAD)"
-export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
-docker compose up -d --build
-```
+**Why the defaults are written the way they are**, since the three exports above are the one piece of
+friction in this section. Both identity arguments carry a default so that Compose can interpolate the
+whole file for *every* subcommand: written as required-but-unset, they made `config`, `ps`, `logs` and
+even `down` fail, and a teardown cannot reasonably need the build provenance of an image it is removing.
+The guard was therefore moved to where a build can actually check it. `APP_VERSION` defaults to the
+module's own Maven version — a drift between the two is caught by `ContainerHardeningContractTest`, which
+compares the default against `pom.xml`. `SOURCE_REVISION` defaults to the all-zero sentinel the
+`Dockerfile` **explicitly refuses**, so every read-only subcommand works from a clean checkout while a
+build still stops rather than stamping an image with a revision nobody supplied. An unlabelled image
+cannot be produced here by accident, which is the whole point of the friction.
 
 ### Schema evolution
 
-Flyway migrates the database forward only — there is no rollback script and `clean` is disabled — from
-four scripts under `carddemo-java/src/main/resources/db/migration/`:
+Flyway migrates the database forward only — there is no rollback script — from four scripts under
+`carddemo-java/src/main/resources/db/migration/`, in two sibling locations:
 
-| Migration | What it creates |
-| :-------- | :-------------- |
-| `V1__create_schema.sql` | The eleven tables derived from the eleven verified record layouts |
-| `V2__create_indexes.sql` | The three alternate-index equivalents as B-tree indexes, plus the primary and foreign keys |
-| `V3__seed_reference_data.sql` | The sample reference and transaction data |
-| `V4__seed_user_security.sql` | The ten seeded identities, stored as BCrypt hashes |
+| Migration | Location | What it creates |
+| :-------- | :------- | :-------------- |
+| `V1__create_schema.sql` | `schema/` | The eleven tables derived from the eleven verified record layouts |
+| `V2__create_indexes.sql` | `schema/` | The three alternate-index equivalents as B-tree indexes, plus the primary and foreign keys |
+| `V3__seed_reference_data.sql` | `seed/` | The sample reference and transaction data |
+| `V4__seed_user_security.sql` | `seed/` | The ten seeded identities, stored as BCrypt hashes |
 
-**`V3` and `V4` apply under the `local` and `test` profiles only.** Both profiles raise the Flyway target
-to `latest`; the shared configuration and the `prod` profile pin it to version `2`. A production migration
-therefore gets the schema and the indexes and inherits neither the sample data nor a seeded credential —
-which is Standard 6 doing its job, and the reason the seed scripts can be as generous as they are.
+**`V3` and `V4` apply under the `local` and `test` profiles only.** Both profiles declare BOTH locations;
+the shared configuration and the `prod` profile declare `classpath:db/migration/schema` alone, so a
+production migration does not resolve the seed scripts at all. Every profile declares
+`spring.flyway.target: latest` — the separation is the location list, and a number there is refused under
+`prod` because it would freeze the schema at its own version. A production migration therefore gets the
+schema and the indexes and inherits neither the sample data nor a seeded credential — which is Standard 6
+doing its job, and the reason the seed scripts can be as generous as they are.
+
+Never declare the shared parent `classpath:db/migration`. A Flyway location is scanned recursively, so it
+reaches both children, and it records every script under a name relative to itself; `FlywayConfig` refuses
+it under every profile. See `docs/decision-log.md` DL-298.
+
+**`clean` follows the same split, and it is not disabled everywhere.** The shared baseline and `prod` set
+`clean-disabled: true`, which is the half that matters: an inherited relaxation would reach production. The
+profiles whose database is *disposable* deliberately set it to `false` — `local`, so you can drop and
+re-apply a migration you are editing, and both copies of the `test` profile, whose database is a per-run
+container. `validate-on-migrate` is on everywhere, so a database whose history no longer matches the
+delivered scripts fails start-up rather than being silently reconciled.
 
 Teardown and inspection, again as alternatives. Reach for the second form when the database has drifted:
 a stale volume is the most common local failure, because Flyway validates the checksum of every migration
@@ -218,7 +271,8 @@ carries a default — so the module runs straight from the build:
 
 ```bash
 cd carddemo-java
-./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local \
+  -Dspring-boot.run.arguments=--server.address=127.0.0.1
 ```
 
 …or from the packaged artefact, whose name comes from the module coordinate
@@ -226,12 +280,28 @@ cd carddemo-java
 
 ```bash
 cd carddemo-java
-java -jar target/carddemo-java-1.0.0.jar --spring.profiles.active=local
+java -jar target/carddemo-java-1.0.0.jar --spring.profiles.active=local \
+  --server.address=127.0.0.1
 ```
 
 Either way, if the Compose stack is already up, free the port first with `docker compose stop app` —
 otherwise the second process cannot bind 8080. Leaving the container running and putting your own process
 on another port with `--server.port=18080` works just as well.
+
+**`local` must stay loopback-only, and that is why both commands name the address.** The profile already
+defaults `server.address` to `127.0.0.1`, so these commands are loopback-bound with or without the
+argument; it is written out because the argument is what a reader copies, and because the shared baseline
+declares no address, which means the embedded server's own default is *every interface*. What the profile
+carries makes that consequential: a signing secret and an operator credential committed in
+`application-local.yml`, cleartext HTTP, anonymous metric scraping, a published OpenAPI description, and
+the ten seeded sign-on identities below. On a wildcard bind, anyone who can route to your machine can mint
+an administrator token from a secret they can read in this repository.
+
+To reach a local stack from another machine, forward the port over an encrypted, authenticated channel —
+`ssh -L 8080:127.0.0.1:8080 <host>`, run on your own machine — or deploy the `prod` profile, which requires
+transport security and resolves every secret from the environment. Publishing the `local` profile on a
+routable address is unsupported; the Compose container is the single place the bind is widened, and it is
+widened only *inside* the container, behind a host mapping that is itself bound to `127.0.0.1`.
 
 ### The three profiles
 
@@ -245,7 +315,7 @@ on another port with `--server.port=18080` works just as well.
 
 This is Standard 5, and it is enforced by absence rather than by convention: the profile resolves each of
 the following from the environment with **no fallback value**, so a missing one **fails startup** instead
-of silently binding a placeholder. Thirteen variables are required, and none of them is needed to build,
+of silently binding a placeholder. Fourteen variables are required, and none of them is needed to build,
 test or run locally. Names only — no value for any of these appears anywhere in this repository, and none
 should ever be written into a file:
 
@@ -259,6 +329,7 @@ should ever be written into a file:
 | `CARDDEMO_FIELD_ENCRYPTION_KEY` | The key behind field-level encryption at rest |
 | `CARDDEMO_SQS_QUEUE` | The FIFO queue the job-submission bridge publishes to |
 | `AWS_REGION` | The region the S3, SQS and SNS clients resolve against |
+| `CARDDEMO_AWS_ACCOUNT_ID` | The account those resources must belong to; a locator owned by any other account is refused |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Where traces are exported |
 | `CARDDEMO_TLS_KEYSTORE` | The server keystore location |
 | `CARDDEMO_TLS_KEYSTORE_PASSWORD` | The keystore credential |
@@ -319,9 +390,9 @@ cd carddemo-java
 
 | Gate | What it proves | How to run it |
 | ---: | :------------- | :------------ |
-| **1** — End-to-end boundary | Byte-equivalent output at the four contractual widths — 80, 100, 133 and 430 bytes — compared as byte arrays against committed goldens | `./mvnw -B clean verify`, or `./mvnw -B verify -Pscoped-tests -Dit.test=BatchPipelineE2ETest` for the pipeline alone. Docker required |
+| **1** — End-to-end boundary | Byte-equivalent output at **all five** contractual widths — **40**, 80, 100, 133 and 430 bytes — every one compared as a byte array against a committed golden. Four come from one seeded pipeline pass; the 40-byte category-balance line comes from a dedicated run of the job that emits it, because that job is not a pipeline member | `./mvnw -B clean verify`, or `./mvnw -B verify -Pscoped-tests -Dit.test=BatchPipelineE2ETest` for the pipeline alone and `-Dit.test=CategoryBalanceReportJobConfigIT` for the fifth width. Docker required |
 | **2** — Zero-warning build | A clean compile under `-Xlint:all -Werror` at `<release>25</release>` | `./mvnw -B clean verify` — the compiler is the gate |
-| **3** — Performance baseline | Elapsed time, peak memory and records per second, taken from the Micrometer batch-step timers | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` and the Grafana `carddemo-overview` dashboard corroborate |
+| **3** — Performance baseline | Elapsed time, peak heap and records per second. **The quotable figures come from `support/RunScopedPerformanceRecorder`**, which wall-clocks each job launch, reads peak heap from the JVM's own memory beans and divides records by elapsed time, writing `target/gate-evidence/gate3-*.md`. The Micrometer batch-step timers **corroborate** those figures; they do not supply them | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` and the Grafana `carddemo-overview` dashboard corroborate |
 | **4** — Named real-world artefacts | The nine ASCII fixtures and twelve encoded datasets by name, the ten seeded identities, and the five validation-lookup cardinalities | `BatchPipelineE2ETest` and `GateVerificationTest`, both inside `./mvnw -B clean verify` |
 | **5** — Interface contracts | The sign-on message texts, the routing each delivered user type produces, and the 17-card job image drained back out of a real FIFO queue | `./mvnw -B clean verify`, or `./mvnw -B verify -Pscoped-tests -Dit.test=OnlineTransactionE2ETest` |
 | **6** — Unsafe and low-level audit | Counts of raw SQL concatenation, `Runtime.exec`, reflection, unchecked casts and suppressed warnings | The scoped grep below |
@@ -334,10 +405,57 @@ is never the evidence for a gate — the authoritative run is the unscoped `./mv
 
 ### Gate 6: the audit, and why its scope is the whole answer
 
+The audit is **four commands, not one**, because three of the five categories cannot be answered by a
+single forbidden-token grep and the fifth is not even measured over the same tree: a cast is a shape rather
+than a token, "SQL built from strings" is a question about how a literal is *joined* rather than about
+whether a literal exists, and warning suppression is forbidden by Gate 2 across both source trees rather
+than by Gate 6 across production alone. Run all four:
+
 ```bash
 cd carddemo-java
-grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery|@SuppressWarnings' src/main/java/
+
+# 1 - the forbidden constructs of Gate 6's own scope. Expect no output at all: all four are zero.
+grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery' src/main/java/
+
+# 2 - cast candidates: every cast whose target is a parameterised type. Expect exactly five lines.
+grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/java/
+
+# 3 - SQL assembled from anything other than a literal. Expect no output at all.
+grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
+
+# 4 - warning suppression, and this is the one line that reaches BOTH trees: Gate 2's scope is not
+#     Gate 6's. Expect no output at all.
+grep -rn '@SuppressWarnings' src/main/java/ src/test/java/
 ```
+
+What each one returns today, so you can tell a clean run from a broken command:
+
+| Command | Measured result |
+| :------ | :-------------- |
+| 1 — forbidden constructs | **no output**. No `Runtime.exec`, no `ProcessBuilder`, no `java.lang.reflect`, no `Class.forName` and no `createNativeQuery` |
+| 2 — cast candidates | **exactly five lines**, which is the budget rather than a coincidence: `service/PostgresJobSubmissionCoordinator.java`, `batch/step/AdvisoryGenerationPublicationLock.java`, `batch/BatchLaunchCoordinator.java`, `repository/TransactionInsertRepositoryImpl.java` and `config/FlywayConfig.java`. All five cast a lambda onto a parameterised `ConnectionCallback` or `PreparedStatementCallback` so the JDBC template resolves the right overload. **None is an unchecked operation** — the compiler would have made it an error, because every warning is one |
+| 3 — SQL assembly | **no output**. Every query string in the production tree is a compile-time literal; a variable is never joined into one |
+| 4 — warning suppression | **no output**, over both trees. Not one `@SuppressWarnings` exists in either, so the whole-source budget of three is unspent |
+
+Command 2 is deliberately narrow, and command 3 deliberately anchored, for the same reason: a looser
+pattern reports prose. A cast-shaped regex that also admits single-letter targets matches 23 lines, of
+which 18 are comment text and message strings; an unanchored concatenation search matches 8 lines, every
+one of them an English diagnostic message containing a word like "from" or "values". `GateVerificationTest`
+resolves that by stripping comments and string literals before matching, which is what makes its figures
+the authoritative ones — and after that filtering the two searches above are exact.
+
+The same test also publishes the census behind row 3: **17 query-string literals** exist in the production
+tree — a literal counts when it opens with a statement verb *and* carries a clause keyword — comprising the
+seven JPQL `@Query` declarations on the repositories and ten native-SQL constants in the JDBC callbacks,
+and **zero** of the 17 is joined to a non-literal on either side. Every variable reaches a statement as a
+bound `?` parameter or a named JPQL parameter.
+
+The suppression line reaches both trees on purpose, and it is the only line here that does. Gate 6 counts
+what the shipped code does at run time, so a test source is legitimately outside it. Gate 2 forbids a
+suppressed warning outright, and the annotation suppresses one wherever it is written — both trees are
+compiled by the same compiler under the same `-Xlint:all -Werror`. The published figure is measured over code
+with comments and literals blanked rather than by this grep, because the module names the annotation in
+several comments and asserted-on literals; see [Gate Evidence](gate-evidence.md#gate-2--zero-warning-build).
 
 **The audit is scoped to `src/main/java/` — everything beneath it and nothing else — and that scoping is
 load-bearing rather than cosmetic.** The Flyway files under `src/main/resources/db/migration/` are `.sql`
@@ -358,9 +476,10 @@ greenfield and every one of them was decided before the code was written:
 | Suppressed warnings | ≤ 3 |
 
 Each suppression, if one ever appears, carries an inline justification naming the framework construct that
-forces it. The **reflection target of zero is the load-bearing one**: it is why all eleven record mappers
-are hand-written with explicit offsets instead of being generated, and why no annotation processor appears
-anywhere in the dependency set. The measured counts, with the raw command output beside them, are
+forces it. The **reflection target of zero is the load-bearing one**: it is why all **twelve** record
+mappers — one per each of the eleven persisted record layouts, plus `StatementWorkRecordMapper` for the
+statement work area, which has no table behind it — are hand-written with explicit offsets instead of being
+generated, and why no annotation processor appears anywhere in the dependency set. The measured counts, with the raw command output beside them, are
 published in [Gate Evidence](gate-evidence.md).
 
 ### Reading the coverage result
@@ -386,8 +505,11 @@ and it means none of the local reports is committed. On your machine they surviv
 The durable record is what the **CardDemo Java CI** workflow uploads:
 `.github/workflows/carddemo-java-ci.yml` scopes itself into the module with
 `defaults.run.working-directory: carddemo-java`, sets up Eclipse Temurin 25.0.3+9, runs
-`./mvnw -B … clean verify`, and uploads `jacoco-coverage-reports`, `owasp-dependency-check-report`,
-`test-reports` and `container-vulnerability-scan-reports` as build artefacts. Fetch those from the
+`./mvnw -B … clean verify`, and uploads `gate-evidence`, `jacoco-coverage-reports`,
+`owasp-dependency-check-report`, `test-reports` and `container-vulnerability-scan-reports` as build
+artefacts. The first of those holds the files the run itself authors — the Gate 1 byte comparison, the Gate 3
+baselines and the Gate 8 sign-off — each stamped with the build revision and the workflow run that produced
+it, and it is uploaded before the reproducibility rebuild that empties the build directory. Fetch those from the
 workflow run rather than quoting a figure from any document, and see [Gate Evidence](gate-evidence.md) for
 the standing per-gate record.
 
@@ -420,7 +542,7 @@ the summary below is the module-specific reading of it.
 
 > **Security issues never go in a public GitHub issue.** If you discover a potential security problem,
 > notify AWS/Amazon Security through their
-> [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/) instead. This is
+> [vulnerability reporting page](https://aws.amazon.com/security/vulnerability-reporting/) instead. This is
 > the one convention here whose consequences a follow-up commit cannot undo.
 
 **Before you write anything.** Work against the latest source on the **main** branch. Check the existing
@@ -444,8 +566,12 @@ attention to the automated CI failures reported on the pull request and stay inv
 **Conduct and licensing.** The project has adopted the Amazon Open Source Code of Conduct; see
 [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md). The project is licensed under **Apache-2.0** — see
 [`LICENSE`](../LICENSE), with [`NOTICE`](../NOTICE) attributing Amazon.com, Inc. or its affiliates — and
-you will be asked to confirm the licensing of your contribution. Every generated source file in the module
-carries the same Apache-2.0 header the legacy members carry, so keep it on anything new.
+you will be asked to confirm the licensing of your contribution. **Every generated Java source, SQL
+migration and comment-capable configuration file in the module carries the same Apache-2.0 header the
+legacy members carry, so keep it on anything new.** The qualifier is exact rather than decorative: the
+formats that admit no comment syntax carry no header and cannot be made to — strict JSON has no comment
+grammar, so the three lookup resources under `src/main/resources/lookup/` and the Grafana dashboard
+definition are headerless by necessity, and that is the whole of the exception.
 
 ---
 
@@ -459,7 +585,8 @@ carries the same Apache-2.0 header the legacy members carry, so keep it on anyth
 | Startup fails with `Validate failed: Migrations have failed validation` and a checksum mismatch for a migration version | The Postgres volume still holds a database migrated by the previous content of that script | `docker compose down -v`, then bring the stack back up so the migrations replay from empty. That is validation working, not a reason to repair the history |
 | The application will not start on the `prod` profile | A required variable is unset | Supply it. There is no fallback default by design, and startup failing is the intended outcome |
 | Port 8080 is already in use | The Compose `app` service already has it | `docker compose stop app`, or start your process on another port with `--server.port=18080` |
-| `./mvnw: Permission denied` | The wrapper script lost its executable bit | `chmod +x carddemo-java/mvnw` |
+| `./mvnw: Permission denied` | The wrapper script lost its executable bit | `chmod +x ./mvnw`, from `carddemo-java/` — the same directory the failing command was run from. Git records the bit, so this means something local cleared it |
+| `./mvnw: /bin/sh^M: bad interpreter` | The checkout rewrote the launcher's line endings | Re-clone, or run `git checkout -- mvnw` after `git config core.autocrlf false`. The module pins `mvnw` to LF and `mvnw.cmd` to CRLF in `carddemo-java/.gitattributes`, so a current checkout cannot land in this state |
 | Dependency resolution fails on a first build | No network, or an empty local repository | The build needs Maven Central once; after that the local repository serves it |
 
 ---

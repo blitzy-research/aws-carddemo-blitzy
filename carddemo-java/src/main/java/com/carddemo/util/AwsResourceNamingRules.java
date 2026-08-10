@@ -21,6 +21,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 /**
  * The one statement of what a region, an object-store bucket, a notification topic and an endpoint
@@ -294,6 +295,107 @@ public final class AwsResourceNamingRules {
         }
         requireTopicName(value, propertyKey);
         return value;
+    }
+
+    /**
+     * Validates a configured account identifier and returns it unchanged.
+     *
+     * <p>An account identifier is twelve digits and nothing else. It is validated as a value in its own
+     * right - separately from any resource identifier it will later be compared against - so that a
+     * deployment which mistypes it learns that from the key it typed rather than from a comparison
+     * against a resource that then looks as though it belonged to somebody else.</p>
+     *
+     * <p>Not a credential: an account identifier names an account and authorises nothing. It is
+     * nevertheless kept out of every diagnostic this class composes, on the same rule every other value
+     * here follows - a message names the key and what the key requires, never the value.</p>
+     *
+     * @param  value       the configured identifier; must not be {@code null}
+     * @param  propertyKey the configuration key it was bound from, named in every diagnostic
+     * @return {@code value}, unchanged
+     * @throws NullPointerException     if {@code value} is {@code null}
+     * @throws IllegalArgumentException if the value is not exactly twelve digits
+     */
+    public static String requireAccountIdentifier(final String value, final String propertyKey) {
+        Objects.requireNonNull(value, () -> "property " + propertyKey + " must not be null");
+        requireAccountId(value, propertyKey);
+        return value;
+    }
+
+    /**
+     * Requires that a resource identifier names a resource of one service, in one region, in one
+     * account, and returns its resource segment.
+     *
+     * <p><strong>This is the rule that separates "well-formed" from "ours".</strong> Every other check in
+     * this class judges shape, and shape cannot distinguish a resource identifier that names this
+     * deployment's own queue or topic from one that names an identically-shaped resource in an account
+     * belonging to somebody else. A locator naming another account is not a malformed locator: it
+     * resolves, the client addresses it, and - because both of this module's outbound channels are
+     * defined to tolerate a failure rather than raise - the deployment reports success while the job
+     * cards or the completion notices land in that other account. So the account is compared here
+     * against the account the deployment declares it owns, and a mismatch is refused.</p>
+     *
+     * <p>The region is compared for the same reason and the partition is held to the recognised set,
+     * because either one differing means the identifier addresses a different set of endpoints and a
+     * different account namespace entirely.</p>
+     *
+     * <p>The diagnostic names the resource being checked and the property that supplied the expectation.
+     * It never repeats the offending identifier, the offending account or the expected one: a refusal
+     * that quoted them would put the identity of a resource in another account into this deployment's
+     * log, and the deployer already has the value they configured.</p>
+     *
+     * @param  value             the resource identifier to check; must not be {@code null}
+     * @param  service           the service segment the identifier must carry, such as {@code sqs}
+     * @param  expectedRegion    the region the deployment configured for its clients
+     * @param  expectedAccountId the twelve-digit account the deployment declares it owns
+     * @param  propertyKey       the configuration key the expectation came from, named in diagnostics
+     * @return the identifier's resource segment, which is the queue or topic name
+     * @throws NullPointerException     if any argument is {@code null}
+     * @throws IllegalArgumentException if the identifier is not a resource identifier of that service,
+     *                                  in that region, in that account
+     */
+    public static String requireResourceOwnedByAccount(final String value, final String service,
+            final String expectedRegion, final String expectedAccountId, final String propertyKey) {
+        Objects.requireNonNull(value, () -> "the resource identifier checked against " + propertyKey
+                + " must not be null");
+        Objects.requireNonNull(service, "service must not be null");
+        Objects.requireNonNull(expectedRegion, "expectedRegion must not be null");
+        Objects.requireNonNull(expectedAccountId, "expectedAccountId must not be null");
+        if (!value.startsWith(ARN_PREFIX)) {
+            throw new IllegalArgumentException("the resource identifier checked against " + propertyKey
+                    + " does not begin with '" + ARN_PREFIX + "', so the account that owns it cannot be"
+                    + " read from it and ownership cannot be established");
+        }
+        final String[] segments = splitOn(value, ARN_SEPARATOR);
+        if (segments.length != TOPIC_ARN_SEGMENT_COUNT) {
+            throw new IllegalArgumentException("the resource identifier checked against " + propertyKey
+                    + " does not carry the " + TOPIC_ARN_SEGMENT_COUNT + " colon-separated segments a"
+                    + " resource identifier carries, so no segment of it can be trusted");
+        }
+        if (!PERMITTED_ARN_PARTITIONS.contains(segments[ARN_PARTITION_SEGMENT])) {
+            throw new IllegalArgumentException("the resource identifier checked against " + propertyKey
+                    + " names a partition outside " + PERMITTED_ARN_PARTITIONS + ", which addresses a"
+                    + " different set of endpoints and a different account namespace entirely");
+        }
+        if (!service.equals(segments[ARN_SERVICE_SEGMENT])) {
+            throw new IllegalArgumentException("the resource identifier checked against " + propertyKey
+                    + " names a service other than '" + service + "', so it does not address the"
+                    + " resource this check is about");
+        }
+        if (!expectedRegion.equalsIgnoreCase(segments[ARN_REGION_SEGMENT])) {
+            throw new IllegalArgumentException("the resource identifier checked against " + propertyKey
+                    + " names a region other than the one this deployment configured for its clients,"
+                    + " so it addresses a resource in a deployment this one is not");
+        }
+        requireAccountId(segments[ARN_ACCOUNT_SEGMENT], propertyKey);
+        if (!expectedAccountId.equals(segments[ARN_ACCOUNT_SEGMENT])) {
+            throw new IllegalArgumentException("the resource identifier checked against " + propertyKey
+                    + " is owned by an account other than the one that key declares this deployment"
+                    + " owns. A well-formed identifier in somebody else's account resolves, is"
+                    + " addressed, and - because both outbound channels here tolerate a failure rather"
+                    + " than raise - would receive this deployment's job cards or completion notices"
+                    + " while every request still reported success");
+        }
+        return segments[ARN_RESOURCE_SEGMENT];
     }
 
     /**

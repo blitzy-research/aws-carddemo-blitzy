@@ -24,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -893,6 +894,269 @@ class DiagnosticConfidentialityAuditTest {
                     .startsWith(SensitiveLogRedactor.REDACTED)
                     .isEqualTo(second)
                     .isNotEqualTo(other);
+        }
+    }
+
+    /**
+     * No confidentiality-critical suite hands a protected value to an assertion as an operand.
+     *
+     * <h2>The second channel, which the rules above do not reach</h2>
+     *
+     * <p>Everything above governs {@code src/main/java}: what the application writes to a log at runtime.
+     * There is a second channel with the same consequence and none of the same scrutiny - what a
+     * <em>test</em> writes to a build log when it fails. An AssertJ failure prints both operands. So
+     * {@code assertThat(rendered).doesNotContain(TOKEN_CANARY)} discloses twice over at the moment the
+     * leak it guards against occurs: once through the canary it names, and once through the record that
+     * now contains it. Four suites carried that shape over eleven assertions, between them naming a
+     * bearer token, a national identifier, a primary account number, a connection string with its
+     * password, an AES-256 fixture key, fifty sealed envelopes, their decrypted values, BCrypt digests, a
+     * cleartext credential and progressively longer prefixes of it.
+     *
+     * <p>A CI log outlives the run that produced it and is read, forwarded and retained by more people
+     * than the run was, so the disclosure is durable in a way a passing test never hints at.
+     *
+     * <p>{@code support.SensitiveValues} exists for exactly this: {@code absentFrom} for containment,
+     * {@code fingerprint} for equality, {@code describe} for identification in a description, and
+     * {@code fingerprints} for a collection. The remedy is always to assert the predicate or the
+     * fingerprint and to identify the value in the description, never to hand it to a matcher.
+     *
+     * <h2>Scope, stated rather than implied</h2>
+     *
+     * <p>The scan is confined to the suites that actually hold protected values, enrolled below by name.
+     * Scanning all five hundred test sources for sensitively-named operands would report a false positive
+     * for every test whose subject merely happens to be called {@code key} or {@code token}, and a rule
+     * that cries wolf is a rule that gets loosened. Two complementary checks then run over that scope: an
+     * exact-name rule for the values known to be there, and a naming-convention rule that catches a
+     * newly-introduced constant which follows the module's own naming.
+     */
+    @Nested
+    @DisplayName("no confidentiality-critical suite hands a protected value to an assertion")
+    class NoAssertionOperandCarriesAProtectedValue {
+
+        /**
+         * The suites that hold protected values, and are therefore the scope of this rule.
+         *
+         * <p>Enrolled by name, with the value each one holds, so a reader can see what is being protected
+         * rather than trusting a pattern. Every entry is asserted to exist, so a renamed or deleted suite
+         * fails here instead of silently narrowing the scan.
+         */
+        private final Map<Path, String> criticalSources = Map.of(
+                Path.of("src", "test", "java", "com", "carddemo", "config",
+                        "ProductionLogAppenderConfidentialityTest.java"),
+                "a bearer token, a national identifier, a primary account number and a connection "
+                        + "string carrying its password, all planted as canaries",
+                Path.of("src", "test", "java", "com", "carddemo", "service",
+                        "SeededProtectedIdentifierIT.java"),
+                "the AES-256 fixture key, fifty sealed envelopes and the identifiers they open to",
+                Path.of("src", "test", "java", "com", "carddemo", "service",
+                        "UserSecurityCredentialIT.java"),
+                "BCrypt digests and the cleartext credential they are made from",
+                Path.of("src", "test", "java", "com", "carddemo", "e2e", "BatchPipelineE2ETest.java"),
+                "production-representative transaction, statement and report records");
+
+        /**
+         * The exact operands that must never be handed to a matcher, with what each one is.
+         *
+         * <p>By exact text rather than by pattern, so the rule has no false positives and a reader can see
+         * the inventory. The convention rule below is what covers a value this list does not yet know.
+         */
+        private final Map<String, String> protectedOperands = Map.of(
+                "TOKEN_CANARY", "a bearer credential",
+                "NATIONAL_ID_CANARY", "a national identifier",
+                "PAN_CANARY", "a primary account number",
+                "JDBC_CANARY", "a connection string carrying its password",
+                "CONFIGURED_KEY", "AES-256 key material",
+                "DOCUMENTED_FIXTURE_KEY", "AES-256 key material",
+                "CREDENTIAL", "a cleartext credential");
+
+        /**
+         * Matchers that print their operand, and the subject they are applied to, when they fail.
+         *
+         * <p>{@code as} and {@code describedAs} are absent on purpose: a description is exactly where a
+         * protected value's fingerprint <em>should</em> be named, so an operand there is the remedy rather
+         * than the defect.
+         */
+        private final List<String> disclosingMatchers = List.of("isEqualTo", "isNotEqualTo",
+                "doesNotContain", "contains", "hasSize", "isSameAs", "startsWith", "endsWith");
+
+        /** Creates the nest. */
+        NoAssertionOperandCarriesAProtectedValue() {
+            // Intentionally empty: this nest contributes tests, not state.
+        }
+
+        /**
+         * The enrolled suites exist, so the scan below is over something.
+         */
+        @Test
+        @DisplayName("every enrolled suite exists, so a renamed or deleted one cannot silently narrow the "
+                + "scan to nothing")
+        void everyEnrolledSuiteExists() {
+            assertThat(this.criticalSources.keySet())
+                    .as("the scope is enrolled by name; a path that no longer resolves is excusing a file "
+                            + "that is not there")
+                    .isNotEmpty()
+                    .allSatisfy(source -> assertThat(source)
+                            .as("%s holds %s", source, this.criticalSources.get(source))
+                            .isRegularFile());
+        }
+
+        /**
+         * No enrolled suite hands one of the known protected values to a disclosing matcher.
+         */
+        @Test
+        @DisplayName("★ no known protected value is an operand of a matcher that would print it")
+        void noKnownProtectedValueIsAMatcherOperand() {
+            final List<String> findings = new ArrayList<>();
+
+            for (final Path source : this.criticalSources.keySet()) {
+                final String text = textOf(source);
+                for (final Map.Entry<String, String> operand : this.protectedOperands.entrySet()) {
+                    for (final String matcher : this.disclosingMatchers) {
+                        findings.addAll(occurrencesOf(text, source, matcher, operand));
+                    }
+                    findings.addAll(occurrencesOf(text, source, "assertThat", operand));
+                }
+            }
+
+            assertThat(findings)
+                    .as("an AssertJ failure prints both operands, so each of these publishes a protected "
+                            + "value into a build log at the exact moment the property it guards is "
+                            + "broken. Assert SensitiveValues.absentFrom for containment or compare "
+                            + "SensitiveValues.fingerprint for equality, and name the value through "
+                            + "SensitiveValues.describe in the description instead. Offending: %s",
+                            findings)
+                    .isEmpty();
+        }
+
+        /**
+         * No enrolled suite applies an assertion directly to a sensitively-named reference.
+         *
+         * <p>The convention rule. The exact list above cannot know about a constant added tomorrow, but
+         * this module names such a constant for what it is - a canary, a credential, a secret, a key, a
+         * digest, some cleartext - and this catches the shape rather than the name.
+         */
+        @Test
+        @DisplayName("★ and no assertion is applied directly to a sensitively-named reference, which "
+                + "catches a protected value the inventory above does not yet know about")
+        void noAssertionSubjectIsASensitivelyNamedReference() {
+            final Pattern sensitivelyNamed = Pattern.compile(
+                    "assertThat\\(\\s*((?:[A-Za-z_$][\\w$]*\\.)*"
+                            + "[A-Za-z_$][\\w$]*(?:CANARY|CREDENTIAL|CLEARTEXT|_SECRET|_KEY|_DIGEST"
+                            + "|_SSN|_PAN)[\\w$]*)\\s*\\)");
+            final List<String> findings = new ArrayList<>();
+
+            for (final Path source : this.criticalSources.keySet()) {
+                final String text = textOf(source);
+                final Matcher applied = sensitivelyNamed.matcher(text);
+                while (applied.find()) {
+                    findings.add(source.getFileName() + ":" + lineOf(text, applied.start())
+                            + " asserts directly on " + applied.group(1));
+                }
+            }
+
+            assertThat(findings)
+                    .as("a value named for what it is must not be an assertion's subject either: whatever "
+                            + "the matcher, the subject is printed on failure. Assert a predicate or a "
+                            + "fingerprint of it instead. Offending: %s", findings)
+                    .isEmpty();
+        }
+
+        /**
+         * Both detectors fire on a planted operand, so a clean scan means something.
+         */
+        @Test
+        @DisplayName("and both detectors fire on a planted leak, so a clean scan is evidence rather than a "
+                + "pattern that stopped matching")
+        void bothDetectorsFireOnAPlantedLeak() {
+            final String planted = String.join("\n",
+                    "assertThat(rendered).doesNotContain(TOKEN_CANARY);",
+                    "assertThat(CONFIGURED_KEY).isEqualTo(DOCUMENTED_FIXTURE_KEY);",
+                    "assertThat(SensitiveValues.absentFrom(rendered, TOKEN_CANARY)).isTrue();",
+                    "assertThat(row.length()).as(\"%s\", describe(TOKEN_CANARY)).isEqualTo(60);");
+            final Path illustration = Path.of("Planted.java");
+
+            // The SAME rule set the real scan applies, assertThat included. A self-check that exercised
+            // a subset would attest to a detector nobody runs.
+            final List<String> operandFindings = new ArrayList<>();
+            for (final Map.Entry<String, String> operand : this.protectedOperands.entrySet()) {
+                for (final String matcher : this.disclosingMatchers) {
+                    operandFindings.addAll(occurrencesOf(planted, illustration, matcher, operand));
+                }
+                operandFindings.addAll(occurrencesOf(planted, illustration, "assertThat", operand));
+            }
+            final Pattern sensitivelyNamed = Pattern.compile(
+                    "assertThat\\(\\s*((?:[A-Za-z_$][\\w$]*\\.)*"
+                            + "[A-Za-z_$][\\w$]*(?:CANARY|CREDENTIAL|CLEARTEXT|_SECRET|_KEY|_DIGEST"
+                            + "|_SSN|_PAN)[\\w$]*)\\s*\\)");
+
+            assertThat(operandFindings)
+                    .as("the first two planted lines hand a protected value to a matcher and must be "
+                            + "reported; the third and fourth are the sanctioned forms - a predicate, and "
+                            + "a value named only inside a description - and must not be")
+                    .hasSize(3)
+                    .allSatisfy(finding -> assertThat(finding).doesNotContain("absentFrom"));
+            assertThat(sensitivelyNamed.matcher(planted).results().count())
+                    .as("and the convention detector finds the one line that asserts directly on a "
+                            + "sensitively-named reference")
+                    .isEqualTo(1L);
+        }
+
+        /**
+         * Locates every place one protected operand is passed to one matcher <em>as a whole argument</em>.
+         *
+         * <h2>Why the whole argument and not a substring</h2>
+         *
+         * <p>The value appearing <em>anywhere</em> inside the argument list is the wrong test, and
+         * measurably so: {@code assertThat(SensitiveValues.absentFrom(rendered, TOKEN_CANARY))} and
+         * {@code isEqualTo(SensitiveValues.fingerprint(CONFIGURED_KEY))} both mention the value and both
+         * are the <em>remedy</em>. A first version of this rule flagged fourteen such sites, every one of
+         * them already safe, which is exactly how a rule earns a blanket suppression.
+         *
+         * <p>What discloses is the value being an argument <em>on its own</em>, because that is the form
+         * AssertJ prints. So the argument list is split at top-level commas - through the same splitter
+         * the throwable rules use, which tracks string and character literals - and an argument is a
+         * finding only when, trimmed, it is exactly the operand. A value wrapped in a fingerprint, a
+         * predicate or a description is untouched.
+         *
+         * @param  text    the source text to scan
+         * @param  source  the file, for the report
+         * @param  matcher the matcher name
+         * @param  operand the protected operand and what it is
+         * @return one entry per occurrence
+         */
+        private List<String> occurrencesOf(final String text, final Path source, final String matcher,
+                final Map.Entry<String, String> operand) {
+            final Pattern call = Pattern.compile("(?<![\\w$.])" + Pattern.quote(matcher) + "\\s*\\(|\\."
+                    + Pattern.quote(matcher) + "\\s*\\(");
+            final List<String> found = new ArrayList<>();
+            final Matcher calls = call.matcher(text);
+            while (calls.find()) {
+                final int open = text.indexOf('(', calls.start());
+                final int close = endOfCall(text, open);
+                if (close <= open) {
+                    continue;
+                }
+                for (final String argument : argumentsOf(text.substring(open, close))) {
+                    if (argument.strip().equals(operand.getKey())) {
+                        found.add(source.getFileName() + ":" + lineOf(text, calls.start()) + " passes "
+                                + operand.getKey() + " (" + operand.getValue() + ") to " + matcher
+                                + "() as a whole argument");
+                    }
+                }
+            }
+            return found;
+        }
+
+        /**
+         * Reports the one-based line an offset falls on.
+         *
+         * @param  text   the source text
+         * @param  offset the offset
+         * @return the line number
+         */
+        private int lineOf(final String text, final int offset) {
+            return (int) text.substring(0, offset).chars().filter(character -> character == '\n').count()
+                    + 1;
         }
     }
 }

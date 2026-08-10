@@ -24,6 +24,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import org.junit.jupiter.api.AfterEach;
@@ -55,6 +56,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -80,7 +82,7 @@ import static org.mockito.Mockito.when;
  *
  * <p><strong>Two legacy defects are asserted as defects.</strong> The non-matching arm of the range
  * filter at lines 173-178 uses {@code NEXT SENTENCE}, and because the next sentence-terminating
- * period in the member is the one on the {@code END-PERFORM} at line 206, that arm leaves the whole
+ * period in the member is the one on the loop's scope terminator at line 206, that arm leaves the whole
  * driving loop rather than skipping one record. Separately, the at-end path of lines 197-203 re-adds
  * the stale amount of the last record, so the final transaction is accumulated twice. Both are
  * reproduced deliberately, so both are pinned here: a future "fix" to either would be a parity
@@ -930,6 +932,251 @@ class TransactionReportServiceParityTest {
                     + (int) Mockito.mockingDetails(types).getInvocations().stream().count()
                     + (int) Mockito.mockingDetails(categories).getInvocations().stream().count();
         }
+    }
+
+    /**
+     * Proves the reference reads stay bounded when the number of DISTINCT keys is large.
+     *
+     * <p>The nest above proves the memo removes the one-query-per-<em>row</em> shape. It cannot prove the
+     * remaining shape is bounded, because two cards, one type and one category are four reads whichever
+     * strategy is used. The cost that was left was one query per distinct <em>key</em>, and the distinct-key
+     * count grows with the report: a window over a large card estate resolves as many cross-references as it
+     * has cards.
+     *
+     * <p>The three references are therefore treated according to what each is. Transaction types and
+     * transaction categories are <strong>closed vocabularies</strong> - seven and eighteen rows, sized by
+     * the estate and not by the report - so each is read in full, once, at the open of its own resource,
+     * which is where the legacy member opens that file. The cross-reference cluster <strong>grows with the
+     * card estate</strong>, so it is read in bounded batches over the cards the run's buffered lookahead
+     * names. Recorded as {@code DL-294}.
+     *
+     * <p>What must not change, and is asserted separately above and below: an absent reference still abends
+     * on the record that first presents it, because absence is never memoised.
+     */
+    @Nested
+    @DisplayName("the reference reads at high distinct-key cardinality: bounded by the reference "
+            + "vocabulary and by a fixed lookahead, never by the number of distinct keys")
+    class TheBoundedReferenceReadsUnderCardinality {
+
+        /** Cards the wide fixture spans, comfortably beyond one lookahead's worth of records. */
+        private static final int DISTINCT_CARDS = 300;
+
+        /** Records per card, so the fixture's record count is twice its card count. */
+        private static final int RECORDS_PER_CARD = 2;
+
+        /** Distinct type-and-category pairs, which is the whole transaction-category vocabulary. */
+        private static final int DISTINCT_CATEGORY_KEYS = 18;
+
+        /** Distinct type codes among those pairs, which is the whole transaction-type vocabulary. */
+        private static final int DISTINCT_TYPE_CODES = 7;
+
+        /**
+         * The greatest number of batched cross-reference reads the wide fixture may issue.
+         *
+         * <p>Derived, not chosen: the run buffers at most 256 records, and the first miss inside a buffered
+         * window resolves every card that window names, so the batch count is the record count divided by
+         * the buffer depth. Six hundred records give three, and the bound is stated at twice that so an
+         * incidental extra fill is not a failure while a per-distinct-key shape - three hundred of them -
+         * is.
+         */
+        private static final int MAX_BATCHED_READS = 6;
+
+        @Test
+        @DisplayName("three hundred distinct cards, seven types and eighteen categories are resolved in a "
+                + "handful of reads: two full reference reads and at most six batches, with NOT ONE keyed "
+                + "read of any of the three")
+        void referenceReadsDoNotGrowWithTheNumberOfDistinctKeys() {
+            stubBoundedVocabularies();
+            stubBatchedCrossReferences();
+            final List<Transaction> wide = wideFixture();
+            stubRange(wide);
+
+            final GeneratedReport report = service.generateReport(START, END);
+
+            assertAll(
+                    () -> verify(types, times(1)).findAll(),
+                    () -> verify(categories, times(1)).findAll(),
+                    () -> verify(types, never()).findById(anyString()),
+                    () -> verify(categories, never()).findById(any(TransactionCategoryId.class)),
+                    () -> verify(crossReferences, never()).findById(anyString()));
+
+            assertThat(batchedCrossReferenceReadCount())
+                    .as("the batch count follows the buffer depth and the record count, not the card "
+                            + "count: %s cards resolved in at most %s reads",
+                            Integer.valueOf(DISTINCT_CARDS), Integer.valueOf(MAX_BATCHED_READS))
+                    .isBetween(1, MAX_BATCHED_READS);
+
+            final int distinctKeys = DISTINCT_CARDS + DISTINCT_TYPE_CODES + DISTINCT_CATEGORY_KEYS;
+            assertThat(referenceReadCount())
+                    .as("THE MEASUREMENT THAT MATTERS. One query per distinct key would be %s reads for "
+                            + "this fixture. Every read the three stores received, of every kind, must be "
+                            + "an order of magnitude below that, or the cost still grows with the report.",
+                            Integer.valueOf(distinctKeys))
+                    .isLessThan(distinctKeys / 10);
+
+            // And the report is complete: every record was resolved and reported, so the bound was not
+            // achieved by resolving fewer references than the run needed.
+            final String emitted = String.join("", report.reportLines());
+            assertThat(wide).allSatisfy(record ->
+                    assertThat(emitted).contains(record.getTranId()));
+        }
+
+        @Test
+        @DisplayName("a run reporting six hundred records and a run reporting one cost the same three "
+                + "reads, and neither inherits the other's snapshot")
+        void everyRunPaysTheSameBoundedCostAndInheritsNothing() {
+            stubBoundedVocabularies();
+            stubBatchedCrossReferences();
+
+            stubRange(wideFixture());
+            service.generateReport(START, END);
+            final int afterTheWideRun = referenceReadCount();
+
+            stubRange(List.of(vocabularyRecord(identifier(1), card(0), 0)));
+            service.generateReport(START, END);
+
+            assertAll(
+                    () -> verify(types, times(2)).findAll(),
+                    () -> verify(categories, times(2)).findAll());
+            assertThat(referenceReadCount() - afterTheWideRun)
+                    .as("EXACTLY three reads for the second run: each closed vocabulary once, and one "
+                            + "batch for its single card. Two reads would mean a vocabulary was inherited "
+                            + "from the first run - a snapshot the legacy step never had - and four or "
+                            + "more would mean a keyed read survived.")
+                    .isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("a type code the preloaded vocabulary does not carry still abends on the record that "
+                + "presents it, because a preload memoises presence and never absence")
+        void aCodeOutsideThePreloadedVocabularyStillAbends() {
+            stubBoundedVocabularies();
+            stubBatchedCrossReferences();
+            when(types.findById("99")).thenReturn(Optional.empty());
+            stubRange(List.of(
+                    ofType(vocabularyRecord(identifier(1), card(0), 0), "99")));
+            doThrow(new AbendException("CBTRN03C", "FILE STATUS 23"))
+                    .when(abendService).abendBatch(any(), any(), any(), any(), any());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.generateReport(START, END));
+
+            final InOrder order = inOrder(abendService);
+            order.verify(abendService).displayIoStatus("23", "READ", "TRANTYPE");
+            order.verify(abendService).abendBatch(eq("CBTRN03C"), eq("INVALID TRANSACTION TYPE"),
+                    eq("23"), eq("READ"), eq("TRANTYPE"));
+            // The keyed read still happened, which is the whole point: a code the preload did not supply
+            // is looked up, found absent, and fails on its own record with its own resource's arm.
+            verify(types, times(1)).findById("99");
+        }
+
+        /** Reads the whole transaction-type and transaction-category vocabularies, as the preload does. */
+        private void stubBoundedVocabularies() {
+            final List<TransactionType> allTypes = new ArrayList<>();
+            for (int ordinal = 1; ordinal <= DISTINCT_TYPE_CODES; ordinal++) {
+                allTypes.add(new TransactionType(typeCode(ordinal - 1), "TYPE " + ordinal));
+            }
+            final List<TransactionCategory> allCategories = new ArrayList<>();
+            for (int ordinal = 0; ordinal < DISTINCT_CATEGORY_KEYS; ordinal++) {
+                allCategories.add(new TransactionCategory(typeCode(ordinal), categoryCode(ordinal),
+                        "CATEGORY " + ordinal));
+            }
+            when(types.findAll()).thenReturn(allTypes);
+            when(categories.findAll()).thenReturn(allCategories);
+        }
+
+        /** Answers a batched cross-reference read with a row for every key the cluster holds. */
+        private void stubBatchedCrossReferences() {
+            when(crossReferences.findAllById(any())).thenAnswer(invocation -> {
+                final Iterable<String> requested = invocation.getArgument(0);
+                final List<CardCrossReference> found = new ArrayList<>();
+                for (final String cardNumber : requested) {
+                    found.add(new CardCrossReference(cardNumber, "000000001", "00000000011"));
+                }
+                return found;
+            });
+        }
+
+        /** How many batched cross-reference reads the store has received. */
+        private int batchedCrossReferenceReadCount() {
+            return (int) Mockito.mockingDetails(crossReferences).getInvocations().stream()
+                    .filter(invocation -> "findAllById".equals(invocation.getMethod().getName()))
+                    .count();
+        }
+
+        /** Counts every read the three stores have received, of every kind. */
+        private int referenceReadCount() {
+            return Mockito.mockingDetails(crossReferences).getInvocations().size()
+                    + Mockito.mockingDetails(types).getInvocations().size()
+                    + Mockito.mockingDetails(categories).getInvocations().size();
+        }
+
+        /**
+         * The wide fixture: {@value #RECORDS_PER_CARD} records on each of {@value #DISTINCT_CARDS} cards,
+         * grouped by card as the job's own ordering delivers them, cycling through the whole
+         * type-and-category vocabulary.
+         *
+         * @return the records, in card order
+         */
+        private List<Transaction> wideFixture() {
+            final List<Transaction> records = new ArrayList<>();
+            for (int cardOrdinal = 0; cardOrdinal < DISTINCT_CARDS; cardOrdinal++) {
+                for (int repeat = 0; repeat < RECORDS_PER_CARD; repeat++) {
+                    final int ordinal = records.size();
+                    records.add(vocabularyRecord(identifier(ordinal + 1), card(cardOrdinal),
+                            ordinal % DISTINCT_CATEGORY_KEYS));
+                }
+            }
+            return List.copyOf(records);
+        }
+
+        /**
+         * One record whose type and category are the pair at the given vocabulary position, so that the
+         * preloaded vocabularies resolve it and no keyed read is provoked by a fixture accident.
+         *
+         * @param  transactionId the sixteen-character identifier
+         * @param  cardNumber    the sixteen-character card-number field image
+         * @param  position      the position in the eighteen-entry vocabulary, from zero
+         * @return the record
+         */
+        private Transaction vocabularyRecord(final String transactionId, final String cardNumber,
+                final int position) {
+
+            return inCategory(
+                    ofType(transaction(transactionId, cardNumber, "1.00", "2022-07-05"),
+                            typeCode(position)),
+                    categoryCode(position));
+        }
+    }
+
+    /**
+     * A sixteen-digit card number for the wide fixture.
+     *
+     * @param  ordinal the card's position, from zero
+     * @return the sixteen-character field image
+     */
+    private static String card(final int ordinal) {
+        return String.format(Locale.ROOT, "%016d", Long.valueOf(4_000_000_000_000_000L + ordinal));
+    }
+
+    /**
+     * The two-character transaction-type code the given vocabulary position carries.
+     *
+     * @param  position the position in the eighteen-entry category vocabulary, from zero
+     * @return the two-character code
+     */
+    private static String typeCode(final int position) {
+        return String.format(Locale.ROOT, "%02d", Integer.valueOf(position % 7 + 1));
+    }
+
+    /**
+     * The four-character transaction-category code the given vocabulary position carries.
+     *
+     * @param  position the position in the eighteen-entry category vocabulary, from zero
+     * @return the four-character code
+     */
+    private static String categoryCode(final int position) {
+        return String.format(Locale.ROOT, "%04d", Integer.valueOf(position + 1));
     }
 
     @Nested

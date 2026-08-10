@@ -43,11 +43,20 @@ import java.util.List;
  *
  * <p>Paging is cursor-based and this type performs no paging arithmetic: {@link PageMetadata} carries
  * the cursors and direction the legacy browse carried.
+ *
+ * <p><strong>The browse state is published exactly once, and the displayed identifiers are not
+ * published as continuation state at all.</strong> {@link PageMetadata} already carries both boundary
+ * cursors, the direction, the two availability flags and the page indicator, so a second carrier
+ * repeating them would give a client two spellings of one state and no rule for which of the two the
+ * next submission is answered from. Nor does anything here publish the ten identifiers the page
+ * displayed as a value for the next submission to echo back: the identifier a row selection resolves
+ * to is re-established server-side from the cursor, so echoing the list would create an inbound
+ * channel the service does not read. Each identifier is of course present on the row that carries it,
+ * which is what a client renders; decision log entry DL-299 records the distinction.
  */
 public record TransactionListResponse(
         List<TransactionRow> rows,
         PageMetadata pageMetadata,
-        TransactionListRequest.ScreenContinuation continuation,
         NavigationContext navigationContext,
         String nextRoute,
         @Size(max = TransactionListResponse.TRANSACTION_ID_LENGTH) String transactionIdFilter,
@@ -251,7 +260,6 @@ public record TransactionListResponse(
                 + "rowCount=" + rows.size()
                 + ", rows=" + REDACTION_PLACEHOLDER
                 + ", pageMetadata=" + REDACTION_PLACEHOLDER
-                + ", continuation=" + REDACTION_PLACEHOLDER
                 + ", navigationContext=" + navigationContext
                 + ", nextRoute=" + nextRoute
                 + ", transactionIdFilter=" + REDACTION_PLACEHOLDER

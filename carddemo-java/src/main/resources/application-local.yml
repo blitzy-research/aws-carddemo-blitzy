@@ -15,9 +15,15 @@
 
 # LOCAL profile overlay - binds the application.yml baseline to carddemo-java/docker-compose.yml.
 #
-#   docker compose up -d                           # postgres + localstack + jaeger
-#   docker compose --profile observability up -d    # adds prometheus + grafana
-#   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+#   docker compose up -d       # every service: postgres, localstack, jaeger, prometheus, grafana
+#   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local \
+#       -Dspring-boot.run.arguments=--server.address=127.0.0.1
+#
+# NO SERVICE IS BEHIND A COMPOSE PROFILE. An earlier revision of this header listed a second command,
+# `docker compose --profile observability up -d`, as the one that "adds prometheus + grafana". No
+# service in docker-compose.yml declares `profiles:`, so that flag selected nothing: both forms brought
+# up the identical stack. The line is removed rather than made real, because gating the observability
+# services would leave the short command with no scrape target and no dashboard.
 #
 # The profile supports both execution forms: a host-launched JVM uses the loopback-published defaults,
 # while the Compose app service supplies container DNS names and fixed internal ports through the same
@@ -262,9 +268,12 @@ spring:
   # cleaning: a production database holding these rows is an incident to be corrected, never data for
   # a start-up path to delete. ProductionSeedRejectionCallbackIT asserts all of it.
   #
-  # clean-disabled is relaxed here and only here, so a developer iterating on a migration can drop
-  # and re-apply. The baseline and the production overlay both forbid it. Dropping is destructive; the
-  # paragraph below states the precondition it is permitted under.
+  # clean-disabled is relaxed by the profiles whose database is DISPOSABLE, so a developer iterating on
+  # a migration can drop and re-apply. That is this profile and the two copies of the test profile -
+  # the packaged application-test.yml and the suite's own src/test/resources/application-test.yml, whose
+  # database is a per-run container. The shared baseline and the production overlay both forbid it, which
+  # is the half that matters: an inherited relaxation would reach production. Dropping is destructive;
+  # the paragraph below states the precondition it is permitted under.
   #
   # WHEN A LOCAL DATABASE DISAGREES WITH THE DELIVERED SCRIPTS. validate-on-migrate is true, so a
   # local database whose migration history does not match the delivered scripts - a checksum for a
@@ -280,17 +289,24 @@ spring:
   # named volumes it discards. Test databases are per-run and are never affected.
   flyway:
     enabled: true
-    # See docs/decision-log.md DL-127.
+    # See docs/decision-log.md DL-298.
     #
-    # THE ONE DELIVERED LOCATION, restated in full rather than inherited so this document reads
-    # completely on its own. All four scripts are physically flat in this single directory and no
-    # child directory exists, so the location is identical in every profile and carries no part of
-    # the production/non-production separation.
-    locations: classpath:db/migration
-    # THE CEILING IS LIFTED, AND IT IS THE ONLY SETTING THAT MAKES THE SEEDS EXECUTABLE AT ALL. The
-    # shared baseline pins target at "2", which stops a migration after the indexes; lifting it here
-    # is what admits V3__seed_reference_data.sql and V4__seed_user_security.sql. Production keeps the
-    # ceiling at 2 and FlywayConfig refuses to start it at any higher value.
+    # BOTH DELIVERED LOCATIONS, restated in full rather than inherited so this document reads
+    # completely on its own. THE SECOND ENTRY IS THE ONLY SETTING THAT MAKES THE SEEDS EXECUTABLE AT
+    # ALL: the shared baseline declares the schema location alone, which is the production posture, and
+    # adding the seed location here is what admits V3__seed_reference_data.sql and
+    # V4__seed_user_security.sql. Drop it and every fixture asserts against an empty result set.
+    #
+    # NEVER REPLACE THESE TWO WITH THEIR PARENT classpath:db/migration. It would resolve the same four
+    # scripts and record each one under a name relative to the parent, breaking the migration names the
+    # Compose bring-up check reads out of the history table; FlywayConfig refuses the parent outright.
+    locations:
+      - classpath:db/migration/schema
+      - classpath:db/migration/seed
+    # Restated for completeness rather than as a control. The baseline already declares it and no
+    # profile carries a numeric ceiling any more; FlywayConfig lifts a low one here rather than
+    # refusing it, because a fixture-bearing profile that stopped at the schema would load no
+    # fixtures.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -340,6 +356,48 @@ spring:
         observation-enabled: true
       sns:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+
+# =================================================================================================
+# THE LISTENER BINDS THE LOOPBACK INTERFACE, AND UNDER THIS PROFILE THAT IS A SECURITY CONTROL
+# RATHER THAN A PREFERENCE.
+#
+# Every concession this profile takes - a committed signing secret, a committed operator credential,
+# cleartext transport, anonymous metric scraping, a published interface description, and ten seeded
+# sign-on identities whose password is documented in the estate README - rests on ONE premise: that
+# nothing off this machine can reach the process holding them. Until this key existed, that premise
+# was true of the Compose stack and FALSE of every other way of starting the application. Compose
+# publishes each port through ${*_BIND_ADDRESS:-127.0.0.1}, so a container start was loopback-bound;
+# but the shared baseline declares no server.address, so the embedded server's own default is EVERY
+# interface, and `./mvnw spring-boot:run -Dspring-boot.run.profiles=local` or `java -jar` on a
+# developer's laptop, a shared build agent or a cloud workstation published an unencrypted service,
+# accepting a signing key anyone can read out of this file, to every host that could route to it.
+# Nothing warned, because nothing was misconfigured: the wide bind was the framework's default and
+# the concessions were this profile's, and the two were only ever safe together by accident.
+#
+# SO THE DEFAULT IS LOOPBACK AND THE WIDE BIND IS THE OVERRIDE, WHICH INVERTS WHICH ONE IS AN
+# ACCIDENT. A host-run process now reaches nothing but this machine unless somebody deliberately says
+# otherwise, and the one deployment that must say otherwise says it in the file that also confines
+# the exposure: docker-compose.yml sets SERVER_ADDRESS to 0.0.0.0 on the app service, because a
+# container-internal loopback bind is unreachable through a published port - Docker forwards to the
+# container's own interface, not to its loopback - while the mapping that reaches it is itself bound
+# to 127.0.0.1 on the host. Container-internal wide, host-side loopback: both halves are needed, and
+# LocalValidationStackExposureTest asserts the pair rather than either alone.
+#
+# WHAT TO DO INSTEAD OF WIDENING THIS. Reaching a local stack from another machine is a solved
+# problem and the solution is not this profile: forward the port over an encrypted, authenticated
+# channel - `ssh -L 8080:127.0.0.1:8080 <host>` - which leaves the listener loopback-bound and puts
+# authentication and encryption in front of it. A service that genuinely has to answer other hosts
+# is a production deployment: the `prod` profile requires transport security and resolves all
+# thirteen of its secrets from the environment with no fallback, which is exactly the posture this
+# profile does not have. Overriding SERVER_ADDRESS to publish this profile on a routable address is
+# UNSUPPORTED, and the paragraphs beside the signing secret and the operator credential below state
+# what it would cost.
+#
+# The port itself stays parameterised: APP_PORT is inherited from the shared baseline and moves the
+# listener without touching which interface it answers on.
+# =================================================================================================
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
 
 # Observability, bound to the compose stack.
 #
@@ -522,20 +580,36 @@ carddemo:
     # fixture. Anyone reading this repository can sign a token with the literal below, and a token
     # signed with it carries whatever authority its role claim names, including the administrator
     # authority that gates the batch-control surface. The secret is acceptable only while the process
-    # holding it cannot be reached from anywhere but the machine running it, and that is not a hope
-    # about how it will be used: docker-compose.yml publishes every port through
-    # ${APP_BIND_ADDRESS:-127.0.0.1} and its peers, so loopback is what an unqualified `up` produces,
-    # and LocalValidationStackExposureTest fails the build if any of those defaults is lost.
+    # holding it cannot be reached from anywhere but the machine running it, and that is now true of
+    # EVERY way of starting this profile rather than of one of them: the server.address block above
+    # binds the listener to 127.0.0.1 by default, so a host-run process is loopback-only, and
+    # docker-compose.yml publishes every port through ${*_BIND_ADDRESS:-127.0.0.1}, so a container
+    # start is loopback-only too. LocalValidationStackExposureTest fails the build if either half is
+    # lost.
     #
-    # WIDENING THAT EXPOSURE OBLIGES REPLACING THIS VALUE. Setting APP_BIND_ADDRESS to anything else -
-    # or running this profile outside Compose on a host reachable by others - makes the literal below a
-    # published signing key, so CARDDEMO_JWT_SECRET must be supplied with a generated value at the same
-    # time. The environment reference is retained here precisely so that displacement needs no edit to
-    # this file; production declares the same key with NO fallback, so the obligation is enforced there
-    # rather than documented. See docs/decision-log.md DL-096.
+    # THERE IS NO SUPPORTED WAY TO PUBLISH THIS PROFILE BEYOND THIS MACHINE, and the honest reason is
+    # that rotating this one value would not make such a deployment safe. An earlier revision of this
+    # file, of docker-compose.yml and of carddemo-java/README.md documented a widening procedure that
+    # paired a wide bind with generated values for CARDDEMO_JWT_SECRET, POSTGRES_PASSWORD and
+    # GRAFANA_ADMIN_PASSWORD, and it did not hold: the app service's environment block never passed
+    # CARDDEMO_JWT_SECRET or CARDDEMO_MANAGEMENT_TOKEN into the container at all, so the generated
+    # signing secret sat in the operator's shell while the container went on minting and accepting
+    # tokens under the literal below - and the procedure read as though the exposure had been paid
+    # for. Even with the forwarding corrected, the deployment would still answer over cleartext HTTP,
+    # would still accept the ten seeded sign-on identities whose password the estate README documents,
+    # and would still sit beside a LocalStack endpoint, a Prometheus, a Grafana and a Jaeger that
+    # authenticate nobody.
+    #
+    # SO THE ANSWER IS A TUNNEL OR A PRODUCTION DEPLOYMENT, NOT A REPLACED FIXTURE.
+    # `ssh -L 8080:127.0.0.1:8080 <host>` reaches a loopback-bound process over an encrypted,
+    # authenticated channel and leaves every premise above intact; a service that must genuinely
+    # answer other hosts is the `prod` profile, which requires transport security and resolves this
+    # very key from the environment with NO fallback. The environment reference is retained here only
+    # so a developer can substitute an inert value of their own without editing a committed file.
+    # See docs/decision-log.md DL-096.
     jwt:
       issuer: carddemo-java
-      secret: ${CARDDEMO_JWT_SECRET:local-development-only-signing-secret-do-not-reuse-0123456789}
+      secret: ${CARDDEMO_LOCAL_JWT_SECRET:local-development-only-signing-secret-do-not-reuse-0123456789}
       expiration: ${CARDDEMO_JWT_EXPIRATION:PT8H}
     # THE ONE NON-PRODUCTION FIXTURE KEY. Base64 of exactly 32 bytes, as AES-256 requires; anything
     # else is refused at start-up by the service that binds it, naming this property.
@@ -583,13 +657,15 @@ carddemo:
     # Production does not re-require HTTPS - it inherits the requirement.
     #
     # AND THAT "ONLY SITUATION" IS ENFORCED RATHER THAN ASSERTED, because a concession resting on a
-    # claim about intent is worthless: if docker-compose.yml published a port on every interface, the
-    # loopback premise would be false for anyone running the documented command and plaintext bearer
-    # tokens would cross a network this profile had assumed away. Every mapping in that file binds
-    # ${*_BIND_ADDRESS:-127.0.0.1}, so the loopback-only premise holds by default, and
-    # LocalValidationStackExposureTest fails the build if a mapping loses it. An operator who widens the
-    # exposure has left the situation this concession was reasoned about, and the paragraph above the
-    # signing secret states what that costs.
+    # claim about intent is worthless: if a port were published on every interface, the loopback premise
+    # would be false for anyone running the documented command and plaintext bearer tokens would cross a
+    # network this profile had assumed away. Two settings hold it, and both are needed because there are
+    # two ways to start this profile: the server.address block above binds the listener to 127.0.0.1 by
+    # default, which covers `spring-boot:run` and `java -jar`, and every mapping in docker-compose.yml
+    # binds ${*_BIND_ADDRESS:-127.0.0.1}, which covers a container start. LocalValidationStackExposureTest
+    # fails the build if either is lost. Publishing this profile on a routable address is unsupported;
+    # the paragraph above the signing secret states why rotating a credential does not license it, and
+    # names the tunnel and the production profile that do.
     #
     # The relaxation is load-bearing rather than decorative. SecurityConfig binds this key, and
     # when it is set it redirects every insecure request instead of serving it. Left at the baseline's
@@ -627,9 +703,13 @@ carddemo:
     # published ports it would be presented on are bound to the loopback interface by
     # docker-compose.yml. Never reuse it anywhere a port is reachable from another host.
     #
-    # Overridable by CARDDEMO_MANAGEMENT_TOKEN so a developer machine can supply its own inert value. The
-    # setting is bound with an EMPTY default in the baseline, and empty is FAIL-CLOSED: no identity can
-    # hold the authority, so the surface admits nobody beyond the three probe paths. Production binds
-    # this to a bare environment reference with no fallback and is refused start-up without it.
+    # Overridable by CARDDEMO_LOCAL_MANAGEMENT_TOKEN so a developer machine can supply its own inert
+    # value. The setting is bound with an EMPTY default in the baseline, and empty is FAIL-CLOSED: no
+    # identity can hold the authority, so the surface admits nobody beyond the three probe paths.
+    # Production binds CARDDEMO_MANAGEMENT_TOKEN - a DIFFERENT variable - to a bare reference with no
+    # fallback and is refused start-up without it.
+    #
+    # Local-scoped for the same reason as the signing secret above: read under production's name, an
+    # operator credential exported on the developer's machine would have bound here without a word.
     management:
-      token: ${CARDDEMO_MANAGEMENT_TOKEN:local-development-only-management-token-do-not-reuse}
+      token: ${CARDDEMO_LOCAL_MANAGEMENT_TOKEN:local-development-only-management-token-do-not-reuse}

@@ -139,9 +139,12 @@ import java.util.Objects;
  * {@code [app/cbl/CORPT00C.cbl:L72]}. Because the frame is a fixed eighty columns, a date of any
  * other encoded byte length would shift the closing apostrophe on cards 11 and 12 or overflow the
  * card, so each slot argument is validated as exactly ten encoded bytes. That is a
- * <strong>frame-integrity</strong> check and not a calendar check: calendar validity, leap-year
- * handling, range ordering and the multi-paragraph date-edit cascade all belong to the date
- * validation service, and this class neither parses nor reformats a date.
+ * <strong>frame-integrity</strong> check rather than the transaction's date edit: range ordering, the
+ * screen's own field-level messages and the multi-paragraph date-edit cascade all belong to the date
+ * validation service. This class does refuse a slot that names no real day, and it does so with a
+ * strict resolver whose parsed value is discarded - the check exists to reject, never to convert, so an
+ * accepted slot reaches its card byte for byte as the caller supplied it and no date is ever reformatted
+ * here.
  *
  * <h2>The slot shape is part of the frame, not a calendar rule</h2>
  *
@@ -168,12 +171,14 @@ import java.util.Objects;
  * None of those values can arise from a legacy screen field, so admitting them would let a caller
  * inject job-control and sort-control text into a contract this class exists to hold invariant.
  *
- * <p>The shape check is deliberately <strong>structural only</strong>. It asks where digits and
- * hyphens sit and nothing else: it does not range check the month or the day, does not consider
- * leap years, does not compare the two dates, and does not reject an impossible calendar date such
- * as a ninety-ninth day of a ninety-ninth month. Those are semantic questions and they remain
- * entirely with the date-validation service, exactly as before. No date or time API is imported
- * here, nothing is parsed into a temporal value, and nothing is reformatted.
+ * <p>The shape check itself is <strong>structural only</strong>: it asks where digits and hyphens sit
+ * and nothing else. On its own that admits {@code 9999-99-99}, {@code 2022-13-01} and
+ * {@code 2023-02-29}, each of which would be embedded in the sort include-condition on cards 11 and 12
+ * and in the report parameter on card 15 and would produce a job whose date window names no real
+ * interval. A second check therefore follows it, {@link #requireRealCalendarDay(String, String)}, which
+ * resolves the slot strictly and refuses it when it names no day that exists. That check does not
+ * compare the two dates with each other and does not carry any of the screen's field-level messages;
+ * ordering and messaging remain entirely with the date-validation service, exactly as before.
  *
  * <h2>There is no report-name substitution slot</h2>
  *
@@ -270,8 +275,9 @@ public final class JclCardImageBuilder {
      * hyphen, two digits, a hyphen, two digits, being {@value #DATE_SLOT_WIDTH} bytes in total.
      *
      * <p>The two hyphens are {@code FILLER} constants of the legacy group rather than data, so the
-     * shape is fixed by the field declaration itself and is checked here as frame integrity. It is
-     * not a calendar rule, and nothing in this class parses or reformats a date.
+     * shape is fixed by the field declaration itself and is checked here as frame integrity. Shape is
+     * all this literal records; whether the shaped value names a real day is the separate question
+     * {@link #requireRealCalendarDay(String, String)} settles, and neither check reformats a date.
      */
     public static final String DATE_SLOT_FORMAT = "YYYY-MM-DD";
 
@@ -400,19 +406,6 @@ public final class JclCardImageBuilder {
     private static final String PAD_CHARACTER = " ";
 
     /**
-     * The lowest printable US-ASCII code point, the space. Everything below it is a C0 control
-     * character and may not appear in a card image, because the image is a job-control stream whose
-     * record framing a control character would break.
-     */
-    private static final char FIRST_PRINTABLE_US_ASCII = 0x20;
-
-    /**
-     * The highest printable US-ASCII code point, the tilde. The delete control sits immediately above
-     * it and is rejected for the same reason as the C0 range below the space.
-     */
-    private static final char LAST_PRINTABLE_US_ASCII = 0x7E;
-
-    /**
      * The separator character of the ten-column date slot, from the {@code YYYY-MM-DD} format
      * literal the legacy screen declares.
      *
@@ -421,12 +414,6 @@ public final class JclCardImageBuilder {
      * {@code [app/cbl/CORPT00C.cbl:L64]}.</p>
      */
     private static final char DATE_SLOT_SEPARATOR = '-';
-
-    /** Zero-based index of the first separator in a ten-column date slot. */
-    private static final int DATE_SLOT_FIRST_SEPARATOR_INDEX = 4;
-
-    /** Zero-based index of the second separator in a ten-column date slot. */
-    private static final int DATE_SLOT_SECOND_SEPARATOR_INDEX = 7;
 
     /** The literal apostrophe that closes the character constants on cards 11 and 12. */
     private static final String CLOSING_APOSTROPHE = "'";

@@ -727,18 +727,35 @@ class DailyTransactionRecordMapperCoverageTest {
         }
 
         @Test
-        @DisplayName("a negative zero re-encodes as positive zero, the one byte a round trip loses")
-        void aNegativeZeroReEncodesAsPositiveZero() {
+        @DisplayName("a negative zero re-encodes as a negative zero, because the sign bit travels on "
+                + "the entity's transient marker rather than inside the BigDecimal")
+        void aNegativeZeroRoundTripsAsANegativeZero() {
             String original = imageWithAmount("0000000000}");
 
-            String reEncoded = DailyTransactionRecordMapper.toRecord(
-                    DailyTransactionRecordMapper.fromRecord(original));
+            DailyTransaction decoded = DailyTransactionRecordMapper.fromRecord(original);
+            String reEncoded = DailyTransactionRecordMapper.toRecord(decoded);
 
+            assertThat(decoded.getDalytranAmt()).isEqualByComparingTo("0.00");
+            assertThat(decoded.isDalytranAmtNegativeZero())
+                    .as("the one bit a BigDecimal cannot hold is carried beside it")
+                    .isTrue();
             assertThat(reEncoded.charAt(EXPECTED_AMOUNT_OFFSET + EXPECTED_AMOUNT_WIDTH - 1))
-                    .as("no fixture record carries a negative zero, so nothing in the estate depends"
-                            + " on the distinction surviving")
-                    .isEqualTo('{');
-            assertThat(reEncoded).isNotEqualTo(original);
+                    .as("the reject dataset's leading segment is the bytes that were read, so this"
+                            + " byte must be the byte the record carried")
+                    .isEqualTo('}');
+            assertThat(reEncoded).isEqualTo(original);
+        }
+
+        @Test
+        @DisplayName("a POSITIVE zero still re-encodes as a positive zero, so the marker cannot leak "
+                + "across records")
+        void aPositiveZeroRoundTripsAsAPositiveZero() {
+            String original = imageWithAmount("0000000000{");
+
+            DailyTransaction decoded = DailyTransactionRecordMapper.fromRecord(original);
+
+            assertThat(decoded.isDalytranAmtNegativeZero()).isFalse();
+            assertThat(DailyTransactionRecordMapper.toRecord(decoded)).isEqualTo(original);
         }
     }
 

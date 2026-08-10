@@ -639,7 +639,8 @@ final class AccountViewServiceTest {
             submit(ACCOUNT_ID);
 
             verify(crossReferenceRepository).findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
-            verify(crossReferenceRepository, never()).findByXrefAcctId(any());
+            verify(crossReferenceRepository, never())
+                    .findByXrefAcctIdOrderByXrefCardNumAsc(any(), any());
             verify(crossReferenceRepository, never()).findAll();
             verifyNoMoreInteractions(crossReferenceRepository);
         }

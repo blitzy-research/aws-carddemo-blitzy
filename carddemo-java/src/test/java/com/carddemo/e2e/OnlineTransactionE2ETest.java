@@ -50,6 +50,7 @@ import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.PostgresJobSubmissionCoordinator;
 import com.carddemo.service.ReportRequestService;
+import com.carddemo.service.ReportRetryTokenService;
 import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.AbstractPostgresAndLocalStackIT;
@@ -3028,7 +3029,7 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
             AuthenticationService.class, SignOnAttemptGovernor.class,
             CredentialDigestService.class, SignOnStateService.class,
             MessageCatalogService.class, NavigationService.class, DateValidationService.class,
-            ReportRequestService.class, JobSubmissionService.class,
+            ReportRequestService.class, ReportRetryTokenService.class, JobSubmissionService.class,
             PostgresJobSubmissionCoordinator.class,
             SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class, AwsConfig.class})
     @EnableConfigurationProperties({JwtProperties.class, AwsProperties.class})

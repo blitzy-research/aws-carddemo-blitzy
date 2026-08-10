@@ -303,7 +303,7 @@ public final class CombineTransactionsJobConfig {
      * and the operational control surface above it - resolve it from there, so the name exists as
      * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = BatchJobCatalog.COMBINE_TRANSACTIONS_JOB_NAME;
+    public static final String JOB_NAME = BatchJobCatalog.COMBINE_TRANSACTIONS_JOB;
 
     /**
      * Name of the ordering step, which replaces the legacy external-sort step {@code STEP05R}.

@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -447,7 +448,8 @@ final class DateAcceptancePredicateEquivalenceTest {
                         SUBMISSION_CARD_COUNT, SUBMISSION_CARD_COUNT, false, ""));
 
         final ReportRequestService service = new ReportRequestService(dateValidation, jobSubmission,
-                mock(MessageCatalogService.class), mock(NavigationService.class), PINNED_CLOCK);
+                mock(MessageCatalogService.class), mock(NavigationService.class), PINNED_CLOCK,
+                new ReportRetryTokenService(null, PINNED_CLOCK, new SimpleMeterRegistry()));
         final ReportRequestService.ReportRequestResult result =
                 service.processReportRequest(confirmedCustomRangeTurn());
 

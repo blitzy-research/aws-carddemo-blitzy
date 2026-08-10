@@ -19,11 +19,13 @@ package com.carddemo.repository;
 import com.carddemo.domain.CardCrossReference;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
  * Persistence gateway for the {@code card_cross_reference} table, replacing the {@code CARDXREF}
- * VSAM base cluster and - through {@link #findByXrefAcctId(String)} - the {@code CXACAIX} alternate
+ * VSAM base cluster and - through {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)} - the
+ * {@code CXACAIX} alternate
  * index defined over its account-identifier field, key length 11 at offset 25 per
  * {@code app/jcl/XREFFILE.jcl} lines 72-77.
  *
@@ -51,37 +53,46 @@ import org.springframework.data.jpa.repository.JpaRepository;
  */
 public interface CardCrossReferenceRepository extends JpaRepository<CardCrossReference, String> {
     /**
-     * Every cross-reference row of one account: the {@code CXACAIX} alternate-index access path.
+     * The cross-reference rows of one account, ascending by card number, limited to the number of rows the
+     * caller asks for: the {@code CXACAIX} alternate-index access path.
      *
      * <p>The return type is a list because the alternate key is non-unique and an account may carry
      * several cards. A single-valued derived query would raise an incorrect-result-size failure the
      * moment two rows shared an account identifier, which is a failure the legacy read of a
      * duplicate-bearing path cannot produce.
      *
-     * <p><strong>Use this only when every row of the account is genuinely wanted.</strong> A caller
-     * reproducing a legacy keyed READ of this path wants one row - the first duplicate in ascending
-     * base-key order - and asks for it through
+     * <p><strong>Use this only when more than one row of the account is genuinely wanted.</strong> A
+     * caller reproducing a legacy keyed READ of this path wants one row - the first duplicate in
+     * ascending base-key order - and asks for it through
      * {@link #findFirstByXrefAcctIdOrderByXrefCardNumAsc(String)} instead. Five services once
      * materialised every row here and then discarded all but the lowest, five copies of one rule paying
      * five times for rows they threw away; the rule has one home again, and the reasoning is recorded as
      * {@code DL-121} and its restoration as {@code DL-164} in {@code docs/decision-log.md}.
      *
-     * <p>No ordering term is declared, because a caller that wants every row and depends on its
-     * sequence sorts what it receives, so the sort is visible at the site whose behaviour depends on it.
+     * <p><strong>&#9733; Bounded and ordered, for the reasons the sibling finder already states.</strong>
+     * Nothing bounds how many cards an account may carry - there is no unique constraint on the account
+     * identifier - so the caller states what it will accept rather than discovering it. The ordering is
+     * the path's own: a read of a duplicate-bearing index yields rows in ascending base-key order, and
+     * the base key here is the card number. An earlier revision declared neither, on the reasoning that
+     * a caller depending on sequence should sort what it receives; that left "the first n rows" with no
+     * referent and left the result size a property of the data. Recorded as {@code DL-296} in
+     * {@code docs/decision-log.md}.
      *
      * <p>An empty list is the analogue of the legacy not-found response and is not an error here; the
      * service turns absence into a screen message.
      *
      * <p>The reference seed is one-to-one across 50 accounts, 50 cards and 50 cross-reference rows, so
-     * it exercises this method without stressing it: demonstrating multi-row retrieval or the
-     * first-match rule requires a purpose-built fixture holding two rows that share an account
+     * it exercises this method without stressing it: demonstrating multi-row retrieval, the ordering or
+     * the first-match rule requires a purpose-built fixture holding two rows that share an account
      * identifier.
      *
      * @param xrefAcctId the eleven-character account identifier, matched exactly as supplied; its
      *                   leading zeros are significant and it is never trimmed
-     * @return the matching rows, possibly empty, never {@code null}
+     * @param limit      the greatest number of rows to return; never absent
+     * @return the matching rows in ascending card-number order, at most {@code limit} of them, possibly
+     *         empty, never {@code null}
      */
-    List<CardCrossReference> findByXrefAcctId(String xrefAcctId);
+    List<CardCrossReference> findByXrefAcctIdOrderByXrefCardNumAsc(String xrefAcctId, Limit limit);
 
     /**
      * The one cross-reference row of an account that a legacy keyed READ of {@code CXACAIX} returns.
@@ -90,13 +101,14 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
      * base-key order, and the base key of this cluster is the card number, so the ordering term is the
      * legacy rule itself rather than a preference. The read is bounded to one row, so an account
      * carrying many cards costs no more than one carrying a single card - which is the whole difference
-     * between this method and {@link #findByXrefAcctId(String)}.
+     * between this method and {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)}.
      *
      * <p>Both verified legacy consumers issue a single keyed READ of this path rather than a browse, so
      * this is the shape those services need; the list form remains for the callers that genuinely want
-     * every row. Keeping both is deliberate: one states "which row does a keyed read return", the other
-     * "which rows does this account carry", and the non-unique index exists precisely because those are
-     * different questions.
+     * more than one row. Keeping both is deliberate: one states "which row does a keyed read return", the
+     * other "which rows does this account carry", and the non-unique index exists precisely because those
+     * are different questions. Both order by the card number, because that is the order the path yields
+     * duplicates in.
      *
      * <p>An empty result is the analogue of the legacy not-found response and is not an error here; the
      * service turns absence into that screen's own message.

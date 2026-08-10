@@ -280,11 +280,13 @@ public class Customer {
      *
      * <p>What this class does contribute is the fail-closed half of that arrangement. Every write
      * path - the eighteen-argument constructor and the mutator - passes through
-     * {@link #requireProtectedValue(String, String)}, which admits only {@code null} or a
+     * {@link #screenProtectedValueEnvelope(String, String)}, which admits only {@code null} or a
      * value carrying the module's protected-value envelope shape. A nine-digit cleartext identifier
      * cannot satisfy that shape, so it is rejected rather than stored. The check is written in terms
      * of the platform library alone, which is why it can live here without the domain layer acquiring
-     * a dependency it is not permitted to have.
+     * a dependency it is not permitted to have. It is a screen and not an authentication: what makes a
+     * stored envelope genuine is that the codec's authenticated decryption accepts it, which happens in
+     * the utility layer and not here.
      */
     @Column(name = "cust_ssn", length = 255, nullable = true)
     private String custSsn;
@@ -302,8 +304,8 @@ public class Customer {
      * <p>{@code NOT NULL} is not itself the guard - a {@code VARCHAR(255)} accepts cleartext as
      * readily as ciphertext. The guard is this boundary. As with the national identifier, this entity
      * neither encrypts nor decrypts - it refuses. Every write path passes through
-     * {@link #requireProtectedValue(String, String)}, so only a well-formed protected value can be
-     * stored, and twenty cleartext characters do not satisfy it. The reference-data seed therefore
+     * {@link #screenProtectedValueEnvelope(String, String)}, so only a value carrying the envelope
+     * shape can be stored, and twenty cleartext characters do not satisfy it. The reference-data seed therefore
      * carries a sealed envelope for every row rather than the cleartext the record holds, which is
      * what lets a mandatory protected column be seeded at all.
      *
@@ -417,8 +419,8 @@ public class Customer {
         this.addrZip = addrZip;
         this.phoneNum1 = phoneNum1;
         this.phoneNum2 = phoneNum2;
-        this.custSsn = requireProtectedValue(custSsn, "custSsn");
-        this.govtIssuedId = requireProtectedValue(govtIssuedId, "govtIssuedId");
+        this.custSsn = screenProtectedValueEnvelope(custSsn, "custSsn");
+        this.govtIssuedId = screenProtectedValueEnvelope(govtIssuedId, "govtIssuedId");
         this.custDob = custDob;
         this.eftAccountId = eftAccountId;
         this.priCardHolderInd = priCardHolderInd;
@@ -556,7 +558,7 @@ public class Customer {
      * @throws IllegalArgumentException if the value is neither {@code null} nor a well-formed protected value
      */
     public void setCustSsn(String custSsn) {
-        this.custSsn = requireProtectedValue(custSsn, "custSsn");
+        this.custSsn = screenProtectedValueEnvelope(custSsn, "custSsn");
     }
 
     public String getGovtIssuedId() {
@@ -576,7 +578,7 @@ public class Customer {
      *                                  protected value
      */
     public void setGovtIssuedId(String govtIssuedId) {
-        this.govtIssuedId = requireProtectedValue(govtIssuedId, "govtIssuedId");
+        this.govtIssuedId = screenProtectedValueEnvelope(govtIssuedId, "govtIssuedId");
     }
 
     public String getCustDob() {
@@ -661,10 +663,20 @@ public class Customer {
     }
 
     /**
-     * Rejects any value that is not a well-formed protected value, so that regulated cleartext cannot reach
-     * the persistence boundary through this entity. The test is structural and needs no key: scheme marker,
-     * Base64 body, and a decoded length long enough for an initialisation vector and an authentication tag.
-     * It is written against the platform library alone, which is why it can live in this layer.
+     * Screens a candidate value for the <em>shape</em> of a protected value, so that regulated cleartext
+     * cannot reach the persistence boundary through this entity. Scheme marker, Base64 body, and a decoded
+     * length long enough for an initialisation vector and an authentication tag. It is written against the
+     * platform library alone, which is why it can live in this layer.
+     *
+     * <p><strong>What this establishes, and what it does not.</strong> Passing this screen proves the value
+     * is not cleartext and could not be a nine- or twenty-character identifier. It does <em>not</em> prove
+     * the value is a ciphertext this deployment produced: the envelope marker followed by any twenty-eight
+     * or more Base64-encoded bytes satisfies every condition here, and nothing in this layer holds a key to
+     * try. Authenticity is established exactly once, and elsewhere - the codec decrypts under
+     * {@code AES/GCM/NoPadding}, whose authentication tag is verified as part of decryption, so a forged or
+     * corrupted envelope fails there and cannot be read back as a value. This method is therefore named for
+     * screening rather than for requiring, because a reader who took it to mean "this value is genuinely
+     * protected" would be relying on a guarantee it does not give.
      *
      * <p>The rejection message never contains the offending value, since that value is regulated data and an
      * exception message is easily logged or returned; only the attribute name and the failing condition are
@@ -679,11 +691,12 @@ public class Customer {
      *
      * @param value         the candidate value, which may be {@code null}
      * @param attributeName the attribute being written, named in the failure message
-     * @return the value, unchanged, when it is acceptable
-     * @throws IllegalArgumentException when the value is non-{@code null} and is not a well-formed
-     *                                  protected value
+     * @return the value, unchanged, when it carries the envelope shape
+     * @throws IllegalArgumentException when the value is non-{@code null} and does not carry the
+     *                                  protected-value envelope shape
      */
-    private static String requireProtectedValue(final String value, final String attributeName) {
+    private static String screenProtectedValueEnvelope(final String value,
+            final String attributeName) {
         if (value == null) {
             return null;
         }

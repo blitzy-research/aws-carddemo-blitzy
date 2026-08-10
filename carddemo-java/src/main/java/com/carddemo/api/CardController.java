@@ -56,11 +56,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -227,7 +225,13 @@ public class CardController {
     /** Timer name for one card-update turn. */
     private static final String METRIC_CARD_UPDATE_TURN = "carddemo.online.cardupdate.turn";
 
-    /** Tag naming the destination the turn settled on. */
+    /**
+     * Tag naming the destination the turn settled on.
+     *
+     * <p>Bounded by construction: the value is a route from the navigation vocabulary, or one of the two
+     * labels below for a turn that settled on no destination or raised before reaching one, so the tag
+     * cannot become a high-cardinality label whatever a caller sends.
+     */
     private static final String TAG_OUTCOME = "outcome";
 
     /**
@@ -455,40 +459,57 @@ public class CardController {
      * Serves one turn of the card-detail screen, legacy transaction {@code CCDL}, program
      * {@code COCRDSLC}.
      *
-     * <p>A read, so it is reachable by the idempotent method and carries no body. <strong>Both business
-     * keys are optional and neither is a path segment.</strong> That is not a stylistic choice: the
+     * <p><strong>A read that is nonetheless a {@code POST} with an optional body.</strong> It reads and
+     * changes nothing, so it is idempotent in effect - but it is not reached by the idempotent method and
+     * it does carry a body: the turn's inputs are the two optional filters, the attention key and the
+     * echoed navigation record, and that record is a structured object rather than a scalar. Carrying it
+     * as a body is what keeps its component names distinct from the filter names, and every other screen
+     * turn on this surface is posted for the same reason, so the one contract is uniform. The body is
+     * declared optional and an absent one reads as the empty request, which is how a first arrival with
+     * nothing typed presents. <strong>Both business keys are optional and neither is a path
+     * segment.</strong> That is not a stylistic choice: the
      * screen distinguishes an absent account from an absent card from both absent, and answers each with
      * its own message, so a mandatory path segment would make two of those three outcomes unreachable
      * and would silently drop a behaviour the legacy screen has.
      *
-     * <p>The echoed navigation record is bound from its own component names, which are distinct from the
-     * two filter parameter names, so the carried account and card - what the previous screen selected -
-     * can never be confused with the account and card the operator typed. {@link CardDetailService}
-     * needs both pairs and reads them separately.
+     * <p>The echoed navigation record is a component of the submitted body, so its own component names
+     * stay distinct from the two filter names and the carried account and card - what the previous screen
+     * selected - can never be confused with the account and card the operator typed. {@link
+     * CardDetailService} needs both pairs and reads them separately.
      *
      * <p>An arrival here from the card list is response metadata on that screen's turn and nothing more.
      * No request is forwarded, and this operation is reached by the client calling it.
      *
-     * @param accountIdFilter the eleven-character account the operator typed, or {@code null} when the
-     *        field was left alone
-     * @param cardNumberFilter the sixteen-character card the operator typed, or {@code null} when the
-     *        field was left alone
-     * @param keyAction the attention key the operator pressed, or {@code null} when the key resolved to
-     *        nothing
-     * @param navigationContext the echoed navigation state, whose components bind from their own names;
-     *        an entirely absent state reads as no carry-over, which is how a first arrival presents
+     * @param request the submitted screen: the eleven-character account filter, the sixteen-character
+     *        card filter, the attention key and the echoed navigation state, any of which may be absent;
+     *        an entirely absent body reads as the empty request, which is how a first arrival presents
+     * @param authentication the authenticated caller, whose approved-operator role the route already
+     *        required
      * @return the screen the turn produces, carrying the card when one was found and the screen message
      *         in every case
      */
     @PostMapping(path = CARD_DETAIL_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "View one card's details",
-            description = "One turn of legacy transaction " + TRANSACTION_CARD_DETAIL + ". Both search "
-                    + "keys are optional, because the legacy screen answers an absent account, an absent "
-                    + "card and no input at all with three different messages.")
+            description = "One turn of legacy transaction " + TRANSACTION_CARD_DETAIL + ". A read that "
+                    + "changes nothing, posted with an optional body: the body is how the echoed "
+                    + "navigation record keeps its component names distinct from the two search keys, "
+                    + "and an absent body reads as the empty request. Both search keys are optional, "
+                    + "because the legacy screen answers an absent account, an absent card and no input "
+                    + "at all with three different messages. Answers 200 for every outcome the legacy "
+                    + "screen could compose, including not finding the card: the outcome is read from "
+                    + "the body.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
-                description = "The turn completed and carries the card details when one was found.")})
+                description = "The turn completed. Carries the card's details when one was found, the "
+                        + "screen message, the field the cursor returns to and the route the client "
+                        + "calls next."),
+        @ApiResponse(responseCode = "400",
+                description = "The body carried a value that could not have occupied its legacy screen "
+                        + "field."),
+        @ApiResponse(responseCode = "401", description = "No authenticated caller."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<CardDetailResponse> viewCardDetail(
             @Valid @RequestBody(required = false) final CardDetailRequest request,
             final Authentication authentication) {
@@ -497,30 +518,26 @@ public class CardController {
                 bounded.keyAction(), bounded.navigationContext(), authentication);
     }
 
-    @Operation(summary = "View one card's details",
-            description = "One turn of legacy transaction " + TRANSACTION_CARD_DETAIL + ". Both search "
-                    + "keys are optional, because "
-                    + "the legacy screen answers an absent account, an absent card and no input at all "
-                    + "with three different messages. Answers 200 for every outcome the legacy screen "
-                    + "could compose, including not finding the card: the outcome is read from the "
-                    + "body.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200",
-                description = "The turn completed. Carries the card's details when one was found, the "
-                        + "screen message, the field the cursor returns to and the route the client "
-                        + "calls next."),
-        @ApiResponse(responseCode = "400",
-                description = "A parameter carried a value that could not have occupied its legacy "
-                        + "screen field."),
-        @ApiResponse(responseCode = "401", description = "No authenticated caller."),
-        @ApiResponse(responseCode = "403",
-                description = "The authenticated principal is not an approved online-data operator.")})
-    public ResponseEntity<CardDetailResponse> viewCardDetail(
-            @RequestParam(name = "accountIdFilter", required = false) final String accountIdFilter,
-            @RequestParam(name = "cardNumberFilter", required = false) final String cardNumberFilter,
-            @RequestParam(name = "keyAction", required = false) final KeyAction keyAction,
-            @Valid @ModelAttribute final NavigationContext navigationContext,
-            final Authentication authentication) {
+    /**
+     * The turn itself, shared by the mapped handler above and exercised directly by its unit tests.
+     *
+     * <p>Not a request handler: it carries no mapping, so it publishes no operation and binds no request.
+     * It used to carry a copy of the operation description and a full set of parameter-binding
+     * annotations, all of which were inert - the framework maps only annotated <em>mapped</em> methods and
+     * the interface description is generated only from those - which meant the richer of the two
+     * descriptions was the one that was never published. That description now sits on the mapped handler
+     * and this method carries none.
+     *
+     * @param  accountIdFilter   the account the operator typed, or {@code null}
+     * @param  cardNumberFilter  the card the operator typed, or {@code null}
+     * @param  keyAction         the attention key, or {@code null}
+     * @param  navigationContext the echoed navigation state
+     * @param  authentication    the authenticated caller
+     * @return the screen the turn produces
+     */
+    public ResponseEntity<CardDetailResponse> viewCardDetail(final String accountIdFilter,
+            final String cardNumberFilter, final KeyAction keyAction,
+            final NavigationContext navigationContext, final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
@@ -1114,12 +1131,18 @@ public class CardController {
     }
 
     /**
-     * Records the elapsed time of one turn, tagged by the destination it settled on.
+     * Records the elapsed time of one turn under the timer naming its screen.
+     *
+     * <p>Every turn is recorded, including one that raised. Each caller invokes this from its {@code
+     * finally} arm, so an exception propagating out of the boundary still stops the sample, carrying the
+     * failed label the caller seeded before the attempt rather than any destination.
      *
      * @param sample the timing sample started at the head of the turn
      * @param metricName the timer naming the screen whose turn this was
      * @param description the timer's description
-     * @param route the destination the turn settled on
+     * @param outcome the already-resolved tag value: a route from the navigation vocabulary, the
+     *     unresolved stand-in for a turn that chose no destination, or the failed label for a turn that
+     *     raised
      */
     private void recordTurn(final Timer.Sample sample, final String metricName,
             final String description, final String outcome) {

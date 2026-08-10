@@ -16,6 +16,11 @@
  */
 package com.carddemo.config;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.api.BatchJobController;
 import com.carddemo.api.GlobalExceptionHandler;
 import com.carddemo.api.JsonRefusalBodyRenderer;
@@ -48,12 +53,16 @@ import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
@@ -782,6 +791,10 @@ class SecurityConfigTest {
                 .withUserConfiguration(SecurityConfig.class, JwtTokenProvider.class,
                         SignOnStateService.class, JsonRefusalBodyRenderer.class,
                         WebMvcConfig.class, FixedClockConfig.class)
+                // WebMvcConfig's body-limit registration now counts a refusal, so this slice needs a
+                // registry. Supplied because the runner registers no metrics auto-configuration,
+                // whereas the running application always has one.
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                 .withBean(UserSecurityRepository.class, CREDENTIAL_MASTER::repository)
                 .withPropertyValues(
                         JwtProperties.PREFIX + ".secret=" + SECRET,
@@ -811,6 +824,17 @@ class SecurityConfigTest {
     private static WebApplicationContextRunner withoutOperatorIdentity() {
         return runner(false, false, false)
                 .withPropertyValues(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + "=");
+    }
+
+    /**
+     * A runner carrying one specific machine credential, so a weak value's effect on startup can be read.
+     *
+     * @param  token the credential to configure
+     * @return the configured runner
+     */
+    private static WebApplicationContextRunner withOperatorCredential(final String token) {
+        return runner(false, false, false)
+                .withPropertyValues(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + "=" + token);
     }
 
     /** A runner in the posture the local and test overlays take: no transport requirement. */
@@ -1316,9 +1340,9 @@ class SecurityConfigTest {
             assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPattern())
                     .as("an entitlement with no pattern is an entitlement enforced by whatever the "
                             + "closing rule happens to say, which was bare authentication")
-                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
+                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
             assertThat(Stream.of(SecurityConfig.Gating.values())
-                    .filter(gating -> gating.enforcementPattern().isEmpty()))
+                    .filter(gating -> gating.enforcementPattern().isBlank()))
                     .as("every entitlement now names the rule that enforces it")
                     .isEmpty();
         }
@@ -2177,6 +2201,10 @@ class SecurityConfigTest {
                     // Contributed so that the only thing this slice is missing is the signing secret;
                     // without it the context would fail for a second reason and the assertion below would
                     // no longer be about the secret at all.
+                    // WebMvcConfig's body-limit registration now counts a refusal, so this slice needs a
+                    // registry. Supplied because the runner registers no metrics auto-configuration,
+                    // whereas the running application always has one.
+                    .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                     .withBean(UserSecurityRepository.class, CREDENTIAL_MASTER::repository)
                     .withPropertyValues(
                             JwtProperties.PREFIX + ".issuer=" + ISSUER,
@@ -2765,6 +2793,100 @@ class SecurityConfigTest {
     }
 
     /**
+     * The strength the machine credential must have before the context will start with it.
+     *
+     * <p>This credential is the whole of the authentication on the management surface and that surface
+     * has no attempt allowance, so its width is the only thing standing between a caller and health,
+     * metrics and environment detail. It previously needed only to be non-blank.</p>
+     */
+    @Nested
+    @DisplayName("The machine credential's strength is a startup condition")
+    class MachineCredentialStrength {
+
+        /** Creates the slice. */
+        MachineCredentialStrength() {
+            // Intentionally empty.
+        }
+
+        @ParameterizedTest(name = "a credential of {0} characters fails startup")
+        @ValueSource(ints = {1, 2, 8, 16, 31})
+        @DisplayName("A CREDENTIAL TOO SHORT TO BE UNGUESSABLE FAILS STARTUP: it used to be accepted, "
+                + "leaving a surface that looked authenticated and was not")
+        void aShortCredentialFailsStartup(final int width) {
+            withOperatorCredential(distinctCharacters(width)).run(context -> assertThat(context)
+                    .as("a context that started would publish the surface behind a guessable value")
+                    .hasFailed());
+        }
+
+        @Test
+        @DisplayName("a credential of exactly the minimum width starts, so the bound refuses only what "
+                + "is below it")
+        void aCredentialOfExactlyTheMinimumWidthStarts() {
+            withOperatorCredential(distinctCharacters(SecurityConfig.MANAGEMENT_TOKEN_MIN_LENGTH))
+                    .run(context -> assertThat(context).hasNotFailed());
+        }
+
+        @Test
+        @DisplayName("a credential past the upper bound fails startup, because past a few hundred "
+                + "characters the value is a paste in the wrong setting rather than a secret")
+        void anOverLongCredentialFailsStartup() {
+            withOperatorCredential("a" + distinctCharacters(
+                    SecurityConfig.MANAGEMENT_TOKEN_MAX_LENGTH))
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("a credential of the required width made of one repeated character fails startup, "
+                + "because width alone is not unguessability")
+        void aRepeatedCharacterCredentialFailsStartup() {
+            withOperatorCredential("a".repeat(SecurityConfig.MANAGEMENT_TOKEN_MIN_LENGTH))
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("a credential carrying a space or a control character fails startup, so the value "
+                + "presented in a header is the value configured")
+        void aCredentialCarryingWhitespaceFailsStartup() {
+            final String padded = distinctCharacters(SecurityConfig.MANAGEMENT_TOKEN_MIN_LENGTH - 1);
+            withOperatorCredential(padded.substring(0, 8) + " " + padded.substring(8))
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("NO credential configured still starts, because empty is the fail-closed state and "
+                + "refusing to start would refuse the safe case")
+        void anUnconfiguredCredentialStillStarts() {
+            withoutOperatorIdentity().run(context -> assertThat(context).hasNotFailed());
+        }
+
+        @Test
+        @DisplayName("the credential the rest of this class configures satisfies the rule, so no other "
+                + "assertion here depends on a value the boundary would refuse")
+        void theFixtureCredentialSatisfiesTheRule() {
+            assertThat(OPERATOR_TOKEN.length())
+                    .isGreaterThanOrEqualTo(SecurityConfig.MANAGEMENT_TOKEN_MIN_LENGTH)
+                    .isLessThanOrEqualTo(SecurityConfig.MANAGEMENT_TOKEN_MAX_LENGTH);
+            assertThat(OPERATOR_TOKEN.chars().distinct().count())
+                    .isGreaterThanOrEqualTo(SecurityConfig.MANAGEMENT_TOKEN_MIN_DISTINCT_CHARACTERS);
+        }
+
+        /**
+         * Builds a credential of the requested width whose characters vary, so a width assertion is not
+         * also a distinctness assertion.
+         *
+         * @param  width how many characters to produce
+         * @return a visible-ASCII value of that width
+         */
+        private String distinctCharacters(final int width) {
+            final StringBuilder value = new StringBuilder(width);
+            for (int index = 0; index < width; index++) {
+                value.append((char) ('a' + (index % 26)));
+            }
+            return value.toString();
+        }
+    }
+
+    /**
      * Where the bearer-token settings are registered, proved by difference rather than by annotation.
      *
      * <p>A settings object bound by two configurations is bound twice and can be changed in one place
@@ -2790,6 +2912,10 @@ class SecurityConfigTest {
                     // slices differ by is the class under test, and the one dependency the token provider
                     // cannot satisfy here is the settings record.
                     .withUserConfiguration(SignOnStateService.class, FixedClockConfig.class)
+                    // WebMvcConfig's body-limit registration now counts a refusal, so this slice needs a
+                    // registry. Supplied because the runner registers no metrics auto-configuration,
+                    // whereas the running application always has one.
+                    .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                     .withBean(UserSecurityRepository.class, CREDENTIAL_MASTER::repository)
                     .withPropertyValues(
                             JwtProperties.PREFIX + ".secret=" + SECRET,
@@ -2929,6 +3055,223 @@ class SecurityConfigTest {
                     .doesNotHaveBean(UserDetailsService.class));
 
             assertNotATopLevelType("UserDetailsServiceImpl");
+        }
+    }
+    /**
+     * What a presented management credential now leaves behind.
+     *
+     * <h2>Why this group exists</h2>
+     *
+     * <p>Review found the operator credential accepted on the strength of being non-blank, compared without
+     * limit, and - the part this group asserts - <strong>refused in total silence</strong>. No meter moved
+     * and nothing was logged, so a deployment being probed for its management credential was
+     * indistinguishable from a deployment nobody had touched. The credential reaches every metrics
+     * endpoint and every exposition scrape, so that silence was the difference between noticing an attempt
+     * and never knowing one happened.
+     *
+     * <p>Three outcomes are counted, on three series with no caller-derived tag: a credential that matched,
+     * one that did not, and one presented at a surface with no identity configured at all. A sustained run
+     * of refusals additionally raises a warning once per interval, so probing is visible without one record
+     * per attempt.
+     *
+     * <p><strong>What is deliberately NOT asserted here, because it deliberately does not happen:</strong>
+     * no lockout. A threshold that closed the surface would let any unauthenticated caller take this
+     * deployment's metrics away from its collector, with one shared secret and nothing to fall back to. The
+     * last test in this group states that as a property rather than leaving it as an absence. See
+     * {@code docs/decision-log.md} entry DL-312.
+     */
+    @Nested
+    @DisplayName("the management credential's outcome is recorded")
+    class TheManagementCredentialOutcome {
+
+        /** A credential of the right shape that is not the configured one. */
+        private static final String WRONG_CREDENTIAL =
+                "unit-test-wrong-operator-credential-9876543210-abcdefghij";
+
+        /**
+         * Reads one outcome's count out of the context's registry.
+         *
+         * @param  context a started context
+         * @param  outcome the outcome tag value
+         * @return how many times that outcome was counted, zero when the series does not exist
+         */
+        private double counted(final AssertableWebApplicationContext context, final String outcome) {
+            final Counter counter = context.getBean(MeterRegistry.class)
+                    .find(SecurityConfig.MANAGEMENT_AUTHENTICATION_METER)
+                    .tag(SecurityConfig.MANAGEMENT_OUTCOME_TAG, outcome)
+                    .counter();
+            return counter == null ? 0.0d : counter.count();
+        }
+
+        @Test
+        @DisplayName("a wrong credential is counted as refused, which is the record that did not exist")
+        void aWrongCredentialIsCountedAsRefused() throws Exception {
+            closedScrape().run(context -> {
+                clientFor(context)
+                        .perform(get(MANAGEMENT_BASE + "/prometheus")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + WRONG_CREDENTIAL))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
+
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_REFUSED))
+                        .as("a refusal must be visible to a collector, not only to the caller who caused it")
+                        .isEqualTo(1.0d);
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_ESTABLISHED)).isZero();
+            });
+        }
+
+        @Test
+        @DisplayName("the correct credential is counted as established, so a rate of refusals can be read "
+                + "against a rate of successful scrapes rather than in isolation")
+        void theCorrectCredentialIsCountedAsEstablished() throws Exception {
+            closedScrape().run(context -> {
+                clientFor(context)
+                        .perform(get(MANAGEMENT_BASE + "/prometheus")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + OPERATOR_TOKEN))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200));
+
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_ESTABLISHED))
+                        .isEqualTo(1.0d);
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_REFUSED)).isZero();
+            });
+        }
+
+        @Test
+        @DisplayName("a credential presented where no operator identity is configured is counted as "
+                + "unconfigured, which is a different fault from a wrong credential and needs a different "
+                + "answer")
+        void aPresentationAgainstNoIdentityIsCountedSeparately() throws Exception {
+            withoutOperatorIdentity().run(context -> {
+                clientFor(context)
+                        .perform(get(MANAGEMENT_BASE + "/prometheus")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + OPERATOR_TOKEN))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
+
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_UNCONFIGURED))
+                        .as("a collector presenting a credential to a surface that issued none is a "
+                                + "deployment fault; a wrong credential is an access attempt")
+                        .isEqualTo(1.0d);
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_REFUSED)).isZero();
+            });
+        }
+
+        @Test
+        @DisplayName("an anonymous probe against a surface with no identity configured is counted as "
+                + "nothing at all, because that is the ordinary traffic and counting it would bury the "
+                + "presentations that mean something")
+        void anAnonymousProbeIsNotCounted() throws Exception {
+            withoutOperatorIdentity().run(context -> {
+                clientFor(context)
+                        .perform(get(MANAGEMENT_BASE + "/health"))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200));
+
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_UNCONFIGURED)).isZero();
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_REFUSED)).isZero();
+            });
+        }
+
+        @Test
+        @DisplayName("a sustained run of refusals raises one warning per interval - not one per attempt, "
+                + "which would let a caller choose this deployment's log volume")
+        void aSustainedRunRaisesOneWarningPerInterval() throws Exception {
+            final LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
+            final Logger securityLogger = loggerContext.getLogger(SecurityConfig.class);
+            final ListAppender<ILoggingEvent> capture = new ListAppender<>();
+            capture.setContext(loggerContext);
+            capture.start();
+            securityLogger.addAppender(capture);
+            try {
+                closedScrape().run(context -> {
+                    final int attempts = SecurityConfig.MANAGEMENT_REFUSAL_REPORT_INTERVAL * 2;
+                    for (int attempt = 0; attempt < attempts; attempt++) {
+                        clientFor(context).perform(get(MANAGEMENT_BASE + "/prometheus")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + WRONG_CREDENTIAL));
+                    }
+
+                    assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_REFUSED))
+                            .as("every attempt is counted; only the reporting is bounded")
+                            .isEqualTo((double) attempts);
+                    final List<ILoggingEvent> warnings = capture.list.stream()
+                            .filter(event -> event.getLevel() == Level.WARN)
+                            .filter(event -> event.getFormattedMessage()
+                                    .contains("Management credential refused"))
+                            .toList();
+                    assertThat(warnings)
+                            .as("twice the interval, so exactly two reports")
+                            .hasSize(2);
+                    assertThat(warnings.get(0).getFormattedMessage())
+                            .as("the report names the count and nothing a caller supplied")
+                            .contains(String.valueOf(SecurityConfig.MANAGEMENT_REFUSAL_REPORT_INTERVAL))
+                            .doesNotContain(WRONG_CREDENTIAL)
+                            .doesNotContain("Bearer");
+                });
+            } finally {
+                securityLogger.detachAppender(capture);
+                capture.stop();
+            }
+        }
+
+        @Test
+        @DisplayName("a successful presentation restarts the run, so the report describes a current attempt "
+                + "and not the sum of every refusal since start-up")
+        void aSuccessfulPresentationRestartsTheRun() throws Exception {
+            final LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
+            final Logger securityLogger = loggerContext.getLogger(SecurityConfig.class);
+            final ListAppender<ILoggingEvent> capture = new ListAppender<>();
+            capture.setContext(loggerContext);
+            capture.start();
+            securityLogger.addAppender(capture);
+            try {
+                closedScrape().run(context -> {
+                    // One short of the interval, so nothing has been reported yet.
+                    for (int attempt = 0;
+                            attempt < SecurityConfig.MANAGEMENT_REFUSAL_REPORT_INTERVAL - 1; attempt++) {
+                        clientFor(context).perform(get(MANAGEMENT_BASE + "/prometheus")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + WRONG_CREDENTIAL));
+                    }
+                    clientFor(context).perform(get(MANAGEMENT_BASE + "/prometheus")
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + OPERATOR_TOKEN));
+                    clientFor(context).perform(get(MANAGEMENT_BASE + "/prometheus")
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + WRONG_CREDENTIAL));
+
+                    assertThat(capture.list.stream()
+                            .filter(event -> event.getLevel() == Level.WARN)
+                            .filter(event -> event.getFormattedMessage()
+                                    .contains("Management credential refused"))
+                            .toList())
+                            .as("without the restart the tenth refusal overall would report a run of ten, "
+                                    + "which is a sentence about history rather than about an attempt")
+                            .isEmpty();
+                    assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_REFUSED))
+                            .as("the meter still counts every refusal; only the run is restarted")
+                            .isEqualTo(SecurityConfig.MANAGEMENT_REFUSAL_REPORT_INTERVAL);
+                });
+            } finally {
+                securityLogger.detachAppender(capture);
+                capture.stop();
+            }
+        }
+
+        @Test
+        @DisplayName("the surface stays open to the correct credential after a run of refusals, because a "
+                + "lockout would hand any unauthenticated caller this deployment's own metrics")
+        void theSurfaceStaysOpenAfterARunOfRefusals() throws Exception {
+            closedScrape().run(context -> {
+                for (int attempt = 0; attempt < SecurityConfig.MANAGEMENT_REFUSAL_REPORT_INTERVAL * 3;
+                        attempt++) {
+                    clientFor(context).perform(get(MANAGEMENT_BASE + "/prometheus")
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + WRONG_CREDENTIAL));
+                }
+
+                clientFor(context)
+                        .perform(get(MANAGEMENT_BASE + "/prometheus")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + OPERATOR_TOKEN))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("thirty wrong presentations must not cost the collector its scrape")
+                                .isEqualTo(200));
+
+                assertThat(counted(context, SecurityConfig.MANAGEMENT_OUTCOME_ESTABLISHED))
+                        .isEqualTo(1.0d);
+            });
         }
     }
 }

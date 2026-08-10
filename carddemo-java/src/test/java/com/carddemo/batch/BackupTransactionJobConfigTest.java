@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -50,6 +51,10 @@ import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.common.KeyValue;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -178,6 +183,40 @@ final class BackupTransactionJobConfigTest {
 
     private MeterRegistry meterRegistry;
 
+    /**
+     * The observation registry the two privately composed steps must actually receive.
+     *
+     * <p>Recording rather than no-op on purpose. A step that never receives a registry keeps the no-op
+     * one and observes nothing, which is indistinguishable from a step that observed correctly unless the
+     * registry under test can be asked what it saw - so a recording handler is what turns that absence
+     * into a failing assertion. Assembled by hand from a plain registry and one handler, which is the
+     * shape every other observation assertion in this module uses, so no test-only dependency enters the
+     * pinned inventory.
+     */
+    private ObservationRegistry observationRegistry;
+
+    /** Every observation the steps stopped, in stop order. */
+    private final List<Observation.Context> observedSteps = new ArrayList<>();
+
+    /**
+     * The tag key the framework's own step observation carries.
+     *
+     * <p>Stated as a literal because it is a name this module does not own and cannot reference: the
+     * framework declares it on a package-private enum, so there is no symbol to import. It is the value
+     * of that enum's {@code STEP_NAME} constant.
+     */
+    private static final String SPRING_BATCH_STEP_NAME_TAG = "spring.batch.step.name";
+
+    /**
+     * The name the framework's own step observation carries.
+     *
+     * <p>A literal for the same reason as the tag key above: the framework declares it on a
+     * package-private enum. It is needed to separate step observations from the ones the generation store
+     * makes into the same registry - the archive step really does perform object-store work, and that work
+     * is observed too, so a count over everything the registry saw would not be a count of steps.
+     */
+    private static final String SPRING_BATCH_STEP_OBSERVATION = "spring.batch.step";
+
     private BackupTransactionJobConfig config;
 
     /**
@@ -244,6 +283,23 @@ final class BackupTransactionJobConfigTest {
             return present;
         });
         this.meterRegistry = new SimpleMeterRegistry();
+        // A recording registry rather than a no-op one, so a step that fails to receive it is a test
+        // failure rather than an absence nobody notices. This configuration composes its steps privately,
+        // which is exactly the shape the framework's step post-processor cannot reach.
+        this.observedSteps.clear();
+        final ObservationRegistry recording = ObservationRegistry.create();
+        recording.observationConfig().observationHandler(new ObservationHandler<>() {
+            @Override
+            public void onStop(final Observation.Context context) {
+                observedSteps.add(context);
+            }
+
+            @Override
+            public boolean supportsContext(final Observation.Context context) {
+                return true;
+            }
+        });
+        this.observationRegistry = recording;
         this.config = configWithBucket(BUCKET);
     }
 
@@ -264,14 +320,21 @@ final class BackupTransactionJobConfigTest {
                 new AwsProperties.Sns("carddemo-job-notifications"));
         final Clock fixed = Clock.fixed(Instant.parse("2026-08-04T07:48:12.34Z"), ZoneOffset.UTC);
 
-        return new BackupTransactionJobConfig(jobRepository, transactionManager,
-                boundaryListener, incrementer, this.transactionRepository,
-                this.transactionScanRepository, this.objectStore, this.versionedObjectStore,
+        // The one generation store, assembled here exactly as the container assembles the registered
+        // component, and handed to the job rather than built inside it - which is what the production
+        // wiring now does too, so this test constructs the same object graph production does.
+        final StagedGenerationStore generationStore = new StagedGenerationStore(
+                this.objectStore, this.versionedObjectStore, bucket,
                 // Runs each publication directly. This test drives one publication at a time from one
                 // thread, so there is nothing to serialize; the lock's acquisition ordering and its
                 // failure-to-acquire behaviour are asserted in its own test.
                 (bases, publication) -> publication.run(),
-                awsProperties, this.meterRegistry, fixed,
+                this.observationRegistry);
+
+        return new BackupTransactionJobConfig(jobRepository, transactionManager,
+                boundaryListener, incrementer, this.transactionRepository,
+                this.transactionScanRepository, generationStore,
+                awsProperties, this.meterRegistry, this.observationRegistry, fixed,
                 this.stagingDirectory.toString());
     }
 
@@ -371,6 +434,35 @@ final class BackupTransactionJobConfigTest {
                     .isNotSameAs(config.backupTransactionJob());
             assertThat(config.backupTransactionJob().getName())
                     .isEqualTo(config.backupTransactionJob().getName());
+        }
+
+        @Test
+        @DisplayName("both privately composed steps observe into the application registry, not a no-op")
+        void bothStepsObserveIntoTheApplicationRegistry() throws Exception {
+            // This is the one configuration whose steps are not beans, so the framework's observability
+            // post-processor never reaches them and each builder has to apply the registry itself. Until
+            // it did, both steps kept ObservationRegistry.NOOP and produced no step observation and no
+            // span - which left the archive step, the only step in the estate that writes to the object
+            // store, untraced. A registry is not an assertable thing on its own; what it observed is.
+            // BOTH STEPS RUN INSIDE ONE JOB EXECUTION, because that is the only shape in which the second
+            // of them can run at all: the archive step seals its archived-identifier manifest and
+            // publishes the path on the job execution's context, and the reset step refuses to delete
+            // anything without it. Running each step under an execution of its own would exercise a
+            // hand-off no launched job performs and would fail on the missing manifest rather than on
+            // anything about observation.
+            runStepsSharingOneExecution(1L, BackupTransactionJobConfig.ARCHIVE_STEP_NAME,
+                    BackupTransactionJobConfig.RESET_STEP_NAME);
+
+            assertThat(observedSteps)
+                    .filteredOn(context -> SPRING_BATCH_STEP_OBSERVATION.equals(context.getName()))
+                    .as("one step observation per step; an empty list is exactly what the no-op registry "
+                            + "produces, which is why the assertion is on what was recorded")
+                    .hasSize(2)
+                    .extracting(context -> lowTag(context, SPRING_BATCH_STEP_NAME_TAG))
+                    .as("and each observation names its own step, so one step observed twice would not "
+                            + "pass for two steps observed once")
+                    .containsExactly(BackupTransactionJobConfig.ARCHIVE_STEP_NAME,
+                            BackupTransactionJobConfig.RESET_STEP_NAME);
         }
     }
 
@@ -586,12 +678,12 @@ final class BackupTransactionJobConfigTest {
             // transaction-report job's unload step. The base is the unit retention counts, so two
             // spellings of it would be two retention groups that only looked like one, and two depths
             // would make the retained set depend on which job happened to run last. The report job now
-            // reads its default FROM this constant, so the name cannot drift; the depths are two
-            // independent measurements of the same LIMIT(5) declaration and are asserted to agree.
-            assertThat(TransactionReportJobConfig.TRANSACTION_BACKUP_GENERATION_LIMIT)
-                    .as("both publishers of %s must prune it to the same depth",
+            // reads both the name and the depth from the same authorities this job does - the base name
+            // from this class and the depth from the store - so neither can drift.
+            assertThat(StagedGenerationStore.STANDARD_RETENTION_LIMIT)
+                    .as("both publishers of %s prune it to the store's one standard depth",
                             BackupTransactionJobConfig.ARCHIVE_DATASET_BASE)
-                    .isEqualTo(StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+                    .isEqualTo(5);
         }
 
         @Test
@@ -650,52 +742,98 @@ final class BackupTransactionJobConfigTest {
     // ----------------------------------------------------------------------------------------
 
     @Nested
-    @DisplayName("The clear: idempotent, through the repository, and never a schema change")
+    @DisplayName("The clear: only the archived row set, idempotent, through the repository, and never "
+            + "a schema change")
     final class TheClear {
 
         @Test
-        @DisplayName("clears a populated master and completes")
-        void clearsAPopulatedMaster() throws Exception {
-            when(transactionRepository.count()).thenReturn(300L);
-
-            final StepExecution execution = runStep(BackupTransactionJobConfig.RESET_STEP_NAME);
+        @DisplayName("clears exactly the identifiers the archive captured, and nothing else")
+        void clearsExactlyTheArchivedIdentifiers() throws Exception {
+            final StepExecution execution = runResetForArchivedKeys(1L,
+                    List.of("0000000000000001", "0000000000000002", "0000000000000003"));
 
             assertThat(execution.getExitStatus().getExitCode()).isEqualTo("COMPLETED");
-            verify(transactionRepository, times(1)).deleteAllInBatch();
+            verify(transactionRepository, never()).deleteAllInBatch();
+            verify(transactionRepository, never()).deleteAll();
+            assertThat(deletedIdentifiers())
+                    .containsExactly("0000000000000001", "0000000000000002", "0000000000000003");
         }
 
         @Test
-        @DisplayName("clears an already-empty master without failing, which is what the legacy "
+        @DisplayName("leaves a row committed after the archive was taken in place, because the manifest "
+                + "does not name it")
+        void leavesARowCommittedAfterTheArchiveInPlace() throws Exception {
+            runResetForArchivedKeys(2L, List.of("0000000000000001", "0000000000000002"));
+
+            assertThat(deletedIdentifiers())
+                    .as("the row committed between the two steps is not in the archived set")
+                    .doesNotContain("0000000000000009")
+                    .containsExactly("0000000000000001", "0000000000000002");
+        }
+
+        @Test
+        @DisplayName("clears an archive that named no record without failing, which is what the legacy "
                 + "condition-code resets existed to achieve")
         void clearsAnAlreadyEmptyMasterWithoutFailing() throws Exception {
-            when(transactionRepository.count()).thenReturn(0L);
-
-            final StepExecution execution = runStep(BackupTransactionJobConfig.RESET_STEP_NAME);
+            final StepExecution execution = runResetForArchivedKeys(3L, List.of());
 
             assertThat(execution.getExitStatus().getExitCode()).isEqualTo("COMPLETED");
             assertThat(execution.getFailureExceptions()).isEmpty();
-            verify(transactionRepository, times(1)).deleteAllInBatch();
+            verify(transactionRepository, never()).deleteAllInBatch();
+            assertThat(deletedIdentifiers()).isEmpty();
         }
 
         @Test
-        @DisplayName("is repeatable, so a re-run after a partial failure clears again and still "
-                + "succeeds")
-        void isRepeatable() {
-            when(transactionRepository.count()).thenReturn(0L);
+        @DisplayName("refuses to clear anything when the archive published no manifest, because the "
+                + "safe answer to which rows may be deleted is never all of them")
+        void refusesToClearWithoutAManifest() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> runStep(BackupTransactionJobConfig.RESET_STEP_NAME))
+                    .withMessageContaining("published no")
+                    .withMessageContaining("manifest");
 
+            verify(transactionRepository, never()).deleteAllInBatch();
+            verify(transactionRepository, never()).deleteAllByIdInBatch(any());
+        }
+
+        @Test
+        @DisplayName("refuses to clear anything when the published manifest is no longer present")
+        void refusesToClearWhenTheManifestIsMissing() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> runResetForPublishedManifest(4L,
+                            stagingDirectory.resolve("absent.KEYS"), 3L))
+                    .withMessageContaining("no longer present");
+
+            verify(transactionRepository, never()).deleteAllInBatch();
+            verify(transactionRepository, never()).deleteAllByIdInBatch(any());
+        }
+
+        @Test
+        @DisplayName("is repeatable, so a re-run after a partial failure clears the same named set "
+                + "again and still succeeds")
+        void isRepeatable() {
             assertThatNoException().isThrownBy(() -> {
-                runStepForExecution(BackupTransactionJobConfig.RESET_STEP_NAME, 7L);
-                runStepForExecution(BackupTransactionJobConfig.RESET_STEP_NAME, 8L);
+                runResetForArchivedKeys(7L, List.of("0000000000000001"));
+                runResetForArchivedKeys(8L, List.of("0000000000000001"));
             });
-            verify(transactionRepository, times(2)).deleteAllInBatch();
+            assertThat(deletedIdentifiers())
+                    .containsExactly("0000000000000001", "0000000000000001");
+        }
+
+        @Test
+        @DisplayName("consumes the manifest, so a later run cannot delete a set it did not archive")
+        void consumesTheManifest() throws Exception {
+            final Path manifest = writeManifest(9L, List.of("0000000000000001"));
+
+            runResetForPublishedManifest(9L, manifest, 1L);
+
+            assertThat(manifest).doesNotExist();
         }
 
         @Test
         @DisplayName("writes no object, because archiving is the other step's work")
         void writesNoObject() throws Exception {
-            when(transactionRepository.count()).thenReturn(1L);
-
-            runStep(BackupTransactionJobConfig.RESET_STEP_NAME);
+            runResetForArchivedKeys(10L, List.of("0000000000000001"));
 
             verifyNoMoreInteractions(objectStore);
         }
@@ -759,9 +897,7 @@ final class BackupTransactionJobConfigTest {
         @Test
         @DisplayName("the clear step records a completed timing under its own step tag")
         void theClearStepRecordsACompletedTiming() throws Exception {
-            when(transactionRepository.count()).thenReturn(0L);
-
-            runStep(BackupTransactionJobConfig.RESET_STEP_NAME);
+            runResetForArchivedKeys(11L, List.of());
 
             assertThat(timerCount(BackupTransactionJobConfig.RESET_STEP_NAME, "COMPLETED"))
                     .isEqualTo(1L);
@@ -947,6 +1083,59 @@ final class BackupTransactionJobConfigTest {
     // ----------------------------------------------------------------------------------------
 
     /**
+     * Reads one low-cardinality tag off an observation, or {@code null} when it carries none.
+     *
+     * @param  context the observation context
+     * @param  name    the tag key
+     * @return the tag value, or {@code null}
+     */
+    private static String lowTag(final Observation.Context context, final String name) {
+        for (final KeyValue keyValue : context.getLowCardinalityKeyValues()) {
+            if (name.equals(keyValue.getKey())) {
+                return keyValue.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Runs several steps of the job inside one job execution, in the order given.
+     *
+     * <p>Needed because the two steps of this job are not independent: the archive step publishes the path
+     * of its sealed archived-identifier manifest on the job execution's context and the reset step reads it
+     * from there, refusing to delete a row set it cannot name. A launched job gives them one execution, so
+     * a test that wants the second step to see the first step's hand-off has to give them one too.
+     *
+     * @param  jobExecutionId the execution identifier the archive names its generation with
+     * @param  stepNames      the steps to run, in order
+     * @return the completed step executions, in the same order
+     * @throws Exception if any step raised
+     */
+    private List<StepExecution> runStepsSharingOneExecution(final long jobExecutionId,
+            final String... stepNames) throws Exception {
+        final Job job = this.config.backupTransactionJob();
+        final JobExecution jobExecution = new JobExecution(
+                new JobInstance(jobExecutionId, BackupTransactionJobConfig.JOB_NAME),
+                jobExecutionId, new JobParameters());
+        final List<StepExecution> completed = new ArrayList<>();
+        for (final String stepName : stepNames) {
+            final Step step = ((StepLocator) job).getStep(stepName);
+            final StepExecution stepExecution = jobExecution.createStepExecution(stepName);
+            step.execute(stepExecution);
+            final List<Throwable> failures = new ArrayList<>(stepExecution.getFailureExceptions());
+            if (!failures.isEmpty()) {
+                final Throwable first = failures.get(0);
+                if (first instanceof RuntimeException runtimeFailure) {
+                    throw runtimeFailure;
+                }
+                throw new IllegalStateException("step " + stepName + " failed", first);
+            }
+            completed.add(stepExecution);
+        }
+        return List.copyOf(completed);
+    }
+
+    /**
      * Runs one step of the job for a default execution identifier.
      *
      * @param stepName the step to run
@@ -990,6 +1179,92 @@ final class BackupTransactionJobConfigTest {
             throw runtimeFailure;
         }
         throw new IllegalStateException("step " + stepName + " failed", first);
+    }
+
+    /**
+     * Runs the clear step for an archive that captured a nominated identifier set.
+     *
+     * <p>Writes the manifest the archive step would have sealed and publishes it on the job execution
+     * exactly as that step does, so the clear step is exercised through the same hand-off a launched job
+     * gives it rather than through a back door.
+     *
+     * @param jobExecutionId the execution the manifest belongs to
+     * @param archivedKeys   the identifiers the archive captured, in capture order
+     * @return the completed step execution
+     * @throws Exception if the step raised
+     */
+    private StepExecution runResetForArchivedKeys(final long jobExecutionId,
+            final List<String> archivedKeys) throws Exception {
+        return runResetForPublishedManifest(jobExecutionId, writeManifest(jobExecutionId, archivedKeys),
+                archivedKeys.size());
+    }
+
+    /**
+     * Runs the clear step against an already-published manifest path.
+     *
+     * @param jobExecutionId the execution the manifest belongs to
+     * @param manifest       the path the archive step published, which need not exist
+     * @param archivedKeys   how many identifiers the archive reported capturing
+     * @return the completed step execution
+     * @throws Exception if the step raised
+     */
+    private StepExecution runResetForPublishedManifest(final long jobExecutionId, final Path manifest,
+            final long archivedKeys) throws Exception {
+        final Job job = this.config.backupTransactionJob();
+        final Step step = ((StepLocator) job).getStep(BackupTransactionJobConfig.RESET_STEP_NAME);
+        final JobExecution jobExecution = new JobExecution(
+                new JobInstance(jobExecutionId, BackupTransactionJobConfig.JOB_NAME),
+                jobExecutionId, new JobParameters());
+        jobExecution.getExecutionContext().putString(
+                BackupTransactionJobConfig.ARCHIVED_MANIFEST_CONTEXT_KEY, manifest.toString());
+        jobExecution.getExecutionContext().putLong(
+                BackupTransactionJobConfig.ARCHIVED_RECORD_COUNT_CONTEXT_KEY, archivedKeys);
+        final StepExecution stepExecution =
+                jobExecution.createStepExecution(BackupTransactionJobConfig.RESET_STEP_NAME);
+
+        step.execute(stepExecution);
+
+        final List<Throwable> failures = new ArrayList<>(stepExecution.getFailureExceptions());
+        if (failures.isEmpty()) {
+            return stepExecution;
+        }
+        final Throwable first = failures.get(0);
+        if (first instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        throw new IllegalStateException("the clear step failed", first);
+    }
+
+    /**
+     * Writes an archived-identifier manifest in the shape the archive step seals, one identifier per
+     * line.
+     *
+     * @param jobExecutionId the execution the manifest belongs to
+     * @param archivedKeys   the identifiers to name
+     * @return the manifest path
+     * @throws IOException if it cannot be written
+     */
+    private Path writeManifest(final long jobExecutionId, final List<String> archivedKeys)
+            throws IOException {
+        final Path manifest = this.stagingDirectory.resolve(
+                "AWS.M2.CARDDEMO.TRANSACT.BKUP.KEYS.G" + jobExecutionId);
+        Files.write(manifest, archivedKeys, StandardCharsets.US_ASCII);
+        return manifest;
+    }
+
+    /**
+     * Every identifier the clear step named for removal, in the order the pages named them.
+     *
+     * @return the flattened identifier list, empty when no removal was issued
+     */
+    private List<String> deletedIdentifiers() {
+        final ArgumentCaptor<Iterable<String>> pages = ArgumentCaptor.captor();
+        verify(this.transactionRepository, atLeast(0)).deleteAllByIdInBatch(pages.capture());
+        final List<String> named = new ArrayList<>();
+        for (final Iterable<String> page : pages.getAllValues()) {
+            page.forEach(named::add);
+        }
+        return named;
     }
 
     /** @return the body of the single stored object, as it was drained during the upload */

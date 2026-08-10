@@ -60,6 +60,7 @@ import com.carddemo.domain.enums.UserType;
 import com.carddemo.domain.id.DisclosureGroupId;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
 import com.carddemo.domain.id.TransactionCategoryId;
+import com.carddemo.util.DailyTransactionRecordMapper;
 
 /**
  * Hand-written builders that produce records at the exact verified widths and offsets of the eleven
@@ -2322,6 +2323,30 @@ public final class TestDataFactory {
      */
     public static DailyTransactionBuilder dailyTransaction() {
         return new DailyTransactionBuilder();
+    }
+
+    /**
+     * Gives an in-memory daily-transaction record the provenance a record read from a resource has.
+     *
+     * <p>Production records always carry one: the posting job reads them from a fixed-width resource and
+     * the mapper attaches the exact bytes it sliced, which is what the reject dataset's leading 350-byte
+     * segment is. A record assembled field by field in a test has no such image, and the reject item type
+     * refuses it rather than regenerating one - deliberately, because a regenerated prefix normalises the
+     * uninitialised filler run and the amount's overpunched sign byte.
+     *
+     * <p>This helper supplies an image for a record whose <em>bytes</em> are not the subject of the test:
+     * it renders the record once through the layout's own mapper and attaches the result, so the image
+     * travels from that point on exactly as a resource's would. A test whose subject <em>is</em> the bytes
+     * builds its record from an explicit image instead, with
+     * {@code DailyTransactionRecordMapper.fromRecord}.
+     *
+     * @param  record the record to give provenance to; must not be {@code null}
+     * @return the same record, now carrying its own rendered image
+     */
+    public static DailyTransaction withRecordProvenance(final DailyTransaction record) {
+        Objects.requireNonNull(record, "record must not be null");
+        record.setSourceRecordImage(DailyTransactionRecordMapper.toRecord(record));
+        return record;
     }
 
     /**

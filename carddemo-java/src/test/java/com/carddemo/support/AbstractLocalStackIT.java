@@ -314,10 +314,32 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 public abstract class AbstractLocalStackIT {
 
     /**
-     * The pinned emulator image. Held as a constant so a subclass can assert against it rather than
-     * restating the tag.
+     * The pinned emulator image, named by tag <em>and</em> by content digest.
+     *
+     * <p><strong>Why the digest is part of the reference.</strong> A tag is a mutable pointer. The container
+     * stack definition and the continuous-integration workflow both pin this emulator by digest already, and
+     * this reference did not - so a rebuild of the tag upstream would move the suite onto an emulator the
+     * stack and the pipeline were never verified against, with no diagnostic anywhere. The queue and object
+     * store this tier asserts contracts against are the emulator's behaviour, so the emulator's identity is
+     * part of the contract.
+     *
+     * <p>The tag is kept alongside the digest rather than replaced by it, so a reader can see which release
+     * the digest denotes.
+     *
+     * <p>Held as a constant so a subclass can assert against it rather than restating the reference.
      */
-    protected static final String LOCALSTACK_IMAGE = "localstack/localstack:4.14.0";
+    protected static final String LOCALSTACK_IMAGE = "localstack/localstack:4.14.0@sha256:"
+            + "3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a";
+
+    /**
+     * The repository the pinned reference denotes, named for the container library's compatibility check.
+     *
+     * <p>The declaration is required by the digest and not by the image: the library recognises a bare
+     * {@code localstack/localstack:<tag>} reference on its own, and treats the same reference carrying a
+     * digest as an unknown substitute because it compares the whole reference against the name it was
+     * written for. Naming the repository says what the digest denotes and widens nothing.
+     */
+    private static final String LOCALSTACK_REPOSITORY = "localstack/localstack";
 
     /** Suffix the queue service requires on the name of a first-in-first-out queue. */
     protected static final String FIFO_SUFFIX = ".fifo";
@@ -401,9 +423,11 @@ public abstract class AbstractLocalStackIT {
      *
      * <p>Declared as a constant rather than written into the annotation because the annotation is on this
      * class and {@link AbstractPostgresAndLocalStackIT} carries the same bound: one figure, referenced
-     * twice, cannot drift between the two entry points into this emulator.</p>
+     * twice, cannot drift between the two entry points into this emulator. Public rather than protected for
+     * the same reason: the bootstrap tier starts an emulator of its own, so it is not a subclass, and it has
+     * to be able to name this bound instead of inventing a second one.</p>
      */
-    protected static final long EXTERNAL_BOUNDARY_TIMEOUT_SECONDS = 120L;
+    public static final long EXTERNAL_BOUNDARY_TIMEOUT_SECONDS = 120L;
 
     /** Seconds a drain will keep asking before it gives up, as a figure the class documentation cites. */
     private static final long DRAIN_DEADLINE_SECONDS = 30L;
@@ -498,7 +522,8 @@ public abstract class AbstractLocalStackIT {
      */
     private static LocalStackContainer startEmulator() {
         final LocalStackContainer container =
-                new LocalStackContainer(DockerImageName.parse(LOCALSTACK_IMAGE))
+                new LocalStackContainer(DockerImageName.parse(LOCALSTACK_IMAGE)
+                        .asCompatibleSubstituteFor(LOCALSTACK_REPOSITORY))
                         .withServices(LocalStackContainer.Service.S3,
                                 LocalStackContainer.Service.SQS,
                                 LocalStackContainer.Service.SNS);
@@ -518,9 +543,15 @@ public abstract class AbstractLocalStackIT {
      * <p>This is the harness's own posture and says nothing about the shipped publisher, which carries no
      * budget deliberately. See the class documentation.</p>
      *
-     * @return the override configuration to apply to a client this class builds
+     * <p>Public rather than private because one test tier reaches this emulator without extending this
+     * class: the bootstrap tier starts an emulator with the provisioning hook copied into it, so it cannot
+     * be a subclass, and its clients were consequently unbudgeted - a first run against a slow or wedged
+     * emulator hung with no diagnostic. Exposing this factory gives that tier the same budgets rather than a
+     * second set of figures that could drift from these.</p>
+     *
+     * @return the override configuration to apply to a client built against this emulator
      */
-    private static ClientOverrideConfiguration boundedCallConfiguration() {
+    public static ClientOverrideConfiguration boundedCallConfiguration() {
         return ClientOverrideConfiguration.builder()
                 .apiCallTimeout(API_CALL_TIMEOUT)
                 .apiCallAttemptTimeout(API_CALL_ATTEMPT_TIMEOUT)

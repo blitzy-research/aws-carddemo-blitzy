@@ -29,15 +29,11 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.orm.jpa.SharedEntityManagerCreator;
 import org.springframework.stereotype.Repository;
-import org.springframework.transaction.NoTransactionException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 /**
  * The module's write-point primitives: an insert that is an insert, and a flush that happens where the
@@ -93,7 +89,8 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
  * independent unit of work would leave the first one still holding a dirty copy, which it would write
  * again at its own commit - a second update carrying a stale version. Updates therefore stay in the
  * caller's unit of work and flush there, through the repository's own {@code saveAndFlush}, and an arm
- * that must survive a failed update declares the unit unusable through {@link #markRollbackOnly()}.
+ * that must survive a failed update composes its screen and returns, the independent boundary having
+ * already rolled back the failed unit before the arm is entered.
  *
  * <h2>Layering and audit</h2>
  *
@@ -112,8 +109,6 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 @Repository
 public class RecordWriter {
 
-    /** Diagnostics for the one arm that reports rather than raises. */
-    private static final Logger LOG = LoggerFactory.getLogger(RecordWriter.class);
 
     /**
      * The complete ANSI/ISO SQL state that means the write was refused because the key was already
@@ -240,29 +235,6 @@ public class RecordWriter {
     @Transactional(propagation = Propagation.MANDATORY)
     public void flush() {
         this.entityManager.flush();
-    }
-
-    /**
-     * Declares the unit of work in progress unusable, so that no commit is attempted for it.
-     *
-     * <p>Needed on exactly one shape of arm: one where a write has already failed and the legacy program
-     * nevertheless reports on the screen and completes the turn. The legacy can do that because its failed
-     * write left the file untouched and there was no unit of work to reconcile. Here the failed flush has
-     * already invalidated the unit of work, so returning normally would have the boundary attempt a commit
-     * that cannot succeed, and the operator would receive a transaction failure in place of the message
-     * the source specifies. Declaring the rollback makes the boundary roll back silently and deliver the
-     * composed screen - the same observable outcome as the legacy, by the only route that reaches it.
-     *
-     * <p>Guarded, because a caller may exercise such an arm with no unit of work at all - a unit test does
-     * exactly that - and the absence of one is not a fault in this method.
-     */
-    public void markRollbackOnly() {
-        try {
-            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
-        } catch (final NoTransactionException notTransactional) {
-            LOG.debug("no unit of work is in progress, so the rollback is recorded without being"
-                    + " issued: type={}", notTransactional.getClass().getSimpleName());
-        }
     }
 
     /**

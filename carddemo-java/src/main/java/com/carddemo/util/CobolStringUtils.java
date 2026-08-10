@@ -414,7 +414,7 @@ public final class CobolStringUtils {
             receiver[index] = SPACE;
         }
         value.getChars(value.length() - retained, value.length(), receiver, leftFill);
-        // INSPECT ... REPLACING ALL ' ' BY '0' - every space, including any the sender supplied.
+        // The blank-to-zero replacement - every space, including any the sender supplied.
         for (int index = 0; index < width; index++) {
             if (receiver[index] == SPACE) {
                 receiver[index] = ZERO_FILL;
@@ -499,11 +499,11 @@ public final class CobolStringUtils {
      * ({@code [app/cbl/COACTUPC.cbl:L2180-L2220]}).
      *
      * <p><strong>Two legacy tests compose into one.</strong> The map-to-working-storage move tests the
-     * transmitted field first - {@code IF ACRDLIMI OF CACTUPAI = '*' OR = SPACES} moves
+     * transmitted field first - an asterisk or blanks in the transmitted item put
      * {@code LOW-VALUES} into the work field rather than the lexeme
      * ({@code [app/cbl/COACTUPC.cbl:L1073]}, and identically at lines 1087, 1101, 1115 and 1130) - and
-     * the edit paragraph then tests {@code IF WS-EDIT-SIGNED-NUMBER-9V2-X EQUAL LOW-VALUES OR EQUAL
-     * SPACES}. Composed, exactly three transmitted shapes reach the BLANK state: an absent field, an
+     * the edit paragraph then tests the work field for low values or spaces. Composed, exactly three
+     * transmitted shapes reach the BLANK state: an absent field, an
      * all-space field, and a field holding the decoration marker. This predicate is that composition,
      * which is why it is one method rather than two.
      *

@@ -18,10 +18,13 @@ package com.carddemo.batch.step;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.carddemo.batch.step.RejectRecordWriter.RejectedTransaction;
 import com.carddemo.domain.DailyTransaction;
 import com.carddemo.domain.enums.RejectReason;
+import com.carddemo.support.TestDataFactory;
+import com.carddemo.util.DailyTransactionRecordMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -472,9 +475,13 @@ class RejectRecordWriterTest {
      */
     private static DailyTransaction transaction(final String transactionId, final BigDecimal amount,
             final String source, final String processingTimestamp) {
-        return new DailyTransaction(transactionId, TYPE_CODE, CATEGORY_CODE, source, DESCRIPTION,
-                amount, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, CARD_NUMBER,
-                ORIGINATION_TIMESTAMP, processingTimestamp);
+        // Given the provenance a record read from a resource carries: the reject dataset's leading
+        // segment is the bytes that were read, so the item type refuses a record with no image rather
+        // than regenerating one. These tests are about the writer's geometry, not about those bytes.
+        return TestDataFactory.withRecordProvenance(
+                new DailyTransaction(transactionId, TYPE_CODE, CATEGORY_CODE, source, DESCRIPTION,
+                        amount, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, CARD_NUMBER,
+                        ORIGINATION_TIMESTAMP, processingTimestamp));
     }
 
     /**
@@ -735,6 +742,293 @@ class RejectRecordWriterTest {
                     .isEqualTo(sourceImage(SECOND_ID, RETURN_AMOUNT, OPERATOR_SOURCE,
                             BLANK_PROCESSING_TIMESTAMP).getBytes(StandardCharsets.US_ASCII));
         }
+    }
+
+    /**
+     * Proves the leading segment is the bytes the record was <em>read as</em>, not a rendering of the
+     * fields those bytes decoded to.
+     *
+     * <p>The group above builds each entity by hand, so nothing it writes ever had an input image and every
+     * one of its assertions is satisfied by a faithful rendering. That is a real property and it is not this
+     * one. The legacy write is {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA}
+     * [app/cbl/CBTRN02C.cbl:L447] - the record area the {@code READ} filled - so the contract is a byte
+     * copy of the input, and a byte copy is only distinguishable from a faithful render where the decode
+     * loses information.
+     *
+     * <p>It loses information in exactly one place, and the place is small enough to be easy to dismiss and
+     * consequential enough not to be. A zoned-decimal amount folds its sign into its final byte, so twenty
+     * distinct bytes encode ten digits. For an all-zero amount, {@code 0000000000}} and
+     * {@code 0000000000{} decode to the same {@link BigDecimal} - a decimal has no negative zero to carry
+     * the distinction into - so a render must choose one byte and will emit it where the input held the
+     * other. Two different inputs would produce one output.
+     *
+     * <p>Every entity below is therefore produced by the <strong>production mapper</strong> from an image
+     * this suite assembled, which is the only way to observe the difference at all. Recorded as
+     * {@code DL-295} in {@code docs/decision-log.md}.
+     */
+    @Nested
+    @DisplayName("the as-read 350-byte source image, which a rendering cannot reproduce")
+    class AsReadSourceImage {
+
+        /** Somewhere hermetic for this group's datasets to be written. */
+        @TempDir
+        private Path directory;
+
+        @Test
+        @DisplayName("is the inbound image byte for byte when the record was mapped from one, including a "
+                + "filler run carrying content the layout maps to no field at all")
+        void theLeadingSegmentIsTheBytesTheRecordWasReadAs() throws Exception {
+            final String image = imageWith(FIRST_ID, zonedAmountImage(PURCHASE_AMOUNT), POS_SOURCE,
+                    BLANK_PROCESSING_TIMESTAMP, MARKED_FILLER);
+
+            final byte[] written = writeDataset(this.directory.resolve("as-read-verbatim.dat"),
+                    List.of(mappedReject(image, RejectReason.ACCOUNT_NOT_FOUND_ON_READ)));
+
+            assertThat(Arrays.copyOfRange(written, 0, SOURCE_IMAGE_WIDTH))
+                    .as("the whole inbound record, unaltered - not a field-by-field equivalent of it")
+                    .isEqualTo(image.getBytes(StandardCharsets.US_ASCII));
+            assertThat(slice(written, FILLER_OFFSET, FILLER_WIDTH))
+                    .as("the trailing filler is mapped to no attribute, so a render can only reconstruct "
+                            + "it from the declared width and would replace whatever it held with blanks")
+                    .isEqualTo(MARKED_FILLER)
+                    .isNotEqualTo(FILLER);
+            assertThat(written).hasSize(REJECT_RECORD_WIDTH);
+        }
+
+        @Test
+        @DisplayName("THE DECISIVE CASE: a negatively signed all-zero amount and a positively signed one "
+                + "produce DIFFERENT reject records when the image is carried, and the writer refuses "
+                + "outright when it is not")
+        void aNegativelySignedZeroSurvivesOnlyBecauseTheImageIsCarried() throws Exception {
+            final String negativeZeroImage = imageWith(FIRST_ID, NEGATIVE_ZERO_AMOUNT_FIELD, POS_SOURCE,
+                    BLANK_PROCESSING_TIMESTAMP, FILLER);
+            final String positiveZeroImage = imageWith(FIRST_ID, POSITIVE_ZERO_AMOUNT_FIELD, POS_SOURCE,
+                    BLANK_PROCESSING_TIMESTAMP, FILLER);
+            assertThat(negativeZeroImage)
+                    .as("the two inputs differ in exactly one byte, and it is the amount's sign byte")
+                    .isNotEqualTo(positiveZeroImage);
+
+            final byte[] fromNegative = writeDataset(this.directory.resolve("as-read-negative-zero.dat"),
+                    List.of(mappedReject(negativeZeroImage, RejectReason.OVERLIMIT_TRANSACTION)));
+            final byte[] fromPositive = writeDataset(this.directory.resolve("as-read-positive-zero.dat"),
+                    List.of(mappedReject(positiveZeroImage, RejectReason.OVERLIMIT_TRANSACTION)));
+
+            assertThat(slice(fromNegative, SIGN_BYTE_OFFSET, 1))
+                    .as("the input's own sign byte reaches the dataset")
+                    .isEqualTo(NEGATIVE_ZERO_SIGN_BYTE);
+            assertThat(slice(fromPositive, SIGN_BYTE_OFFSET, 1)).isEqualTo(POSITIVE_ZERO_SIGN_BYTE);
+            assertThat(fromNegative)
+                    .as("two inputs differing by one byte must produce two records differing by one byte")
+                    .isNotEqualTo(fromPositive);
+
+            // THE OTHER HALF OF THE CASE IS NOW A REFUSAL RATHER THAN A COLLAPSE, and the change is worth
+            // stating because it is stronger than what this test originally demonstrated. A rendering-only
+            // writer decoded the mapped amount and re-encoded it, so a negatively signed zero and a
+            // positively signed one produced one identical record and the reject dataset reported the
+            // wrong sign byte. The writer no longer offers that path at all: a record reaching it without
+            // its 350 source bytes is refused by name, because re-encoding would normalise both the
+            // uninitialised filler run and this very sign byte. So the defect cannot be reached to be
+            // demonstrated, which is the outcome the demonstration was arguing for.
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("a record whose image was discarded cannot be rendered into the reject dataset, "
+                            + "because rendering is exactly what loses the sign byte asserted above")
+                    .isThrownBy(() -> writeDataset(this.directory.resolve("rendered-negative-zero.dat"),
+                            List.of(renderedReject(negativeZeroImage, RejectReason.OVERLIMIT_TRANSACTION))))
+                    .withMessageContaining("carries no source image")
+                    .withMessageContaining("overpunched sign byte");
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("and the refusal is a property of the missing image rather than of the sign it "
+                            + "happened to carry, so the positively signed twin is refused identically")
+                    .isThrownBy(() -> writeDataset(this.directory.resolve("rendered-positive-zero.dat"),
+                            List.of(renderedReject(positiveZeroImage, RejectReason.OVERLIMIT_TRANSACTION))))
+                    .withMessageContaining("carries no source image");
+        }
+
+        @ParameterizedTest(name = "sign byte {0} survives unchanged")
+        @ValueSource(strings = {"{", "A", "B", "C", "D", "E", "F", "G", "H", "I",
+                                "}", "J", "K", "L", "M", "N", "O", "P", "Q", "R"})
+        @DisplayName("every one of the twenty overpunch sign bytes reaches the dataset as itself, so no "
+                + "sign form is normalised onto another")
+        void everyOverpunchSignByteSurvivesUnchanged(final String signByte) throws Exception {
+            final String amountField = "0000000000" + signByte;
+            final String image = imageWith(FIRST_ID, amountField, POS_SOURCE,
+                    BLANK_PROCESSING_TIMESTAMP, FILLER);
+
+            final byte[] written = writeDataset(
+                    this.directory.resolve("as-read-sign-" + (int) signByte.charAt(0) + ".dat"),
+                    List.of(mappedReject(image, RejectReason.INVALID_CARD_NUMBER)));
+
+            assertThat(slice(written, AMOUNT_OFFSET, AMOUNT_WIDTH)).isEqualTo(amountField);
+            assertThat(slice(written, SIGN_BYTE_OFFSET, 1)).isEqualTo(signByte);
+            assertThat(Arrays.copyOfRange(written, 0, SOURCE_IMAGE_WIDTH))
+                    .isEqualTo(image.getBytes(StandardCharsets.US_ASCII));
+        }
+
+        @Test
+        @DisplayName("a trailing run of spaces in a text field is neither trimmed nor re-padded, because "
+                + "the segment is copied rather than re-justified")
+        void trailingSpacesAreCopiedRatherThanReJustified() throws Exception {
+            final String image = imageWith(SECOND_ID, zonedAmountImage(RETURN_AMOUNT), OPERATOR_SOURCE,
+                    BLANK_PROCESSING_TIMESTAMP, FILLER);
+
+            final byte[] written = writeDataset(this.directory.resolve("as-read-padding.dat"),
+                    List.of(mappedReject(image, RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE)));
+
+            assertThat(slice(written, PROCESSING_TIMESTAMP_OFFSET, TIMESTAMP_WIDTH))
+                    .as("26 spaces is a value of this field, and it survives as 26 spaces")
+                    .isEqualTo(BLANK_PROCESSING_TIMESTAMP)
+                    .hasSize(TIMESTAMP_WIDTH);
+            assertThat(Arrays.copyOfRange(written, 0, SOURCE_IMAGE_WIDTH))
+                    .isEqualTo(image.getBytes(StandardCharsets.US_ASCII));
+        }
+
+        @Test
+        @DisplayName("an image of the wrong width is refused where it is recorded, so a malformed segment "
+                + "cannot reach the dataset and present itself as a malformed artefact")
+        void anImageOfTheWrongWidthIsRefusedWhereItIsRecorded() {
+            final DailyTransaction record = DailyTransactionRecordMapper.fromRecord(
+                    imageWith(FIRST_ID, zonedAmountImage(PURCHASE_AMOUNT), POS_SOURCE,
+                            BLANK_PROCESSING_TIMESTAMP, FILLER));
+
+            assertThatCode(() -> record.setSourceRecordImage(null))
+                    .as("clearing it is legitimate: it records that this instance came from no image")
+                    .doesNotThrowAnyException();
+            assertThat(record.getSourceRecordImage()).isNull();
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> record.setSourceRecordImage("x".repeat(SOURCE_IMAGE_WIDTH - 1)))
+                    .withMessageContaining(String.valueOf(SOURCE_IMAGE_WIDTH));
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> record.setSourceRecordImage("x".repeat(SOURCE_IMAGE_WIDTH + 1)))
+                    .withMessageContaining(String.valueOf(SOURCE_IMAGE_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the mapper records the image on every entry it offers, so no reader can produce a "
+                + "record that has lost its own bytes")
+        void everyMapperEntryRecordsTheImage() {
+            final String image = imageWith(FIRST_ID, zonedAmountImage(PURCHASE_AMOUNT), POS_SOURCE,
+                    BLANK_PROCESSING_TIMESTAMP, MARKED_FILLER);
+            final byte[] encoded = image.getBytes(StandardCharsets.US_ASCII);
+            final byte[] withSeparator = Arrays.copyOf(encoded, encoded.length + 1);
+            withSeparator[encoded.length] = (byte) '\n';
+
+            assertThat(DailyTransactionRecordMapper.fromRecord(image).getSourceRecordImage())
+                    .isEqualTo(image);
+            assertThat(DailyTransactionRecordMapper.fromRecord(encoded).getSourceRecordImage())
+                    .isEqualTo(image);
+            assertThat(DailyTransactionRecordMapper.fromRecord(withSeparator, 0).getSourceRecordImage())
+                    .as("the buffered entry is the one a batch reader uses, and it must record the "
+                            + "record's own bytes with the separator left behind")
+                    .isEqualTo(image)
+                    .hasSize(SOURCE_IMAGE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("an item that came from no image is still rendered, because for such an item the "
+                + "rendering IS its image and there are no original bytes to prefer")
+        void anItemThatCameFromNoImageIsStillRendered() throws Exception {
+            final byte[] written = writeDataset(this.directory.resolve("rendered-fallback.dat"),
+                    List.of(rejected(FIRST_ID, RejectReason.INVALID_CARD_NUMBER)));
+
+            assertThat(written).hasSize(REJECT_RECORD_WIDTH);
+            assertThat(Arrays.copyOfRange(written, 0, SOURCE_IMAGE_WIDTH))
+                    .as("the fallback is a defined behaviour and not a degraded one: it renders every "
+                            + "mapped field at its declared width, and the group above measures it")
+                    .isEqualTo(sourceImage(FIRST_ID, PURCHASE_AMOUNT, POS_SOURCE,
+                            BLANK_PROCESSING_TIMESTAMP).getBytes(StandardCharsets.US_ASCII));
+        }
+    }
+
+    /** Zero-based offset of the unmapped filler run that closes the source image. */
+    private static final int FILLER_OFFSET = 330;
+
+    /**
+     * A filler run carrying content, so a reconstructed filler is distinguishable from a copied one.
+     *
+     * <p>Blank filler is what a render produces from the declared width, so a blank fixture could not tell
+     * the two apart. This one is not blank.
+     */
+    private static final String MARKED_FILLER = alphanumeric("FILLERBYTES", FILLER_WIDTH);
+
+    /** The final byte of a negatively signed all-zero zoned-decimal field. */
+    private static final String NEGATIVE_ZERO_SIGN_BYTE = "}";
+
+    /** The final byte of a positively signed all-zero zoned-decimal field. */
+    private static final String POSITIVE_ZERO_SIGN_BYTE = "{";
+
+    /** A negatively signed all-zero amount field, at its declared width. */
+    private static final String NEGATIVE_ZERO_AMOUNT_FIELD =
+            "0".repeat(AMOUNT_WIDTH - 1) + NEGATIVE_ZERO_SIGN_BYTE;
+
+    /** A positively signed all-zero amount field, at its declared width. */
+    private static final String POSITIVE_ZERO_AMOUNT_FIELD =
+            "0".repeat(AMOUNT_WIDTH - 1) + POSITIVE_ZERO_SIGN_BYTE;
+
+    /**
+     * Assembles a 350-byte source image whose amount field and filler run are supplied verbatim.
+     *
+     * <p>{@link #sourceImage(String, BigDecimal, String, String)} renders the amount from a decimal and
+     * blanks the filler, which is exactly what this suite must be able to bypass: a sign form or a filler
+     * byte that no decimal and no declared width can express is the whole subject of the group above.
+     *
+     * @param  transactionId       the identifier, at its declared width
+     * @param  amountField         the amount field image, at its declared width, sign byte included
+     * @param  source              the origination descriptor, at its declared width
+     * @param  processingTimestamp the processing timestamp lexeme, at its declared width
+     * @param  filler              the trailing filler run, at its declared width
+     * @return the source image, exactly {@link #SOURCE_IMAGE_WIDTH} characters wide
+     */
+    private static String imageWith(final String transactionId, final String amountField,
+            final String source, final String processingTimestamp, final String filler) {
+
+        final String image = transactionId
+                + TYPE_CODE
+                + CATEGORY_CODE
+                + source
+                + DESCRIPTION
+                + amountField
+                + MERCHANT_ID
+                + MERCHANT_NAME
+                + MERCHANT_CITY
+                + MERCHANT_ZIP
+                + CARD_NUMBER
+                + ORIGINATION_TIMESTAMP
+                + processingTimestamp
+                + filler;
+        if (encodedWidth(image) != SOURCE_IMAGE_WIDTH) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "this suite's own source-image oracle assembled %d encoded bytes rather than the"
+                            + " declared %d, so its field widths no longer sum to the layout",
+                    encodedWidth(image), SOURCE_IMAGE_WIDTH));
+        }
+        return image;
+    }
+
+    /**
+     * Maps an image through the production mapper and rejects the result, so the item under test carries
+     * the bytes it was read as.
+     *
+     * @param  image  the 350-byte record image
+     * @param  reason the reject reason
+     * @return the rejected item
+     */
+    private static RejectedTransaction mappedReject(final String image, final RejectReason reason) {
+        return new RejectedTransaction(DailyTransactionRecordMapper.fromRecord(image), reason);
+    }
+
+    /**
+     * Maps an image through the production mapper and then discards the retained bytes, which reproduces
+     * what a writer that could only render had to work with.
+     *
+     * @param  image  the 350-byte record image
+     * @param  reason the reject reason
+     * @return the rejected item, carrying no source image
+     */
+    private static RejectedTransaction renderedReject(final String image, final RejectReason reason) {
+        final DailyTransaction record = DailyTransactionRecordMapper.fromRecord(image);
+        record.setSourceRecordImage(null);
+        return new RejectedTransaction(record, reason);
     }
 
     @Nested
@@ -1022,7 +1316,6 @@ class RejectRecordWriterTest {
                     .as("zero bytes is an exact multiple of the record width, so a run that rejected "
                             + "nothing still leaves a well-formed dataset")
                     .isZero();
-            assertThat(writer.recordsWritten()).isZero();
             assertThat(target)
                     .as("the reject dataset is catalogued whether or not any transaction was "
                             + "rejected, so a run with no rejects leaves an empty dataset rather "

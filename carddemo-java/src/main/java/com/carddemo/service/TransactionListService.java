@@ -139,6 +139,16 @@ import org.springframework.stereotype.Service;
  * page is cached; the client echoes the paging state back, exactly as the pseudo-conversational turn
  * carried it in the communication area.
  *
+ * <p><strong>One value the legacy read back from the terminal is not echoed but re-read.</strong> The
+ * selection clauses take the identifier the map is displaying on the marked row, and that identifier
+ * returns from the device on a real 3270. Accepting it from a request body would make the identity of
+ * the selected transaction something the submitter states rather than something this service
+ * established, so the marked row's identifier is re-read from the page the echoed cursor names, on the
+ * one kind of turn that marks a row. Everything else about the browse - which key to resume from, which
+ * direction, the page counter, the next-page indicator - remains echoed state, because each of those is
+ * a value the legacy held in its own commarea and none of them can name a record the browse does not
+ * find for itself. Decision log entry DL-299 records the divergence.
+ *
  * <p>The turn is deliberately non-transactional. A repository browse that fails completes its own
  * transaction before this service maps the failure, so no rollback-only marker can replace the
  * source screen outcome when this method returns.
@@ -264,6 +274,17 @@ public final class TransactionListService {
 
     /** Blank message, the value the member moves into its message field at line 102. */
     private static final String BLANK = "";
+
+    /**
+     * Label the re-read of a displayed row reports under when it fails.
+     *
+     * <p>Deliberately not one of the four legacy browse command names. That read has no counterpart in
+     * the source - the source read the map - so naming it after a legacy command would attribute a
+     * failure to a statement the member does not execute. It shares the failure arm because the arm's
+     * outcome, an error flag and the unable-to-look-up message, is the one composition the legacy screen
+     * has for a read it could not complete.
+     */
+    private static final String RESELECT_READ_COMMAND = "REREAD-DISPLAYED-PAGE";
 
     /**
      * Fixed stand-in the diagnostic renderings of this class's three carried shapes emit in place of a
@@ -416,7 +437,7 @@ public final class TransactionListService {
         state.focusScreenFieldId = FOCUS_SCREEN_FIELD_ID;
         state.transactionIdFilterEcho = nullToBlank(command.transactionIdFilter());
 
-        // Line 107: IF EIBCALEN = 0 - the turn carries no prior navigation state at all.
+        // Line 107 tests the commarea length for zero - the turn carries no prior navigation state at all.
         if (isNavigationStateAbsent(command.navigationContext())) {
             state.context = ScreenNavigationState.empty();
             LOG.debug("Transaction list entered with no navigation state:"
@@ -522,11 +543,21 @@ public final class TransactionListService {
             final String selector = elementAt(state.receivedSelectors, row);
             if (isPresent(selector)) {
                 state.selectionFlag = selector;
-                state.selectedTransactionId =
-                        nullToBlank(elementAt(state.receivedTransactionIds, row));
                 selectedRow = row;
                 break;
             }
+        }
+        if (selectedRow > 0) {
+            // Lines 151-178 pair the marked selector with the identifier the map echoed beside it. The
+            // identifier is re-read from the page the browse cursor names instead - see the method note.
+            final String reReadIdentifier = reReadDisplayedIdentifier(state, command, selectedRow);
+            if (reReadIdentifier == null) {
+                // The re-read failed. Its arm has already raised the error flag, emitted the
+                // unable-to-look-up message and sent the screen, so the turn is complete: continuing
+                // would open a browse the guard below would never close.
+                return;
+            }
+            state.selectedTransactionId = reReadIdentifier;
         }
 
         // Lines 183-204.
@@ -591,6 +622,92 @@ public final class TransactionListService {
         if (!state.errorFlag) {
             state.transactionIdFilterEcho = BLANK;
         }
+    }
+
+    /**
+     * Re-reads the identifier the marked row is displaying, from the page the submitted browse cursor
+     * names, rather than believing an identifier the submission echoed.
+     *
+     * <p><strong>What this replaces, and why it is not the same shape as the source.</strong> Each of the
+     * ten selection clauses at lines 150 to 178 does two moves: the row's selector into the selection
+     * flag, and the identifier the map is displaying <em>on that same row</em> into the selected-record
+     * field. The second move reads the map, and the map on a returning turn is what the terminal
+     * transmitted back. On the mainframe that is a device the region itself painted a moment earlier over
+     * a private connection, so the value it returns is the value the program sent. Over HTTP the
+     * submission is composed by the caller, so the equivalent move would let a submission mark row three
+     * and name any sixteen-character identifier as the one supposedly shown there - and the hand-off at
+     * lines 186 to 195 would carry that identifier to the transaction-view screen as though the operator
+     * had chosen it. The identifier is therefore established from the browse rather than from the
+     * submission. Decision log entry DL-299 records the divergence; it is a labelled improvement on the
+     * legacy trust posture, in the same family as hashing a credential the legacy compared in the clear,
+     * and it changes no outcome for a submission that echoes what it was sent.
+     *
+     * <p><strong>Which read reproduces which page, and why the direction decides it.</strong> The
+     * population paragraph writes the page's first boundary key only from slot one, lines 392-393, and
+     * its last only from slot ten, lines 438-439. A page assembled by the forward paragraph fills slot
+     * one upward, so its first key is genuinely the identifier of its top row, and reading <em>ascending
+     * from that key inclusive</em> for one screen's worth of rows returns the same rows in the same slot
+     * order. A page assembled by the backward paragraph fills slot ten downward from line 349, so its
+     * last key is the identifier of its bottom row, and reading <em>descending from that key
+     * inclusive</em> returns the same rows in the same slot order - counting slots downward from ten,
+     * exactly as that paragraph does. Taking the ascending reading for a backward page would agree
+     * whenever the page filled completely and disagree whenever it did not: a short backward page is
+     * bottom-aligned, its slot one is never populated, and every identifier would land one or more rows
+     * away from the row the operator marked. The direction the submission carries is the one the previous
+     * response published for the page it produced, which is what makes it the right discriminator here.
+     *
+     * <p>Nothing is compared against a submitted identifier, because none is accepted: there is one
+     * source for the value and it is this read. A row the page did not fill answers blank, which is what
+     * the legacy's own catch-all leaves in the field at lines 180 to 181, and the selection dispatch then
+     * declines to act on it exactly as it declines to act on a blank echo. A cursor the page never
+     * carried answers blank for the same reason.
+     *
+     * <p>One bounded query, one screen's worth of rows, issued only on a turn that actually marked a row.
+     *
+     * @param state     per-call working storage, which receives the failure arm's flag and message
+     * @param command   the submitted turn, whose paging component supplies the cursor and the direction
+     * @param screenRow the one-based slot the marked selector sits on
+     * @return the identifier that row is displaying, blank when that slot carries none, or {@code null}
+     *     when the read itself failed - in which case the failure arm has already been applied
+     */
+    private String reReadDisplayedIdentifier(final BrowseState state,
+            final TransactionListCommand command, final int screenRow) {
+        final boolean filledDownward =
+                command.pageCursor().direction() == BrowseWindow.PagingDirection.BACKWARD;
+        final String boundaryKey = filledDownward
+                ? blankToNull(command.pageCursor().nextCursorKey())
+                : blankToNull(command.pageCursor().previousCursorKey());
+        if (boundaryKey == null) {
+            LOG.debug("Transaction list could not re-read a marked row: rule=row-selection"
+                    + " screenRow={} reason=NO BOUNDARY KEY filledDownward={}",
+                    screenRow, filledDownward);
+            return BLANK;
+        }
+
+        final List<Transaction> displayedPage;
+        try {
+            displayedPage = filledDownward
+                    ? transactionScanRepository.findByTranIdLessThanEqualOrderByTranIdDesc(
+                            boundaryKey, Limit.of(SCREEN_ROW_COUNT))
+                    : transactionScanRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+                            boundaryKey, Limit.of(SCREEN_ROW_COUNT));
+        } catch (final DataAccessException failure) {
+            reportBrowseFailure(state, failure, RESELECT_READ_COMMAND);
+            return null;
+        }
+
+        // A downward-filled page puts its first read in slot ten and each later read one slot higher up;
+        // an upward-filled page puts its first read in slot one.
+        final int readIndex = filledDownward
+                ? SCREEN_ROW_COUNT - screenRow
+                : screenRow - FIRST_SCREEN_ROW;
+        if (readIndex < 0 || readIndex >= displayedPage.size()) {
+            LOG.debug("Transaction list re-read a marked row that the page did not fill:"
+                    + " rule=row-selection screenRow={} rowsOnPage={}", screenRow,
+                    displayedPage.size());
+            return BLANK;
+        }
+        return nullToBlank(displayedPage.get(readIndex).getTranId());
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1047,10 +1164,8 @@ public final class TransactionListService {
         // Lines 556-562.
         state.receivedFilter = nullToBlank(command.transactionIdFilter());
         state.receivedSelectors = command.rowSelectors();
-        state.receivedTransactionIds = command.displayedTransactionIds();
-        LOG.trace("Transaction list received the submitted map: rule=receive-map selectors={}"
-                + " identifiers={}", state.receivedSelectors.size(),
-                state.receivedTransactionIds.size());
+        LOG.trace("Transaction list received the submitted map: rule=receive-map selectors={}",
+                state.receivedSelectors.size());
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1411,7 +1526,6 @@ public final class TransactionListService {
     private static void clearScreenFieldsToLowValues(final BrowseState state) {
         state.receivedFilter = BLANK;
         state.receivedSelectors = List.of();
-        state.receivedTransactionIds = List.of();
         state.transactionIdFilterEcho = BLANK;
         for (int screenRow = FIRST_SCREEN_ROW; screenRow <= SCREEN_ROW_COUNT; screenRow++) {
             state.screenRows[screenRow - 1] = null;
@@ -1701,15 +1815,15 @@ public final class TransactionListService {
      * @param rowSelectors the ten row selector fields, one character each, scanned in ascending row
      *     order at lines 149-178. A shorter list is treated as though the missing rows were blank. Never
      *     {@code null} as constructed
-     * @param displayedTransactionIds the ten displayed transaction identifiers the screen echoes, from
-     *     which the selected one is taken at lines 151-178. Same absence rule; never {@code null} as
-     *     constructed
      * @param pageCursor the two boundary keys the previous response reported. The first key is what a
      *     backward request repositions on, line 239, and the last is what a forward request repositions
-     *     on, line 262. Its direction component is deliberately <strong>not consulted</strong>: the
-     *     legacy records the direction nowhere but the attention key, so the key is authoritative and a
-     *     supplied direction cannot contradict it. An absent value is normalised to one carrying neither
-     *     key
+     *     on, line 262. Its direction component <strong>never decides which way this turn travels</strong>:
+     *     the legacy records that nowhere but the attention key, so the key is authoritative and a
+     *     supplied direction cannot contradict it. The direction is read for one other purpose only -
+     *     it records which way the page being resubmitted was <em>assembled</em>, which is what says
+     *     whether that page filled its slots upward from the first or downward from the tenth, and
+     *     therefore which of the two keys names a row the page actually holds. An absent value is
+     *     normalised to one carrying neither key
      * @param nextPageAvailable whether the previous turn found a page beyond the one it displayed - the
      *     screen's next-page flag. It is the guard the eighth program function key tests at line 267 and
      *     the condition the backward paragraph consults at line 361, and it can only be carried forward
@@ -1723,7 +1837,6 @@ public final class TransactionListService {
             ScreenNavigationState navigationContext,
             String transactionIdFilter,
             List<String> rowSelectors,
-            List<String> displayedTransactionIds,
             BrowseWindow.CursorRequest pageCursor,
             boolean nextPageAvailable,
             int currentPageNumber) {
@@ -1747,7 +1860,6 @@ public final class TransactionListService {
             navigationContext = (navigationContext == null)
                     ? ScreenNavigationState.empty() : navigationContext;
             rowSelectors = immutableCopy(rowSelectors);
-            displayedTransactionIds = immutableCopy(displayedTransactionIds);
             pageCursor = (pageCursor == null)
                     ? new BrowseWindow.CursorRequest(null, null, null) : pageCursor;
         }
@@ -1755,11 +1867,11 @@ public final class TransactionListService {
         /**
          * Renders the command with every record key withheld.
          *
-         * <p>The filter, the echoed identifiers and both boundary cursors are all transaction keys, and a
-         * transaction key names the transaction it belongs to. Stringifying this object into a log line,
-         * an exception message or a test-failure report would put them into channels with none of the
-         * protections a response body has. The attention key, the counts and the paging flags are not
-         * sensitive and are rendered as they stand.
+         * <p>The filter and both boundary cursors are all transaction keys, and a transaction key names
+         * the transaction it belongs to. Stringifying this object into a log line, an exception message or
+         * a test-failure report would put them into channels with none of the protections a response body
+         * has. The attention key, the selectors and the paging flags are not sensitive and are rendered as
+         * they stand: a selector is a keystroke against a screen position and names no record.
          *
          * <p>Only the rendering changes: every accessor, the equality contract and the hash contract
          * continue to carry the withheld values in full.
@@ -1773,7 +1885,6 @@ public final class TransactionListService {
                     + ", navigationContext=" + navigationContext
                     + ", transactionIdFilter=" + REDACTION_PLACEHOLDER
                     + ", rowSelectors=" + rowSelectors
-                    + ", displayedTransactionIds=" + REDACTION_PLACEHOLDER
                     + ", pageCursor=" + pageCursor
                     + ", nextPageAvailable=" + nextPageAvailable
                     + ", currentPageNumber=" + currentPageNumber
@@ -2084,9 +2195,6 @@ public final class TransactionListService {
 
         /** The row selectors as received, empty when the map was not received. */
         private List<String> receivedSelectors = List.of();
-
-        /** The echoed row identifiers as received, empty when the map was not received. */
-        private List<String> receivedTransactionIds = List.of();
     }
 
     /**

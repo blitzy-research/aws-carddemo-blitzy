@@ -35,13 +35,16 @@ import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -172,12 +175,27 @@ class GrafanaDashboardMetricsContractTest {
                 .doesNotContain("GATE 3 PEAK MEMORY")
                 .doesNotContain("GATE 3 PEAK MEMORY is read from this row");
 
-        for (final int visualizationOnly : new int[] {11, 12, 17}) {
+        // Panel 9 joins the three. Its title claimed to CORROBORATE the Gate 3 elapsed figure while the
+        // guidance panel correctly stated that no panel here is the run-scoped figure, so the dashboard
+        // contradicted itself about one number and a reader following either statement was misinformed by
+        // the other. It reads a real per-execution timer, which is why the claim was tempting, but it reads
+        // it over the DISPLAY WINDOW while the quoted figure comes from the measured run. See
+        // docs/decision-log.md entry DL-313.
+        for (final int visualizationOnly : new int[] {9, 11, 12, 17}) {
             assertThat(panel(visualizationOnly).path("title").asText())
                     .as("panel %d shows a figure adjacent to a Gate 3 figure and must say which it is",
                             visualizationOnly)
                     .contains("visualization");
         }
+        assertThat(panel(9).path("title").asText())
+                .as("the corrected title must also say WHICH figure it is not, or 'visualization' leaves a "
+                        + "reader to work out what it is a visualization instead of")
+                .contains("not the Gate 3 elapsed figure");
+        assertThat(dashboard.toString())
+                .as("no panel title or description may claim to corroborate a gate figure; corroboration "
+                        + "was the exact word that made a visualization read as evidence")
+                .doesNotContain("corroborates the Gate 3")
+                .doesNotContain("corroborates the gate");
     }
 
     @Test
@@ -341,6 +359,17 @@ class GrafanaDashboardMetricsContractTest {
         Counter.builder("carddemo.batch.fileprobe.records").register(registry).increment();
         Counter.builder("carddemo.batch.reject.records")
                 .baseUnit("records").register(registry).increment();
+        // The boundary counters, added when the boundary row was added. Each is registered here through the
+        // same TYPE the production code uses, because the type is what decides the exposition's suffixes:
+        // a counter publishes _total and a timer publishes _seconds_count, _seconds_sum and _seconds_max,
+        // and a panel querying the wrong suffix renders nothing under every condition.
+        Counter.builder("carddemo.job.completion.shed").register(registry).increment();
+        Counter.builder("carddemo.batch.job.terminal").register(registry).increment();
+        Counter.builder("carddemo.http.request.refused").register(registry).increment();
+        Counter.builder("carddemo.tracing.export").register(registry).increment();
+        Counter.builder("carddemo.management.authentication").register(registry).increment();
+        Counter.builder("carddemo.online.reportrequest.retrytoken.refused")
+                .register(registry).increment();
     }
 
     /**
@@ -362,6 +391,21 @@ class GrafanaDashboardMetricsContractTest {
         // base name exactly as the framework families above are. The suffixes remain the exporter's.
         Timer.builder("jvm.gc.pause").register(registry).record(Duration.ofMillis(1));
         LongTaskTimer.builder("spring.batch.job.active").register(registry).start().stop();
+        // The observation-derived boundary families. Each reaches the registry as a TIMER, because
+        // Micrometer's default observation handler stops an observation into one - which is also why the
+        // panels reading them group by the 'error' label the handler adds rather than by an outcome tag the
+        // observation would have had to declare.
+        Timer.builder("carddemo.job.submission.publish").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.job.completion.publish").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.batch.staging").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.batch.generation").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.batch.job.publication").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.batch.joblaunch.request").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.batch.jobstatus.request").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.online.reportrequest.turn").register(registry).record(Duration.ofMillis(5));
+        // The observation-derived active-job meter, which this module renames off the framework's colliding
+        // name. A long-task timer, exactly as the framework's is.
+        LongTaskTimer.builder("carddemo.batch.job.observed.active").register(registry).start().stop();
     }
 
     /**
@@ -435,5 +479,176 @@ class GrafanaDashboardMetricsContractTest {
             counterNames.add(matcher.group(1));
         }
         return counterNames;
+    }
+    /**
+     * The operational panel inventory, asserted in the direction the contract was missing.
+     *
+     * <h2>Why one direction was not enough</h2>
+     *
+     * <p>Until review this class asserted only that every metric the dashboard QUERIES is a metric the
+     * exporter PUBLISHES. That catches a panel charting a name that does not exist, which is the failure a
+     * reader notices immediately - an empty panel. It cannot catch the opposite and quieter failure: a
+     * meter this module registers, pays for and relies on, that no panel reads. The dashboard charted the
+     * request surface, the batch steps and the runtime, and charted none of the BOUNDARIES - so a failing
+     * queue publish, a shed job-completion notification, a refused management credential, a refused request
+     * body and a lost trace batch were all measured and all invisible here.
+     *
+     * <p>The inventory below is therefore a REQUIREMENT rather than a description. Each entry names a
+     * boundary this module owns, and adding a meter for a new boundary without a panel is intended to fail
+     * this test. It is deliberately not "every meter the module registers": the per-screen turn timers are
+     * seventeen families whose aggregate already appears on the per-endpoint row, and charting each
+     * individually would produce a dashboard nobody reads. What it does cover is every boundary where this
+     * module talks to something outside itself, plus every refusal that happens before a caller is
+     * authenticated.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-313.
+     */
+    @Nested
+    @DisplayName("the required operational panel inventory, asserted in both directions")
+    class TheOperationalPanelInventory {
+
+        /**
+         * Every boundary family a panel must read, as the exposition names it.
+         *
+         * <p>Base names without a suffix: a family is satisfied by any panel reading any of its series, so
+         * a counter charted as a rate and a timer charted as a maximum both count.
+         */
+        private static final List<String> REQUIRED_FAMILIES = List.of(
+                "carddemo_job_submission_publish_seconds",
+                "carddemo_job_completion_publish_seconds",
+                "carddemo_job_completion_shed_total",
+                "carddemo_batch_staging_seconds",
+                "carddemo_batch_generation_seconds",
+                "carddemo_batch_job_publication_seconds",
+                "carddemo_batch_job_terminal_total",
+                "carddemo_batch_joblaunch_request_seconds",
+                "carddemo_batch_jobstatus_request_seconds",
+                "carddemo_online_reportrequest_turn_seconds",
+                "carddemo_online_reportrequest_retrytoken_refused_total",
+                "carddemo_batch_job_observed_active_seconds",
+                "carddemo_http_request_refused_total",
+                "carddemo_management_authentication_total",
+                "carddemo_tracing_export_total");
+
+        @Test
+        @DisplayName("every required boundary family is read by at least one panel, which is the direction "
+                + "the contract used to leave open")
+        void everyRequiredFamilyIsCharted() {
+            final Set<String> queried = queriedMetricNames();
+
+            for (final String family : REQUIRED_FAMILIES) {
+                assertThat(queried)
+                        .as("%s is a boundary this module measures; no panel reads it, so the measurement "
+                                + "exists and nobody can see it", family)
+                        .anySatisfy(name -> assertThat(name).startsWith(family));
+            }
+        }
+
+        @Test
+        @DisplayName("every required family is also a name the exporter publishes, so the inventory cannot "
+                + "be satisfied by charting something that does not exist")
+        void everyRequiredFamilyIsPublished() {
+            final Set<String> published = publishedMetricNames();
+
+            for (final String family : REQUIRED_FAMILIES) {
+                assertThat(published)
+                        .as("the inventory demands a panel for %s, so the exporter must publish it; a "
+                                + "required family that does not exist would make the requirement "
+                                + "unsatisfiable rather than met", family)
+                        .anySatisfy(name -> assertThat(name).startsWith(family));
+            }
+        }
+
+        @Test
+        @DisplayName("each required family is read with an outcome dimension, because a boundary counted "
+                + "without its outcome answers how much happened and not how much worked")
+        void everyRequiredFamilyIsSplitByOutcome() {
+            // The dimension differs by instrument and that difference is the point: an observation-derived
+            // timer carries Micrometer's own 'error' label, a hand-registered timer carries the 'outcome'
+            // tag its call site declared, and a refusal counter carries 'reason'. What is asserted is that
+            // SOME outcome dimension is grouped by, never that every panel uses the same word for it.
+            final Map<String, String> dimensionOf = Map.ofEntries(
+                    Map.entry("carddemo_job_submission_publish_seconds", "error"),
+                    Map.entry("carddemo_job_completion_publish_seconds", "error"),
+                    Map.entry("carddemo_job_completion_shed_total", "reason"),
+                    Map.entry("carddemo_batch_staging_seconds", "error"),
+                    Map.entry("carddemo_batch_generation_seconds", "error"),
+                    Map.entry("carddemo_batch_job_publication_seconds", "error"),
+                    Map.entry("carddemo_batch_job_terminal_total", "publication"),
+                    Map.entry("carddemo_batch_joblaunch_request_seconds", "outcome"),
+                    Map.entry("carddemo_batch_jobstatus_request_seconds", "outcome"),
+                    Map.entry("carddemo_online_reportrequest_turn_seconds", "outcome"),
+                    Map.entry("carddemo_online_reportrequest_retrytoken_refused_total", "reason"),
+                    Map.entry("carddemo_batch_job_observed_active_seconds", "spring_batch_job_status"),
+                    Map.entry("carddemo_http_request_refused_total", "reason"),
+                    Map.entry("carddemo_management_authentication_total", "outcome"),
+                    Map.entry("carddemo_tracing_export_total", "outcome"));
+
+            for (final Map.Entry<String, String> required : dimensionOf.entrySet()) {
+                assertThat(expressionsReading(required.getKey()))
+                        .as("%s must be read somewhere that groups by %s",
+                                required.getKey(), required.getValue())
+                        .anySatisfy(expression -> assertThat(expression)
+                                .contains(required.getValue()));
+            }
+        }
+
+        @Test
+        @DisplayName("every boundary family is charted with a latency or a rate, so a panel says how much "
+                + "as well as whether")
+        void everyRequiredFamilyIsChartedAsARateOrALatency() {
+            for (final String family : REQUIRED_FAMILIES) {
+                assertThat(expressionsReading(family))
+                        .as("%s is charted, but as a bare instantaneous value; a counter total or a timer "
+                                + "sum reads as a monotonic line nobody can act on", family)
+                        .anySatisfy(expression -> assertThat(expression)
+                                .containsAnyOf("rate(", "increase(", "_max", "_sum"));
+            }
+        }
+
+        /**
+         * Every panel expression that reads one metric family.
+         *
+         * @param  family the exposition base name
+         * @return the expressions naming it, which may be empty
+         */
+        private static List<String> expressionsReading(final String family) {
+            final List<String> expressions = new ArrayList<>();
+            for (final JsonNode panel : dashboard.path("panels")) {
+                for (final JsonNode target : panel.path("targets")) {
+                    final String expression = target.path("expr").asText();
+                    if (expression.contains(family)) {
+                        expressions.add(expression);
+                    }
+                }
+            }
+            return expressions;
+        }
+    }
+
+    @Nested
+    @DisplayName("the boundary row's own honesty")
+    class TheBoundaryRowIsHonestAboutItself {
+
+        @Test
+        @DisplayName("the row says its panels are expected to be empty until their path has run, because "
+                + "Micrometer creates a meter on first use")
+        void theRowSaysItsPanelsStartEmpty() {
+            final JsonNode row = panel(34);
+
+            assertThat(row.path("type").asText()).isEqualTo("row");
+            assertThat(row.path("description").asText())
+                    .contains("EXPECTED")
+                    .contains("empty until");
+        }
+
+        @Test
+        @DisplayName("the row explains where the outcome dimension comes from, so a reader is not left to "
+                + "guess why some panels group by an error label and others by an outcome tag")
+        void theRowExplainsTheOutcomeDimension() {
+            assertThat(panel(34).path("description").asText())
+                    .contains("error")
+                    .contains("none");
+        }
     }
 }

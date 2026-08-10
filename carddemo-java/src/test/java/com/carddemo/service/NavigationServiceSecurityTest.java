@@ -96,6 +96,12 @@ class NavigationServiceSecurityTest {
     private ListAppender<ILoggingEvent> recorder;
     private Level originalLevel;
 
+    /** The centralised abend category, which now carries the unresolvable-nomination record. */
+    private Logger abendLogger;
+
+    /** The level that category held before this suite pinned it. */
+    private Level originalAbendLevel;
+
     @BeforeEach
     void attachRecorder() {
         this.navigationService = new NavigationService();
@@ -109,10 +115,21 @@ class NavigationServiceSecurityTest {
         this.recorder.setContext(this.logger.getLoggerContext());
         this.recorder.start();
         this.logger.addAppender(this.recorder);
+        // The abend category is captured by the SAME appender, because the abend record moved there and
+        // the properties this suite asserts are properties of what a reader of the log sees - not of which
+        // class emitted it. The unresolvable-nomination path now records through the centralised online
+        // abend diagnostic, so capturing only this service's own category would leave this suite asserting
+        // that a record it can no longer see is safe. See docs/decision-log.md entry DL-312.
+        this.abendLogger = (Logger) LoggerFactory.getLogger(AbendService.class);
+        this.originalAbendLevel = this.abendLogger.getLevel();
+        this.abendLogger.setLevel(Level.DEBUG);
+        this.abendLogger.addAppender(this.recorder);
     }
 
     @AfterEach
     void detachRecorder() {
+        this.abendLogger.detachAppender(this.recorder);
+        this.abendLogger.setLevel(this.originalAbendLevel);
         this.logger.detachAppender(this.recorder);
         this.recorder.stop();
         this.logger.setLevel(this.originalLevel);

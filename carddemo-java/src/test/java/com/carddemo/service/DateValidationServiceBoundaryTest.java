@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * <h2>What is under test</h2>
  *
  * <p>Two entirely separate legacy constructs meet in this one class. The first is the
- * procedural copybook range {@code EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT}
+ * procedural copybook range EDIT-DATE-CCYYMMDD through EDIT-DATE-CCYYMMDD-EXIT
  * declared across {@code app/cpy/CSUTLDPY.cpy} lines 18 to 329, performed four times from
  * the account-maintenance transaction. The second is the callable subprogram
  * {@code app/cbl/CSUTLDTC.cbl}, invoked from four sites in the report-request and

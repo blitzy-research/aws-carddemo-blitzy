@@ -292,20 +292,44 @@ EXPOSE 8080
 # and it must be bounded independently of whether this deployment's external
 # dependencies happen to be reachable.
 #
-# ---- 1. THE TRANSPORT IS READ, NOT ASSUMED ------------------------------------
-# The previous probe always sent plaintext HTTP. application-prod.yml enables
-# in-JVM transport security on this same port, so under that profile the probe
-# sent a plaintext request to a TLS listener, never received a status line, and
-# reported a perfectly healthy process as unhealthy - which an orchestrator acts
-# on by restarting it, forever. Verified rather than reasoned about: a plaintext
-# /dev/tcp request to a TLS listener returns no `HTTP/1.1 200` line at all.
+# ---- 1. THE TRANSPORT IS OBSERVED, NOT CONFIGURED -----------------------------
+# The first revision of this probe always sent plaintext HTTP. application-prod
+# .yml enables in-JVM transport security on this same port, so under that profile
+# the probe sent a plaintext request to a TLS listener, never received a status
+# line, and reported a perfectly healthy process as unhealthy - which an
+# orchestrator acts on by restarting it, forever. Verified rather than reasoned
+# about: a plaintext /dev/tcp request to a TLS listener returns no
+# `HTTP/1.1 200` line at all.
 #
-# The switch below is SERVER_SSL_ENABLED, and it is deliberately not a private
-# variable of this file. It is the relaxed-binding environment form of
-# `server.ssl.enabled`, which is the exact key the framework itself binds the
-# listener's transport from. So the server and its probe read ONE value and
-# cannot disagree: a deployment that turns transport security on has, by the
-# same act, told the probe to speak it.
+# THE SECOND REVISION FIXED THAT BY READING A VARIABLE, AND THE VARIABLE WAS THE
+# DEFECT. It branched on SERVER_SSL_ENABLED alone, defaulting to plaintext. That
+# reads as safe - the name is the relaxed-binding environment form of
+# `server.ssl.enabled` - but a configuration KEY and an ENVIRONMENT VARIABLE are
+# not the same thing, and the transport is not obliged to arrive through the
+# variable. application-prod.yml sets `server.ssl.enabled: true` as a literal in
+# YAML and sets no variable at all, so a prod container inherited the plaintext
+# default: TLS listener, plaintext probe, unhealthy forever. The same gap opens
+# for any deployment that configures the listener through a properties file, a
+# command-line argument or a configuration server rather than through this one
+# variable, and none of those is a misuse.
+#
+# SO THE PROBE NOW ESTABLISHES THE TRANSPORT BY OBSERVING THE LISTENER. Both
+# attempts are built in, and whichever one the server answers is the answer:
+# the probe passes when EITHER a plaintext or a TLS request returns a 200 status
+# line, and fails only when neither does. There is nothing left to keep in step,
+# because nothing is declared twice - the server states its transport in exactly
+# one place, wherever that deployment chooses, and the probe reads the result.
+#
+# SERVER_SSL_ENABLED IS STILL HONOURED, AS A HINT AND NOT AS A SWITCH. When it
+# is set true the TLS attempt is made first and the plaintext attempt is the
+# fallback; otherwise the order is reversed. A deployment that sets it therefore
+# pays for one connection instead of two, while a deployment that does not set it
+# is still reported correctly. A failed first attempt costs a refused or closed
+# local connection, which is immediate: a TLS listener ends a plaintext request
+# at the handshake, and a plaintext listener ends a TLS handshake the same way.
+# Both branches are exercised against a real listener by
+# config/ContainerHardeningContractTest, which also asserts that the prod profile
+# needs no variable for this probe to succeed.
 #
 # ---- 2. THE MECHANISM IS WHAT THIS IMAGE CONTAINS ----------------------------
 # Verified against the runtime image rather than assumed. It ships neither curl
@@ -349,7 +373,7 @@ EXPOSE 8080
 # the server accepts connections; failures inside it do not count against
 # --retries, while a success inside it marks the container healthy immediately.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=90s --retries=3 \
-  CMD ["/usr/bin/bash", "-c", "port=\"${APP_PORT:-8080}\"; request=$'GET /actuator/health/liveness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n'; case \"${SERVER_SSL_ENABLED:-false}\" in [Tt][Rr][Uu][Ee]) printf '%s' \"${request}\" | openssl s_client -quiet -connect \"127.0.0.1:${port}\" 2>/dev/null | head -n 1 | grep -q '^HTTP/1\\.[01] 200' ;; *) exec 3<>\"/dev/tcp/127.0.0.1/${port}\" && printf '%s' \"${request}\" >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] 200' ;; esac"]
+  CMD ["/usr/bin/bash", "-c", "port=\"${APP_PORT:-8080}\"; request=$'GET /actuator/health/liveness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n'; plaintext() { exec 3<>\"/dev/tcp/127.0.0.1/${port}\" && printf '%s' \"${request}\" >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] 200'; }; tls() { printf '%s' \"${request}\" | openssl s_client -quiet -connect \"127.0.0.1:${port}\" 2>/dev/null | head -n 1 | grep -q '^HTTP/1\\.[01] 200'; }; case \"${SERVER_SSL_ENABLED:-}\" in [Tt][Rr][Uu][Ee]) tls || plaintext ;; *) plaintext || tls ;; esac"]
 
 # Exec form, so the JVM is PID 1 and receives SIGTERM directly. Wrapping this in
 # `sh -c` would put a shell at PID 1 that does not forward signals, and the

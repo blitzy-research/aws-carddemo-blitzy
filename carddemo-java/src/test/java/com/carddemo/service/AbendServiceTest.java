@@ -39,6 +39,7 @@ import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -625,29 +626,38 @@ final class AbendServiceTest {
         }
 
         @Test
-        @DisplayName("the diagnostic precedes the context image, and both precede the abort")
-        void theDiagnosticPrecedesTheContextImageAndBothPrecedeTheAbort() {
-            // Raising the level to debug reveals the second emission, which lets the ordering be
-            // asserted as a sequence of two recorded events rather than as a single one.
+        @DisplayName("the diagnostic is the only record, and it precedes the abort")
+        void theDiagnosticIsTheOnlyRecordAndPrecedesTheAbort() {
+            // THE SECOND EMISSION IS GONE, and its removal is the finding rather than a change of level.
+            // The area's fourth field is a 72-character operator message slot whose content this module
+            // does not author, so a debug switch used to publish an arbitrary caller-facing value into the
+            // log stream, rendered for a 3270 screen. Ordering is still what this test asserts - the record
+            // exists by the time the raise surfaces, which is only possible if it was written first - and
+            // the byte-exact image is still asserted, now on the exception where the legacy area belongs.
+            // See docs/decision-log.md entry DL-312.
             logger.setLevel(Level.DEBUG);
 
-            assertThatThrownBy(() -> abendService.abendOnline(ONLINE_PROGRAM, CANONICAL_REASON,
-                    CANONICAL_MESSAGE))
-                    .isInstanceOf(AbendException.class);
+            final AbendException raised = catchThrowableOfType(AbendException.class,
+                    () -> abendService.abendOnline(ONLINE_PROGRAM, CANONICAL_REASON,
+                            CANONICAL_MESSAGE));
 
             final List<ILoggingEvent> recorded = List.copyOf(recorder.list);
             assertThat(recorded)
-                    .as("the field-by-field diagnostic, then the byte-exact image, then the abort")
-                    .hasSize(2);
+                    .as("one record, written before the raise surfaced, at the most permissive level")
+                    .hasSize(1);
             assertAll(
                     () -> assertThat(recorded.get(0).getLevel()).isEqualTo(Level.ERROR),
                     () -> assertThat(recorded.get(0).getFormattedMessage())
                             .startsWith(ORACLE_ABENDING_PROGRAM),
-                    () -> assertThat(recorded.get(1).getLevel()).isEqualTo(Level.DEBUG),
-                    () -> assertThat(recorded.get(1).getFormattedMessage())
-                            .as("the emitted image is the whole area, padding included")
-                            .contains(CANONICAL_CONTEXT_IMAGE)
-                            .contains(String.valueOf(ORACLE_CONTEXT_WIDTH)));
+                    () -> assertThat(recorded.get(0).getFormattedMessage())
+                            .as("no level of this category renders the area or its message slot")
+                            .doesNotContain(CANONICAL_CONTEXT_IMAGE)
+                            .doesNotContain(CANONICAL_MESSAGE)
+                            .doesNotContain("contextLength="),
+                    () -> assertThat(raised.toFixedWidthContext())
+                            .as("the area is unchanged and is carried by the exception, padding included")
+                            .isEqualTo(CANONICAL_CONTEXT_IMAGE)
+                            .hasSize(ORACLE_CONTEXT_WIDTH));
         }
 
         @Test

@@ -68,7 +68,7 @@ import com.carddemo.util.PfKeyTranslator;
  * <p>{@code COCRDSLC} belongs to the five-member family - account update, account view, card list,
  * card detail and card update - that alone includes the attention-key copybook and alone registers a
  * CICS abend handler. This member arms that handler at lines 250 to 252 and its handler ends in
- * {@code EXEC CICS ABEND ABCODE('9999')} at <strong>line 875</strong>. The path is therefore wired
+ * the terminal abend carrying code 9999 at <strong>line 875</strong>. The path is therefore wired
  * here because the legacy wired it here, and not because an abend is expected. Every occurrence of
  * the {@code CANCEL} token in the estate is the CICS handler-deregistration option, never the COBOL
  * statement, so there is no cancellation behaviour to translate: the Java equivalent of
@@ -809,7 +809,7 @@ public class CardDetailService {
      *                             attention-key condition. The explicit flag rather than an inference
      *                             from the message, because the back-navigation path sets no message at
      *                             all. The two signals are combined here and not earlier: the edit
-     *                             paragraph's unconditional {@code SET INPUT-OK} at line 610 resets the
+     *                             paragraph's unconditional setting of INPUT-OK at line 610 resets the
      *                             legacy flag on every re-submission, and an unrecognised key must
      *                             survive that reset while the legacy flag's own semantics must not
      *                             change
@@ -887,7 +887,7 @@ public class CardDetailService {
          * This member emits no invalid-key text of its own - the canonical arm that does so lives in the
          * estate's other twelve online programs - so raising the legacy input flag here would be a state
          * the legacy never reaches, and it would then be erased anyway: the edit paragraph opens with an
-         * unconditional {@code SET INPUT-OK} at line 610, which resets that flag on every re-submission.
+         * unconditional setting of INPUT-OK at line 610, which resets that flag on every re-submission.
          * Keeping the condition in its own field leaves the legacy flag's semantics exactly as the source
          * defines them, including that reset, while still reporting the unrecognised key to a caller.
          * The two are combined only at the boundary, where the outcome is assembled.
@@ -1025,7 +1025,7 @@ public class CardDetailService {
 
         /**
          * Raises the summary message only if none has been set, which is the
-         * {@code IF WS-RETURN-MSG-OFF} gate the source places on every per-field and not-found
+         * WS-RETURN-MSG-OFF gate the source places on every per-field and not-found
          * assignment. First failure wins for the summary; the field flags are set independently and
          * all of them are set.
          *
@@ -1113,7 +1113,7 @@ public class CardDetailService {
         try {
             mainPara(state, input);
         } catch (final RuntimeException failure) {
-            // EXEC CICS HANDLE ABEND LABEL(ABEND-ROUTINE) at lines 250 to 252 is armed before any
+            // The abend-handler registration naming ABEND-ROUTINE at lines 250 to 252 is armed before any
             // other statement, so it covers everything the turn does. The handler always raises, so
             // nothing below this block runs on this path and no failure is swallowed.
             abendRoutine(state, failure);
@@ -1221,7 +1221,7 @@ public class CardDetailService {
      * does this - only a key the copybook's selection does not recognise at all produces the catalogue's
      * invalid-key text, which is set by the decoding step.
      *
-     * <p><strong>The dispatch is an {@code EVALUATE TRUE} at lines 304 to 381 and its arms are
+     * <p><strong>The dispatch is a multi-way selection at lines 304 to 381 and its arms are
      * independent conditions, so it becomes an if-else cascade rather than a {@code switch}.</strong>
      * Clause order is preserved exactly, because COBOL stops at the first arm whose condition holds:
      * back-navigation, then a hand-off from the card-list screen whose criteria are already validated,
@@ -1236,20 +1236,20 @@ public class CardDetailService {
      * @param input the transmitted screen, the raw attention identifier and the echoed state
      */
     private void mainPara(final TurnState state, final CardDetailScreenInput input) {
-        // MOVE LIT-THISTRANID TO WS-TRANID at line 260, and the two header identifiers the screen
+        // Line 260 carries LIT-THISTRANID into WS-TRANID, and the two header identifiers the screen
         // initialisation moves at lines 434 and 435.
         state.transactionName = boundedField(LIT_THISTRANID, TRANSACTION_NAME_WIDTH);
         state.programName = boundedField(LIT_THISPGM, PROGRAM_NAME_WIDTH);
 
-        // SET WS-RETURN-MSG-OFF TO TRUE at line 264.
+        // Line 264 sets WS-RETURN-MSG-OFF.
         state.returnMessage = NO_MESSAGE;
 
         final ScreenNavigationState inbound = input.navigationContext();
         if (isNavigationStateAbsent(inbound) || arrivedFreshFromMenu(inbound)) {
-            // INITIALIZE CARDDEMO-COMMAREA and WS-THIS-PROGCOMMAREA at lines 271 to 272.
+            // Lines 271 to 272 clear CARDDEMO-COMMAREA and WS-THIS-PROGCOMMAREA.
             state.context = ScreenNavigationState.empty();
         } else {
-            // MOVE DFHCOMMAREA(1:LENGTH OF CARDDEMO-COMMAREA) TO CARDDEMO-COMMAREA at lines 274 to
+            // Lines 274 to 275 copy the passed commarea, for the length CARDDEMO-COMMAREA declares, into
             // 278. The trailing program-private area holds only the originating program and
             // transaction, both of which the echoed state already carries.
             state.context = inbound;
@@ -1263,33 +1263,33 @@ public class CardDetailService {
         state.contextCardNumber = boundedField(state.context.cardNumber(), CARD_NUMBER_WIDTH);
         state.reEnter = state.context.reEntry();
 
-        // PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT at lines 284 to 285.
+        // Lines 284 to 285 run the YYYY-STORE-PFKEY range through YYYY-STORE-PFKEY-EXIT.
         expandStorePfKeyCopybook(state, input.attentionKeyIdentifier());
 
-        // SET PFK-INVALID TO TRUE at line 291.
+        // Line 291 sets PFK-INVALID.
         state.pfKeyState = PfKeyState.INVALID;
-        // IF CCARD-AID-ENTER OR CCARD-AID-PFK03 ... SET PFK-VALID TO TRUE at lines 292 to 295.
+        // Lines 292 to 295 admit only the enter key and PF3, setting PFK-VALID for those two alone.
         if (state.keyAction == KeyAction.ENTER || state.keyAction == KeyAction.PFK03) {
             state.pfKeyState = PfKeyState.VALID;
         }
-        // IF PFK-INVALID ... SET CCARD-AID-ENTER TO TRUE at lines 297 to 299.
+        // Lines 297 to 299 coerce a key that was not admitted to the enter key.
         if (state.pfKeyState.isInvalid()) {
             state.keyAction = KeyAction.ENTER;
         }
 
         if (state.keyAction == KeyAction.PFK03) {
-            // WHEN CCARD-AID-PFK03 at line 305: transfer to the calling screen or the main menu.
+            // The PF3 arm at line 305: transfer to the calling screen or the main menu.
             returnToCallerOrMenu(state);
             return;
         }
         if (state.context.firstEntry() && arrivedFromCardList(state.context)) {
-            // WHEN CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM = LIT-CCLISTPGM at lines 339 to 340. The
+            // The first-entry-from-card-list arm at lines 339 to 340. The
             // selection criteria were validated by the list screen, so no edit runs here.
-            // SET INPUT-OK TO TRUE at line 341.
+            // Line 341 sets INPUT-OK.
             state.inputState = InputState.OK;
             state.accountFilterState = FilterState.VALID;
             state.cardFilterState = FilterState.VALID;
-            // MOVE CDEMO-ACCT-ID TO CC-ACCT-ID-N and CDEMO-CARD-NUM TO CC-CARD-NUM-N, lines 342 to 343.
+            // Lines 342 to 343 carry CDEMO-ACCT-ID into CC-ACCT-ID-N and CDEMO-CARD-NUM into CC-CARD-NUM-N.
             state.workAreaAccountId = boundedField(state.context.accountId(), ACCOUNT_ID_WIDTH);
             state.workAreaCardNumber = boundedField(state.context.cardNumber(), CARD_NUMBER_WIDTH);
             state.contextAccountId = state.workAreaAccountId;
@@ -1300,16 +1300,16 @@ public class CardDetailService {
             return;
         }
         if (state.context.firstEntry()) {
-            // WHEN CDEMO-PGM-ENTER at line 349: any other first entry gathers criteria.
+            // The first-entry arm at line 349: any other first entry gathers criteria.
             sendMap(state);
             commonReturn(state);
             return;
         }
         if (state.context.reEntry()) {
-            // WHEN CDEMO-PGM-REENTER at line 357.
+            // The re-entry arm at line 357.
             processInputs(state, input);
             if (state.inputState.isError()) {
-                // IF INPUT-ERROR at line 360.
+                // The input-error test at line 360.
                 sendMap(state);
                 commonReturn(state);
                 return;
@@ -1329,7 +1329,7 @@ public class CardDetailService {
         state.returnMessage = MSG_UNEXPECTED_DATA_SCENARIO;
         sendPlainText(state);
 
-        // IF INPUT-ERROR at lines 386 to 391.
+        // The input-error test at lines 386 to 391.
         if (state.inputState.isError()) {
             state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
             sendMap(state);
@@ -1375,18 +1375,18 @@ public class CardDetailService {
      *
      * <p>Moves the summary message into the work area's message field at line 395, repacks the
      * communication area at lines 397 to 400, and issues
-     * {@code EXEC CICS RETURN TRANSID(LIT-THISTRANID)} at lines 402 to 406, which re-arms this same
+     * the pseudo-conversational return on this transaction id at lines 402 to 406, which re-arms this same
      * transaction for the operator's next keystroke. Re-arming is what the returned transaction
      * identifier records; it is idempotent, so a path that has already ended the turn is unaffected.
      *
      * @param state the turn's working storage
      */
     private void commonReturn(final TurnState state) {
-        // MOVE WS-RETURN-MSG TO CCARD-ERROR-MSG at line 395. The work-area message field is 75
+        // Line 395 carries WS-RETURN-MSG into CCARD-ERROR-MSG. The work-area message field is 75
         // characters, the same width as the sending field, so nothing is lost.
         state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
 
-        // MOVE CARDDEMO-COMMAREA TO WS-COMMAREA and append WS-THIS-PROGCOMMAREA, lines 397 to 400.
+        // Lines 397 to 400 carry CARDDEMO-COMMAREA into WS-COMMAREA and append WS-THIS-PROGCOMMAREA.
         // The repack carries the selection the two edits stored into CDEMO-ACCT-ID and
         // CDEMO-CARD-NUM at lines 659, 673, 676, 700, 714 and 717. No routing field is written on
         // this path: the source sets those only on the back-navigation arm.
@@ -1401,7 +1401,7 @@ public class CardDetailService {
                 state.context.lastMap(),
                 state.context.lastMapset());
 
-        // EXEC CICS RETURN TRANSID(LIT-THISTRANID) COMMAREA(WS-COMMAREA) at lines 402 to 406: the
+        // Lines 402 to 406 re-arm this transaction and hand back the carried work area: the
         // same transaction is re-armed, so the destination stays this screen.
         state.reArmedTransactionId = LIT_THISTRANID;
         state.route = NavigationService.Route.CARD_DETAIL;
@@ -1435,8 +1435,8 @@ public class CardDetailService {
                 navigationService.resolveBackNavigation(carriedState(state.context),
                         NavigationService.Route.USER_MENU);
 
-        // MOVE LIT-THISTRANID TO CDEMO-FROM-TRANID and LIT-THISPGM TO CDEMO-FROM-PROGRAM, 323 to 324.
-        // SET CDEMO-USRTYP-USER TO TRUE at line 326, then SET CDEMO-PGM-ENTER TO TRUE at line 327.
+        // Lines 323 to 324 carry this transaction id into CDEMO-FROM-TRANID and this program name into CDEMO-FROM-PROGRAM.
+        // Line 326 sets CDEMO-USRTYP-USER, then sets CDEMO-PGM-ENTER at line 327.
         state.context = contextWith(state.context,
                 LIT_THISTRANID,
                 LIT_THISPGM,
@@ -1449,7 +1449,7 @@ public class CardDetailService {
                 boundedField(LIT_THISMAPSET, MAP_NAME_WIDTH))
                 .withFirstEntry();
 
-        // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at lines 331 to 334. Control transfers, so this
+        // Lines 331 to 334 transfer control to the nominated program. Control transfers, so this
         // turn does not re-arm its own transaction and the re-armed identifier stays empty.
         state.route = destination;
         state.reArmedTransactionId = NO_MESSAGE;
@@ -1516,7 +1516,7 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void screenInit(final TurnState state) {
-        // MOVE LOW-VALUES TO CCRDSLAO at line 428: every outbound field starts blank, and the two
+        // Line 428 carries LOW-VALUES into CCRDSLAO: every outbound field starts blank, and the two
         // steps that follow write only what the source writes.
         state.embossedNameField = blankField(EMBOSSED_NAME_WIDTH);
         state.cardStatusField = blankField(CARD_STATUS_WIDTH);
@@ -1525,15 +1525,15 @@ public class CardDetailService {
         state.accountIdField = blankField(ACCOUNT_ID_WIDTH);
         state.cardNumberField = blankField(CARD_NUMBER_WIDTH);
 
-        // MOVE CCDA-TITLE01 and CCDA-TITLE02 at lines 432 to 433, at their contractual widths.
+        // Lines 432 to 433 carry CCDA-TITLE01 and CCDA-TITLE02, at their contractual widths.
         state.title01 = messageCatalogService.screenTitle01();
         state.title02 = messageCatalogService.screenTitle02();
 
-        // MOVE LIT-THISTRANID and LIT-THISPGM at lines 434 to 435.
+        // Lines 434 to 435 carry LIT-THISTRANID and LIT-THISPGM.
         state.transactionName = boundedField(LIT_THISTRANID, TRANSACTION_NAME_WIDTH);
         state.programName = boundedField(LIT_THISPGM, PROGRAM_NAME_WIDTH);
 
-        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 437.
+        // Line 437 carries the current date into WS-CURDATE-DATA.
         final LocalDateTime now = LocalDateTime.now(clock);
         final String fullYear = numericField(now.getYear(), EXPIRY_YEAR_TO - EXPIRY_YEAR_FROM);
 
@@ -1586,49 +1586,49 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void setupScreenVars(final TurnState state) {
-        // IF EIBCALEN = 0 at line 459.
+        // Line 459 tests the commarea length for zero.
         if (isNavigationStateAbsent(state.context)) {
-            // SET WS-PROMPT-FOR-INPUT TO TRUE at line 460.
+            // Line 460 sets WS-PROMPT-FOR-INPUT.
             state.infoMessage = MSG_PROMPT_FOR_INPUT;
         } else {
-            // IF CDEMO-ACCT-ID = 0 at line 462: MOVE LOW-VALUES, else MOVE CC-ACCT-ID.
+            // Line 462 tests the carried account id for zero, blanking the field in that case and carrying CC-ACCT-ID otherwise.
             state.accountIdField = isZeroOrUnsupplied(state.contextAccountId)
                     ? blankField(ACCOUNT_ID_WIDTH)
                     : boundedField(state.workAreaAccountId, ACCOUNT_ID_WIDTH);
 
-            // IF CDEMO-CARD-NUM = 0 at line 468.
+            // Line 468 tests the carried card number for zero.
             state.cardNumberField = isZeroOrUnsupplied(state.contextCardNumber)
                     ? blankField(CARD_NUMBER_WIDTH)
                     : boundedField(state.workAreaCardNumber, CARD_NUMBER_WIDTH);
 
-            // IF FOUND-CARDS-FOR-ACCOUNT at line 474.
+            // Line 474 tests the found-cards-for-account condition.
             if (state.foundCardsForAccount() && state.card != null) {
                 final String expiry =
                         boundedField(state.card.getCardExpirationDate(), EXPIRY_DATE_WIDTH);
-                // MOVE CARD-EMBOSSED-NAME TO CRDNAMEO at lines 475 to 476.
+                // Lines 475 to 476 carry CARD-EMBOSSED-NAME into CRDNAMEO.
                 state.embossedNameField =
                         boundedField(state.card.getCardEmbossedName(), EMBOSSED_NAME_WIDTH);
-                // MOVE CARD-EXPIRY-MONTH TO EXPMONO at line 480, and the year at line 482. The
+                // Line 480 carries CARD-EXPIRY-MONTH into EXPMONO, and the year at line 482. The
                 // legacy field name carries the misspelling CARD-EXPIRAION-DATE; the byte layout is
                 // unchanged and only the Java property is spelled correctly.
                 state.expiryMonthField = fieldSlice(expiry, EXPIRY_MONTH_FROM, EXPIRY_MONTH_TO);
                 state.expiryYearField = fieldSlice(expiry, EXPIRY_YEAR_FROM, EXPIRY_YEAR_TO);
-                // MOVE CARD-ACTIVE-STATUS TO CRDSTCDO at line 484.
+                // Line 484 carries CARD-ACTIVE-STATUS into CRDSTCDO.
                 state.cardStatusField =
                         boundedField(state.card.getCardActiveStatus(), CARD_STATUS_WIDTH);
             }
         }
 
-        // IF WS-NO-INFO-MESSAGE ... SET WS-PROMPT-FOR-INPUT TO TRUE at lines 490 to 492.
+        // Lines 490 to 492 set WS-PROMPT-FOR-INPUT when no information message is already standing.
         if (state.noInfoMessage()) {
             state.infoMessage = MSG_PROMPT_FOR_INPUT;
         }
 
-        // MOVE WS-RETURN-MSG TO ERRMSGO at line 494. The receiving field is eighty characters against
+        // Line 494 carries WS-RETURN-MSG into ERRMSGO. The receiving field is eighty characters against
         // a seventy-five-character sender, so the move pads and never truncates.
         state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
 
-        // MOVE WS-INFO-MSG TO INFOMSGO at line 496.
+        // Line 496 carries WS-INFO-MSG into INFOMSGO.
         state.infoMessageField = boundedField(state.infoMessage, INFO_MESSAGE_WIDTH);
 
         setupScreenVarsExit(state);
@@ -1654,7 +1654,7 @@ public class CardDetailService {
      * 512, because the list screen has already chosen them; otherwise both are unprotected and
      * modified. The same condition removes their highlight at lines 527 to 531.
      *
-     * <p><strong>The cursor decision at lines 515 to 524 is an {@code EVALUATE TRUE} whose arm order is
+     * <p><strong>The cursor decision at lines 515 to 524 is a multi-way selection whose arm order is
      * the contract.</strong> Two arms share a body and are listed first, so a faulted <em>or</em> blank
      * account filter takes the cursor even when the card filter is also at fault; only if neither
      * account arm holds do the two card arms get a chance; and the catch-all returns the cursor to the
@@ -1669,13 +1669,13 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void setupScreenAttrs(final TurnState state) {
-        // IF CDEMO-LAST-MAPSET = LIT-CCLISTMAPSET AND CDEMO-FROM-PROGRAM = LIT-CCLISTPGM, 505 to 512.
+        // Lines 505 to 512 test that the last mapset and the originating program are both the card-list screen's.
         final boolean handedOverByCardList = arrivedFromCardList(state.context)
                 && LIT_CCLISTMAPSET.equals(trimmedProgramName(state.context.lastMapset()));
         state.accountIdProtected = handedOverByCardList;
         state.cardNumberProtected = handedOverByCardList;
 
-        // EVALUATE TRUE at lines 515 to 524. Arm order preserved; the catch-all is the last arm.
+        // Lines 515 to 524 hold a multi-way selection. Arm order preserved; the catch-all is the last arm.
         if (state.accountFilterState.isNotOk() || state.accountFilterState.isBlank()) {
             // MOVE -1 TO ACCTSIDL at line 518.
             state.focusField = FIELD_ACCOUNT_ID;
@@ -1693,29 +1693,29 @@ public class CardDetailService {
             state.cardNumberHighlighted = false;
         }
 
-        // IF FLG-ACCTFILTER-NOT-OK ... MOVE DFHRED at lines 533 to 535.
+        // Lines 533 to 535 recolour the account filter red when its flag is not-OK.
         if (state.accountFilterState.isNotOk()) {
             state.accountIdHighlighted = true;
         }
 
-        // IF FLG-CARDFILTER-NOT-OK ... MOVE DFHRED at lines 537 to 539.
+        // Lines 537 to 539 recolour the card filter red when its flag is not-OK.
         if (state.cardFilterState.isNotOk()) {
             state.cardNumberHighlighted = true;
         }
 
-        // IF FLG-ACCTFILTER-BLANK AND CDEMO-PGM-REENTER at lines 541 to 545.
+        // Lines 541 to 545 mark a blank account filter, and only on re-entry.
         if (state.accountFilterState.isBlank() && state.reEnter) {
             state.accountIdField = boundedField(DECORATION_MARKER, ACCOUNT_ID_WIDTH);
             state.accountIdHighlighted = true;
         }
 
-        // IF FLG-CARDFILTER-BLANK AND CDEMO-PGM-REENTER at lines 547 to 551.
+        // Lines 547 to 551 mark a blank card filter, and only on re-entry.
         if (state.cardFilterState.isBlank() && state.reEnter) {
             state.cardNumberField = boundedField(DECORATION_MARKER, CARD_NUMBER_WIDTH);
             state.cardNumberHighlighted = true;
         }
 
-        // IF WS-NO-INFO-MESSAGE ... DFHBMDAR else DFHNEUTR at lines 553 to 557.
+        // Lines 553 to 557 dim the information field when no message stands, and leave it neutral otherwise.
         state.infoMessageDarkened = state.noInfoMessage();
 
         setupScreenAttrsExit(state);
@@ -1738,7 +1738,7 @@ public class CardDetailService {
      * {@code 1400-SEND-SCREEN} at line 563: transmits the map and raises the re-enter gate.
      *
      * <p>Records the next mapset and map at lines 565 to 566, then
-     * {@code SET CDEMO-PGM-REENTER TO TRUE} at line 567 - which is the single place the gate goes up, so
+     * the setting of CDEMO-PGM-REENTER at line 567 - which is the single place the gate goes up, so
      * every path that presents a screen arms the next turn to be treated as a re-submission. The send
      * itself at lines 569 to 576 has no equivalent beyond marking the turn as having presented, because
      * the outbound map is the returned value.
@@ -1746,12 +1746,12 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void sendScreen(final TurnState state) {
-        // MOVE LIT-THISMAPSET TO CCARD-NEXT-MAPSET and LIT-THISMAP TO CCARD-NEXT-MAP, 565 to 566. The
+        // Lines 565 to 566 carry this mapset and map into CCARD-NEXT-MAPSET and CCARD-NEXT-MAP. The
         // mapset literal is eight characters and the work-area field is seven, so it truncates.
         state.nextMapset = boundedField(LIT_THISMAPSET, MAP_NAME_WIDTH);
         state.nextMap = boundedField(LIT_THISMAP, MAP_NAME_WIDTH);
 
-        // SET CDEMO-PGM-REENTER TO TRUE at line 567.
+        // Line 567 sets CDEMO-PGM-REENTER.
         state.reEnter = true;
         state.context = state.context.withReEntry();
 
@@ -1788,7 +1788,7 @@ public class CardDetailService {
         receiveMap(state, input);
         editMapInputs(state);
 
-        // MOVE WS-RETURN-MSG TO CCARD-ERROR-MSG at line 587, then the three names at lines 588 to 590.
+        // Line 587 carries WS-RETURN-MSG into CCARD-ERROR-MSG, then the three names at lines 588 to 590.
         state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
         state.nextProgram = boundedField(LIT_THISPGM, PROGRAM_NAME_WIDTH);
         state.nextMapset = boundedField(LIT_THISMAPSET, MAP_NAME_WIDTH);
@@ -1811,7 +1811,7 @@ public class CardDetailService {
     // ==============================================================================================
 
     /**
-     * {@code 2100-RECEIVE-MAP} at line 596: {@code EXEC CICS RECEIVE MAP INTO(CCRDSLAI)}.
+     * {@code 2100-RECEIVE-MAP} at line 596: the map receive into the input structure.
      *
      * <p>The receive is what bounds each transmitted value to its declared field width, so that is done
      * here rather than being left to a caller: the account filter is eleven characters and the card
@@ -1863,28 +1863,28 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void editMapInputs(final TurnState state) {
-        // SET INPUT-OK, FLG-CARDFILTER-ISVALID and FLG-ACCTFILTER-ISVALID at lines 610 to 612.
+        // Lines 610 to 612 set INPUT-OK, FLG-CARDFILTER-ISVALID and FLG-ACCTFILTER-ISVALID.
         state.inputState = InputState.OK;
         state.cardFilterState = FilterState.VALID;
         state.accountFilterState = FilterState.VALID;
 
-        // IF ACCTSIDI = '*' OR SPACES ... MOVE LOW-VALUES TO CC-ACCT-ID, lines 615 to 620.
+        // Lines 615 to 620 read an asterisk or blanks in the account field as no filter, and blank CC-ACCT-ID.
         state.workAreaAccountId =
                 CobolStringUtils.isUnsuppliedNumericLexeme(state.receivedAccountId)
                         ? blankField(ACCOUNT_ID_WIDTH)
                         : state.receivedAccountId;
 
-        // IF CARDSIDI = '*' OR SPACES ... MOVE LOW-VALUES TO CC-CARD-NUM, lines 622 to 627.
+        // Lines 622 to 627 read an asterisk or blanks in the card field as no filter, and blank CC-CARD-NUM.
         state.workAreaCardNumber =
                 CobolStringUtils.isUnsuppliedNumericLexeme(state.receivedCardNumber)
                         ? blankField(CARD_NUMBER_WIDTH)
                         : state.receivedCardNumber;
 
-        // PERFORM 2210-EDIT-ACCOUNT at line 630 and 2220-EDIT-CARD at line 633.
+        // Line 630 runs 2210-EDIT-ACCOUNT and line 633 runs 2220-EDIT-CARD.
         editAccount(state);
         editCard(state);
 
-        // IF FLG-ACCTFILTER-BLANK AND FLG-CARDFILTER-BLANK at lines 637 to 640. Ungated by design.
+        // Lines 637 to 640 test both filters for blank together. Ungated by design.
         if (state.accountFilterState.isBlank() && state.cardFilterState.isBlank()) {
             state.returnMessage = MSG_NO_SEARCH_CRITERIA_RECEIVED;
         }
@@ -1910,17 +1910,17 @@ public class CardDetailService {
      * number, or absent.
      *
      * <p>Pessimistic opening at line 648, then two guarded exits and a success arm. The two
-     * {@code GO TO 2210-EDIT-ACCOUNT-EXIT} statements at lines 660 and 674 jump forward to the range's
+     * The jumps to 2210-EDIT-ACCOUNT-EXIT at lines 660 and 674 go forward to the range's
      * end point, so each becomes an early {@code return}; neither of this member's jumps goes backwards,
      * so there is no loop to rebuild.
      *
      * <p><strong>An all-zero field counts as not supplied, not as invalid.</strong> The first test at
-     * lines 651 to 653 reads {@code CC-ACCT-ID = LOW-VALUES OR SPACES OR CC-ACCT-ID-N = ZEROS}, so a
+     * lines 651 to 653 accepts an empty, a blank or an all-zero account filter alike, so a
      * field of eleven zeros takes the blank arm and yields {@code MISSING} rather than
      * {@code INVALID} - which is also why the message speaks of a "non zero" number.
      *
      * <p><strong>The numeric test is the COBOL class condition, not a parse.</strong>
-     * {@code IF CC-ACCT-ID IS NOT NUMERIC} at line 665 is true unless every one of the eleven positions
+     * The class condition on CC-ACCT-ID at line 665 is true unless every one of the eleven positions
      * holds a digit, so a five-digit entry left-justified in the field fails on its trailing spaces -
      * exactly what the message says. Membership is tested against the ASCII digit range explicitly,
      * because the platform's own digit predicate is Unicode-aware and would accept digits the class
@@ -1933,7 +1933,7 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void editAccount(final TurnState state) {
-        // SET FLG-ACCTFILTER-NOT-OK TO TRUE at line 648.
+        // Line 648 sets FLG-ACCTFILTER-NOT-OK.
         state.accountFilterState = FilterState.NOT_OK;
 
         if (isZeroOrUnsupplied(state.workAreaAccountId)) {
@@ -1941,7 +1941,7 @@ public class CardDetailService {
             state.inputState = InputState.ERROR;
             state.accountFilterState = FilterState.BLANK;
             state.raiseMessageIfUnset(MSG_PROMPT_FOR_ACCOUNT);
-            // MOVE ZEROES TO CDEMO-ACCT-ID at line 659.
+            // Line 659 carries ZEROES into CDEMO-ACCT-ID.
             state.contextAccountId = blankField(ACCOUNT_ID_WIDTH);
             state.recordFieldError(PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     state.accountFilterState, MSG_PROMPT_FOR_ACCOUNT);
@@ -1954,7 +1954,7 @@ public class CardDetailService {
             state.inputState = InputState.ERROR;
             state.accountFilterState = FilterState.NOT_OK;
             state.raiseMessageIfUnset(MSG_ACCOUNT_FILTER_NOT_NUMERIC);
-            // MOVE ZERO TO CDEMO-ACCT-ID at line 673.
+            // Line 673 carries ZERO into CDEMO-ACCT-ID.
             state.contextAccountId = blankField(ACCOUNT_ID_WIDTH);
             state.recordFieldError(PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     state.accountFilterState, MSG_ACCOUNT_FILTER_NOT_NUMERIC);
@@ -1962,7 +1962,7 @@ public class CardDetailService {
             return;
         }
 
-        // MOVE CC-ACCT-ID TO CDEMO-ACCT-ID and SET FLG-ACCTFILTER-ISVALID, lines 676 to 677.
+        // Lines 676 to 677 carry CC-ACCT-ID into CDEMO-ACCT-ID and set FLG-ACCTFILTER-ISVALID.
         state.contextAccountId = state.workAreaAccountId;
         state.accountFilterState = FilterState.VALID;
         editAccountExit(state);
@@ -1997,7 +1997,7 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void editCard(final TurnState state) {
-        // SET FLG-CARDFILTER-NOT-OK TO TRUE at line 688.
+        // Line 688 sets FLG-CARDFILTER-NOT-OK.
         state.cardFilterState = FilterState.NOT_OK;
 
         if (isZeroOrUnsupplied(state.workAreaCardNumber)) {
@@ -2005,7 +2005,7 @@ public class CardDetailService {
             state.inputState = InputState.ERROR;
             state.cardFilterState = FilterState.BLANK;
             state.raiseMessageIfUnset(MSG_PROMPT_FOR_CARD);
-            // MOVE ZEROES TO CDEMO-CARD-NUM at line 700.
+            // Line 700 carries ZEROES into CDEMO-CARD-NUM.
             state.contextCardNumber = blankField(CARD_NUMBER_WIDTH);
             state.recordFieldError(PROPERTY_CARD_NUMBER, FIELD_CARD_NUMBER,
                     state.cardFilterState, MSG_PROMPT_FOR_CARD);
@@ -2018,7 +2018,7 @@ public class CardDetailService {
             state.inputState = InputState.ERROR;
             state.cardFilterState = FilterState.NOT_OK;
             state.raiseMessageIfUnset(MSG_CARD_FILTER_NOT_NUMERIC);
-            // MOVE ZERO TO CDEMO-CARD-NUM at line 714.
+            // Line 714 carries ZERO into CDEMO-CARD-NUM.
             state.contextCardNumber = blankField(CARD_NUMBER_WIDTH);
             state.recordFieldError(PROPERTY_CARD_NUMBER, FIELD_CARD_NUMBER,
                     state.cardFilterState, MSG_CARD_FILTER_NOT_NUMERIC);
@@ -2026,7 +2026,7 @@ public class CardDetailService {
             return;
         }
 
-        // MOVE CC-CARD-NUM-N TO CDEMO-CARD-NUM and SET FLG-CARDFILTER-ISVALID, lines 717 to 718.
+        // Lines 717 to 718 carry CC-CARD-NUM-N into CDEMO-CARD-NUM and set FLG-CARDFILTER-ISVALID.
         state.contextCardNumber = state.workAreaCardNumber;
         state.cardFilterState = FilterState.VALID;
         editCardExit(state);
@@ -2097,17 +2097,17 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void getCardByAcctCard(final TurnState state) {
-        // MOVE CC-CARD-NUM TO WS-CARD-RID-CARDNUM at line 740.
+        // Line 740 carries CC-CARD-NUM into WS-CARD-RID-CARDNUM.
         state.cardRecordKey = state.workAreaCardNumber;
         state.errorResource = RESOURCE_CARD_BASE_CLUSTER;
         state.errorOperation = OPERATION_READ;
 
-        // EXEC CICS READ FILE(LIT-CARDFILENAME) at lines 742 to 750. A failure to answer at all is not
+        // Lines 742 to 750 read the card file by key. A failure to answer at all is not
         // one of the three arms below: it transfers to the handler armed at line 250.
         final Optional<Card> found = cardRepository.findById(state.cardRecordKey);
 
         if (found.isEmpty()) {
-            // WHEN DFHRESP(NOTFND) at lines 755 to 761.
+            // The NOTFND-response arm at lines 755 to 761.
             state.rawFileStatus = STATUS_RECORD_NOT_FOUND;
             state.inputState = InputState.ERROR;
             state.accountFilterState = FilterState.NOT_OK;
@@ -2135,7 +2135,7 @@ public class CardDetailService {
             return;
         }
 
-        // WHEN DFHRESP(NORMAL) at lines 753 to 754.
+        // The NORMAL-response arm at lines 753 to 754.
         state.rawFileStatus = STATUS_SUCCESS;
         state.card = candidate;
         state.setFoundCardsForAccount();
@@ -2178,7 +2178,7 @@ public class CardDetailService {
      *
      * <p><strong>This not-found arm is deliberately different from the card-number read's.</strong> At
      * lines 796 to 799 it faults <em>only</em> the account filter and it sets its message
-     * <em>unconditionally</em> - there is no {@code IF WS-RETURN-MSG-OFF} gate here, unlike line 759. Its
+     * <em>unconditionally</em> - there is no WS-RETURN-MSG-OFF gate here, unlike line 759. Its
      * catch-all at lines 800 to 807 likewise raises the account flag ungated, where the card-number
      * read raises it inside the gate. Both asymmetries are reproduced rather than harmonised.
      *
@@ -2191,7 +2191,7 @@ public class CardDetailService {
         state.errorResource = RESOURCE_CARD_ACCOUNT_PATH;
         state.errorOperation = OPERATION_READ;
 
-        // EXEC CICS READ FILE(LIT-CARDFILENAME-ACCT-PATH) RIDFLD(WS-CARD-RID-ACCT-ID), 783 to 791.
+        // Lines 783 to 791 read the card file's account path by the account key.
         // A keyed read of the non-unique path yields the first record in ascending base-key order, which
         // is exactly what the repository's ordered-first finder reads: one row, ordered on the base key,
         // with no row fetched that the read would have discarded.
@@ -2199,7 +2199,7 @@ public class CardDetailService {
                 cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(state.cardAccountKey);
 
         if (found.isEmpty()) {
-            // WHEN DFHRESP(NOTFND) at lines 796 to 799. Ungated message, single field faulted.
+            // The NOTFND-response arm at lines 796 to 799. Ungated message, single field faulted.
             state.rawFileStatus = STATUS_RECORD_NOT_FOUND;
             state.inputState = InputState.ERROR;
             state.accountFilterState = FilterState.NOT_OK;
@@ -2222,7 +2222,7 @@ public class CardDetailService {
             return;
         }
 
-        // WHEN DFHRESP(NORMAL) at lines 794 to 795.
+        // The NORMAL-response arm at lines 794 to 795.
         state.rawFileStatus = STATUS_SUCCESS;
         state.card = candidate;
         state.setFoundCardsForAccount();
@@ -2256,7 +2256,7 @@ public class CardDetailService {
      * @param longText the diagnostic text to transmit
      */
     void sendLongText(final TurnState state, final String longText) {
-        // EXEC CICS SEND TEXT FROM(WS-LONG-MSG) ERASE FREEKB at lines 821 to 826.
+        // Lines 821 to 826 send the long message as text, erasing the screen and freeing the keyboard.
         state.returnMessage = (longText == null) ? NO_MESSAGE : longText;
         state.screenSent = true;
         // EXEC CICS RETURN at lines 828 to 829: no transaction identifier, so nothing is re-armed.
@@ -2289,7 +2289,7 @@ public class CardDetailService {
      * @param state the turn's working storage
      */
     private void sendPlainText(final TurnState state) {
-        // EXEC CICS SEND TEXT FROM(WS-RETURN-MSG) ERASE FREEKB at lines 839 to 844.
+        // Lines 839 to 844 send the summary message as text, erasing the screen and freeing the keyboard.
         state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
         state.screenSent = true;
         // EXEC CICS RETURN at lines 846 to 847.
@@ -2383,7 +2383,7 @@ public class CardDetailService {
 
     /**
      * {@code ABEND-ROUTINE} at line 857: the handler armed at lines 250 to 252, ending in
-     * {@code EXEC CICS ABEND ABCODE('9999')} at <strong>line 875</strong>.
+     * The terminal abend carrying code 9999 at <strong>line 875</strong>.
      *
      * <p><strong>Emit, then raise - in that order, and never the other way round.</strong> The legacy
      * routine transmits its context to the terminal at lines 865 to 869, deregisters the handler at lines
@@ -2404,7 +2404,7 @@ public class CardDetailService {
      * @param failure the failure that transferred control here; carried into the log, not into the text
      */
     private void abendRoutine(final TurnState state, final Throwable failure) {
-        // IF ABEND-MSG EQUAL LOW-VALUES ... at lines 859 to 861.
+        // Lines 859 to 861 test the abend message for emptiness.
         if (state.abendMessage.isEmpty()) {
             state.abendMessage = MSG_UNEXPECTED_ABEND;
         }
@@ -2415,13 +2415,13 @@ public class CardDetailService {
         final String resource =
                 state.errorResource.isEmpty() ? RESOURCE_CARD_BASE_CLUSTER : state.errorResource;
 
-        // EMIT FIRST. MOVE LIT-THISPGM TO ABEND-CULPRIT at line 863, then the terminal send at 865.
+        // EMIT FIRST. Line 863 records this program as the abend culprit, then the terminal send at 865.
         LOG.error("ABENDING TRANSACTION {}: culprit={} fileStatus={} resource={} operation={}"
                                 + " reason={} failureChain={}", LIT_THISTRANID, LIT_THISPGM, rawStatus,
                         resource, OPERATION_READ, state.abendMessage,
                         FailureDiagnostics.failureChainOf(failure));
 
-        // THEN RAISE. EXEC CICS ABEND ABCODE('9999') at lines 875 to 877; the abend service owns the
+        // THEN RAISE. Lines 875 to 877 abend with code 9999; the abend service owns the
         // code and the context layout, so neither is restated here.
         state.abendCode = ABEND_CODE_UNEXPECTED_DATA;
         abendService.abendOnline(LIT_THISPGM, state.abendMessage, state.abendMessage);
@@ -2471,7 +2471,7 @@ public class CardDetailService {
         state.errorResource = resourceName;
         state.responseCode = RESPONSE_RECORD_LENGTH_MISMATCH;
         state.reasonCode = 0;
-        // MOVE WS-FILE-ERROR-MESSAGE TO WS-RETURN-MSG at lines 771 and 807 - ungated, so it overwrites.
+        // Lines 771 and 807 carry WS-FILE-ERROR-MESSAGE into WS-RETURN-MSG - ungated, so it overwrites.
         state.returnMessage = composeFileErrorMessage(state);
         LOG.error("Card read returned an unusable record: fileStatus={} operation={} resource={}",
                 state.rawFileStatus, state.errorOperation, resourceName);

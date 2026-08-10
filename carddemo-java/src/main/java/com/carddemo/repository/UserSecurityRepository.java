@@ -22,8 +22,8 @@ import java.util.Optional;
 import com.carddemo.domain.UserSecurity;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Limit;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
@@ -209,7 +209,7 @@ import org.springframework.data.repository.query.Param;
  *
  * <p>The administrative user list presents a page of 10 rows, proven from the legacy screen table
  * declared as occurring 10 times rather than inferred. The opening page may use
- * {@link #findAllProjectedBy(Pageable)} at page zero; every continuation uses the strict greater-than
+ * {@link #findAllProjectedBy(Pageable)} at window zero; every continuation uses the strict greater-than
  * or less-than projected method and asks for the screen width plus the source's one-record probe.
  * {@link #findProjectedBySecUsrId(String)} supplies the inclusive boundary without hydrating a
  * credential, and {@link #countBySecUsrIdLessThan(String)} reconstructs the private page counter with
@@ -337,6 +337,13 @@ public interface UserSecurityRepository extends Repository<UserSecurity, String>
      * at a time and fills backwards as well as forwards, so imposing either here would break one of the
      * two directions.
      *
+     * <p><strong>&#9733; A slice, and deliberately not a page.</strong> A page carries a total row count,
+     * which the server produces with a second aggregate over the whole table. Nothing reads it: the legacy
+     * screen computes no row number, displays no total and has no field to display one in, and the caller
+     * takes the content and discards the rest. The window itself is what the caller needs and a slice is
+     * exactly that window, so the count is not requested rather than requested and thrown away. Recorded
+     * as {@code DL-296} in {@code docs/decision-log.md}.
+     *
      * <p><strong>This serves the opening page of a browse only.</strong> The legacy screen computes no
      * row number: it retains the first and last identifier it displayed - two eight-character commarea
      * fields - and repositions on one of them, so every page after the first is a keyset read through
@@ -347,10 +354,10 @@ public interface UserSecurityRepository extends Repository<UserSecurity, String>
      * skipped. At page zero there is nothing to discard, which is why the opening page legitimately
      * arrives here.
      *
-     * @param pageable the page, size and sort the caller requires; never {@code null}
-     * @return one page of projections, empty when the page lies beyond the last row
+     * @param pageable the window, size and sort the caller requires; never {@code null}
+     * @return one window of projections, empty when the window lies beyond the last row
      */
-    Page<AdminEntry> findAllProjectedBy(Pageable pageable);
+    Slice<AdminEntry> findAllProjectedBy(Pageable pageable);
 
     /**
      * Reads one sign-on identity as the credential-free list projection.

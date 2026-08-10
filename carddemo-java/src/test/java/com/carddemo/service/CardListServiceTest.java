@@ -358,7 +358,7 @@ final class CardListServiceTest {
     /** {@code FILLER PIC X(12) VALUE 'File Error:'}: eleven characters in a field of twelve. */
     private static final String ORACLE_FILE_ERROR_PREFIX = "File Error: ";
 
-    /** {@code MOVE 'READ' TO ERROR-OPNAME}: the only operation this member ever names. */
+    /** The {@code READ} operation name: the only operation this member ever names. */
     private static final String ORACLE_OPERATION_READ = "READ";
 
     /** The two-character status the unclassified arm maps onto: a permanent error. */
@@ -890,7 +890,7 @@ final class CardListServiceTest {
      * and card-update flows are its genuine consumers.
      */
     private void verifyTheAccountFinderIsNeverReached() {
-        verify(cardRepository, never()).findByCardAcctId(any());
+        verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(any(), any());
         verify(cardRepository, never()).findFirstByCardAcctIdOrderByCardNumAsc(any());
     }
 

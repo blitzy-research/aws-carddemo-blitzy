@@ -21,6 +21,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import java.util.Objects;
 
@@ -126,6 +128,27 @@ import java.util.Objects;
 public class TransactionCategory {
 
     /**
+     * Width of the type-code part of the key: 2, from {@code TRAN-TYPE-CD PIC X(02)} - alphanumeric, so
+     * the width is contractual and the character class is not.
+     *
+     * <p>Named so that the column declaration, the persistence-time rule and the check constraint in
+     * {@code V1__create_schema.sql} read the one figure rather than three copies of it.
+     */
+    static final int TRAN_TYPE_CD_WIDTH = 2;
+
+    /**
+     * Width of the category-code part of the key: 4, from {@code TRAN-CAT-CD PIC 9(04)}.
+     *
+     * <p><strong>Width only, with no digit class, even though the picture clause is numeric.</strong> This
+     * key is looked up with the value a transaction record carries in that field, and the estate's own
+     * sort specifications declare that field zoned decimal - {@code app/jcl/PRTCATBL.jcl} types the
+     * corresponding category code {@code ZD} - so its sign occupies the final byte and a legitimately
+     * signed value ends in a brace or a letter. A digit class would make such a reference row
+     * unmatchable rather than invalid.
+     */
+    static final int TRAN_CAT_CD_WIDTH = 4;
+
+    /**
      * Transaction type code - legacy field {@code TRAN-TYPE-CD}, offset 0, width 2, and the first
      * component of the 6-byte composite key. Mapped to column {@code tran_type_cd}, declared
      * {@code VARCHAR(2) NOT NULL} by the schema migration.
@@ -136,7 +159,7 @@ public class TransactionCategory {
      * startup.
      */
     @Id
-    @Column(name = "tran_type_cd", length = 2, nullable = false)
+    @Column(name = "tran_type_cd", length = TRAN_TYPE_CD_WIDTH, nullable = false)
     private String tranTypeCd;
 
     /**
@@ -149,7 +172,7 @@ public class TransactionCategory {
      * from its two components.
      */
     @Id
-    @Column(name = "tran_cat_cd", length = 4, nullable = false)
+    @Column(name = "tran_cat_cd", length = TRAN_CAT_CD_WIDTH, nullable = false)
     private String tranCatCd;
 
     /**
@@ -278,6 +301,34 @@ public class TransactionCategory {
      */
     public TransactionCategoryId toId() {
         return new TransactionCategoryId(tranTypeCd, tranCatCd);
+    }
+
+    /**
+     * Requires both key components to be exactly the widths their record layout declares, immediately
+     * before the row is inserted or updated.
+     *
+     * <p>This entity's own equality documentation already states that {@code "0005"} is not equal to
+     * {@code "5"}, and that is precisely why the rule exists: the two are different rows claiming the
+     * same four bytes of one 60-byte reference record, and only one of them is reachable by the
+     * type-and-category join the posting and the report both perform. The category code's picture clause
+     * is numeric, and it is still checked for width alone; see {@link #TRAN_CAT_CD_WIDTH} for why a digit
+     * class would make a signed value unmatchable rather than invalid. Recorded as {@code DL-297} in
+     * {@code docs/decision-log.md}.
+     *
+     * <p>Placed on the callback rather than in the constructor for the reason
+     * {@code StoredValueRules} records: the provider hydrates a row by instantiating the entity and
+     * assigning its fields, so a constructor guard would be bypassed on every read, while a callback
+     * sits on the one path every insert and every update must take. {@code V1__create_schema.sql} carries
+     * the same rules a second time, so a bulk load that never constructs an entity is refused as well.
+     *
+     * @throws IllegalArgumentException if either key component is absent or is not exactly the width its
+     *         layout declares
+     */
+    @PrePersist
+    @PreUpdate
+    void validateBeforeWrite() {
+        StoredValueRules.requireFixedWidth(tranTypeCd, TRAN_TYPE_CD_WIDTH, "tranTypeCd");
+        StoredValueRules.requireFixedWidth(tranCatCd, TRAN_CAT_CD_WIDTH, "tranCatCd");
     }
 
     /**

@@ -54,9 +54,19 @@ import java.util.List;
  *
  * <p>Failure to acquire is a failure to publish, deliberately. Publishing without the lock is the defect
  * this interface exists to close, so an implementation that cannot acquire must raise rather than proceed
- * unserialized.
+ * unserialized. Acquisition must also be <strong>bounded</strong>: a publication may wait its turn, but a
+ * holder that has stopped making progress must surface as one failed job rather than as a batch tier that
+ * never finishes.
  *
- * <p>See {@code docs/decision-log.md} entry DL-181.
+ * <p><strong>Failure to release, after {@code publication} has returned normally, is not a failure to
+ * publish.</strong> By that point the publication has passed its own commit point - its objects are
+ * durable, its fixed-name views name them, and its retention deletions cannot be undone - so a fault in
+ * the implementation's own release path is evidence about the implementation and none about the
+ * publication. An implementation must report such a fault as an operational alert and return normally. The
+ * alternative marks FAILED a job whose output is correct, which causes a re-run, which publishes the same
+ * generations a second time.
+ *
+ * <p>See {@code docs/decision-log.md} entries DL-181 and DL-304.
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
  * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
@@ -72,7 +82,8 @@ public interface GenerationPublicationLock {
      *                     the publication touches no base, in which case the body still runs.
      * @param publication the publication to run while the bases are held; must not be {@code null}
      * @throws RuntimeException propagated unchanged from {@code publication}, or raised by the
-     *                          implementation when the bases cannot be acquired
+     *                          implementation when the bases cannot be acquired. Never raised for a
+     *                          release that failed after {@code publication} returned normally.
      */
     void whileHolding(List<String> logicalBases, Runnable publication);
 }

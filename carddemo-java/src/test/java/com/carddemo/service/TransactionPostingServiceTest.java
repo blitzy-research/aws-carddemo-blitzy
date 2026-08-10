@@ -201,6 +201,15 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class TransactionPostingServiceTest {
 
+    /**
+     * The bound the two alternate-key finders now require, generous enough that these specifications
+     * measure the finder's shape rather than its bound.
+     *
+     * <p>The bound itself is measured against a real server in the repository specifications, where a
+     * fixture can hold two rows under one account identifier; a mock cannot establish it.
+     */
+    private static final Limit ALTERNATE_KEY_ROWS = Limit.of(100);
+
     // =================================================================================================
     // KEYS AND RECORD VALUES
     // =================================================================================================
@@ -908,17 +917,17 @@ class TransactionPostingServiceTest {
                     new CardCrossReference("4111111111111112", CUSTOMER_ID, ACCOUNT_ID);
             final CardCrossReference secondAsSupplied =
                     new CardCrossReference("4111111111111110", CUSTOMER_ID, ACCOUNT_ID);
-            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+            when(cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID, ALTERNATE_KEY_ROWS))
                     .thenReturn(List.of(firstAsSupplied, secondAsSupplied));
-            when(cardCrossReferenceRepository.findByXrefAcctId(UNKNOWN_ACCOUNT_ID))
+            when(cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(UNKNOWN_ACCOUNT_ID, ALTERNATE_KEY_ROWS))
                     .thenReturn(List.of());
 
             // The declared types below are the assertion: a List, never an Optional. A signature
             // returning an optional would not compile against these two declarations.
             final List<CardCrossReference> resolved =
-                    cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID);
+                    cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID, ALTERNATE_KEY_ROWS);
             final List<CardCrossReference> unresolved =
-                    cardCrossReferenceRepository.findByXrefAcctId(UNKNOWN_ACCOUNT_ID);
+                    cardCrossReferenceRepository.findByXrefAcctIdOrderByXrefCardNumAsc(UNKNOWN_ACCOUNT_ID, ALTERNATE_KEY_ROWS);
 
             assertAll(
                     () -> assertThat(unresolved)

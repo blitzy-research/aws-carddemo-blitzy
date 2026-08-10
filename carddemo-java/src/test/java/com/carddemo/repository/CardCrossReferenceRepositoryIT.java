@@ -17,6 +17,7 @@
 
 package com.carddemo.repository;
 
+import org.springframework.data.domain.Limit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNoException;
@@ -192,6 +193,15 @@ import org.springframework.transaction.annotation.Transactional;
 @DisplayName("Card cross reference: the 36-of-50 byte layout, the non-unique account path, and the "
         + "three foreign keys that originate here")
 final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
+
+    /**
+     * The bound the two alternate-key finders now require.
+     *
+     * <p>Generous, because most specifications here measure what the finder returns rather than how much
+     * of it. The bound's own behaviour is measured separately, on a fixture that holds more rows than the
+     * bound admits.
+     */
+    private static final Limit ALTERNATE_KEY_ROWS = Limit.of(100);
 
     private static final String TABLE = "card_cross_reference";
 
@@ -667,7 +677,7 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
 
             assertThat(row.getXrefCustId()).isNotEqualTo(UNPADDED_CUSTOMER_ID);
             assertThat(row.getXrefAcctId()).isNotEqualTo(UNPADDED_ACCOUNT_ID);
-            assertThat(repository.findByXrefAcctId(UNPADDED_ACCOUNT_ID))
+            assertThat(repository.findByXrefAcctIdOrderByXrefCardNumAsc(UNPADDED_ACCOUNT_ID, ALTERNATE_KEY_ROWS))
                     .as("the alternate-key finder matches the stored value exactly, so an unpadded "
                             + "account identifier resolves to nothing rather than to every account "
                             + "whose digits happen to end that way")
@@ -701,14 +711,14 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
                     .isNotNull();
             assertThatNoException()
                     .as("and invoking it issues real SQL against the migrated schema")
-                    .isThrownBy(() -> repository.findByXrefAcctId(SEEDED_ACCOUNT_ID));
+                    .isThrownBy(() -> repository.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID, ALTERNATE_KEY_ROWS));
         }
 
         @Test
         @DisplayName("the finder answers with a collection, and the seeded account carries exactly one "
                 + "row whose account identifier is eleven characters untrimmed")
         void theFinderAnswersWithACollectionOfTheAccountsRows() {
-            final List<CardCrossReference> rows = repository.findByXrefAcctId(SEEDED_ACCOUNT_ID);
+            final List<CardCrossReference> rows = repository.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID, ALTERNATE_KEY_ROWS);
 
             assertThat(rows)
                     .as("the declared return type is what the line above proves: a single-valued "
@@ -735,9 +745,9 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
         void anAccountCarryingNoRowAnswersEmpty() {
             assertThatNoException()
                     .as("absence is an answer here, not a failure")
-                    .isThrownBy(() -> repository.findByXrefAcctId(ABSENT_ACCOUNT_ID));
+                    .isThrownBy(() -> repository.findByXrefAcctIdOrderByXrefCardNumAsc(ABSENT_ACCOUNT_ID, ALTERNATE_KEY_ROWS));
 
-            final List<CardCrossReference> rows = repository.findByXrefAcctId(ABSENT_ACCOUNT_ID);
+            final List<CardCrossReference> rows = repository.findByXrefAcctIdOrderByXrefCardNumAsc(ABSENT_ACCOUNT_ID, ALTERNATE_KEY_ROWS);
 
             assertThat(rows)
                     .as("empty, and never null: the service turns absence into a screen message")
@@ -764,7 +774,7 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
         @DisplayName("two rows sharing one account and differing in their key alone are BOTH returned, "
                 + "which is the non-unique contract the one-to-one seed cannot show")
         void twoRowsSharingOneAccountAreBothReturned() throws SQLException {
-            assertThat(repository.findByXrefAcctId(SEEDED_ACCOUNT_ID))
+            assertThat(repository.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID, ALTERNATE_KEY_ROWS))
                     .as("the starting state is the one-to-one seed")
                     .hasSize(SEEDED_ROWS_OF_ONE_ACCOUNT);
             insertReservedCard(RESERVED_CARD_ONE);
@@ -773,7 +783,7 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
                     reservedCrossReference(RESERVED_CARD_ONE),
                     reservedCrossReference(RESERVED_CARD_TWO)));
 
-            final List<CardCrossReference> rows = repository.findByXrefAcctId(SEEDED_ACCOUNT_ID);
+            final List<CardCrossReference> rows = repository.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID, ALTERNATE_KEY_ROWS);
 
             assertThat(rows)
                     .as("every row of the account is exposed, not merely the first")
@@ -784,6 +794,29 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
                             + "exactly the field the base cluster is keyed on")
                     .containsExactlyInAnyOrder(SEEDED_CARD_NUMBER, RESERVED_CARD_ONE, RESERVED_CARD_TWO)
                     .doesNotHaveDuplicates();
+
+            // ★ THE ORDER IS THE PATH'S, AND THE BOUND SELECTS THE LEADING ROWS OF IT. A read of a
+            // duplicate-bearing index yields rows in ascending base-key order, and the base key here is
+            // the card number. An earlier revision declared neither an order nor a bound, which left the
+            // sequence to the plan and the result size to the data. Asserted as ORDERED lists. DL-296.
+            assertThat(rows)
+                    .extracting(CardCrossReference::getXrefCardNum)
+                    .as("ascending by card number: the seeded key sorts below both reserved keys")
+                    .isSorted()
+                    .containsExactly(SEEDED_CARD_NUMBER, RESERVED_CARD_ONE, RESERVED_CARD_TWO);
+            assertThat(repository.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID, Limit.of(2)))
+                    .extracting(CardCrossReference::getXrefCardNum)
+                    .as("two rows, and the two LOWEST of the three - not an arbitrary subset")
+                    .containsExactly(SEEDED_CARD_NUMBER, RESERVED_CARD_ONE);
+            assertThat(repository.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID, Limit.of(1)))
+                    .extracting(CardCrossReference::getXrefCardNum)
+                    .as("bounded to one, it agrees with the first-match finder - two depths of one path "
+                            + "rather than two answers to one question")
+                    .containsExactly(SEEDED_CARD_NUMBER);
+            assertThat(repository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID))
+                    .get()
+                    .extracting(CardCrossReference::getXrefCardNum)
+                    .isEqualTo(SEEDED_CARD_NUMBER);
             assertThat(rows)
                     .allSatisfy(row -> assertThat(row.getXrefAcctId()).isEqualTo(SEEDED_ACCOUNT_ID));
             assertThat(committedRowCount(COUNT_CROSS_REFERENCE_ROWS))
@@ -1011,7 +1044,7 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
                     .as("and the ENCODED width of what was written is the mapped portion of the record, "
                             + "which is what a fixed-width emitter would have to reproduce")
                     .isEqualTo(DATA_WIDTH);
-            assertThat(repository.findByXrefAcctId(SEEDED_ACCOUNT_ID))
+            assertThat(repository.findByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT_ID, ALTERNATE_KEY_ROWS))
                     .as("and the new row is reachable through the alternate-key path as well as by key")
                     .extracting(CardCrossReference::getXrefCardNum)
                     .contains(RESERVED_CARD_ONE);

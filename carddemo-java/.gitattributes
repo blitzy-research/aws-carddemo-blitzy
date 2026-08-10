@@ -39,3 +39,45 @@
 # rule is declared here, because the wrapper script mvnw.cmd is committed with CRLF line endings
 # on purpose and a repository-wide normalisation rule would corrupt it.
 src/test/resources/fixtures/** -text -whitespace
+
+# ---------------------------------------------------------------------------------------------
+# Launchers: the line ending is part of the contract, and it is the OPPOSITE for the two wrappers
+# ---------------------------------------------------------------------------------------------
+#
+# Three files in this module are executed by an interpreter that reads their first line, and for
+# each of them the required ending is a fact about the interpreter rather than a preference. Left
+# unspecified, the ending is decided by whatever core.autocrlf the person cloning happens to have
+# configured, which is the one input this module cannot see and cannot test:
+#
+#   mvnw                  A POSIX shell script. With core.autocrlf=true a Windows checkout rewrites
+#                         all of its lines as CRLF, and the shebang then reads "#!/bin/sh\r" - a
+#                         path that does not exist. `./mvnw` fails with "bad interpreter", and so
+#                         does the Docker builder stage, which copies this file into a Linux image
+#                         and runs it there. eol=lf pins it to LF on every platform.
+#
+#   mvnw.cmd              A cmd.exe polyglot whose batch half relies on CRLF: cmd.exe reads a
+#                         .cmd file line by line, and an LF-only file can leave labels and GOTO
+#                         targets unresolved. It was committed as CRLF deliberately; eol=crlf makes
+#                         that intent enforceable rather than merely described, so a checkout on a
+#                         normalising platform reproduces it instead of depending on a contributor's
+#                         configuration. Declaring `text` also normalises the stored blob to LF,
+#                         which is what keeps `git diff` and `git diff --check` reading it as text
+#                         rather than reporting a carriage return on every line as trailing
+#                         whitespace.
+#
+#   localstack/init/*.sh  A bash hook that is bind-mounted into the LocalStack container and
+#                         executed by the Linux shell inside it. The bytes the container reads are
+#                         the bytes in the HOST checkout, so a CRLF conversion here breaks the
+#                         emulator's startup - "#!/usr/bin/env bash\r" and "set -eu\r" - on a
+#                         Windows host even though nothing about the container changed. The CI
+#                         bootstrap-contract gate asserts this file is free of carriage returns
+#                         after a checkout, and simulates a normalising checkout to prove the
+#                         attribute is what holds it.
+#
+# Anchored with a leading slash where the path is exact, so `mvnw` matches only this module's
+# launcher and not a file of the same name at any other depth. Deliberately three narrow rules
+# rather than one blanket text=auto: a blanket rule would also claim every fixture above, whose
+# bytes are a fixed-width record contract.
+/mvnw text eol=lf
+/mvnw.cmd text eol=crlf
+/localstack/init/*.sh text eol=lf

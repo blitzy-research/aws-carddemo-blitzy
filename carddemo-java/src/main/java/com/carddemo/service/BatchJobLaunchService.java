@@ -26,13 +26,9 @@ import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
-import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.NoSuchJobException;
-import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
-import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
-import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.stereotype.Service;
 
 /**
@@ -55,14 +51,24 @@ import org.springframework.stereotype.Service;
  * type, and nothing here reads a job configuration method: the nine names are read from the catalogue and
  * the framework's own registry does the resolving.
  *
- * <p><strong>A launch is idempotent, because the framework's metadata already decides that.</strong> A
- * job identity is its name plus its identifying parameters. This service hands the framework exactly the
- * name and exactly the parameter values it was given and <strong>appends nothing</strong> - no timestamp,
- * no unique identifier, no random value, no run counter, no current time - so the same request twice is
- * the same job identity twice and the framework answers the second one out of its own metadata rather
- * than starting a duplicate run. That refusal is surfaced to the caller as the framework's own report and
- * is never worked around, because manufacturing a distinguishing parameter is precisely how a
- * "launch once" instruction quietly becomes "launch again".
+ * <p><strong>A launch is deliberately repeatable, and this service adds nothing of its own to make it
+ * so.</strong> A job identity is its name plus its identifying parameters. This service hands the launch
+ * port exactly the name and exactly the parameter values it was given and <strong>appends nothing</strong>
+ * - no timestamp, no unique identifier, no random value, no run counter, no current time - so nothing a
+ * caller sent and nothing this layer invented distinguishes one request from the next. The identifying
+ * value that does distinguish them is minted one layer down, by the shared parameter incrementer that every
+ * job configuration attaches, and is applied inside {@code batch/BatchLaunchCoordinator}; a caller can
+ * neither supply it nor influence it, because the only parameter names accepted are the ones the addressed
+ * job declares.
+ *
+ * <p>So the same job submitted twice with the same parameters starts a second, distinct instance rather
+ * than being answered out of the framework's metadata. That is the faithful reading of the estate and not a
+ * gap: a job member resubmitted with an identical parameter set simply ran again - the posting job on the
+ * same processing date, the accrual run with the same run date, the backup after a failed cycle - and
+ * refusing the second submission would be a behavioural regression presented as an idempotency guarantee.
+ * What <em>is</em> refused is an overlapping run: the coordinator holds a per-job lock and declines while an
+ * execution of that job is active, which is the property the operational surface actually needs. This
+ * paragraph replaces one that claimed the opposite; see {@code docs/decision-log.md} entry DL-310.
  *
  * <p><strong>Parameter values are passed through byte for byte.</strong> Two of them make that
  * non-negotiable: the interest run's ten-character parameter also becomes the literal leading characters
@@ -72,13 +78,15 @@ import org.springframework.stereotype.Service;
  * and their validators - the validators run inside the framework's launch - and none of their rules is
  * restated here. A second copy of a rule is a second answer waiting to disagree with the first.
  *
- * <p><strong>The framework's own reports are propagated, not translated.</strong> The three conditions
- * the framework distinguishes when a launch does not start - the identity has already been used, the
- * job's own validator rejected the parameters, and the name is not registered - are declared on
- * {@link #launch(String, Map)} and left for the caller to render. A service that flattened them into one
- * failure would take the rendering decision away from the boundary that owns the error contract, and a
- * service that invented its own message for each would put a second copy of that text below the layer
- * that publishes it.
+ * <p><strong>A refusal reaches the caller as a closed reason code, never as a framework object.</strong>
+ * The launch port answers a declined launch with its own refusal carrying one of three reasons - an
+ * execution of that job is already active, the generated instance already exists, or the job's own
+ * validator rejected the parameters - and an unregistered name arrives as the framework's own
+ * {@link NoSuchJobException}. This service passes both on without adding a message of its own: the text an
+ * operator reads is owned by the boundary that publishes the error contract, and a second copy of it here
+ * would be a second copy to disagree with the first. What is deliberately not propagated is the framework's
+ * exception chain, because it carries parameter values, query text and resource locations that this
+ * boundary does not disclose.
  *
  * <p><strong>What a status report may carry.</strong> Four values: the execution identifier, the stable
  * job name, the framework's batch status and its exit code. The framework's exit <em>description</em> is
@@ -178,22 +186,25 @@ public class BatchJobLaunchService {
     }
 
     /**
-     * Starts one job and answers the execution identifier the framework assigned.
+     * Starts one job and answers the execution identifier the framework assigned, without waiting for the
+     * job to run.
      *
-     * <p>Nothing is added to the parameters, so the same name with the same values is the same job
-     * identity and the framework answers a repeat out of its own metadata rather than starting a second
-     * run. Which parameters the job accepts, and what each must contain, is decided by the job's own
+     * <p>Nothing is added to the parameters here. The one identifying value that makes each launch a
+     * distinct instance is minted below this method by the launch port, so the same name with the same
+     * values deliberately starts a second run rather than being answered out of the framework's metadata -
+     * which is what a resubmitted job member did on the estate. An <em>overlapping</em> run is what the port
+     * refuses. Which parameters the job accepts, and what each must contain, is decided by the job's own
      * validator during the launch and is not restated here.
      *
      * @param stableJobName the allow-listed name to resolve through the registry
      * @param jobParameters the parameters to launch with; every value is passed through unchanged, and
      *                      {@code null} or an empty map launches the job with no parameters at all
      * @return the execution identifier the framework assigned
-     * @throws JobExecutionAlreadyRunningException if that job identity is already running
-     * @throws JobInstanceAlreadyCompleteException if that job identity already completed
-     * @throws JobRestartException                 if that job identity cannot be restarted
-     * @throws JobParametersInvalidException       if the job's own validator rejected the parameters
-     * @throws NoSuchJobException                  if the framework holds no job under that name
+     * @throws com.carddemo.service.BatchLaunchGateway.LaunchRejectedException if an execution of that job
+     *                      is already active, if the generated instance already exists, or if the job's own
+     *                      validator rejected the parameters
+     * @throws ValidationException if a supplied parameter name is not one the addressed job reads
+     * @throws NoSuchJobException  if the framework holds no job under that name
      */
     public long launch(final String stableJobName, final Map<String, String> jobParameters)
             throws NoSuchJobException {
@@ -231,8 +242,8 @@ public class BatchJobLaunchService {
      *
      * <p>Values are copied exactly as they arrived. Nothing is trimmed, padded, upper-cased, parsed or
      * reformatted, because two of the parameters this module's jobs declare are fixed-width and one of
-     * them becomes the leading characters of synthesised identifiers. Nothing is added either, which is
-     * what keeps a repeated launch the same job identity.
+     * them becomes the leading characters of synthesised identifiers. Nothing is added here either; the
+     * only addition anywhere on the path is the gateway's identifying run number.
      *
      * <p>The carrier is created here, handed straight to the framework by the only caller and never
      * retained, published or shared, so it is not shared mutable state. Every accepted value is installed

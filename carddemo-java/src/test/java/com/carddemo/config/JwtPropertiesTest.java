@@ -53,6 +53,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.NestedExceptionUtils;
 import org.springframework.core.annotation.MergedAnnotations;
 import org.springframework.core.annotation.MergedAnnotations.SearchStrategy;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.env.SystemEnvironmentPropertySource;
 import org.springframework.core.io.ClassPathResource;
@@ -62,6 +63,7 @@ import org.springframework.validation.ObjectError;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 /**
  * Asserts that {@link JwtProperties} refuses to bind anything unusable, never lets the signing material
@@ -148,7 +150,16 @@ class JwtPropertiesTest {
     private static final String TEST_DOCUMENT = "application-test.yml";
 
     /** The environment variable the signing secret is supplied by, as the production document names it. */
-    private static final String SIGNING_SECRET_VARIABLE = "CARDDEMO_JWT_SECRET";
+    private static final String PRODUCTION_SIGNING_SECRET_VARIABLE = "CARDDEMO_JWT_SECRET";
+
+    /** The operator credential's production variable, held here so the overlays can be checked against it. */
+    private static final String PRODUCTION_MANAGEMENT_TOKEN_VARIABLE = "CARDDEMO_MANAGEMENT_TOKEN";
+
+    /** The signing-secret variable the local overlay reads, which is local's alone. */
+    private static final String LOCAL_SIGNING_SECRET_VARIABLE = "CARDDEMO_LOCAL_JWT_SECRET";
+
+    /** The signing-secret variable the test overlays read, which is the suite's alone. */
+    private static final String TEST_SIGNING_SECRET_VARIABLE = "CARDDEMO_TEST_JWT_SECRET";
 
     /** How a comment opens in a YAML document, used to tell configuration apart from prose. */
     private static final String COMMENT_MARKER = "#";
@@ -325,6 +336,28 @@ class JwtPropertiesTest {
             }
         }
         return found;
+    }
+
+    /**
+     * Returns the signing-secret variable one overlay reads.
+     *
+     * <p>Each non-production overlay reads its own, which is the whole of the isolation: production's
+     * variable is not a key any of them looks up. Resolved from the document name rather than passed in, so
+     * a parameterised case cannot be given the wrong pairing.
+     *
+     * @param  overlay the overlay document's resource name
+     * @return the variable that overlay reads its signing secret from
+     */
+    private static String signingSecretVariableOf(final String overlay) {
+        if (LOCAL_DOCUMENT.equals(overlay)) {
+            return LOCAL_SIGNING_SECRET_VARIABLE;
+        }
+        if (TEST_DOCUMENT.equals(overlay)) {
+            return TEST_SIGNING_SECRET_VARIABLE;
+        }
+        throw new IllegalArgumentException(overlay + " is not a non-production overlay this sweep knows."
+                + " Add it beside " + LOCAL_DOCUMENT + " and " + TEST_DOCUMENT + " together with the"
+                + " variable it reads, rather than letting it fall back to production's variable.");
     }
 
     /**
@@ -697,7 +730,7 @@ class JwtPropertiesTest {
     }
 
     @Nested
-    @DisplayName("The helpers that let a consumer ask about the settings without holding them")
+    @DisplayName("The one helper that lets a consumer ask about the settings without holding them")
     class Helpers {
 
         @ParameterizedTest(name = "secret = [{0}]")
@@ -720,36 +753,6 @@ class JwtPropertiesTest {
         @DisplayName("report a supplied secret as present")
         void treatASuppliedSecretAsPresent() {
             assertThat(new JwtProperties(freshSecret(), ISSUER, A_USABLE_LIFETIME).hasSecret()).isTrue();
-        }
-
-        @Test
-        @DisplayName("compare issuers without either caller holding the signing material")
-        void compareIssuersAlone() {
-            JwtProperties minting = new JwtProperties(freshSecret(), ISSUER, A_USABLE_LIFETIME);
-            JwtProperties verifying = new JwtProperties(freshSecret(), ISSUER, Duration.ofHours(1));
-
-            assertThat(minting.sharesIssuerWith(verifying))
-                    .as("agreement on the issuer is independent of the secret and the lifetime, which "
-                            + "is what lets two separately configured sides be compared safely")
-                    .isTrue();
-        }
-
-        @Test
-        @DisplayName("report a differing issuer as a disagreement")
-        void reportADifferingIssuer() {
-            String secret = freshSecret();
-            JwtProperties mine = new JwtProperties(secret, ISSUER, A_USABLE_LIFETIME);
-
-            assertThat(mine.sharesIssuerWith(
-                    new JwtProperties(secret, "somebody-else", A_USABLE_LIFETIME)))
-                    .isFalse();
-        }
-
-        @Test
-        @DisplayName("treat a missing comparison subject as a disagreement rather than failing")
-        void treatNullComparisonAsDisagreement() {
-            assertThat(new JwtProperties(freshSecret(), ISSUER, A_USABLE_LIFETIME).sharesIssuerWith(null))
-                    .isFalse();
         }
     }
 
@@ -854,8 +857,8 @@ class JwtPropertiesTest {
                     .isNotEmpty();
             assertThat(candidates).extracting(Placeholder::name)
                     .as("and %s in particular must be among them, since it is the very setting these "
-                            + "tests are about", SIGNING_SECRET_VARIABLE)
-                    .contains(SIGNING_SECRET_VARIABLE);
+                            + "tests are about", PRODUCTION_SIGNING_SECRET_VARIABLE)
+                    .contains(PRODUCTION_SIGNING_SECRET_VARIABLE);
         }
 
         @Test
@@ -925,8 +928,9 @@ class JwtPropertiesTest {
         @DisplayName("a non-production overlay may default the signing secret, but only to a value that "
                 + "says so and that production cannot reach")
         void aNonProductionOverlayDefaultsToAValueThatSaysSo(final String overlay) throws IOException {
+            final String overlaySigningVariable = signingSecretVariableOf(overlay);
             List<Placeholder> signing = placeholdersIn(textOf(overlay), true).stream()
-                    .filter(placeholder -> SIGNING_SECRET_VARIABLE.equals(placeholder.name()))
+                    .filter(placeholder -> overlaySigningVariable.equals(placeholder.name()))
                     .toList();
 
             assertThat(signing)
@@ -960,6 +964,129 @@ class JwtPropertiesTest {
                                 + "production token", overlay, PRODUCTION_DOCUMENT)
                         .doesNotContain(declared.fallback());
             }
+        }
+
+        /**
+         * No non-production overlay reads any variable production reads a secret from.
+         *
+         * <h2>The defect this closes, and why a fallback did not close it</h2>
+         *
+         * <p>Both overlays used to declare {@code ${CARDDEMO_JWT_SECRET:...}} and
+         * {@code ${CARDDEMO_MANAGEMENT_TOKEN:...}} - production's own variables, with a self-describing
+         * non-production tail beside them. Every assertion above passed on that arrangement, because every
+         * assertion above is about the <em>fallback</em>. The fallback is the part that is only consulted
+         * when the variable is absent.
+         *
+         * <p>So on any machine where the variable was present the fallback was never reached, and the
+         * profile bound whatever the environment held: a build agent configured to deploy, a developer who
+         * exported a deployment secret an hour earlier, a shell that sourced an operations profile. The
+         * placeholder resolved, no fallback was consulted, nothing was logged, and the suite went on to
+         * sign and verify tokens with a live production credential - or the local stack did. A reviewer
+         * reading either file would have seen a test-only default and concluded the opposite.
+         *
+         * <p>The remedy is the variable name itself. Placeholder resolution is by exact key, so an overlay
+         * that names {@code CARDDEMO_TEST_JWT_SECRET} cannot read {@code CARDDEMO_JWT_SECRET} however the
+         * environment is arranged - not unlikely, impossible. This test is what keeps it that way, and the
+         * ban list is derived from the production document rather than written out here, so a secret added
+         * to production is covered the moment it is added.
+         *
+         * <p>Comment lines are excluded from the scan deliberately: both overlays discuss production's
+         * variables in prose to explain the asymmetry, and that prose is the documentation of the rule
+         * rather than a violation of it.
+         *
+         * @param  overlay the non-production overlay to scan
+         * @throws IOException if either document cannot be read
+         */
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {LOCAL_DOCUMENT, TEST_DOCUMENT})
+        @DisplayName("★ no non-production overlay references a variable production reads a secret from, so "
+                + "an ambient deployment credential cannot be bound into a suite or a local stack")
+        void noNonProductionOverlayReferencesAProductionSecretVariable(final String overlay)
+                throws IOException {
+            final List<String> productionSecretVariables =
+                    secretNamed(placeholdersIn(textOf(PRODUCTION_DOCUMENT), true)).stream()
+                            .map(Placeholder::name)
+                            .distinct()
+                            .toList();
+
+            assertThat(productionSecretVariables)
+                    .as("the ban list is derived from %s, so it must have found production's secrets. An "
+                            + "empty list would make the assertion below pass over nothing",
+                            PRODUCTION_DOCUMENT)
+                    .isNotEmpty()
+                    .contains(PRODUCTION_SIGNING_SECRET_VARIABLE, PRODUCTION_MANAGEMENT_TOKEN_VARIABLE);
+
+            final List<Placeholder> shared = placeholdersIn(textOf(overlay), true).stream()
+                    .filter(placeholder -> productionSecretVariables.contains(placeholder.name()))
+                    .toList();
+
+            assertThat(shared)
+                    .as("%s reads a variable %s reads a secret from. A fallback beside it is no defence: "
+                            + "the fallback is only consulted when the variable is ABSENT, so on any "
+                            + "machine that holds a deployment credential under that name the credential "
+                            + "is what binds, silently. Give the overlay its own name - the local profile "
+                            + "uses %s and the test profile %s. Offending: %s", overlay,
+                            PRODUCTION_DOCUMENT, LOCAL_SIGNING_SECRET_VARIABLE,
+                            TEST_SIGNING_SECRET_VARIABLE, shared)
+                    .isEmpty();
+        }
+
+        /**
+         * An ambient production variable does not reach a non-production overlay's property, demonstrated.
+         *
+         * <h2>Why a demonstration rather than the source assertion alone</h2>
+         *
+         * <p>The test above proves the overlays do not <em>name</em> production's variables. That is the
+         * whole mechanism, but it is an argument about text, and the claim it supports is about runtime
+         * behaviour: that an environment holding a deployment secret cannot influence what a suite binds.
+         * This resolves the same placeholders the container resolves, through Spring's own
+         * {@link org.springframework.core.env.StandardEnvironment} with the production variable present in
+         * the property sources, and reads the results back. Both directions are shown, because only the
+         * pair is convincing:
+         *
+         * <ul>
+         *   <li>The overlay's <em>own</em> variable IS honoured when set, which proves the resolution
+         *       under test is live and the negative result below is not an artefact of nothing being
+         *       resolved at all.</li>
+         *   <li>Production's variable, present at the same time under its own name, changes nothing.</li>
+         * </ul>
+         */
+        @Test
+        @DisplayName("★ resolving a non-production placeholder with an ambient production secret present "
+                + "yields the overlay's own value, and the overlay's own variable does take effect")
+        void anAmbientProductionSecretCannotOverrideANonProductionValue() {
+            final String ambientProductionSecret = "ambient-deployment-secret-that-must-not-be-bound";
+            final String suppliedTestSecret = "supplied-test-only-secret-not-used-outside-tests";
+            final StandardEnvironment environment = new StandardEnvironment();
+            environment.getPropertySources().addFirst(new MapPropertySource("ambient",
+                    Map.of(PRODUCTION_SIGNING_SECRET_VARIABLE, ambientProductionSecret,
+                            PRODUCTION_MANAGEMENT_TOKEN_VARIABLE, ambientProductionSecret)));
+
+            final String resolvedWithoutTestVariable = environment.resolvePlaceholders(
+                    "${" + TEST_SIGNING_SECRET_VARIABLE + ":test-only-signing-secret-fallback}");
+
+            environment.getPropertySources().addFirst(new MapPropertySource("suite",
+                    Map.of(TEST_SIGNING_SECRET_VARIABLE, suppliedTestSecret)));
+            final String resolvedWithTestVariable = environment.resolvePlaceholders(
+                    "${" + TEST_SIGNING_SECRET_VARIABLE + ":test-only-signing-secret-fallback}");
+
+            assertAll(
+                    () -> assertThat(resolvedWithoutTestVariable)
+                            .as("with only the production variables present, the overlay's placeholder "
+                                    + "resolves to its own fallback. Resolution is by exact key, so a "
+                                    + "deployment secret held under a different name is not a candidate")
+                            .isEqualTo("test-only-signing-secret-fallback")
+                            .isNotEqualTo(ambientProductionSecret),
+                    () -> assertThat(resolvedWithTestVariable)
+                            .as("and the overlay's OWN variable is honoured when supplied, which is what "
+                                    + "makes the result above evidence rather than a resolution that "
+                                    + "happened to do nothing")
+                            .isEqualTo(suppliedTestSecret),
+                    () -> assertThat(environment.getProperty(PRODUCTION_SIGNING_SECRET_VARIABLE))
+                            .as("the ambient production secret really was present throughout, so the "
+                                    + "isolation was tested against something rather than against an "
+                                    + "empty environment")
+                            .isEqualTo(ambientProductionSecret));
         }
 
         @Test

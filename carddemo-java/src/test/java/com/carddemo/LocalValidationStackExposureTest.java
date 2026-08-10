@@ -87,6 +87,17 @@ class LocalValidationStackExposureTest {
     /** The local profile, which carries the signing secret the loopback binding protects. */
     private static final Path LOCAL_PROFILE = Path.of("src", "main", "resources", "application-local.yml");
 
+    /**
+     * The variable the local profile reads its signing secret from.
+     *
+     * <p>Local-scoped, and named here rather than inline because both the stack definition and the profile
+     * are asserted to name the same one. It is deliberately NOT production's {@code CARDDEMO_JWT_SECRET}:
+     * this profile once read that variable, so a deployment secret exported on the developer's machine bound
+     * into the local stack silently. Placeholder resolution is by exact key, so the separate name is what
+     * makes that impossible rather than unlikely.
+     */
+    private static final String LOCAL_SIGNING_SECRET_VARIABLE = "CARDDEMO_LOCAL_JWT_SECRET";
+
     /** The loopback address every mapping must default to. */
     private static final String LOOPBACK = "127.0.0.1";
 
@@ -403,24 +414,103 @@ class LocalValidationStackExposureTest {
         }
 
         @Test
-        @DisplayName("and the obligation that comes with widening is stated where the decision is made")
-        void andTheObligationIsStatedWhereTheDecisionIsMade() {
-            final String definition = read(COMPOSE_FILE);
+        @DisplayName("and no shipped file or runbook carries a recipe that publishes this stack on a "
+                + "routable address")
+        void andNoRunbookCarriesANonLoopbackBindRecipe() {
+            // WHAT THIS REPLACES, AND WHY THE REPLACEMENT IS A DIFFERENT KIND OF ASSERTION. The previous
+            // version of this test asserted that the Compose file MENTIONED CARDDEMO_JWT_SECRET,
+            // POSTGRES_PASSWORD and GRAFANA_ADMIN_PASSWORD, on the reasoning that a widening procedure
+            // must name the credentials it obliges an operator to replace. It passed while the procedure
+            // it was guarding did not work: the app service's environment block forwards NEITHER
+            // CARDDEMO_JWT_SECRET NOR CARDDEMO_MANAGEMENT_TOKEN into the container, so an operator who
+            // exported a generated signing secret changed nothing about the running application, which
+            // went on minting and accepting tokens under the committed literal. A test that reads prose
+            // cannot catch that. This one reads what the stack DOES.
+            //
+            // The posture is now that there is no supported non-loopback bind at all - a tunnel or the
+            // production profile is the answer - so the assertion is the absence of the recipe. The
+            // pattern below matches any *_BIND_ADDRESS assignment to something that is not a loopback
+            // address, in this file and in all three runbooks that documented one.
+            final Pattern wideBindRecipe =
+                    Pattern.compile("[A-Z][A-Z0-9_]*_BIND_ADDRESS\\s*=\\s*(?!127\\.)\\S+");
+            final List<Path> shipped = List.of(COMPOSE_FILE, LOCAL_PROFILE,
+                    Path.of("README.md"),
+                    Path.of("..", "README.md"),
+                    Path.of("..", "docs", "onboarding-guide.md"));
 
+            final List<String> findings = new ArrayList<>();
+            for (final Path file : shipped) {
+                final Matcher recipe = wideBindRecipe.matcher(read(file));
+                while (recipe.find()) {
+                    findings.add(file + " carries [" + recipe.group() + "]");
+                }
+            }
+
+            assertThat(findings)
+                    .as("a documented widening is an instruction, and this stack has nothing to widen "
+                            + "into safety: it answers over cleartext, accepts ten seeded identities "
+                            + "whose password is published, and stands beside four services that "
+                            + "authenticate nobody. Direct a remote reader at `ssh -L` or the prod "
+                            + "profile instead")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("and the two supported ways to reach it from elsewhere are the ones named, so the "
+                + "removal reads as a redirection rather than as an omission")
+        void andTheSupportedRemoteAccessRouteIsNamed() {
             assertAll(
-                    () -> assertThat(definition)
-                            .as("the signing secret is the one whose absence is exploitable rather than "
-                                    + "untidy, so widening must name it")
-                            .contains("CARDDEMO_JWT_SECRET"),
-                    () -> assertThat(definition)
-                            .as("and the two passwords a reachable stack would expose")
-                            .contains("POSTGRES_PASSWORD")
-                            .contains("GRAFANA_ADMIN_PASSWORD"),
+                    () -> assertThat(read(COMPOSE_FILE))
+                            .as("the encrypted, authenticated forward keeps the listener loopback-bound")
+                            .contains("ssh -L 8080:127.0.0.1:8080"),
+                    () -> assertThat(read(COMPOSE_FILE))
+                            .as("and a service that must answer other hosts is a production deployment")
+                            .contains("`prod` profile"),
                     () -> assertThat(read(LOCAL_PROFILE))
-                            .as("and the profile that carries the secret must point back at the binding "
-                                    + "that is what makes carrying it acceptable")
-                            .contains("APP_BIND_ADDRESS")
-                            .contains("CARDDEMO_JWT_SECRET"));
+                            .as("the profile carrying the fixture credentials says the same, beside the "
+                                    + "credential rather than in a distant section")
+                            .contains("ssh -L 8080:127.0.0.1:8080"));
+        }
+
+        @Test
+        @DisplayName("and the app container's own bind is wide INSIDE the namespace and loopback on the "
+                + "host, which is the pair the published mapping needs")
+        void andTheContainerBindIsWideInsideAndLoopbackOutside() {
+            // Both halves are asserted together because each alone is a defect. Without the profile
+            // default, `spring-boot:run` and `java -jar` bind every interface of the developer's machine
+            // while carrying a committed signing secret. Without the container override, Docker's
+            // published port forwards to the container's own interface and finds nothing listening
+            // there, so the stack comes up healthy and answers nobody.
+            assertThat(read(LOCAL_PROFILE))
+                    .as("a host-run process must default to loopback")
+                    .contains("address: ${SERVER_ADDRESS:127.0.0.1}");
+
+            final String appService = serviceBlocks(read(COMPOSE_FILE)).get("app");
+            assertThat(appService)
+                    .as("and the container must widen it, because a published port does not reach a "
+                            + "container's loopback")
+                    .contains("SERVER_ADDRESS: 0.0.0.0");
+            assertThat(publishedMappings(appService))
+                    .as("while the host side of the mapping stays loopback-bound")
+                    .allSatisfy(mapping -> assertThat(hostAddressOf(mapping)).contains(LOOPBACK));
+        }
+
+        @Test
+        @DisplayName("and the app service forwards no application credential, so no file may claim that "
+                + "supplying one changes what the container trusts")
+        void andTheAppServiceForwardsNoApplicationCredential() {
+            // This is the fact the removed widening recipe got wrong, pinned so that it cannot be
+            // asserted in prose again without being made true first. If a future revision decides the
+            // container SHOULD receive an operator-supplied signing secret, this test is where that
+            // decision is registered - and the runbook may then say so.
+            final String appService = serviceBlocks(read(COMPOSE_FILE)).get("app");
+
+            assertThat(appService)
+                    .as("the local signing secret and operator credential come from "
+                            + "application-local.yml, which is what makes them inspectable fixtures "
+                            + "rather than values a stack passes around")
+                    .doesNotContain("CARDDEMO_JWT_SECRET")
+                    .doesNotContain("CARDDEMO_MANAGEMENT_TOKEN");
         }
 
         @Test

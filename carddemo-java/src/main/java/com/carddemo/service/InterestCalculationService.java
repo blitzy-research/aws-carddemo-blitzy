@@ -265,6 +265,15 @@ public class InterestCalculationService {
      */
     private static final BigDecimal MONTHLY_INTEREST_DIVISOR = new BigDecimal("1200");
 
+    /** Legacy name of the per-row interest receiving field, line 168, {@code PIC S9(09)V99}. */
+    private static final String FIELD_WS_MONTHLY_INT = "WS-MONTHLY-INT";
+
+    /** Legacy name of the group's running-total receiving field, line 169, {@code PIC S9(09)V99}. */
+    private static final String FIELD_WS_TOTAL_INT = "WS-TOTAL-INT";
+
+    /** Legacy name of the account balance the group rewrites, {@code PIC S9(10)V99}. */
+    private static final String FIELD_ACCT_CURR_BAL = "ACCT-CURR-BAL";
+
     /**
      * The scale the quotient is carried at before it is truncated to the receiving field's two
      * decimals. It is deliberately far wider than the receiver, which is what the compiler's
@@ -535,7 +544,7 @@ public class InterestCalculationService {
      * <p>The source invokes that paragraph from exactly two places and only one of them can be reached.
      * The reachable one is the key-change control break at {@code app/cbl/CBACT04C.cbl:L196}. The other
      * is the {@code ELSE} arm at lines 219 to 221, which sits inside a {@code PERFORM UNTIL
-     * END-OF-FILE = 'Y'} whose condition is evaluated <strong>before</strong> each iteration; the read
+     * an until-loop over the end-of-file flag whose condition is evaluated <strong>before</strong> each iteration; the read
      * paragraph raises the flag itself at line 340, so the loop ends and the arm never runs. The last
      * account of a run therefore never has its balance posted and never has its cycle accumulators
      * closed, while every interest record of that account has already been written - because
@@ -714,7 +723,7 @@ public class InterestCalculationService {
         final Iterator<TransactionCategoryBalance> cursor = orderedCategoryBalances.iterator();
         List<TransactionCategoryBalance> currentGroup = new ArrayList<>();
 
-        // Lines 188 to 222: PERFORM UNTIL END-OF-FILE = 'Y'.
+        // Lines 188 to 222 form an until-loop that ends when the end-of-file flag turns 'Y'.
         while (!run.isEndOfFile()) {
             // Line 190. The paragraph raises the end-of-file flag itself, exactly as line 340 does.
             final Optional<TransactionCategoryBalance> read = tcatbalfGetNext(cursor, run);
@@ -986,7 +995,8 @@ public class InterestCalculationService {
         // is zeroed: the account travels back exactly as it was read.
         final Account closedAccount = controlBreak.rewritesAccount()
                 ? updateAccount(account, group.totalInterest())
-                : withholdAccountRewrite(account, group.totalInterest());
+                : withholdAccountRewrite(account, group.totalInterest().signum() != 0,
+                        interestTransactions.size());
 
         return new GroupInterestResult(accountId,
                 group.totalInterest(),
@@ -1152,11 +1162,13 @@ public class InterestCalculationService {
      * @return the account as it was rewritten
      */
     private Account updateAccount(final Account account, final BigDecimal totalInterest) {
-        // Line 352: ADD WS-TOTAL-INT TO ACCT-CURR-BAL. Both operands carry two decimals, so the sum
-        // is exact; it is still routed through the codec because the receiving field has two decimals
-        // and the codec is the module's single point of decimal truth.
-        account.setAcctCurrBal(
-                ZonedDecimalCodec.toMonetaryScale(account.getAcctCurrBal().add(totalInterest)));
+        // Line 352: ADD WS-TOTAL-INT TO ACCT-CURR-BAL. Both operands carry two decimals, so the
+        // fractional half of the store changes nothing; it is still routed through the codec's storing
+        // form because the receiving field declares ten integer digits and a store into it drops surplus
+        // high-order digits, and because the codec is the module's single point of decimal truth.
+        account.setAcctCurrBal(ZonedDecimalCodec.storeIntoMonetary(
+                account.getAcctCurrBal().add(totalInterest),
+                ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_10_V99, FIELD_ACCT_CURR_BAL));
         // Lines 353 and 354: BOTH cycle accumulators, not one.
         account.setAcctCurrCycCredit(ZERO_MONETARY);
         account.setAcctCurrCycDebit(ZERO_MONETARY);
@@ -1189,20 +1201,33 @@ public class InterestCalculationService {
      * already written at line 468 and its running total is still reported, because neither depends on
      * the control break.
      *
-     * <p>The withheld amount is logged rather than discarded silently, because a balance that does not
-     * move while records exist for it is exactly the kind of outcome an operator has to be able to
-     * explain. See {@code docs/decision-log.md} entry DL-207.
+     * <p>The outcome is logged rather than passing silently, because a balance that does not move while
+     * records exist for it is exactly the kind of outcome an operator has to be able to explain. What is
+     * published is the control outcome, its reason and two counters - whether any interest accrued at
+     * all, and how many records the group wrote - and <strong>not the amount</strong>. An exact monetary
+     * figure at this level would put a customer's accrued interest into the ordinary operational log,
+     * where a stable per-run account reference alongside it makes the figure attributable. The two
+     * counters carry the whole diagnostic value: they separate a group that accrued nothing and lost
+     * nothing from one whose real accrual was dropped, which is the distinction an operator acts on. The
+     * withheld total is still returned to the caller in the group result, because that is data the run
+     * accounts for rather than a diagnostic.
      *
-     * @param  account       the account the group read at line 203, returned unmodified
-     * @param  totalInterest the group's running total, which no balance receives
+     * <p>The amount is not passed to this method at all. Taking a control fact rather than the value is
+     * deliberate: it means no future edit here can reintroduce the disclosure, because the figure is not
+     * in scope to be logged. See {@code docs/decision-log.md} entries DL-207 and DL-300.
+     *
+     * @param  account         the account the group read at line 203, returned unmodified
+     * @param  interestAccrued whether the group's running total was non-zero, which is a control fact
+     *                         about the outcome and carries no monetary value
+     * @param  recordsWritten  how many interest records the group handed to the writer before the break
      * @return the account exactly as it was read
      */
     private static Account withholdAccountRewrite(final Account account,
-            final BigDecimal totalInterest) {
+            final boolean interestAccrued, final int recordsWritten) {
         LOG.info("END OF FILE CONTROL BREAK IS UNREACHABLE, SO 1050-UPDATE-ACCOUNT IS NOT PERFORMED"
-                + " FOR THE FINAL ACCOUNT GROUP - accountRef={} withheldInterest={} balance and both"
-                + " cycle accumulators are left as read",
-                SensitiveLogRedactor.redact(account.getAcctId()), totalInterest);
+                + " FOR THE FINAL ACCOUNT GROUP - accountRef={} interestAccrued={} recordsWritten={}"
+                + " balance and both cycle accumulators are left as read",
+                SensitiveLogRedactor.redact(account.getAcctId()), interestAccrued, recordsWritten);
         return account;
     }
 
@@ -1411,7 +1436,8 @@ public class InterestCalculationService {
         final BigDecimal product = categoryBalance.multiply(disclosedRate);
         final BigDecimal quotient = product.divide(MONTHLY_INTEREST_DIVISOR,
                 INTERMEDIATE_QUOTIENT_SCALE, ZonedDecimalCodec.COBOL_TRUNCATION_MODE);
-        final BigDecimal monthlyInterest = ZonedDecimalCodec.toMonetaryScale(quotient);
+        final BigDecimal monthlyInterest = ZonedDecimalCodec.storeIntoMonetary(quotient,
+                ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_WS_MONTHLY_INT);
 
         // Line 467, and only then line 468.
         group.addToTotalInterest(monthlyInterest);
@@ -1493,7 +1519,7 @@ public class InterestCalculationService {
                 batchTimestamp,                                           // Line 497.
                 batchTimestamp);                                          // Line 498, the same value.
 
-        // Line 500: WRITE FD-TRANFILE-REC. The caller's guarded writer performs it and owns the status
+        // Line 500 writes FD-TRANFILE-REC. The caller's guarded writer performs it and owns the status
         // arms at lines 501 to 512; what matters here is that it happens now, inside this group's unit
         // of work and before the control break rewrites the account, and not after this group commits.
         context.synthesizedWriter().accept(interestTransaction);
@@ -2242,14 +2268,16 @@ public class InterestCalculationService {
         }
 
         /**
-         * Line 467: adds one row's interest to the running total. The receiving field carries two
-         * decimals, so the sum is taken to the monetary scale through the codec.
+         * Line 467: adds one row's interest to the running total. The receiving field is declared
+         * {@code PIC S9(09)V99} at line 169, so the sum is stored into that geometry through the codec:
+         * two decimals, and nine integer digits beyond which a store drops high-order digits silently.
          *
          * @param monthlyInterest the row's interest
          */
         private void addToTotalInterest(final BigDecimal monthlyInterest) {
-            this.totalInterest =
-                    ZonedDecimalCodec.toMonetaryScale(this.totalInterest.add(monthlyInterest));
+            this.totalInterest = ZonedDecimalCodec.storeIntoMonetary(
+                    this.totalInterest.add(monthlyInterest),
+                    ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_09_V99, FIELD_WS_TOTAL_INT);
         }
 
         /**

@@ -22,8 +22,10 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.regex.Matcher;
@@ -50,6 +52,14 @@ import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInstance;
+import io.micrometer.common.KeyValue;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
+
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.JobParametersIncrementer;
@@ -58,6 +68,7 @@ import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.flow.FlowExecutionStatus;
+import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
@@ -977,6 +988,53 @@ public final class BatchConfigTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(null, null));
         }
+
+        @Test
+        @DisplayName("each placement is its own flow-state key, so a flow that gates three steps gets "
+                + "three decision states rather than one shared one")
+        void eachPlacementIsItsOwnFlowStateKey() {
+            JobExecutionDecider first = ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.atOnePlacement();
+            JobExecutionDecider second = ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.atOnePlacement();
+
+            assertThat(first).isNotSameAs(second);
+            assertThat(first)
+                    .as("value equality would collapse two placements into one key and restore the "
+                            + "shared-state defect, which is why a placement is not a record")
+                    .isNotEqualTo(second)
+                    .isNotEqualTo(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO);
+            // Exactly what the framework's flow builder does: it keeps its states in a map keyed by the
+            // object handed to it and creates a state only when that key is absent.
+            assertThat(Map.of(first, "gateBeforeOne", second, "gateBeforeTwo"))
+                    .as("two placements must occupy two keys")
+                    .hasSize(2);
+        }
+
+        @ParameterizedTest(name = "a placement answers {1} exactly as the gate does")
+        @CsvSource({"COMPLETED, CONDITION_CODE_PERMITTED", "FAILED, CONDITION_CODE_REFUSED"})
+        @DisplayName("a placement evaluates the gate's own rule and adds nothing of its own")
+        void aPlacementEvaluatesTheGatesOwnRule(final BatchStatus earlierStatus,
+                final String expectedOutcome) {
+
+            JobExecution execution = jobExecution();
+            StepExecution earlier = stepEndedWith(execution, STEP_NAME, earlierStatus,
+                    ExitStatus.COMPLETED);
+
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.atOnePlacement()
+                    .decide(execution, earlier).getName())
+                    .isEqualTo(expectedOutcome);
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.atOnePlacement()
+                    .decide(execution, earlier).getName())
+                    .as("and the same verdict the constant itself reaches")
+                    .isEqualTo(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, earlier)
+                            .getName());
+        }
+
+        @Test
+        @DisplayName("a placement names the rule it stands for, so a flow diagnostic reads as the gate")
+        void aPlacementNamesTheRuleItStandsFor() {
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.atOnePlacement().toString())
+                    .contains(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.name());
+        }
     }
 
     @Nested
@@ -1004,8 +1062,32 @@ public final class BatchConfigTest {
         @TempDir
         private Path stagingRoot;
 
+        /** The registry the authoritative terminal verdict is counted on. */
+        private MeterRegistry meterRegistry;
+
+        /** The registry the durable boundary is observed into. */
+        private ObservationRegistry observationRegistry;
+
+        /** Every observation the boundary stopped, in stop order. */
+        private final List<Observation.Context> observedPublications = new ArrayList<>();
+
         @BeforeEach
         void attachRecorder() {
+            this.meterRegistry = new SimpleMeterRegistry();
+            this.observedPublications.clear();
+            final ObservationRegistry recording = ObservationRegistry.create();
+            recording.observationConfig().observationHandler(new ObservationHandler<>() {
+                @Override
+                public void onStop(final Observation.Context context) {
+                    observedPublications.add(context);
+                }
+
+                @Override
+                public boolean supportsContext(final Observation.Context context) {
+                    return true;
+                }
+            });
+            this.observationRegistry = recording;
             listener = listenerWith(null, null);
             logger = (Logger) LoggerFactory.getLogger(BatchConfig.class);
             originalLevel = logger.getLevel();
@@ -1028,15 +1110,22 @@ public final class BatchConfigTest {
                 final JobCompletionEventPublisher completionPublisher) {
             return new BatchConfig().batchJobBoundaryListener(
                     providerOf(store), providerOf(completionPublisher),
+                    providerOf(this.meterRegistry), providerOf(this.observationRegistry),
                     this.stagingRoot.toString());
         }
 
         /**
          * Creates an object provider whose optional value is fixed for the life of the test.
+         *
+         * <p>Both accessors are stubbed, not one. The listener resolves its optional collaborators
+         * through {@code getIfAvailable()} and its observation registry through the defaulting
+         * {@code getIfAvailable(Supplier)}; a provider that answered only the first would hand the
+         * listener a null registry and fail construction for a reason unrelated to the test.
          */
         private <T> ObjectProvider<T> providerOf(final T value) {
             final ObjectProvider<T> provider = mock();
             when(provider.getIfAvailable()).thenReturn(value);
+            when(provider.getIfAvailable(BatchConfigTest.<T>anySupplier())).thenReturn(value);
             return provider;
         }
 
@@ -1294,6 +1383,158 @@ public final class BatchConfigTest {
         }
 
         @Test
+        @DisplayName("the terminal verdict counted is the PERSISTED one, so a publication that failed a "
+                + "completed job is not reported as a success")
+        void theCountedVerdictIsThePersistedOne() throws IOException {
+            // The gap this closes: the framework stops its job timer and its job span BEFORE this
+            // callback, so both recorded COMPLETED - and the publication inside the callback then
+            // persists FAILED. Standard batch telemetry reports success for a job the repository records
+            // as failed, permanently, and nothing in the framework's own measurements can be made to say
+            // otherwise. The count published here is the only place the persisted verdict appears.
+            final StagedGenerationStore store = mock();
+            listener = listenerWith(store, null);
+            final JobExecution execution = jobExecution();
+            final StepExecution step =
+                    stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            StagedGenerationStore.register(step, REJECT_GENERATION_BASE, stageRealGenerationPair(7),
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            when(store.publishRegistered(execution))
+                    .thenThrow(new IllegalStateException("object store refused publication"));
+
+            listener.afterJob(execution);
+
+            assertThat(execution.getStatus())
+                    .as("the repository records FAILED, which is the fact the meter has to agree with")
+                    .isEqualTo(BatchStatus.FAILED);
+            final Counter counted = this.meterRegistry.find(BatchConfig.TERMINAL_VERDICT_METER_NAME)
+                    .tag(BatchConfig.TAG_JOB, JOB_NAME)
+                    .counter();
+            assertThat(counted)
+                    .as("one count per terminal job, published after the verdict is final")
+                    .isNotNull();
+            assertThat(counted.count()).isEqualTo(1.0d);
+            assertThat(counted.getId().getTag(BatchConfig.TAG_PERSISTED_STATUS))
+                    .as("the authoritative status is the persisted one")
+                    .isEqualTo(BatchStatus.FAILED.name());
+            assertThat(counted.getId().getTag(BatchConfig.TAG_OBSERVED_STATUS))
+                    .as("and the status the framework's own telemetry recorded is carried beside it, so "
+                            + "the disagreement is a query rather than an investigation")
+                    .isEqualTo(BatchStatus.COMPLETED.name());
+            assertThat(counted.getId().getTag(BatchConfig.TAG_PUBLICATION))
+                    .as("and the verdict is attributed to the boundary that caused it")
+                    .isEqualTo(BatchConfig.PUBLICATION_FAILED);
+        }
+
+        @Test
+        @DisplayName("a clean job counts one verdict on which both statuses agree")
+        void aCleanJobCountsAgreeingStatuses() throws IOException {
+            final StagedGenerationStore store = mock();
+            listener = listenerWith(store, null);
+            final JobExecution execution = jobExecution();
+            final StepExecution step =
+                    stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            StagedGenerationStore.register(step, REJECT_GENERATION_BASE, stageRealGenerationPair(8),
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            when(store.publishRegistered(execution)).thenReturn(List.of());
+
+            listener.afterJob(execution);
+
+            final Counter counted = this.meterRegistry.find(BatchConfig.TERMINAL_VERDICT_METER_NAME)
+                    .counter();
+            assertThat(counted).isNotNull();
+            assertThat(counted.getId().getTag(BatchConfig.TAG_PERSISTED_STATUS))
+                    .isEqualTo(BatchStatus.COMPLETED.name());
+            assertThat(counted.getId().getTag(BatchConfig.TAG_OBSERVED_STATUS))
+                    .isEqualTo(BatchStatus.COMPLETED.name());
+            assertThat(counted.getId().getTag(BatchConfig.TAG_PUBLICATION))
+                    .isEqualTo(BatchConfig.PUBLICATION_PUBLISHED);
+        }
+
+        @Test
+        @DisplayName("a job that never completed is counted as skipped rather than as a failed boundary")
+        void aJobThatDidNotCompleteIsCountedAsSkipped() {
+            listener = listenerWith(null, null);
+            final JobExecution execution = jobExecution();
+            execution.setStatus(BatchStatus.STOPPED);
+            execution.setExitStatus(ExitStatus.STOPPED);
+
+            listener.afterJob(execution);
+
+            final Counter counted = this.meterRegistry.find(BatchConfig.TERMINAL_VERDICT_METER_NAME)
+                    .counter();
+            assertThat(counted).isNotNull();
+            assertThat(counted.getId().getTag(BatchConfig.TAG_PUBLICATION))
+                    .as("publication was skipped, and a skipped boundary must not read as a failed one")
+                    .isEqualTo(BatchConfig.PUBLICATION_SKIPPED);
+            assertThat(counted.getId().getTag(BatchConfig.TAG_PERSISTED_STATUS))
+                    .isEqualTo(BatchStatus.STOPPED.name());
+        }
+
+        @Test
+        @DisplayName("the durable boundary is observed, carrying the identity that joins it to its job")
+        void theDurableBoundaryIsObserved() throws IOException {
+            // Until this observation existed the object-store work here appeared in NO trace: the
+            // framework's job span is stopped before the callback, and nothing opened one of its own. It
+            // cannot be a child of that span - it is already closed - so it carries identity instead.
+            final StagedGenerationStore store = mock();
+            listener = listenerWith(store, null);
+            final JobExecution execution = jobExecution();
+            final StepExecution step =
+                    stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            StagedGenerationStore.register(step, REJECT_GENERATION_BASE, stageRealGenerationPair(9),
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            when(store.publishRegistered(execution)).thenReturn(List.of());
+
+            listener.afterJob(execution);
+
+            assertThat(this.observedPublications)
+                    .as("one observation over the whole boundary; an empty list is what a no-op registry "
+                            + "produces and is exactly the state this closes")
+                    .singleElement()
+                    .satisfies(context -> {
+                        assertThat(context.getName())
+                                .isEqualTo(BatchConfig.PUBLICATION_OBSERVATION_NAME);
+                        assertThat(lowTag(context, BatchConfig.TAG_JOB)).isEqualTo(JOB_NAME);
+                        assertThat(highTag(context, BatchConfig.TAG_JOB_EXECUTION_ID))
+                                .as("the execution identifier is what joins this work to the job's own "
+                                        + "record, since a parent span is not available")
+                                .isEqualTo(String.valueOf(execution.getId()));
+                        assertThat(lowTag(context, BatchConfig.TAG_ARTIFACT_COUNT)).isEqualTo("1");
+                        assertThat(context.getError()).isNull();
+                    });
+        }
+
+        @Test
+        @DisplayName("a publication that failed records the failure on its own observation")
+        void aFailedPublicationRecordsTheFailureOnItsObservation() throws IOException {
+            final StagedGenerationStore store = mock();
+            listener = listenerWith(store, null);
+            final JobExecution execution = jobExecution();
+            final StepExecution step =
+                    stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            StagedGenerationStore.register(step, REJECT_GENERATION_BASE, stageRealGenerationPair(10),
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            when(store.publishRegistered(execution))
+                    .thenThrow(new IllegalStateException("object store refused publication"));
+
+            listener.afterJob(execution);
+
+            assertThat(this.observedPublications)
+                    .singleElement()
+                    .satisfies(context -> assertThat(context.getError())
+                            .as("a trace has to show the boundary that failed, not only a duration")
+                            .isInstanceOf(IllegalStateException.class));
+        }
+
+        @Test
         @DisplayName("notification failure is warned and never rewrites the established batch verdict")
         void notificationFailureIsNonFatal() {
             final JobCompletionEventPublisher publisher = mock();
@@ -1393,5 +1634,50 @@ public final class BatchConfigTest {
                     .as("a rejected call emits nothing")
                     .isEmpty();
         }
+    }
+    /**
+     * Reads one low-cardinality tag off an observation, or {@code null} when it carries none.
+     *
+     * @param  context the observation context
+     * @param  name    the tag key
+     * @return the tag value, or {@code null}
+     */
+    private static String lowTag(final Observation.Context context, final String name) {
+        for (final KeyValue keyValue : context.getLowCardinalityKeyValues()) {
+            if (name.equals(keyValue.getKey())) {
+                return keyValue.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Reads one high-cardinality tag off an observation, or {@code null} when it carries none.
+     *
+     * @param  context the observation context
+     * @param  name    the tag key
+     * @return the tag value, or {@code null}
+     */
+    private static String highTag(final Observation.Context context, final String name) {
+        for (final KeyValue keyValue : context.getHighCardinalityKeyValues()) {
+            if (name.equals(keyValue.getKey())) {
+                return keyValue.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * A matcher for the default supplier the listener passes to its provider.
+     *
+     * <p>Named and parameterized rather than inlined so the stubbing stays checked: a raw
+     * {@code Supplier} would make the generic call unchecked, and an unchecked operation is a build
+     * failure here, so the type is carried rather than suppressed.
+     *
+     * @param  <T> the provided type
+     * @return a matcher accepting any supplier of that type
+     */
+    private static <T> java.util.function.Supplier<T> anySupplier() {
+        return org.mockito.ArgumentMatchers.any();
     }
 }

@@ -135,10 +135,15 @@ class WebMvcConfigBoundaryTest {
                         // the two account-update components that are required to carry no constraint.
                         "controlCharacterRefusingTextCustomizer",
                         "defaultValidator");
-        assertThat(declared).filteredOn(method -> method.getName().equals("addCorsMappings")
-                        || method.getName().equals("requestBodyLimitFilter"))
-                .hasSize(2)
-                .allSatisfy(method -> assertThat(method.getParameterCount()).isEqualTo(1));
+        assertThat(declared).filteredOn(method -> method.getName().equals("addCorsMappings"))
+                .singleElement()
+                .satisfies(method -> assertThat(method.getParameterCount()).isEqualTo(1));
+        assertThat(declared).filteredOn(method -> method.getName().equals("requestBodyLimitFilter"))
+                .as("the configured ceiling and the registry a refusal is counted on. The second argument "
+                        + "is what makes a refused body visible at all: the filter now reports the "
+                        + "refusal rather than only returning it")
+                .singleElement()
+                .satisfies(method -> assertThat(method.getParameterCount()).isEqualTo(2));
         assertThat(declared).filteredOn(method -> !method.getName().equals("addCorsMappings")
                         && !method.getName().equals("requestBodyLimitFilter"))
                 .allSatisfy(method -> assertThat(method.getParameterCount()).isZero());

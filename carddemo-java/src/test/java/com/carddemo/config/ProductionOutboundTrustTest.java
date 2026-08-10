@@ -85,7 +85,7 @@ class ProductionOutboundTrustTest {
      * Builds an environment carrying a complete, acceptable production posture.
      *
      * <p>Only the settings this guard reads are populated. The required-settings sweep is a separate
-     * check with its own test, and populating its twelve entries here would couple the two.
+     * check with its own test, and populating its entries here would couple the two.
      *
      * @return the environment
      */
@@ -637,6 +637,143 @@ class ProductionOutboundTrustTest {
          */
         private static UnaryOperator<String> onlySets(final String name, final String value) {
             return candidate -> name.equals(candidate) ? value : null;
+        }
+    }
+
+    @Nested
+    @DisplayName("a configured locator must name the account this deployment declares it owns")
+    class ConfiguredResourceOwnership {
+
+        /** A twelve-digit account that is not the declared one. */
+        private static final String FOREIGN_ACCOUNT = "999999999999";
+
+        /** The account the fixture declares. */
+        private static final String OWNED_ACCOUNT = "000000000000";
+
+        /** Constructs the fixture. */
+        ConfiguredResourceOwnership() {
+        }
+
+        @Test
+        @DisplayName("accepts a bare name for both outbound resources, because a name carries no "
+                + "account and therefore cannot name another one")
+        void acceptsBareNames() {
+            final MockEnvironment environment = ownedProduction();
+            environment.setProperty(ProductionConfigurationValidator.QUEUE_DESTINATION_KEY,
+                    BARE_QUEUE);
+            environment.setProperty(ProductionConfigurationValidator.TOPIC_DESTINATION_KEY,
+                    "carddemo-job-notifications");
+
+            ProductionConfigurationValidator.validateConfiguredResourceOwnership(environment);
+        }
+
+        @Test
+        @DisplayName("accepts a locator in the declared account")
+        void acceptsALocatorInTheDeclaredAccount() {
+            final MockEnvironment environment = ownedProduction();
+            environment.setProperty(ProductionConfigurationValidator.QUEUE_DESTINATION_KEY,
+                    locator("sqs", OWNED_ACCOUNT, BARE_QUEUE));
+            environment.setProperty(ProductionConfigurationValidator.TOPIC_DESTINATION_KEY,
+                    locator("sns", OWNED_ACCOUNT, "carddemo-job-notifications"));
+
+            ProductionConfigurationValidator.validateConfiguredResourceOwnership(environment);
+        }
+
+        @Test
+        @DisplayName("refuses a queue locator in another account, before a single bean is created")
+        void refusesAForeignQueueLocator() {
+            final MockEnvironment environment = ownedProduction();
+            environment.setProperty(ProductionConfigurationValidator.QUEUE_DESTINATION_KEY,
+                    locator("sqs", FOREIGN_ACCOUNT, BARE_QUEUE));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateConfiguredResourceOwnership(environment))
+                    .withMessageContaining(ProductionConfigurationValidator.QUEUE_DESTINATION_KEY)
+                    .withMessageContaining("owned by an account other than")
+                    .satisfies(refusal -> assertThat(refusal.getMessage())
+                            .as("a refusal must not repeat the offending account, which would put "
+                                    + "another account's identity into this deployment's log")
+                            .doesNotContain(FOREIGN_ACCOUNT));
+        }
+
+        @Test
+        @DisplayName("refuses a topic locator in another account, which would otherwise receive this "
+                + "deployment's job-completion notices")
+        void refusesAForeignTopicLocator() {
+            final MockEnvironment environment = ownedProduction();
+            environment.setProperty(ProductionConfigurationValidator.TOPIC_DESTINATION_KEY,
+                    locator("sns", FOREIGN_ACCOUNT, "carddemo-job-notifications"));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateConfiguredResourceOwnership(environment))
+                    .withMessageContaining(ProductionConfigurationValidator.TOPIC_DESTINATION_KEY);
+        }
+
+        @Test
+        @DisplayName("refuses a locator of the wrong service, so a topic identifier configured as the "
+                + "queue is not accepted merely for carrying the right account")
+        void refusesALocatorOfTheWrongService() {
+            final MockEnvironment environment = ownedProduction();
+            environment.setProperty(ProductionConfigurationValidator.QUEUE_DESTINATION_KEY,
+                    locator("sns", OWNED_ACCOUNT, BARE_QUEUE));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateConfiguredResourceOwnership(environment));
+        }
+
+        @Test
+        @DisplayName("says nothing when the declared account or the region is absent, because the "
+                + "required-settings sweep has already reported both by variable name")
+        void deferAWhenTheDeclarationIsAbsent() {
+            final MockEnvironment noAccount = new MockEnvironment();
+            noAccount.setActiveProfiles(ProductionConfigurationValidator.PRODUCTION_PROFILE);
+            noAccount.setProperty(ProductionConfigurationValidator.REGION_KEY, REGION);
+            noAccount.setProperty(ProductionConfigurationValidator.QUEUE_DESTINATION_KEY,
+                    locator("sqs", FOREIGN_ACCOUNT, BARE_QUEUE));
+
+            ProductionConfigurationValidator.validateConfiguredResourceOwnership(noAccount);
+
+            final MockEnvironment noRegion = new MockEnvironment();
+            noRegion.setActiveProfiles(ProductionConfigurationValidator.PRODUCTION_PROFILE);
+            noRegion.setProperty(AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY,
+                    OWNED_ACCOUNT);
+            noRegion.setProperty(ProductionConfigurationValidator.QUEUE_DESTINATION_KEY,
+                    locator("sqs", FOREIGN_ACCOUNT, BARE_QUEUE));
+
+            ProductionConfigurationValidator.validateConfiguredResourceOwnership(noRegion);
+        }
+
+        @Test
+        @DisplayName("refuses a null environment rather than reading a field of it")
+        void refusesANullEnvironment() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateConfiguredResourceOwnership(null));
+        }
+
+        /**
+         * @return an environment declaring the owned account, the region and nothing else
+         */
+        private MockEnvironment ownedProduction() {
+            final MockEnvironment environment = new MockEnvironment();
+            environment.setActiveProfiles(ProductionConfigurationValidator.PRODUCTION_PROFILE);
+            environment.setProperty(ProductionConfigurationValidator.REGION_KEY, REGION);
+            environment.setProperty(AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY,
+                    OWNED_ACCOUNT);
+            return environment;
+        }
+
+        /**
+         * @param  service the service segment
+         * @param  account the account segment
+         * @param  name    the resource segment
+         * @return the composed resource identifier
+         */
+        private static String locator(final String service, final String account, final String name) {
+            return "arn:aws:" + service + ":" + REGION + ":" + account + ":" + name;
         }
     }
 }

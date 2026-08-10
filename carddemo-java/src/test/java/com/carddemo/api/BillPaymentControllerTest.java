@@ -298,7 +298,7 @@ class BillPaymentControllerTest {
             assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPattern())
                     .as("the ordinary entitlement names one rule over the API root, which requires either "
                             + "sign-on authority by name rather than merely an established identity")
-                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
+                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
         }
 
         @Test

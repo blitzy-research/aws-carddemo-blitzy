@@ -76,19 +76,19 @@ final class RecordLayoutEntityTest {
     /** {@code RECLN 300}, {@code [app/cpy/CVACT01Y.cpy]}. */
     private static final int ORACLE_ACCOUNT_RECORD_LENGTH = 300;
 
-    /** {@code RECLN = 500}, {@code [app/cpy/CVCUS01Y.cpy]}. */
+    /** Record length 500, {@code [app/cpy/CVCUS01Y.cpy]}. */
     private static final int ORACLE_CUSTOMER_RECORD_LENGTH = 500;
 
-    /** {@code RECLN = 350}, {@code [app/cpy/CVTRA06Y.cpy]}. */
+    /** Record length 350, {@code [app/cpy/CVTRA06Y.cpy]}. */
     private static final int ORACLE_DAILY_TRANSACTION_RECORD_LENGTH = 350;
 
     /** Eighty bytes, {@code [app/cpy/CSUSR01Y.cpy:L18-L23]}. */
     private static final int ORACLE_USER_SECURITY_RECORD_LENGTH = 80;
 
-    /** {@code RECLN = 50}, {@code [app/cpy/CVTRA02Y.cpy]}. */
+    /** Record length 50, {@code [app/cpy/CVTRA02Y.cpy]}. */
     private static final int ORACLE_DISCLOSURE_GROUP_RECORD_LENGTH = 50;
 
-    /** {@code RECLN = 60}, shared by the transaction-type and transaction-category records. */
+    /** Record length 60, shared by the transaction-type and transaction-category records. */
     private static final int ORACLE_SIXTY_BYTE_RECORD_LENGTH = 60;
 
     /** A {@code PIC S9(10)V99} zoned image occupies twelve bytes; the column takes precision twelve. */
@@ -393,7 +393,7 @@ final class RecordLayoutEntityTest {
         @Test
         @DisplayName("the overlimit basis is evaluated strictly left to right into a two-decimal field")
         void theOverlimitBasisIsEvaluatedLeftToRight() {
-            // COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT.
+            // The over-limit basis is the cycle credit less the cycle debit plus the daily amount.
             // Reproduced here to record that reordering changes which transactions are rejected.
             final Account account = anAccount();
             final BigDecimal amount = new BigDecimal("10.00");
@@ -902,7 +902,7 @@ final class RecordLayoutEntityTest {
         @Test
         @DisplayName("the monthly interest expression is preserved operand for operand")
         void theMonthlyInterestExpressionIsPreserved() {
-            // COMPUTE WS-MONTHLY-INT = ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200. Multiplying first and
+            // The monthly interest is the category balance multiplied by the rate, then divided by 1200. Multiplying first and
             // dividing second is the contract: rearranging moves the truncation point.
             final BigDecimal balance = new BigDecimal("1000.00");
             final BigDecimal rate = new BigDecimal("12.50");

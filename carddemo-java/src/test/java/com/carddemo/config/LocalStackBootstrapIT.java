@@ -18,9 +18,11 @@ package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.support.AbstractLocalStackIT;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -100,18 +102,46 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * deduplication attribute read back here is the resource-side half of DL-043 and the queue's name is
  * DL-045.
  *
+ * <h2>Why this tier is bounded, and by figures it does not own</h2>
+ *
+ * <p>Everything here crosses a process boundary: a container is started, a shell script is executed inside
+ * it, and three cloud clients call it over a socket. Every one of those can stall rather than fail, and a
+ * stalled build reports nothing at all. Two of the methods below carried their own budget and the rest,
+ * including the lifecycle method that runs the hook, carried none - so a wedged emulator hung the build at
+ * the first unbounded call, and the clients themselves had no whole-call or per-attempt budget to fall back
+ * on.
+ *
+ * <p>Both bounds now come from {@link com.carddemo.support.AbstractLocalStackIT}: its class-level figure is
+ * applied here as a class-level {@code @Timeout} and again on the lifecycle method, which a class-level
+ * annotation does not cover, and its bounded client configuration is applied to all three clients. The
+ * figures are referenced rather than restated so that this tier and the shared tier cannot drift apart. This
+ * class deliberately does not extend that base - it starts an emulator of its own, with the provisioning
+ * hook copied in before start - which is exactly why the base's two levers are public.
+ *
  * <p><strong>Provenance.</strong> Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
  * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("AWS bootstrap, executed: the hook runs, provisions three resources, and reruns cleanly")
+@Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
 class LocalStackBootstrapIT {
 
     /**
-     * The emulator image, pinned to the tag the stack definition pins. Its companion asserts that
-     * this literal and the stack definition's agree, so a drift between them is a test failure rather
-     * than a silently different environment.
+     * The emulator image, pinned by tag <em>and</em> by content digest, exactly as the stack definition and
+     * the continuous-integration workflow pin it. Its companion asserts that this reference and the stack
+     * definition's agree, so a drift between them is a test failure rather than a silently different
+     * environment - and the digest is what makes that agreement mean one image rather than one label.
      */
-    private static final String EMULATOR_IMAGE = "localstack/localstack:4.14.0";
+    private static final String EMULATOR_IMAGE = "localstack/localstack:4.14.0@sha256:"
+            + "3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a";
+
+    /**
+     * The repository the pinned reference denotes, named for the container library's compatibility check.
+     *
+     * <p>Required by the digest rather than by the image: the library recognises the bare tagged reference
+     * and treats the digest-bearing one as an unknown substitute, because it compares the whole reference
+     * against the name it was written for.
+     */
+    private static final String EMULATOR_REPOSITORY = "localstack/localstack";
 
     /** The hook as it exists in the module. Nothing about it is copied or reimplemented here. */
     private static final String HOOK_ON_HOST = "localstack/init/01-create-aws-resources.sh";
@@ -161,7 +191,8 @@ class LocalStackBootstrapIT {
      */
     private static LocalStackContainer startEmulator() {
         final LocalStackContainer container =
-                new LocalStackContainer(DockerImageName.parse(EMULATOR_IMAGE))
+                new LocalStackContainer(DockerImageName.parse(EMULATOR_IMAGE)
+                        .asCompatibleSubstituteFor(EMULATOR_REPOSITORY))
                         .withServices(LocalStackContainer.Service.S3,
                                 LocalStackContainer.Service.SQS,
                                 LocalStackContainer.Service.SNS)
@@ -183,6 +214,7 @@ class LocalStackBootstrapIT {
      * @throws InterruptedException if the invocation is interrupted
      */
     @BeforeAll
+    @Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
     static void runTheHookOnce() throws IOException, InterruptedException {
         firstRun = LOCALSTACK.execInContainer("bash", HOOK_IN_CONTAINER);
         assertThat(firstRun.getExitCode())
@@ -198,6 +230,7 @@ class LocalStackBootstrapIT {
      */
     private static S3Client s3Client() {
         return S3Client.builder()
+                .overrideConfiguration(AbstractLocalStackIT.boundedCallConfiguration())
                 .endpointOverride(LOCALSTACK.getEndpoint())
                 .region(Region.of(LOCALSTACK.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
@@ -213,6 +246,7 @@ class LocalStackBootstrapIT {
      */
     private static SqsClient sqsClient() {
         return SqsClient.builder()
+                .overrideConfiguration(AbstractLocalStackIT.boundedCallConfiguration())
                 .endpointOverride(LOCALSTACK.getEndpoint())
                 .region(Region.of(LOCALSTACK.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
@@ -227,6 +261,7 @@ class LocalStackBootstrapIT {
      */
     private static SnsClient snsClient() {
         return SnsClient.builder()
+                .overrideConfiguration(AbstractLocalStackIT.boundedCallConfiguration())
                 .endpointOverride(LOCALSTACK.getEndpoint())
                 .region(Region.of(LOCALSTACK.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
@@ -475,7 +510,8 @@ class LocalStackBootstrapIT {
     final class RunningTheHookASecondTime {
 
         @Test
-        @Timeout(120)
+        @Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS,
+            unit = TimeUnit.SECONDS)
         @DisplayName("succeeds, reports each resource already present, and changes nothing")
         void succeedsReportsAlreadyPresentAndChangesNothing()
                 throws IOException, InterruptedException {
@@ -527,7 +563,8 @@ class LocalStackBootstrapIT {
         }
 
         @Test
-        @Timeout(120)
+        @Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS,
+            unit = TimeUnit.SECONDS)
         @DisplayName("leaves exactly one of each resource, never a duplicate")
         void leavesExactlyOneOfEachResource() throws IOException, InterruptedException {
             // Runs the hook again and then counts. A duplicate would not necessarily fail any single

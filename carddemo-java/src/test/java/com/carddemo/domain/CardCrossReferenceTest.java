@@ -18,7 +18,6 @@ package com.carddemo.domain;
 
 import com.carddemo.support.SensitiveValues;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

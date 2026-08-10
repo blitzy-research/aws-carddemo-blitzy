@@ -53,9 +53,11 @@ import com.carddemo.service.TransactionPostingService;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.support.AbstractLocalStackIT.ObjectVersionRef;
 import com.carddemo.support.AbstractPostgresAndLocalStackIT;
+import com.carddemo.support.GateEvidenceProvenance;
 import com.carddemo.support.IsolatedStagingRoot;
 import com.carddemo.support.LegacyRejectReasons;
 import com.carddemo.support.RunScopedPerformanceRecorder;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -504,6 +506,18 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * refused before an execution is created.
      */
     private final List<Long> ownedExecutionIds = new ArrayList<>();
+
+    /**
+     * How long one launched job is given to reach a terminal state before this class calls it stalled.
+     *
+     * <p>A stall budget rather than a performance target: the recorded figures this class publishes are the
+     * ones the meters report, and none of them is compared against this. It is generous because the
+     * pipeline's own jobs read the whole seeded estate on a shared server.
+     */
+    private static final long LAUNCH_COMPLETION_BUDGET_MILLIS = 300_000L;
+
+    /** How often the framework's metadata is re-read while a launched job runs. */
+    private static final long LAUNCH_POLL_INTERVAL_MILLIS = 50L;
 
     /**
      * Every object version and delete marker the shared staging bucket held before this run began.
@@ -1249,6 +1263,42 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @DisplayName("Gate 1 - the reject dataset the run produced is byte-identical to daily-reject.txt")
     void theRejectDatasetMatchesItsGolden() throws IOException {
         assertGolden(goldenContract(REJECT_BASE));
+    }
+
+    @Test
+    @Order(11)
+    @DisplayName("Gate 1 - the leading 350 bytes of every reject record are a LINE OF THE STAGED INPUT, "
+            + "byte for byte, so the image survives the reader, the validation and the writer")
+    void everyRejectRecordEchoesALineOfTheStagedInput() throws IOException {
+        final byte[] staged = Files.readAllBytes(stagingRoot().resolve(LANDING_DATASET));
+        final Set<String> inputRecords = new LinkedHashSet<>();
+        for (int offset = 0; offset + SOURCE_IMAGE_WIDTH <= staged.length;
+                offset += SOURCE_IMAGE_WIDTH + 1) {
+            inputRecords.add(new String(staged, offset, SOURCE_IMAGE_WIDTH, StandardCharsets.US_ASCII));
+        }
+        assertThat(inputRecords)
+                .as("the staged dataset really is %s distinct records of %s bytes plus a terminator each",
+                        Integer.valueOf(INPUT_RECORD_COUNT), Integer.valueOf(SOURCE_IMAGE_WIDTH))
+                .hasSize(INPUT_RECORD_COUNT);
+
+        final byte[] rejects = run().artefact(REJECT_BASE);
+        assertThat(rejects.length % REJECT_WIDTH).isZero();
+        assertThat(rejects.length / REJECT_WIDTH).isPositive();
+
+        // THE END-TO-END BYTE COPY. The legacy write is MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA
+        // [app/cbl/CBTRN02C.cbl:L447] - the record area the READ filled. So each reject record's leading
+        // segment must be an input line VERBATIM, not a rendering of the fields it decoded to. A single
+        // defensive copy, re-map or reload anywhere between the reader and the writer would break this
+        // and no unit test of the writer alone could see it. Recorded as DL-295.
+        for (int record = 0; record < rejects.length / REJECT_WIDTH; record++) {
+            final String segment = new String(rejects, record * REJECT_WIDTH, SOURCE_IMAGE_WIDTH,
+                    StandardCharsets.US_ASCII);
+            assertThat(inputRecords)
+                    .as("reject record %s carries a leading segment that is not any line of the staged "
+                            + "input, so something between the reader and the writer altered it",
+                            Integer.valueOf(record))
+                    .contains(segment);
+        }
     }
 
     @Test
@@ -2092,12 +2142,19 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     // ===============================================================================================
 
     /**
-     * Launches one registered job and records its execution.
+     * Launches one registered job, waits for it to reach a terminal state, and records its execution.
+     *
+     * <p><strong>The wait is part of the launch contract rather than a concession to timing.</strong> The
+     * coordinator reserves the execution on the calling thread and runs the job on its own bounded workers,
+     * so the identifier comes back while the run is still in flight - which is exactly what stops a long
+     * job from holding a request thread. A caller that needs the outcome asks the store for it, and that is
+     * what this does: it polls the framework's own metadata until the execution is no longer running, which
+     * is the same thing the status endpoint an operator would use reports.
      *
      * @param  jobName    the job's registered name
      * @param  parameters the caller parameters the job declares
      * @return the completed execution
-     * @throws Exception if the launcher refuses the launch
+     * @throws Exception if the launcher refuses the launch or the run does not finish in time
      */
     private JobExecution launch(final String jobName, final Map<String, String> parameters)
             throws Exception {
@@ -2118,12 +2175,46 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
         // can all fail. Teardown works from this ledger, so a setup that gets three launches in has three
         // launches cleaned up.
         this.ownedExecutionIds.add(Long.valueOf(executionId));
-        final JobExecution execution = Objects.requireNonNull(
-                this.jobExplorer.getJobExecution(Long.valueOf(executionId)),
-                () -> "the coordinator reported execution " + executionId + " but the store has none");
+        final JobExecution execution = awaitTerminalState(jobName, executionId);
         assertThat(execution.getStatus())
                 .as("%s must complete; failures were %s", jobName, execution.getAllFailureExceptions())
                 .isEqualTo(BatchStatus.COMPLETED);
+        return execution;
+    }
+
+    /**
+     * Reads one execution out of the framework's metadata until it is no longer running.
+     *
+     * <p>Polls rather than waits on the launcher, because polling is the only thing a client of the launch
+     * surface can do: the coordinator hands the job to a worker and publishes nothing else to wait on. The
+     * budget is generous rather than tight - it is the point at which this class concludes the run has
+     * stalled, not a duration any job is asked to meet - and the interval is short so that a fast job is
+     * not held up by the polling itself.
+     *
+     * @param  jobName     the job's registered name, for the diagnostic
+     * @param  executionId the identifier the launch answered with
+     * @return the execution in its terminal state
+     * @throws InterruptedException if the wait is interrupted
+     */
+    private JobExecution awaitTerminalState(final String jobName, final long executionId)
+            throws InterruptedException {
+
+        final long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(LAUNCH_COMPLETION_BUDGET_MILLIS);
+        JobExecution execution = Objects.requireNonNull(
+                this.jobExplorer.getJobExecution(Long.valueOf(executionId)),
+                () -> "the coordinator reported execution " + executionId + " but the store has none");
+        while (execution.isRunning() && System.nanoTime() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(LAUNCH_POLL_INTERVAL_MILLIS);
+            execution = Objects.requireNonNull(
+                    this.jobExplorer.getJobExecution(Long.valueOf(executionId)),
+                    () -> "execution " + executionId + " disappeared from the store while it ran");
+        }
+        assertThat(execution.isRunning())
+                .as("%s (execution %d) was still running after %d ms, so the launch worker never"
+                                + " finished it", jobName, Long.valueOf(executionId),
+                        Long.valueOf(LAUNCH_COMPLETION_BUDGET_MILLIS))
+                .isFalse();
         return execution;
     }
 
@@ -2230,11 +2321,9 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * between - no decoding, no normalising, no trimming - and a difference is reported with the record
      * it falls in and the offset it falls at, both within the record and within the whole artefact.
      *
-     * @param  logicalBase  the base whose captured artefact is compared
-     * @param  goldenName   the committed golden's file name
-     * @param  recordWidth  the record width, which is the whole stride
-     * @param  recordCount  the record count both sides must carry
-     * @param  inputName    the input file name the comparison report names as the run's source
+     * @param  contract the artefact to compare, naming the base whose captured output is read, the
+     *                  committed golden's file name, the record width that is the whole stride, and the
+     *                  record count both sides must carry
      * @throws IOException if the golden cannot be read
      */
     private void assertGolden(final GoldenContract contract) throws IOException {
@@ -2257,23 +2346,49 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
                         produced.length / recordWidth, goldenName, recordCount)
                 .isEqualTo(recordCount);
 
+        // A MISMATCH IS LOCATED, NOT RENDERED. Both assertions below used to print their subjects: the
+        // first the whole differing record from each side, the second the whole artefact as a byte
+        // array. These are production-representative records - a transaction carries a card number and
+        // an amount, a statement carries a customer's name and address - so a single parity regression
+        // published up to a hundred and twenty-nine kilobytes of representative customer data into the
+        // build log, and did so in CI where the log outlives the run.
+        //
+        // Everything a person needs to diagnose the difference is a coordinate and two bytes: which
+        // record, which offset inside it, which absolute offset, and what each side holds there. The
+        // fingerprints identify the two records without disclosing either, and are decisive for
+        // "these differ" because equal records fingerprint equally.
         final int difference = firstDifferingOffset(produced, golden);
         if (difference >= 0) {
             final int recordIndex = difference / recordWidth;
             final int columnIndex = difference % recordWidth;
-            assertThat(new String(produced, recordIndex * recordWidth, recordWidth,
-                    StandardCharsets.US_ASCII))
+            final String producedRecord = new String(produced, recordIndex * recordWidth, recordWidth,
+                    StandardCharsets.US_ASCII);
+            final String goldenRecord = new String(golden, recordIndex * recordWidth, recordWidth,
+                    StandardCharsets.US_ASCII);
+            assertThat(SensitiveValues.fingerprint(producedRecord))
                     .as("%s: first difference in record %d at byte offset %d within the record "
                             + "(1-based column %d, absolute offset %d); expected byte 0x%02X, produced "
-                            + "0x%02X", goldenName, recordIndex, columnIndex, columnIndex + 1,
+                            + "0x%02X. Record %d is %s in the golden and %s in the run - re-run with the "
+                            + "artefact in hand to read it, because the record itself is "
+                            + "production-representative and is deliberately not printed here",
+                            goldenName, recordIndex, columnIndex, columnIndex + 1,
                             difference, Byte.valueOf(golden[difference]),
-                            Byte.valueOf(produced[difference]))
-                    .isEqualTo(new String(golden, recordIndex * recordWidth, recordWidth,
-                            StandardCharsets.US_ASCII));
+                            Byte.valueOf(produced[difference]), recordIndex,
+                            SensitiveValues.describe(goldenRecord),
+                            SensitiveValues.describe(producedRecord))
+                    .isEqualTo(SensitiveValues.fingerprint(goldenRecord));
         }
-        assertThat(produced)
-                .as("%s must be reproduced byte for byte, whole", goldenName)
-                .isEqualTo(golden);
+        // Equivalent to array equality and prints an integer instead of two artefacts: the geometry
+        // assertions above have already fixed both lengths at recordCount * recordWidth, and a scan
+        // that finds no differing offset over equal lengths has compared every byte.
+        assertThat(produced.length)
+                .as("%s must be reproduced byte for byte, whole, so the two lengths agree first",
+                        goldenName)
+                .isEqualTo(golden.length);
+        assertThat(firstDifferingOffset(produced, golden))
+                .as("%s must be reproduced byte for byte, whole: no offset may differ, and -1 is what a "
+                        + "complete scan over equal lengths returns", goldenName)
+                .isEqualTo(-1);
 
         // AND the row the snapshot recorded for this contract agrees with what was just measured. The row
         // is what the Gate 1 report publishes, so a row that disagreed with the comparison would publish
@@ -2746,6 +2861,12 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
                 .append("     SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp")
                 .append(newline)
                 .append("     CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. -->")
+                .append(newline).append(newline)
+                // The estate provenance above is a constant of this migration and is identical in every
+                // file this module will ever emit. This line is the part that differs: which build and
+                // which run produced this comparison, so a published bundle can be attributed to the
+                // code it compared. See docs/decision-log.md DL-315.
+                .append(GateEvidenceProvenance.stamp())
                 .append(newline).append(newline)
                 .append("| Contract | Input | Expected output | Width | Expected records | ")
                 .append("Actual records | Expected bytes | Actual bytes | Status |").append(newline)

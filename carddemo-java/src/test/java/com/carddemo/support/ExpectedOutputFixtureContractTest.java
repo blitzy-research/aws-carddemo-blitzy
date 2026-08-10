@@ -830,8 +830,11 @@ final class ExpectedOutputFixtureContractTest {
             writer.update(context);
             writer.close();
 
-            assertThat(writer.recordsWritten()).isEqualTo(REJECT_RECORD_COUNT);
-            return Files.readAllBytes(target);
+            final byte[] emitted = Files.readAllBytes(target);
+            assertThat(emitted)
+                    .as("the writer emitted one whole record per rejected transaction")
+                    .hasSize(REJECT_RECORD_COUNT * RejectRecordWriter.REJECT_RECORD_LENGTH);
+            return emitted;
         }
     }
 

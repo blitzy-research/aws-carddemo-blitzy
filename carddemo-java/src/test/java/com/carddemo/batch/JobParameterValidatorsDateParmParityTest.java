@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Verifies that {@link JobParameterValidators#parseDateParmRecord(String)} reproduces the legacy
  * eighty-to-twenty-one byte move rather than imposing a stricter contract of its own.
  *
- * <p>The legacy read is {@code READ DATE-PARMS-FILE INTO WS-DATEPARM-RECORD} at
+ * <p>The legacy read takes DATE-PARMS-FILE into WS-DATEPARM-RECORD at
  * {@code [app/cbl/CBTRN03C.cbl:L221]}. The sending item is the record area
  * {@code FD-DATEPARM-REC PIC X(80)} at {@code [app/cbl/CBTRN03C.cbl:L88]}; the receiving item is the
  * group {@code WS-DATEPARM-RECORD} at {@code [app/cbl/CBTRN03C.cbl:L122]}, which is a ten-character

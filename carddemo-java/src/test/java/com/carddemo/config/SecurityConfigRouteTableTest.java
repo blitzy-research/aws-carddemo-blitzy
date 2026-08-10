@@ -490,7 +490,7 @@ class SecurityConfigRouteTableTest {
             // authority minted anywhere in the process to every ordinary business route. Naming the region
             // is what lets the chain state the two authorities that may pass.
             assertThat(Gating.AUTHENTICATED.enforcementPattern())
-                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
+                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
             assertThat(TransactionRoute.enforcementPatternsFor(Gating.AUTHENTICATED))
                     .as("the twelve ordinary entries share one region, so they yield one rule between them")
                     .containsExactly(SecurityConfig.API_PATH_PREFIX + "/**");
@@ -504,7 +504,7 @@ class SecurityConfigRouteTableTest {
                     .allSatisfy(gating -> assertThat(gating.enforcementPattern())
                             .as("%s would otherwise be enforced by whatever the closing rule happens to "
                                     + "say", gating)
-                            .isPresent());
+                            .isNotBlank());
         }
 
         @Test
@@ -522,11 +522,11 @@ class SecurityConfigRouteTableTest {
         @DisplayName("name a pattern for each of the three entitlements, narrowest first")
         void nameAPatternForEachOfTheThreeEntitlements() {
             assertThat(Gating.ANONYMOUS.enforcementPattern())
-                    .contains(SecurityConfig.SIGN_ON_PATH);
+                    .isEqualTo(SecurityConfig.SIGN_ON_PATH);
             assertThat(Gating.ADMINISTRATIVE.enforcementPattern())
-                    .contains(SecurityConfig.ADMIN_PATH_PREFIX + "/**");
+                    .isEqualTo(SecurityConfig.ADMIN_PATH_PREFIX + "/**");
             assertThat(Gating.AUTHENTICATED.enforcementPattern())
-                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
+                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
             // The ordinary region contains the other two, which is why chain order rather than pattern
             // disjointness is what keeps the sign-on route anonymous and the administrative prefix gated.
             assertThat(SecurityConfig.SIGN_ON_PATH)
@@ -583,8 +583,7 @@ class SecurityConfigRouteTableTest {
                     .as("a fabricated row would corrupt an audit whose value is matching the resource "
                             + "definition exactly")
                     .noneSatisfy(route -> assertThat(route.getGating().enforcementPattern())
-                            .hasValueSatisfying(pattern -> assertThat(pattern)
-                                    .startsWith(SecurityConfig.BATCH_PATH_PREFIX)));
+                            .startsWith(SecurityConfig.BATCH_PATH_PREFIX));
         }
     }
 
