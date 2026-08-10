@@ -3490,10 +3490,10 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (job, artifacts, error) (carddemo_batch_job_publication_seconds_max{job=\"$job\"})",
+          "expr": "max by (batchJob, artifacts, error) (carddemo_batch_job_publication_seconds_max{job=\"$job\"})",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "publish {{job}} {{artifacts}} {{error}}",
+          "legendFormat": "publish {{batchJob}} {{artifacts}} {{error}}",
           "range": true,
           "refId": "A"
         },
@@ -3519,7 +3519,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "The control plane. One series per job and outcome for a launch request and for a status request, so a caller repeatedly asking for a job that does not exist, or repeatedly failing validation, is visible without reading a log. The job label is bounded to the allow-list plus one placeholder for anything outside it, so an unknown job name cannot create a series.",
+      "description": "The control plane. One series per job and outcome for a launch request and for a status request, so a caller repeatedly asking for a job that does not exist, or repeatedly failing validation, is visible without reading a log. The batchJob label is bounded to the allow-list plus one placeholder for anything outside it, so an unknown job name cannot create a series. It is named batchJob and not job because Prometheus stamps its own job label - the scrape target - onto every series it collects, so grouping by job would collapse every batch job onto carddemo-app; the job=\"$job\" selector below is the correct use of that label and is retained. See docs/decision-log.md DL-338.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3597,10 +3597,10 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (job, outcome) (rate(carddemo_batch_joblaunch_request_seconds_count{job=\"$job\"}[5m]))",
+          "expr": "sum by (batchJob, outcome) (rate(carddemo_batch_joblaunch_request_seconds_count{job=\"$job\"}[5m]))",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "launch {{job}} {{outcome}}",
+          "legendFormat": "launch {{batchJob}} {{outcome}}",
           "range": true,
           "refId": "A"
         },
@@ -3610,10 +3610,10 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (job, outcome) (rate(carddemo_batch_jobstatus_request_seconds_count{job=\"$job\"}[5m]))",
+          "expr": "sum by (batchJob, outcome) (rate(carddemo_batch_jobstatus_request_seconds_count{job=\"$job\"}[5m]))",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "status {{job}} {{outcome}}",
+          "legendFormat": "status {{batchJob}} {{outcome}}",
           "range": true,
           "refId": "B"
         }
@@ -3704,10 +3704,10 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (job, outcome) (carddemo_batch_joblaunch_request_seconds_max{job=\"$job\"})",
+          "expr": "max by (batchJob, outcome) (carddemo_batch_joblaunch_request_seconds_max{job=\"$job\"})",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "launch {{job}} {{outcome}} max",
+          "legendFormat": "launch {{batchJob}} {{outcome}} max",
           "range": true,
           "refId": "A"
         },
@@ -3717,10 +3717,10 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (job, outcome) (carddemo_batch_jobstatus_request_seconds_max{job=\"$job\"})",
+          "expr": "max by (batchJob, outcome) (carddemo_batch_jobstatus_request_seconds_max{job=\"$job\"})",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "status {{job}} {{outcome}} max",
+          "legendFormat": "status {{batchJob}} {{outcome}} max",
           "range": true,
           "refId": "B"
         }

@@ -16,9 +16,11 @@
  */
 package com.carddemo.config;
 
+import static org.assertj.core.api.Assertions.as;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.InstanceOfAssertFactories.STRING;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import com.carddemo.config.ProductionConfigurationValidator.RequiredSetting;
@@ -41,6 +43,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.MapPropertySource;
@@ -126,6 +129,18 @@ final class ProductionConfigurationValidatorTest {
      * value one character below it is refused, and padding cannot be used to reach it.
      */
     private static final String OPERATOR_CREDENTIAL_VARIABLE = "CARDDEMO_MANAGEMENT_TOKEN";
+
+    /**
+     * The one data source location a production deployment may declare.
+     *
+     * <p>Every rule the transport check applies is satisfied here: the PostgreSQL sub-protocol, a named
+     * non-loopback host, an explicit port and database, {@code sslmode=verify-full}, no embedded
+     * credential and no SSL factory override. Held as a constant so that the accepting cases and the
+     * rejecting cases below differ in exactly one component each, which is what makes each rejection
+     * attributable to the component it names.
+     */
+    private static final String AUTHENTICATED_DATABASE_URL =
+            "jdbc:postgresql://db.production.example:5432/carddemo?sslmode=verify-full";
 
     /**
      * Builds the text that satisfies one variable.
@@ -356,17 +371,26 @@ final class ProductionConfigurationValidatorTest {
         }
 
         @Test
-        @DisplayName("a value supplied as a literal rather than through a variable is accepted too")
+        @DisplayName("a value supplied as a literal rather than through a variable is accepted too, and "
+                + "the literal used is the authenticated production form")
         void aLiterallyDeclaredValueIsAccepted() {
             final Map<String, String> variables = everyRequiredVariable();
             variables.remove("CARDDEMO_DB_URL");
             final StandardEnvironment environment = environmentWith(variables);
             environment.getPropertySources().addFirst(new MapPropertySource("literal-override",
-                    Map.<String, Object>of("spring.datasource.url", "jdbc:postgresql://named/db")));
+                    Map.<String, Object>of("spring.datasource.url", AUTHENTICATED_DATABASE_URL)));
 
             assertThatCode(() -> ProductionConfigurationValidator.validateRequiredSettings(environment))
                     .as("the check judges whether a value is usable, not how it came to be declared; a "
                             + "deployment that overrides the key outright is not missing anything")
+                    .doesNotThrowAnyException();
+            assertThatCode(() -> ProductionConfigurationValidator.validateDatabaseTransport(environment))
+                    .as("THE FIXTURE ITSELF IS THE FINDING THIS ADDRESSES. This case used to supply "
+                            + "jdbc:postgresql://named/db - a URL with no transport rule at all, which "
+                            + "the driver reads as sslmode=prefer and therefore as a channel that may "
+                            + "silently fall back to plaintext. A suite whose own example of a good "
+                            + "production value was a downgradeable one had no way to notice the gap, so "
+                            + "the literal is now the authenticated form and both checks are run on it")
                     .doesNotThrowAnyException();
         }
 
@@ -544,6 +568,315 @@ final class ProductionConfigurationValidatorTest {
                 return expected.getMessage();
             }
             throw new AssertionError("The check accepted an environment it should have refused");
+        }
+    }
+
+    @Nested
+    @DisplayName("The production data source is held to an authenticated transport")
+    class TheProductionDataSourceIsHeldToAnAuthenticatedTransport {
+
+        /** Creates the nested test class. */
+        TheProductionDataSourceIsHeldToAnAuthenticatedTransport() {
+        }
+
+        /**
+         * Builds an environment whose data source location is the supplied text.
+         *
+         * <p>Every other required variable is satisfied, so a refusal can only come from the location.
+         *
+         * @param  url the location to declare
+         * @return an environment carrying the delivered documents and that location
+         */
+        private StandardEnvironment environmentWithUrl(final String url) {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put("CARDDEMO_DB_URL", url);
+            return environmentWith(variables);
+        }
+
+        @Test
+        @DisplayName("the authenticated production form is accepted, so the rule refuses what is weaker "
+                + "rather than everything")
+        void theAuthenticatedFormIsAccepted() {
+            assertThatCode(() -> ProductionConfigurationValidator
+                    .validateDatabaseTransport(environmentWithUrl(AUTHENTICATED_DATABASE_URL)))
+                    .as("a named non-loopback host, an explicit port and database, and "
+                            + "sslmode=verify-full is the whole of the requirement; a check that refused "
+                            + "this would be a different rule from the one documented")
+                    .doesNotThrowAnyException();
+        }
+
+        @ParameterizedTest(name = "{0} is accepted")
+        @ValueSource(strings = {
+            "jdbc:postgresql://db.production.example:5432/carddemo?sslmode=VERIFY-FULL",
+            "jdbc:postgresql://db.production.example:5432/carddemo?sslMode=verify-full",
+            "jdbc:postgresql://db.production.example/carddemo?sslmode=verify-full&ApplicationName=cd",
+            "jdbc:postgresql://db.production.example:5432/carddemo?connectTimeout=10"
+                    + "&sslmode=verify-full&sslrootcert=/etc/ssl/root.crt",
+            "JDBC:POSTGRESQL://db.production.example:5432/carddemo?sslmode=verify-full",
+        })
+        @DisplayName("the equivalent spellings a real deployment produces are accepted, because the "
+                + "driver reads them equivalently")
+        void theEquivalentSpellingsAreAccepted(final String url) {
+            assertThatCode(() -> ProductionConfigurationValidator
+                    .validateDatabaseTransport(environmentWithUrl(url)))
+                    .as("the driver reads the parameter name and its value case-insensitively, accepts "
+                            + "further parameters beside the mode, and does not require an explicit "
+                            + "port. A check stricter than the driver would refuse a correct deployment "
+                            + "for a reason the driver does not have")
+                    .doesNotThrowAnyException();
+        }
+
+        @ParameterizedTest(name = "sslmode={0} is refused")
+        @ValueSource(strings = {"disable", "allow", "prefer", "require", "verify-ca"})
+        @DisplayName("every weaker transport rule the driver accepts is refused, and the refusal names "
+                + "the guarantee that rule gives up")
+        void everyWeakerModeIsRefused(final String mode) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("%s is one of the driver's own modes and each drops a different guarantee: "
+                            + "encryption, chain validation or host-name validation. Refusing them as a "
+                            + "class would tell a deployer their value was wrong without telling them "
+                            + "what it cost", mode)
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                            environmentWithUrl("jdbc:postgresql://db.production.example:5432/carddemo"
+                                    + "?sslmode=" + mode)))
+                    .withMessageContaining("spring.datasource.url")
+                    .withMessageContaining(ProductionConfigurationValidator
+                            .DATABASE_REFUSED_SSL_MODES.get(mode))
+                    .withMessageContaining(ProductionConfigurationValidator
+                            .DATABASE_REQUIRED_SSL_MODE);
+        }
+
+        @Test
+        @DisplayName("every mode the driver accepts is either the required one or carries a recorded "
+                + "reason, so the refusal above can never be silent about one")
+        void everyDriverModeIsAccountedFor() {
+            final Set<String> accountedFor =
+                    new LinkedHashSet<>(ProductionConfigurationValidator.DATABASE_REFUSED_SSL_MODES
+                            .keySet());
+            accountedFor.add(ProductionConfigurationValidator.DATABASE_REQUIRED_SSL_MODE);
+
+            assertThat(accountedFor)
+                    .as("these are the six modes the PostgreSQL driver defines. A mode the driver "
+                            + "accepts and this map does not would still be refused, but with the "
+                            + "unrecognised-value wording rather than with what it gives up")
+                    .containsExactlyInAnyOrder("disable", "allow", "prefer", "require", "verify-ca",
+                            "verify-full");
+        }
+
+        @Test
+        @DisplayName("an ABSENT transport rule is refused, because the driver's own default is prefer "
+                + "and a silent plaintext fallback is what this check exists for")
+        void anAbsentModeIsRefused() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("THIS IS THE FINDING. jdbc:postgresql://named/db declares no transport rule, "
+                            + "and the driver defaults sslmode to prefer - which asks for encryption "
+                            + "and falls back to a plaintext session WITHOUT REPORTING IT. Accepting "
+                            + "this URL is accepting a downgradeable, unauthenticated channel that "
+                            + "carries every credential and every sealed identifier this deployment "
+                            + "reads")
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                            environmentWithUrl("jdbc:postgresql://named/db")))
+                    .withMessageContaining("must declare sslmode=verify-full")
+                    .withMessageContaining("WITHOUT REPORTING IT");
+        }
+
+        @Test
+        @DisplayName("a transport rule declared with an empty value is refused as absent rather than "
+                + "read as satisfied")
+        void anEmptyModeIsRefusedAsAbsent() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("sslmode= binds an empty string, which the check must not read as a declared "
+                            + "mode; it is the same posture as omitting the parameter")
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                            environmentWithUrl("jdbc:postgresql://db.production.example/carddemo"
+                                    + "?sslmode=")))
+                    .withMessageContaining("must declare sslmode=verify-full");
+        }
+
+        @Test
+        @DisplayName("an unrecognised transport rule is refused here rather than by the driver later")
+        void anUnrecognisedModeIsRefused() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                            environmentWithUrl("jdbc:postgresql://db.production.example/carddemo"
+                                    + "?sslmode=verify-everything")))
+                    .withMessageContaining("does not recognise");
+        }
+
+        @Test
+        @DisplayName("a repeated transport rule is judged on the LAST value, which is the one the "
+                + "driver applies")
+        void aRepeatedModeIsJudgedOnTheEffectiveValue() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("appending a weaker mode after a stronger one is how a check that read the "
+                            + "first occurrence would be defeated; the driver keeps the last, so this "
+                            + "check must too")
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                            environmentWithUrl("jdbc:postgresql://db.production.example/carddemo"
+                                    + "?sslmode=verify-full&sslmode=prefer")))
+                    .withMessageContaining(ProductionConfigurationValidator
+                            .DATABASE_REFUSED_SSL_MODES.get("prefer"));
+        }
+
+        @Test
+        @DisplayName("a non-validating SSL factory is refused, because it would leave verify-full "
+                + "stated and unenforced")
+        void aNonValidatingSslFactoryIsRefused() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("this is the one setting that makes the mode a statement with no effect, so "
+                            + "refusing the mode without refusing this would be a check with a "
+                            + "documented bypass")
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                            environmentWithUrl(AUTHENTICATED_DATABASE_URL
+                                    + "&sslfactory=org.postgresql.ssl.NonValidatingFactory")))
+                    .withMessageContaining("non-validating sslfactory");
+        }
+
+        @Test
+        @DisplayName("a validating SSL factory is accepted, so the rule names the bypass rather than "
+                + "forbidding the setting")
+        void aValidatingSslFactoryIsAccepted() {
+            assertThatCode(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                    environmentWithUrl(AUTHENTICATED_DATABASE_URL
+                            + "&sslfactory=org.postgresql.ssl.LibPQFactory")))
+                    .as("a deployment with its own validating factory is not the failure this rule "
+                            + "addresses, and refusing it would make the rule about the parameter "
+                            + "rather than about the bypass")
+                    .doesNotThrowAnyException();
+        }
+
+        @ParameterizedTest(name = "a credential carried as {0} is refused")
+        @ValueSource(strings = {
+            "jdbc:postgresql://operator:secret@db.production.example:5432/carddemo"
+                    + "?sslmode=verify-full",
+            "jdbc:postgresql://db.production.example:5432/carddemo?sslmode=verify-full&user=operator",
+            "jdbc:postgresql://db.production.example:5432/carddemo?sslmode=verify-full"
+                    + "&password=whatever",
+        })
+        @DisplayName("a credential embedded in the location is refused however it is carried")
+        void anEmbeddedCredentialIsRefused(final String url) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("either form puts a credential in the one production value that appears in a "
+                            + "configuration dump and a process listing, and either silently overrides "
+                            + "spring.datasource.username and spring.datasource.password - the two "
+                            + "settings this class guards beside the location")
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateDatabaseTransport(environmentWithUrl(url)))
+                    .withMessageContaining("spring.datasource.url");
+        }
+
+        @ParameterizedTest(name = "{0} is refused for its host")
+        @ValueSource(strings = {
+            "jdbc:postgresql://localhost:5432/carddemo?sslmode=verify-full",
+            "jdbc:postgresql://127.0.0.1:5432/carddemo?sslmode=verify-full",
+            "jdbc:postgresql://[::1]:5432/carddemo?sslmode=verify-full",
+        })
+        @DisplayName("a loopback host is refused even with the required transport rule, because the "
+                + "database is not in this process")
+        void aLoopbackHostIsRefused(final String url) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("a loopback host in production means the variable was never set and something "
+                            + "else answered; it is also the one host for which relaxing the transport "
+                            + "rule looks harmless")
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateDatabaseTransport(environmentWithUrl(url)))
+                    .withMessageContaining("loopback");
+        }
+
+        @Test
+        @DisplayName("a host-less location is refused, so the server is stated rather than inferred")
+        void aHostlessLocationIsRefused() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateDatabaseTransport(environmentWithUrl(
+                                    "jdbc:postgresql:carddemo?sslmode=verify-full")))
+                    .withMessageContaining("must name a host");
+        }
+
+        @ParameterizedTest(name = "{0} is refused for its sub-protocol")
+        @ValueSource(strings = {
+            "jdbc:h2:mem:carddemo",
+            "jdbc:mysql://db.production.example:3306/carddemo?sslmode=verify-full",
+            "postgresql://db.production.example:5432/carddemo?sslmode=verify-full",
+        })
+        @DisplayName("a location naming another sub-protocol is refused, because the transport rules "
+                + "are the PostgreSQL driver's and no other driver honours them")
+        void anotherSubProtocolIsRefused(final String url) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("this is also the one rule that refuses an embedded database outright, which "
+                            + "the profile document's fixed driver declaration cannot do on its own")
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateDatabaseTransport(environmentWithUrl(url)))
+                    .withMessageContaining("sub-protocol");
+        }
+
+        @Test
+        @DisplayName("a malformed location is refused as malformed rather than passing the rules it "
+                + "cannot be parsed for")
+        void aMalformedLocationIsRefused() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateDatabaseTransport(environmentWithUrl(
+                                    "jdbc:postgresql://db production example/carddemo")))
+                    .withMessageContaining("well-formed");
+        }
+
+        @Test
+        @DisplayName("every fault is reported together, so a location wrong in three ways is corrected "
+                + "in one attempt")
+        void everyFaultIsReportedTogether() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(
+                            environmentWithUrl("jdbc:postgresql://operator:secret@localhost/carddemo")))
+                    .withMessageContaining("breaks 3 rule(s)")
+                    .withMessageContaining("loopback")
+                    .withMessageContaining("user information")
+                    .withMessageContaining("must declare sslmode=verify-full");
+        }
+
+        @Test
+        @DisplayName("the refusal never repeats the configured location, because a credential pasted "
+                + "into it is one of the faults reported")
+        void theRefusalNeverRepeatsTheConfiguredLocation() {
+            final String url = "jdbc:postgresql://operator:"
+                    + "value-this-test-supplies-and-the-message-must-not-carry@db.example/carddemo"
+                    + "?sslmode=verify-full";
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateDatabaseTransport(environmentWithUrl(url)))
+                    .extracting(Throwable::getMessage, as(STRING))
+                    .as("echoing the value would write the credential the refusal is about into the "
+                            + "start-up log the refusal is read from")
+                    .doesNotContain("value-this-test-supplies-and-the-message-must-not-carry")
+                    .contains("deliberately not repeated");
+        }
+
+        @Test
+        @DisplayName("an absent location is left to the required-settings sweep, so one missing "
+                + "variable does not produce two messages")
+        void anAbsentLocationIsNotReportedHere() {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.remove("CARDDEMO_DB_URL");
+
+            assertThatCode(() -> ProductionConfigurationValidator
+                    .validateDatabaseTransport(environmentWith(variables)))
+                    .as("validateRequiredSettings already refuses this, and a deployer told to both "
+                            + "set a variable and correct its transport learns to fix one of them and "
+                            + "stop reading")
+                    .doesNotThrowAnyException();
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("the sweep must still be the thing that reports it, or the value is unguarded")
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environmentWith(variables)));
+        }
+
+        @Test
+        @DisplayName("a null environment is rejected rather than silently passing")
+        void aNullEnvironmentIsRejected() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateDatabaseTransport(null))
+                    .withMessageContaining("environment");
         }
     }
 

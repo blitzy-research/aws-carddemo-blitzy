@@ -866,27 +866,34 @@ Schema evolution is **versioned and forward-only**, in four migrations under
 
 ### The two seeds can never reach production
 
-The seeds are excluded from production by the **profile-scoped migration location list**, not by a version
-ceiling. Production resolves `classpath:db/migration/schema` and nothing else, so the two seed scripts are
-not applied, not pending and **not resolved at all** — they appear in no migration state. Only the local
-and test overlays add `classpath:db/migration/seed`, which is the single setting that makes `V3` and `V4`
-executable. Every profile, production included, declares `spring.flyway.target: latest`; **no profile
-declares a version and production refuses one**.
+The seeds are excluded from production by the **profile-scoped migration location list**. Production
+resolves `classpath:db/migration/schema` and nothing else, so the two seed scripts are not applied, not
+pending and **not resolved at all** — they appear in no migration state. Only the local and test overlays
+add `classpath:db/migration/seed`, and that is one of the two settings a seeding profile carries.
+
+A **version ceiling sits beside the location list** rather than in place of it. The shared baseline and the
+production overlay both declare `spring.flyway.target: "2"`, which is the highest version the schema
+location delivers; `local` and `test` lift it to `latest` in the same block where they add the seed
+location. Production refuses any other value in either direction, the head marker included, and corrects
+silence to the pin. The two controls are not redundant and they fail differently: the location list is what
+excludes the seeds, and a stale ceiling can under-migrate the schema half but can never expose a seed.
 
 Their shared parent `classpath:db/migration` holds no script at all and is **refused as a location under
 every profile**. A Flyway location is scanned recursively, so the parent reaches both children — and it
 records each script under a name relative to itself, which would break the migration names the Compose
 bring-up check reads out of the history table.
 
-Three properties make that robust rather than merely configured. The schema-only list is declared both in
-the shared baseline and again in the production overlay, so a profile silent about migrations inherits the
-production posture rather than the permissive one — the safe value is the default. A location a profile
-never lists is not a value an operator can widen, and it constrains no future version: a `V5` schema
-migration placed in the schema location is applied by production, which a version ceiling made impossible.
-And a startup callback independently **refuses a production start** against a database whose migration
-history records a seed or whose tables still hold seeded rows, so a production instance cannot be pointed
-at a seeded database even by mistake. The reasoning and the arrangement it replaced are recorded in
-`docs/decision-log.md` at DL-298.
+Three properties make that robust rather than merely configured. The schema-only list and the ceiling are
+each declared twice — in the shared baseline and again in the production overlay — so a profile silent
+about migrations inherits the production posture rather than the permissive one; the safe value is the
+default. A location a profile never lists is not a value an operator can widen. And a startup callback
+independently **refuses a production start** against a database whose migration history records a seed or
+whose tables still hold seeded rows, so a production instance cannot be pointed at a seeded database even
+by mistake. The one cost the ceiling carries is that a future `V5` schema migration is skipped rather than
+applied, and it is made loud rather than silent: `FlywayConfigTest` asserts the pin **equals** the highest
+version the schema location delivers, so shipping a fifth schema script fails the build until the pin is
+raised with it. The reasoning, the arrangement that preceded it and the restoration of the ceiling are
+recorded in `docs/decision-log.md` at DL-298 and DL-334.
 
 ### Seed volumes
 
@@ -1087,7 +1094,7 @@ a developer's own machine, and none is a default that production could inherit. 
 production profile and the committed local and test fixtures, and it is worth stating exactly, because "no
 secrets are committed" would be a convenient claim and it would not be true of this repository.
 
-The production profile resolves **thirteen** values from the environment **with no fallback default**, so a
+The production profile resolves **fourteen** values from the environment **with no fallback default**, so a
 missing one **fails startup** rather than silently binding a placeholder. Each is written `${VARIABLE}` and
 never `${VARIABLE:something}`. A defaulted secret is a hardcoded secret with extra steps, which is why the
 absence of defaults is as much a requirement as the absence of literals. The full set, because "every
@@ -1098,7 +1105,7 @@ secret" is only checkable if it is enumerated:
 | Database | `CARDDEMO_DB_URL`, `CARDDEMO_DB_USERNAME`, `CARDDEMO_DB_PASSWORD` |
 | Session and field protection | `CARDDEMO_JWT_SECRET`, `CARDDEMO_FIELD_ENCRYPTION_KEY` |
 | Management access | `CARDDEMO_MANAGEMENT_TOKEN` |
-| Cloud resources and region | `CARDDEMO_SQS_QUEUE`, `AWS_REGION` |
+| Cloud resources and region | `CARDDEMO_SQS_QUEUE`, `AWS_REGION`, `CARDDEMO_AWS_ACCOUNT_ID` |
 | Trace export | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` |
 | Transport security | `CARDDEMO_TLS_KEYSTORE`, `CARDDEMO_TLS_KEYSTORE_PASSWORD`, `CARDDEMO_TLS_KEYSTORE_TYPE`, `CARDDEMO_TLS_KEY_ALIAS` |
 
@@ -1108,9 +1115,21 @@ migration runner opens a connection and before the server reads a key store — 
 variable stops with one actionable message and never reaches infrastructure holding a placeholder. It also
 rejects a production start-up that has inherited a seeded profile. Cloud credentials themselves come from
 the standard provider chain rather than from configuration at all, which is why no access key appears in
-the table. Five further production variables *do* carry defaults and are not
-secrets — a token lifetime, a bucket name, a topic name, a message-group identifier and a trace sampling
-rate — each naming a resource or a policy rather than granting access.
+the table. Six further production variables *do* carry defaults and are not
+secrets — a token lifetime, a bucket name, a topic name, a message-group identifier, a trace sampling rate
+and a trusted-proxy list — each naming a resource or a policy rather than granting access.
+
+Two of the fourteen are held to more than being present, because presence is not the property that matters
+for either. The operator credential is held to a length and shape floor, since it is a bearer token
+presented on every scrape with no sign-on behind it. And the **database location is held to its
+transport**: it must read `jdbc:postgresql://host:port/database?sslmode=verify-full`, name a non-loopback
+host, and carry no embedded credential and no non-validating SSL factory. That check exists because the
+PostgreSQL driver *defaults* `sslmode` to `prefer`, which asks for encryption and falls back to a plaintext
+session without reporting that it did — so a URL that simply omits the parameter is a downgradeable,
+unauthenticated channel that looks configured. Every weaker mode is refused with the guarantee it gives up:
+`disable` forbids encryption, `allow` lets the server choose, `prefer` downgrades silently, `require`
+encrypts but validates no certificate, and `verify-ca` validates the chain but not the host name. Recorded
+at `docs/decision-log.md` DL-336.
 
 **The local and test profiles do commit fixture values, and they are real values in the file.**
 `application-local.yml` carries a default database password, LocalStack access and secret keys, a JWT
@@ -1244,7 +1263,7 @@ page describes:
 | :------- | :------------ |
 | Layered separation of concerns | the strict downward dependency direction, verified by import census, and the confinement of fixed-width record knowledge to `util` |
 | Constructor injection and immutability without code generation | constructor injection throughout, records and final classes for transport types, and no code-generating annotation processor in the build |
-| No **production** secret in source, and none defaulted | the production profile's **thirteen** no-fallback values, the startup validator that enforces them, hashed seeded credentials, and no production secret value printed on this page. The intentional non-production values are inventoried under [Secrets](#secrets) rather than glossed over, because the unqualified version of this standard would be false |
+| No **production** secret in source, and none defaulted | the production profile's **fourteen** no-fallback values, the startup validator that enforces them, hashed seeded credentials, and no production secret value printed on this page. The intentional non-production values are inventoried under [Secrets](#secrets) rather than glossed over, because the unqualified version of this standard would be false |
 | Versioned, forward-only schema evolution | four Flyway migrations across two profile-scoped locations, an open target that leaves the schema sequence free to grow, and a startup callback that refuses a seeded production database |
 | Observability as a first-class concern | Actuator, Micrometer timers on every endpoint and step, Prometheus and Grafana provisioning, OTLP tracing, and structured JSON logging |
 

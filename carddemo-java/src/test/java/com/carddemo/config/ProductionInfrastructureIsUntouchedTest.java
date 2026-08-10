@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -133,6 +134,14 @@ final class ProductionInfrastructureIsUntouchedTest {
         // somebody typed, it contains the word "token", and a management credential must now look generated.
         // Thirty-two bytes of mixed characters stand in for what a deployment would generate.
         variables.put("CARDDEMO_MANAGEMENT_TOKEN", "7Qf2ZmXk9Lv3Rb8TpWn5Yc1Hd6Js4Gu0");
+        // The fifth, and the generic filler is not a JDBC location at all. Under this profile the data
+        // source is held to its TRANSPORT and not only to being supplied: the PostgreSQL sub-protocol, a
+        // named non-loopback host, sslmode=verify-full, no embedded credential and no non-validating SSL
+        // factory. A fixture that supplied a URL with no transport rule would be this suite modelling a
+        // downgradeable channel as an acceptable production value, which is the defect the rule exists
+        // for. See docs/decision-log.md DL-336.
+        variables.put("CARDDEMO_DB_URL",
+                "jdbc:postgresql://db.production.internal:5432/carddemo?sslmode=verify-full");
         return variables;
     }
 
@@ -300,6 +309,39 @@ final class ProductionInfrastructureIsUntouchedTest {
                         .hasMessageContaining(reportLineFor(propertyKey))
                         .hasMessageContaining("whitespace only");
                 assertThat(InfrastructureStandIn.constructions()).isZero();
+            });
+        }
+
+        @ParameterizedTest(name = "a data source location of {0} stops the start")
+        @ValueSource(strings = {
+            "jdbc:postgresql://db.production.internal:5432/carddemo",
+            "jdbc:postgresql://db.production.internal:5432/carddemo?sslmode=prefer",
+            "jdbc:postgresql://db.production.internal:5432/carddemo?sslmode=require",
+            "jdbc:postgresql://db.production.internal:5432/carddemo?sslmode=verify-ca",
+            "jdbc:postgresql://localhost:5432/carddemo?sslmode=verify-full",
+            "jdbc:postgresql://operator:secret@db.production.internal/carddemo?sslmode=verify-full",
+        })
+        @DisplayName("a data source location that is present but not an authenticated channel fails the "
+                + "refresh before the stand-in is constructed")
+        void aDowngradeableDataSourceStopsTheRefresh(final String url) {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put("CARDDEMO_DB_URL", url);
+
+            containerFor("prod", variables).run(context -> {
+                assertThat(context)
+                        .as("presence is not the property that matters for this value. The first case "
+                                + "is the shape a deployment writes by default, and the driver reads it "
+                                + "as sslmode=prefer - a channel that falls back to plaintext without "
+                                + "reporting it. The refusal has to land in the POST-PROCESSOR phase, "
+                                + "because a pool built on that URL would open the session before "
+                                + "anything else could object")
+                        .hasFailed()
+                        .getFailure()
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("the configured data source location breaks");
+                assertThat(InfrastructureStandIn.constructions())
+                        .as("nothing that would reach infrastructure may have been constructed")
+                        .isZero();
             });
         }
 

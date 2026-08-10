@@ -23,6 +23,7 @@ import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -145,6 +146,87 @@ public final class ProductionConfigurationValidator {
     private static final String PLACEHOLDER_SUFFIX = "}";
 
     /**
+     * The setting naming the database every production connection is opened to.
+     *
+     * <p>Declared as a constant because two independent checks read it - the required-settings sweep,
+     * which establishes that a deployment supplied a location at all, and
+     * {@link #validateDatabaseTransport} which establishes that the location it supplied opens an
+     * authenticated channel. Two spellings of one key is one spelling waiting to be corrected in only
+     * one place.
+     */
+    static final String DATASOURCE_URL_KEY = "spring.datasource.url";
+
+    /**
+     * The only JDBC sub-protocol a production data source may name.
+     *
+     * <p>Held here as well as by {@code driver-class-name} in the profile document because the two are
+     * independent: the declared driver decides which implementation is loaded, and the URL decides which
+     * driver actually accepts it. A URL naming another sub-protocol either fails to load - late, on the
+     * first connection attempt - or is accepted by a driver that happens to be on the class path, and
+     * neither outcome is a PostgreSQL server reached over the transport checked below.
+     */
+    static final String DATABASE_REQUIRED_SUBPROTOCOL = "jdbc:postgresql:";
+
+    /** The URL parameter carrying the transport rule the driver applies. */
+    static final String DATABASE_SSL_MODE_PARAMETER = "sslmode";
+
+    /**
+     * The only transport rule a production data source may declare.
+     *
+     * <p>This is what "authenticated TLS" reduces to in a PostgreSQL connection string. The driver's
+     * {@code verify-full} requires the session to be encrypted, validates the server certificate against
+     * the configured or platform trust anchor, <em>and</em> checks that the certificate's subject matches
+     * the host that was dialled. Every weaker mode drops at least one of those three, and the differences
+     * matter individually rather than as a spectrum - which is why {@link #DATABASE_REFUSED_SSL_MODES}
+     * names each one with the guarantee it gives up.
+     */
+    static final String DATABASE_REQUIRED_SSL_MODE = "verify-full";
+
+    /**
+     * Every transport rule the driver accepts other than the required one, mapped to what it gives up.
+     *
+     * <p>Enumerated rather than handled as "anything that is not {@value #DATABASE_REQUIRED_SSL_MODE}"
+     * because a deployer reading a refusal needs to know which guarantee their value dropped, and because
+     * the list is the driver's own closed set. An unrecognised value is still refused, by the fallback
+     * arm in {@link #validateDatabaseTransport}: the driver rejects it too, and it is refused here first
+     * so the refusal arrives before a connection is opened rather than after.
+     */
+    static final Map<String, String> DATABASE_REFUSED_SSL_MODES = Map.of(
+            "disable", "which forbids encryption outright, so credentials and account data cross the"
+                    + " network in clear text",
+            "allow", "which uses a plaintext session unless the server refuses one, so the transport is"
+                    + " chosen by whatever answers on the port",
+            "prefer", "which is the driver's own default and falls back to a plaintext session without"
+                    + " reporting that it did, so a downgrade is silent",
+            "require", "which encrypts but validates no certificate at all, so any party that answers on"
+                    + " the port can present its own and be believed",
+            "verify-ca", "which validates the certificate chain but not the host name, so a certificate"
+                    + " issued by the same authority for any other host is accepted");
+
+    /** The URL parameter that can replace the driver's certificate validation with none. */
+    static final String DATABASE_SSL_FACTORY_PARAMETER = "sslfactory";
+
+    /**
+     * The factory name that defeats certificate validation however the transport rule is set.
+     *
+     * <p>Matched as a case-insensitive substring because the driver ships this class under a package
+     * prefix a deployment may abbreviate or re-declare, and the simple name is the part that identifies
+     * it. This is the one setting that can make {@value #DATABASE_REQUIRED_SSL_MODE} a statement without
+     * an effect, so refusing the mode without refusing this would be a check with a documented bypass.
+     */
+    static final String DATABASE_NON_VALIDATING_SSL_FACTORY = "nonvalidatingfactory";
+
+    /**
+     * URL parameters that carry a credential, refused wherever they appear.
+     *
+     * <p>The driver reads the connection identity from either the parameters or the dedicated settings,
+     * and the profile document supplies the dedicated ones. A credential in the URL is a credential in
+     * the one production value that appears in a configuration dump, a process listing and every library
+     * that prints a data source, and it also silently overrides the guarded settings beside it.
+     */
+    static final List<String> DATABASE_CREDENTIAL_PARAMETERS = List.of("user", "password");
+
+    /**
      * The setting naming the collector every span is posted to.
      *
      * <p>Declared as a constant because two independent checks read it - the required-settings sweep, which
@@ -229,7 +311,7 @@ public final class ProductionConfigurationValidator {
      * The keys whose value is refused for being too short as well as for being absent.
      *
      * <p>A map rather than a field on {@link RequiredSetting} because the rule applies to exactly one of
-     * the thirteen and inventing a per-setting minimum would invite a length rule onto values that have
+     * the fourteen and inventing a per-setting minimum would invite a length rule onto values that have
      * no business carrying one - a region and a key store alias are as long as they are. Adding a
      * second entry here is the supported way to extend it.
      *
@@ -270,10 +352,13 @@ public final class ProductionConfigurationValidator {
      * Every setting the production profile requires from its environment, in the order they appear in
      * {@code application-prod.yml} so that a failure message reads down the document.
      *
-     * <p>This list is the thirteen values that are written as a bare environment reference with no
-     * fallback. The five that carry a fallback - the tracing sample rate, the staging bucket, the
-     * message group, the notification topic and the token lifetime - are deliberately absent, because a
-     * value that is allowed to default is by definition not required from the environment.
+     * <p>This list is the <strong>fourteen</strong> values that are written as a bare environment
+     * reference with no fallback. The six that carry a fallback - the tracing sample rate, the staging
+     * bucket, the message group, the notification topic, the token lifetime and the trusted-proxy list -
+     * are deliberately absent, because a value that is allowed to default is by definition not required
+     * from the environment. The
+     * count is not transcribed anywhere it can drift: {@code DocumentedSourceCountsTest} derives it from
+     * this list and holds every document that states it to the derived figure.
      *
      * <p>The region is guarded at {@code carddemo.aws.region}, which is where the production document
      * writes the bare reference, and <strong>not</strong> at the cloud integration's own
@@ -283,13 +368,13 @@ public final class ProductionConfigurationValidator {
      * and a test asserts against.
      *
      * <p>{@code ProductionConfigurationValidatorTest} compares this list against the document itself,
-     * so a fourteenth bare reference added to the profile without a matching entry here fails the build
+     * so a further bare reference added to the profile without a matching entry here fails the build
      * rather than going unguarded. That check is what carried the operator credential into this list: the
      * management surface's machine credential is presented on every scrape and must no more be defaulted
-     * than the signing secret is.
+     * than the signing secret is, and it is what carried the declared account identifier in beside it.
      */
     static final List<RequiredSetting> REQUIRED_SETTINGS = List.of(
-            new RequiredSetting("spring.datasource.url", "CARDDEMO_DB_URL"),
+            new RequiredSetting(DATASOURCE_URL_KEY, "CARDDEMO_DB_URL"),
             new RequiredSetting("spring.datasource.username", "CARDDEMO_DB_USERNAME"),
             new RequiredSetting("spring.datasource.password", "CARDDEMO_DB_PASSWORD"),
             new RequiredSetting("server.ssl.key-store", "CARDDEMO_TLS_KEYSTORE"),
@@ -470,6 +555,7 @@ public final class ProductionConfigurationValidator {
         Objects.requireNonNull(environment, "environment");
         return beanFactory -> {
             validateRequiredSettings(environment);
+            validateDatabaseTransport(environment);
             validateOutboundTrust(environment);
             validateConfiguredResourceOwnership(environment);
             validateTraceCollectorAddress(environment);
@@ -1090,6 +1176,239 @@ public final class ProductionConfigurationValidator {
         if (!faults.isEmpty()) {
             throw new IllegalStateException(traceCollectorFailureMessage(faults));
         }
+    }
+
+    /**
+     * Holds the production data source to an authenticated, non-downgradeable transport, rather than
+     * merely to having been supplied.
+     *
+     * <h2>What was wrong with presence</h2>
+     *
+     * <p>Until this check existed the location at {@value #DATASOURCE_URL_KEY} was required to be
+     * declared, resolved and non-blank, and nothing else. <strong>The PostgreSQL driver defaults
+     * {@value #DATABASE_SSL_MODE_PARAMETER} to {@code prefer}</strong>, so a URL that names no transport
+     * rule at all - the shape a deployment writes by default, and the shape this module's own tests used
+     * to accept - asks for encryption and <em>falls back to a plaintext session without reporting that it
+     * did</em>. Every credential this deployment presents and every row it reads then crosses the network
+     * in clear text, and nothing in a log, a health probe or a metric says so. Worse, {@code prefer} and
+     * {@code require} validate no certificate, so whatever answers on the port is believed: a party in
+     * the path can present its own certificate, terminate the session and read or alter it.
+     *
+     * <p>That is not a hypothetical for this module in particular. The data source carries the account
+     * balances, the card numbers, and the two sealed regulated identifier columns whose envelopes are
+     * opened by the running process - so a session an attacker can read is a session in which the sealed
+     * values travel beside nothing that re-seals them.
+     *
+     * <h2>The six rules, and why each is the enforceable form of the requirement</h2>
+     *
+     * <ol>
+     *   <li><strong>The sub-protocol must be {@value #DATABASE_REQUIRED_SUBPROTOCOL}.</strong> The
+     *       transport rules below are the PostgreSQL driver's, so they mean nothing against a URL another
+     *       driver accepts. This is also the one rule that refuses an embedded database outright.</li>
+     *   <li><strong>{@value #DATABASE_SSL_MODE_PARAMETER} must be present and exactly
+     *       {@value #DATABASE_REQUIRED_SSL_MODE}.</strong> Present, because absence <em>is</em>
+     *       {@code prefer} and a silent downgrade is the failure this check exists for. Exactly, because
+     *       each weaker mode gives up a different one of the three guarantees - encryption, chain
+     *       validation, host-name validation - and only {@value #DATABASE_REQUIRED_SSL_MODE} keeps all
+     *       three. Both directions of "not exactly" are refused: a weaker named mode with the reason it
+     *       gives up, and an unrecognised value because the driver would reject it later and this refusal
+     *       arrives before a connection is opened.</li>
+     *   <li><strong>No non-validating SSL factory.</strong> {@value #DATABASE_NON_VALIDATING_SSL_FACTORY}
+     *       replaces the driver's trust decision with acceptance, which would make rule 2 a statement
+     *       with no effect. Refusing the mode without refusing this would be a check with a documented
+     *       bypass.</li>
+     *   <li><strong>No embedded credentials</strong>, neither as authority user information nor as a
+     *       {@code user} or {@code password} parameter. A credential in a locator is a credential in every
+     *       place a locator is written down, and either form silently overrides the two dedicated settings
+     *       this class guards beside it.</li>
+     *   <li><strong>The URL must name a host.</strong> The driver's host-less forms address a server
+     *       through defaults, and a production data source that is inferred is the thing the profile
+     *       document refuses to allow for the location as a whole.</li>
+     *   <li><strong>The host must not be loopback.</strong> The database is not in this process, so a
+     *       loopback host means the variable was never really set and a fallback answered - and it is also
+     *       the one host for which an operator is most tempted to relax rule 2.</li>
+     * </ol>
+     *
+     * <p><strong>Why a trust-anchor file is deliberately not required.</strong> A rule demanding
+     * {@code sslrootcert} would add a further deployment obligation without adding a guarantee:
+     * {@value #DATABASE_REQUIRED_SSL_MODE} already refuses to connect when no trust anchor validates the
+     * server, so a deployment whose anchor is unresolvable fails loudly at the first connection rather
+     * than degrading quietly. Enforcing the mode is the check; enforcing where the anchor lives is
+     * platform configuration this module has no authority over.
+     *
+     * <p><strong>Why the parameters are read from the URL rather than from the pool.</strong> The pool is
+     * not built yet. This runs as part of the same bean-factory post-processor as the checks around it,
+     * before any singleton is created, so a deployment configured to talk to its database over a
+     * downgradeable channel never starts - it does not start, serve authenticated banking requests over
+     * that channel for a while, and get noticed later.
+     *
+     * <p>An absent value is not reported here. {@link #validateRequiredSettings} already reports it, and
+     * one missing variable producing two messages teaches a deployer to fix one of them and stop reading.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-336.
+     *
+     * @param environment environment to read the setting from
+     * @throws IllegalStateException when the configured location is not an authenticated PostgreSQL
+     *                               channel; the message names the rule that was broken and never
+     *                               repeats the configured value
+     * @throws NullPointerException  when {@code environment} is {@code null}
+     */
+    static void validateDatabaseTransport(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final String configured = resolveLeniently(environment, DATASOURCE_URL_KEY);
+        if (!isSuppliedValue(DATASOURCE_URL_KEY, configured)) {
+            return;
+        }
+
+        final String url = configured.strip();
+        if (!url.toLowerCase(Locale.ROOT).startsWith(DATABASE_REQUIRED_SUBPROTOCOL)) {
+            // Returned rather than accumulated: every rule below is a PostgreSQL driver rule, so
+            // reporting them against a URL that driver never sees would be advice about the wrong driver.
+            throw new IllegalStateException(databaseTransportFailureMessage(List.of(
+                    "  " + DATASOURCE_URL_KEY + ": must name the "
+                            + DATABASE_REQUIRED_SUBPROTOCOL + " sub-protocol, because the transport rules"
+                            + " this check applies are the PostgreSQL driver's and no other driver"
+                            + " honours them")));
+        }
+
+        final List<String> faults = new ArrayList<>();
+        // A JDBC URL is not a URI - the `jdbc:` prefix leaves it with two schemes - so the prefix is
+        // removed and the remainder parsed, which yields exactly the authority and query the driver reads.
+        final URI address = parseJdbcAuthority(url);
+        if (address == null) {
+            throw new IllegalStateException(databaseTransportFailureMessage(List.of(
+                    "  " + DATASOURCE_URL_KEY + ": is not a well-formed JDBC location")));
+        }
+
+        final String host = address.getHost();
+        if (host == null || host.isBlank()) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must name a host, so the server a production"
+                    + " deployment connects to is stated rather than inferred from a driver default");
+        } else if (isLoopbackHost(host)) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must not name a loopback host in production; the"
+                    + " database is not in this process, so a loopback host means the variable was never"
+                    + " set and something else answered");
+        }
+        if (address.getUserInfo() != null) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must carry no user information; a credential in a"
+                    + " locator is a credential in every place a locator is written down, and it"
+                    + " silently overrides the connection identity this profile guards separately");
+        }
+
+        final Map<String, String> parameters = urlParameters(address.getRawQuery());
+        for (final String credentialParameter : DATABASE_CREDENTIAL_PARAMETERS) {
+            if (parameters.containsKey(credentialParameter)) {
+                faults.add("  " + DATASOURCE_URL_KEY + ": must declare no '" + credentialParameter
+                        + "' parameter; the connection identity is supplied by"
+                        + " spring.datasource.username and spring.datasource.password, which this check"
+                        + " guards, and a parameter of the same meaning overrides them unseen");
+            }
+        }
+
+        final String sslMode = parameters.get(DATABASE_SSL_MODE_PARAMETER);
+        if (sslMode == null || sslMode.isBlank()) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must declare " + DATABASE_SSL_MODE_PARAMETER
+                    + "=" + DATABASE_REQUIRED_SSL_MODE + "; the driver's default is 'prefer', which"
+                    + " falls back to a plaintext session WITHOUT REPORTING IT, so omitting the"
+                    + " parameter asks for a downgradeable and unauthenticated channel");
+        } else if (!DATABASE_REQUIRED_SSL_MODE.equalsIgnoreCase(sslMode.strip())) {
+            final String surrendered =
+                    DATABASE_REFUSED_SSL_MODES.get(sslMode.strip().toLowerCase(Locale.ROOT));
+            faults.add("  " + DATASOURCE_URL_KEY + ": declares a " + DATABASE_SSL_MODE_PARAMETER
+                    + " other than " + DATABASE_REQUIRED_SSL_MODE + ", "
+                    + (surrendered == null
+                            ? "and one the driver does not recognise, so the connection would be"
+                                    + " refused later instead of here"
+                            : surrendered)
+                    + ". Only " + DATABASE_REQUIRED_SSL_MODE + " requires encryption, validates the"
+                    + " certificate chain and checks the server's name against the host dialled");
+        }
+
+        final String sslFactory = parameters.get(DATABASE_SSL_FACTORY_PARAMETER);
+        if (sslFactory != null
+                && sslFactory.toLowerCase(Locale.ROOT).contains(DATABASE_NON_VALIDATING_SSL_FACTORY)) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must not declare a non-validating "
+                    + DATABASE_SSL_FACTORY_PARAMETER + "; it replaces the driver's trust decision with"
+                    + " acceptance, which would leave " + DATABASE_SSL_MODE_PARAMETER + "="
+                    + DATABASE_REQUIRED_SSL_MODE + " stated and unenforced");
+        }
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(databaseTransportFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Parses the authority and query of a JDBC location.
+     *
+     * <p>A JDBC URL carries two schemes - {@code jdbc:} and then the driver's own - so it is not a URI as
+     * written. Removing the leading {@code jdbc:} leaves {@code postgresql://host:port/database?query},
+     * which parses into exactly the authority and query components the driver itself reads.
+     *
+     * @param  url the trimmed JDBC location, already known to carry the required sub-protocol
+     * @return the parsed remainder, or {@code null} when it is not well formed
+     */
+    private static URI parseJdbcAuthority(final String url) {
+        try {
+            return new URI(url.substring("jdbc:".length()));
+        } catch (final URISyntaxException | IndexOutOfBoundsException malformed) {
+            return null;
+        }
+    }
+
+    /**
+     * Splits a raw query string into its parameters, lower-casing each name.
+     *
+     * <p>Names are lower-cased because the driver reads them case-insensitively, so a check that did not
+     * would be defeated by {@code sslMode=prefer}. A repeated name keeps its <em>last</em> value, which is
+     * the driver's own precedence, so a URL appending a weaker mode after a stronger one is judged on the
+     * value that will actually take effect. The raw query is used rather than the decoded one so that an
+     * encoded separator cannot hide a parameter from this split.
+     *
+     * @param  rawQuery the query component as written, which may be {@code null}
+     * @return the parameters, names lower-cased; never {@code null}
+     */
+    private static Map<String, String> urlParameters(final String rawQuery) {
+        final Map<String, String> parameters = new LinkedHashMap<>();
+        if (rawQuery == null || rawQuery.isBlank()) {
+            return parameters;
+        }
+        for (final String pair : rawQuery.split("&")) {
+            if (pair.isBlank()) {
+                continue;
+            }
+            final int separator = pair.indexOf('=');
+            final String name = separator < 0 ? pair : pair.substring(0, separator);
+            final String value = separator < 0 ? "" : pair.substring(separator + 1);
+            parameters.put(name.strip().toLowerCase(Locale.ROOT), value);
+        }
+        return parameters;
+    }
+
+    /**
+     * Builds the refusal for a data source whose transport is not authenticated.
+     *
+     * <p>The configured value is never repeated. It is the production value most likely to have a
+     * credential pasted into it, which is one of the faults this method reports, so echoing it would
+     * write the credential into the start-up log the refusal is read from.
+     *
+     * @param  faults one line per broken rule
+     * @return the message the refusal carries
+     */
+    private static String databaseTransportFailureMessage(final List<String> faults) {
+        return "The \'" + PRODUCTION_PROFILE + "\' profile cannot start: the configured data source"
+                + " location breaks " + faults.size() + " rule(s)." + System.lineSeparator()
+                + "Every credential this deployment presents and every account balance, card number and"
+                + " sealed identifier it reads travels over this connection."
+                + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "The configured value is deliberately not repeated here. Correct it and start again. "
+                + "The required form is " + DATABASE_REQUIRED_SUBPROTOCOL
+                + "//host:port/database?" + DATABASE_SSL_MODE_PARAMETER + "="
+                + DATABASE_REQUIRED_SSL_MODE + ". See docs/decision-log.md DL-336 and the variable list"
+                + " at the head of application-prod.yml.";
     }
 
     /**

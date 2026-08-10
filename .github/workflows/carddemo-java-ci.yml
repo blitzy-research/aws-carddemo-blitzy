@@ -283,11 +283,25 @@ jobs:
       # WHY THE PATHS ARE SCOPED. The legacy estate under app/ and samples/ carries roughly 32,900
       # such lines and must stay byte-identical: it is the parity baseline this migration is
       # verified against, and reformatting it would invalidate the traceability matrix. The estate
-      # README is upstream CRLF text with trailing spaces of its own. This gate therefore reads
-      # exactly the trees this migration authors and no others. Inside them, .gitattributes
-      # already exempts the fixed-width fixtures, whose records are space-padded to a declared
-      # width - that padding is content, and reporting it would bury real defects under thousands
-      # of false ones.
+      # README is upstream CRLF text with 59 trailing-space lines of its own, and .gitattributes'
+      # `/README.md whitespace=cr-at-eol` exempts the carriage return rather than those spaces, so
+      # naming it here would report 59 upstream lines this migration did not author. This gate
+      # therefore reads exactly the trees this migration authors and no others. Inside them,
+      # .gitattributes already exempts the fixed-width fixtures, whose records are space-padded to a
+      # declared width - that padding is content, and reporting it would bury real defects under
+      # thousands of false ones.
+      #
+      # WHY TWO FILES ARE NAMED BESIDE THE THREE DIRECTORIES, AND WHY A DIRECTORY LIST ALONE LEFT A
+      # HOLE. This migration authors two files that sit at the repository ROOT rather than inside any
+      # of the three trees: mkdocs.yml, whose explicit nav list is what publishes the five new
+      # documentation pages, and catalog-info.yaml, whose type and tags this migration updates. A
+      # pathspec of directories cannot reach a root-level file, so both were authored by this
+      # migration and read by no whitespace gate - the exact gap the estate README exclusion is
+      # sometimes mistaken for. They are named individually rather than by widening the pathspec to
+      # `.`, which would pull in the estate tree the paragraph above excludes. Both are clean at the
+      # revision this was added, and BuildAndCiContractTest holds the pathspec to naming them, so a
+      # third authored root file has to be added here rather than silently escaping the gate.
+      # Reasoned in docs/decision-log.md DL-340.
       #
       # WHY IT OVERRIDES THE DEFAULT DIRECTORY. Every other run: step is scoped into the module.
       # This one is the exception because the pathspec it passes is repository-relative and the
@@ -299,7 +313,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- \
-            carddemo-java docs .github
+            carddemo-java docs .github catalog-info.yaml mkdocs.yml
 
       - name: Set up Eclipse Temurin JDK 25.0.3+9
         uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
@@ -919,6 +933,153 @@ jobs:
           echo 'The gate evidence bundle is complete and every file names this run.'
           ls -l target/gate-evidence
 
+      # THE EMITTED SIGN-OFF IS NOT THE RUN'S SIGN-OFF, AND THIS STEP IS WHERE IT BECOMES ONE. The table
+      # in gate8-sign-off.md is written by GateVerificationTest at integration-test. The vulnerability
+      # report and the merged coverage report are written at verify - a LATER phase. So a row whose
+      # evidence is either of those cannot be anything but outstanding when that table is written, and the
+      # table says so: it carries a `Sign-off status: PROVISIONAL` line naming each outstanding row and the
+      # artefact that discharges it. Before this step existed, the upload below published that interim
+      # table as the run's conclusion, and nothing anywhere rejected a PENDING row. A reviewer downloading
+      # the bundle got a sign-off checklist in which the supply-chain and performance rows read PENDING and
+      # no artefact said whether they had since passed.
+      #
+      # WHAT THIS STEP DOES, AND WHY IT CAN. It runs after verify, so every artefact the outstanding rows
+      # name now exists. It discharges each one against the real artefact - the scan's own JSON report for
+      # the supply-chain row, the measuring tiers' own baselines for the performance row - checks the
+      # coverage floor against the merged report's own counter, and only then writes final-sign-off.md
+      # carrying `Sign-off status: FINAL` and the evidence for each discharge. If a row cannot be
+      # discharged, or if the interim table still carries a MISSING row, this step FAILS and no final
+      # sign-off is written, so the bundle can never contain a FINAL table that was not earned.
+      #
+      # WHY THE FILE IS NOT NAMED gate8-*.md. The `gate<n>-` prefix denotes an artefact the TEST SUITE
+      # writes during the build, and the bundle-verification step above requires every such name the suite
+      # mentions to be verified there - a step that runs before this one. A file this step writes therefore
+      # has to sit outside that namespace or it would be required to exist before it is created.
+      # config/BuildAndCiContractTest asserts this step exists, that it rejects an undischarged row, and
+      # that it writes the file the upload publishes. Reasoned in docs/decision-log.md DL-340.
+      - name: Reconcile the provisional sign-off into a final one
+        if: success()
+        run: |
+          set -euo pipefail
+          interim='target/gate-evidence/gate8-sign-off.md'
+          final='target/gate-evidence/final-sign-off.md'
+
+          # A MISSING row fails the emitting assertion, so a table carrying one should never have reached
+          # this step. Checked anyway: this step's whole purpose is that the sign-off is earned rather than
+          # assumed, and that argument does not permit assuming the earlier assertion ran.
+          #
+          # MATCHED AS A ROW, NOT AS A WORD. The table's own explanatory paragraph says "A row marked
+          # MISSING is an outstanding work item", so a bare token search reports the sentence that explains
+          # the state as though it were the state - which it did, on the first run of this step against a
+          # real bundle. A row is a line opening with a pipe, and the state cell is emphasised, so the
+          # anchored pattern below reads the table and not the prose around it.
+          if grep -qE '^\|.*\*\*MISSING\*\*' "${interim}"; then
+            echo '::error::The interim sign-off carries a MISSING row, which is an outstanding work item.' >&2
+            grep -nE '^\|.*\*\*MISSING\*\*' "${interim}" >&2
+            exit 1
+          fi
+
+          status="$(sed -n 's/^Sign-off status: \([A-Z]*\).*/\1/p' "${interim}" | head -1)"
+          if [ -z "${status}" ]; then
+            echo "::error::${interim} carries no 'Sign-off status:' line, so nothing states whether it is" >&2
+            echo 'the run conclusion or an interim record. The emitting test writes that line; a bundle' >&2
+            echo 'without it is from a build whose suite did not produce this artefact.' >&2
+            exit 1
+          fi
+          echo "The interim sign-off reports: ${status}"
+
+          # ---- discharge 1: the supply-chain row, against the scan's own machine-readable report --------
+          # Counted over UNSUPPRESSED findings only, which is the invariant the build enforces: the module
+          # carries one written analyst determination, and the threshold ends the build on a qualifying
+          # finding that no determination covers. jq reads the report the scan wrote rather than the
+          # console line it printed, so a scan that reported and then had its output lost still discharges.
+          report='target/dependency-check-report.json'
+          qualifying="$(jq '[.dependencies[]? | .vulnerabilities[]? |
+                             (.cvssv3.baseScore // .cvssv2.score // 0) | tonumber |
+                             select(. >= 7.0)] | length' "${report}")"
+          if [ "${qualifying}" -ne 0 ]; then
+            printf '::error::%s reports %d unsuppressed finding(s) at or above CVSS 7.0.\n' \
+              "${report}" "${qualifying}" >&2
+            exit 1
+          fi
+          suppressed="$(jq '[.dependencies[]? | .suppressedVulnerabilities[]?] | length' "${report}")"
+          echo "Supply chain discharged: 0 unsuppressed findings at or above 7.0, ${suppressed} suppressed."
+
+          # ---- discharge 2: the performance row, against the measuring tiers' own baselines -------------
+          # The bundle step above has already required both baselines to exist and to name this run's
+          # revision. What is checked here is that each carries a measured ROW: a file with a header and no
+          # row satisfies existence and discharges nothing.
+          baselines=0
+          for baseline in target/gate-evidence/gate3-*.md; do
+            rows="$(grep -cE '^\| *[A-Za-z]' "${baseline}" || true)"
+            if [ "${rows}" -lt 2 ]; then
+              printf '::error::%s carries no measured row beneath its header.\n' "${baseline}" >&2
+              exit 1
+            fi
+            baselines=$((baselines + 1))
+          done
+          if [ "${baselines}" -eq 0 ]; then
+            echo '::error::No run-scoped performance baseline was produced, so the Gate 3 row cannot be' >&2
+            echo 'discharged. The measuring tiers write these files; their absence in a green run is a' >&2
+            echo 'defect in those tiers.' >&2
+            exit 1
+          fi
+          echo "Performance discharged: ${baselines} run-scoped baseline(s), each carrying measured rows."
+
+          # ---- the coverage floor, read from the merged report's own counter ----------------------------
+          # The build already fails below the floor, so this is not a second gate. It is the FIGURE, put
+          # into the final sign-off so the published conclusion states the coverage it was signed off at
+          # instead of asserting that a check passed somewhere.
+          coverage='target/site/jacoco-merged/jacoco.xml'
+          counter="$(grep -o '<counter type="LINE" missed="[0-9]*" covered="[0-9]*"/>' "${coverage}" \
+            | tail -1)"
+          missed="$(printf '%s' "${counter}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+          covered="$(printf '%s' "${counter}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+          total=$((missed + covered))
+          if [ "${total}" -eq 0 ]; then
+            echo "::error::${coverage} reports no LINE counter, so the floor cannot be stated." >&2
+            exit 1
+          fi
+          percent=$((covered * 10000 / total))
+          if [ "${percent}" -lt 8000 ]; then
+            printf '::error::Merged line coverage is %d.%02d%%, below the 80%% floor.\n' \
+              $((percent / 100)) $((percent % 100)) >&2
+            exit 1
+          fi
+          printf 'Coverage discharged: %d of %d lines, %d.%02d%%, floor 80%%.\n' \
+            "${covered}" "${total}" $((percent / 100)) $((percent % 100))
+
+          # ---- write the final sign-off ----------------------------------------------------------------
+          # It carries the same `Build provenance: revision` line every file in this bundle carries, so the
+          # conclusion is attributable to one commit exactly as the evidence behind it is.
+          {
+            printf '<!-- Gate 8 FINAL sign-off, reconciled after verify by the CI workflow. -->\n\n'
+            printf '## Gate 8 - final integration sign-off\n\n'
+            printf 'Build provenance: revision %s, run %s/%s attempt %s.\n\n' \
+              "${SOURCE_REVISION}" "${GITHUB_REPOSITORY}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+            printf 'Sign-off status: FINAL - every row of the interim table is discharged against the\n'
+            printf 'artefact it named, and each discharge is stated below rather than asserted.\n\n'
+            printf 'Interim table reported: %s.\n\n' "${status}"
+            printf '| Discharged row | Artefact read after verify | Result |\n'
+            printf '| :--- | :--- | :--- |\n'
+            printf '| Zero unsuppressed critical or high vulnerabilities | %s | 0 unsuppressed at or above CVSS 7.0, %s suppressed by written determination |\n' \
+              "${report}" "${suppressed}"
+            printf '| Performance baseline | target/gate-evidence/gate3-*.md | %s run-scoped baseline(s), each with measured rows naming this revision |\n' \
+              "${baselines}"
+            printf '| Line coverage at or above 80%% | %s | %s of %s lines, %d.%02d%% |\n' \
+              "${coverage}" "${covered}" "${total}" $((percent / 100)) $((percent % 100))
+            printf '\nThe interim table this reconciles is target/gate-evidence/gate8-sign-off.md, written\n'
+            printf 'at integration-test. It is published beside this file rather than replaced by it, so a\n'
+            printf 'reader can see both what the build knew then and what it knows now.\n'
+          } > "${final}"
+
+          if grep -q 'Sign-off status: PROVISIONAL' "${final}"; then
+            echo "::error::${final} still reads PROVISIONAL, which cannot be published as a sign-off." >&2
+            exit 1
+          fi
+          echo "Wrote ${final}:"
+          cat "${final}"
+
       - name: Upload gate evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1010,6 +1171,108 @@ jobs:
             echo 'Every published per-tier figure equals what this run executed.'
           else
             echo 'The published per-tier table does not match this run. Update the table in docs/gate-evidence.md from the figures above.'
+          fi
+          exit "${status}"
+
+      # THE PUBLISHED COVERAGE COUNTERS ARE RECONCILED HERE FOR THE SAME REASON THE TEST TOTALS ABOVE
+      # ARE, and they were not, which is how three of the four went stale. The evidence page publishes a
+      # four-row table of covered-and-total figures read from the merged report, and nothing anywhere
+      # compared those figures with the report. Two of the four were then correct and three were wrong -
+      # line by three, instruction by two hundred, method by two - which is invisible to every other check
+      # in this pipeline: the coverage GATE reads the report and passes, and the page's transcription of the
+      # same report can say anything at all without the gate noticing.
+      #
+      # WHY IT CANNOT BE A TEST INSTEAD. The merged report is written at post-integration-test. Every test
+      # in this module runs earlier, at test or integration-test, so no test in the suite can read the
+      # report of its own build. A test reading a PREVIOUS build's report would pass or fail on a stale
+      # file, which is worse than not checking. After verify both exist, which is here.
+      #
+      # THE PERCENTAGE COLUMN IS DERIVED RATHER THAN COMPARED, deliberately: a rounded percentage that
+      # follows from two correct counters carries no independent information, and comparing a rounded figure
+      # to a computed one invites a spurious mismatch in the last digit. What is checked is the pair, and
+      # the pair is what the report states.
+      - name: Reconcile the published coverage counters with the merged report
+        if: success()
+        run: |
+          set +e
+          set -uo pipefail
+          evidence='../docs/gate-evidence.md'
+          report='target/site/jacoco-merged/jacoco.xml'
+          status=0
+
+          if [ ! -s "${report}" ]; then
+            echo "::error title=No merged report::${report} is absent, so the published coverage table cannot be reconciled"
+            exit 1
+          fi
+
+          # The report-level counters are the LAST occurrence of each type in the file: JaCoCo writes
+          # per-class and per-package counters first and the bundle totals last. tail -1 is therefore the
+          # bundle figure rather than whichever class happened to be emitted first.
+          measured_of() {
+            local counter="$1"
+            grep -o "<counter type=\"${counter}\" missed=\"[0-9]*\" covered=\"[0-9]*\"/>" "${report}" \
+              | tail -1
+          }
+          published_of() {
+            # Row keyed on its metric name in the first cell, with emphasis and thousands separators
+            # stripped. Column 1 is covered and column 2 is total, as the page's own header states.
+            awk -v key="$1" -v col="$2" -F'|' '
+              /^\|/ {
+                name = $2; gsub(/[*` ]/, "", name);
+                if (name == key) {
+                  cell = $(col + 2); gsub(/[*, ]/, "", cell);
+                  if (cell ~ /^[0-9]+$/) { print cell; exit }
+                }
+              }' "${evidence}"
+          }
+
+          for pair in 'LINE:Line' 'BRANCH:Branch' 'INSTRUCTION:Instruction' 'METHOD:Method'; do
+            counter="${pair%%:*}"
+            row="${pair##*:}"
+            element="$(measured_of "${counter}")"
+            if [ -z "${element}" ]; then
+              echo "::error title=Counter absent::${report} carries no bundle ${counter} counter"
+              status=1
+              continue
+            fi
+            missed="$(printf '%s' "${element}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+            covered="$(printf '%s' "${element}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+            total=$((missed + covered))
+            echo "${row}: measured covered=${covered} total=${total}"
+
+            expected_covered="$(published_of "${row}" 1)"
+            expected_total="$(published_of "${row}" 2)"
+            if [ -z "${expected_covered}" ] || [ -z "${expected_total}" ]; then
+              echo "::error title=Published row missing::${evidence} carries no ${row} row with two numeric figures"
+              status=1
+              continue
+            fi
+            if [ "${expected_covered}" != "${covered}" ]; then
+              echo "::error title=Published counter is wrong::${row} covered: the page publishes ${expected_covered}, this run measured ${covered}"
+              status=1
+            fi
+            if [ "${expected_total}" != "${total}" ]; then
+              echo "::error title=Published counter is wrong::${row} total: the page publishes ${expected_total}, this run measured ${total}"
+              status=1
+            fi
+          done
+
+          # The analysed-class count is published in the same section and comes from the same report.
+          classes="$(measured_of CLASS)"
+          if [ -n "${classes}" ]; then
+            class_missed="$(printf '%s' "${classes}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+            class_covered="$(printf '%s' "${classes}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+            echo "Class: measured covered=${class_covered} total=$((class_missed + class_covered))"
+            if [ "${class_missed}" -ne 0 ]; then
+              echo "::error title=Wholly untested class::${report} reports ${class_missed} class(es) with no executed method; the build's own CLASS/MISSEDCOUNT rule allows zero"
+              status=1
+            fi
+          fi
+
+          if [ "${status}" -eq 0 ]; then
+            echo 'Every published coverage counter equals the merged report.'
+          else
+            echo 'The published coverage table does not match the merged report. Update the table in docs/gate-evidence.md from the figures above.'
           fi
           exit "${status}"
 

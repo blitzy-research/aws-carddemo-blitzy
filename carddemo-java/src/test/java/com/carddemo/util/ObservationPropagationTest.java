@@ -99,6 +99,23 @@ class ObservationPropagationTest {
     }
 
     /**
+     * Builds a registry that mints real observations rather than the shared no-op one.
+     *
+     * <p>Necessary and not incidental. A registry with no handler answers every {@code start} with the
+     * single {@code NOOP} observation, so an assertion that the worker sees "the same observation as the
+     * submitter" holds whether anything was carried or not - it is two references to one singleton. With a
+     * handler registered the registry mints a distinct observation per start, which is what makes every
+     * identity assertion in this file a measurement.
+     *
+     * @return a registry with one accept-everything handler
+     */
+    private static ObservationRegistry recordingRegistry() {
+        final ObservationRegistry registry = ObservationRegistry.create();
+        registry.observationConfig().observationHandler(context -> true);
+        return registry;
+    }
+
+    /**
      * Runs work on a different thread and returns what that thread found current, or {@code null}.
      *
      * <p>A separate thread is essential and not incidental: an observation is thread-bound, so work
@@ -135,7 +152,7 @@ class ObservationPropagationTest {
         @DisplayName("the worker finds the submitter's observation current, which is the whole point: "
                 + "the outbound call becomes a child instead of a detached root")
         void theWorkerRunsInsideTheSubmittersObservation() throws Exception {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
             final Observation caller = Observation.start(CALLER_OBSERVATION, registry);
             final AtomicReference<Observation> insideTheWork = new AtomicReference<>();
             final Runnable wrapped = whileObserving(caller,
@@ -158,7 +175,7 @@ class ObservationPropagationTest {
         @DisplayName("capture happens at wrap time, not at run time, because by the time the worker "
                 + "runs the submitting thread has moved on")
         void captureHappensWhenWrappedRatherThanWhenRun() throws Exception {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
             final Observation caller = Observation.start(CALLER_OBSERVATION, registry);
             final AtomicReference<Observation> insideTheWork = new AtomicReference<>();
             final Runnable wrapped = whileObserving(caller,
@@ -178,7 +195,7 @@ class ObservationPropagationTest {
         @DisplayName("with nothing current the work is returned unwrapped and still runs, because an "
                 + "unobserved caller is an ordinary caller")
         void nothingCurrentReturnsTheWorkUnchanged() {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
             final Runnable work = () -> {
                 // Body irrelevant; identity is what is asserted.
             };
@@ -192,7 +209,7 @@ class ObservationPropagationTest {
         @DisplayName("a failure in the work propagates unchanged and the scope still closes, so a "
                 + "tracing concern never becomes the caller's error")
         void aFailureInTheWorkPropagatesAndTheScopeStillCloses() throws Exception {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
             final Observation caller = Observation.start(CALLER_OBSERVATION, registry);
             final IllegalStateException thrown = new IllegalStateException("the work failed");
             final Runnable wrapped = whileObserving(caller,
@@ -218,7 +235,7 @@ class ObservationPropagationTest {
         @Test
         @DisplayName("refuses an absent registry or an absent unit of work by name")
         void refusesAbsentArguments() {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
 
             assertThatNullPointerException()
                     .isThrownBy(() -> ObservationPropagation.inCurrentObservation(null, () -> {
@@ -240,7 +257,7 @@ class ObservationPropagationTest {
         @DisplayName("the worker runs inside the submitter's observation and the answer is returned "
                 + "untouched, because a carrier that altered a result would be a defect not a trace")
         void theWorkerRunsInsideTheObservationAndTheAnswerSurvives() throws Exception {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
             final Observation caller = Observation.start(CALLER_OBSERVATION, registry);
             final AtomicReference<Observation> insideTheWork = new AtomicReference<>();
             final Callable<Boolean> wrapped = whileObserving(caller,
@@ -268,7 +285,7 @@ class ObservationPropagationTest {
         @DisplayName("with nothing current the work is returned unwrapped, so an unobserved probe is "
                 + "answered exactly as before")
         void nothingCurrentReturnsTheWorkUnchanged() {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
             final Callable<Boolean> work = () -> Boolean.TRUE;
 
             assertThat(ObservationPropagation.callInCurrentObservation(registry, work))
@@ -279,7 +296,7 @@ class ObservationPropagationTest {
         @DisplayName("a checked failure in the work reaches the executor unchanged, which is what lets "
                 + "the caller's own deadline handling stay in charge")
         void aCheckedFailurePropagatesUnchanged() throws Exception {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
             final Observation caller = Observation.start(CALLER_OBSERVATION, registry);
             final Exception thrown = new Exception("the provider refused");
             final Callable<Boolean> wrapped = whileObserving(caller,
@@ -302,7 +319,7 @@ class ObservationPropagationTest {
         @Test
         @DisplayName("refuses an absent registry or an absent unit of work by name")
         void refusesAbsentArguments() {
-            final ObservationRegistry registry = ObservationRegistry.create();
+            final ObservationRegistry registry = recordingRegistry();
 
             assertThatNullPointerException()
                     .isThrownBy(() -> ObservationPropagation.callInCurrentObservation(null,

@@ -306,8 +306,16 @@ public final class BatchJobController {
     /** Timer name for one status request, following the module's batch metric naming. */
     private static final String METRIC_STATUS_REQUEST = "carddemo.batch.jobstatus.request";
 
-    /** Tag naming the job an operation concerned, bounded to the allow-list plus one placeholder. */
-    private static final String TAG_JOB = "job";
+    /**
+     * Tag naming the job an operation concerned, bounded to the allow-list plus one placeholder.
+     *
+     * <p><strong>Deliberately not {@code job}.</strong> Prometheus stamps its own {@code job} label onto
+     * every series it collects, naming the scrape target rather than the application dimension. Two
+     * labels of one name cannot coexist, so the exporter's value is renamed to {@code exported_job} on
+     * collection and every query grouping by {@code job} collapses to the single scrape target -
+     * silently, with the panel still rendering. Recorded as {@code DL-338}.
+     */
+    private static final String TAG_JOB = "batchJob";
 
     /** Tag naming which outcome the operation reached. */
     private static final String TAG_OUTCOME = "outcome";

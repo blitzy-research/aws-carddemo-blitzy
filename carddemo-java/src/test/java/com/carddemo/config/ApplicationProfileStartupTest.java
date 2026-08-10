@@ -192,11 +192,14 @@ final class ApplicationProfileStartupTest {
     /** The descriptor prefix a class-path location carries, stripped to reach a resource pattern. */
     private static final String CLASS_PATH_PREFIX = "classpath:";
 
-    /** The target EVERY profile resolves, spelled as the migration tool's own head sentinel. */
+    /** The target the two SEEDING profiles resolve, spelled as the migration tool's own head sentinel. */
     private static final String HEAD_TARGET = "latest";
 
-    /** The version pin production no longer declares and which the resolution now refuses. */
-    private static final String WITHDRAWN_SCHEMA_PIN = "2";
+    /**
+     * The ceiling the shared baseline and the production overlay pin, which is the highest version the
+     * schema location delivers and the value the resolution refuses every alternative to.
+     */
+    private static final String SCHEMA_CEILING = "2";
 
     /** The complete delivered numbering, asserted rather than assumed. */
     private static final List<Integer> EXPECTED_DELIVERED_VERSIONS = List.of(1, 2, 3, 4);
@@ -432,11 +435,10 @@ final class ApplicationProfileStartupTest {
                                 + "seeds", SHARED_PARENT_LOCATION)
                         .doesNotContain(SHARED_PARENT_LOCATION, SEED_LOCATION);
                 assertThat(bound.getTarget())
-                        .as("the target is the apply-everything marker rather than a version. A pin of "
-                                + "%s used to be the exclusion; it also froze the schema at that "
-                                + "version, so a script added later would never be applied and the "
-                                + "migration would still report success", WITHDRAWN_SCHEMA_PIN)
-                        .isEqualTo(HEAD_TARGET);
+                        .as("and the ceiling is the SECOND control: pinned at %s, the highest version "
+                                + "the schema location delivers, so a seed-numbered script is excluded "
+                                + "by its number as well as by its directory", SCHEMA_CEILING)
+                        .isEqualTo(SCHEMA_CEILING);
                 assertThat(bound.isCleanDisabled())
                         .as("a production migration must not be able to drop the schema it manages")
                         .isTrue();
@@ -451,7 +453,7 @@ final class ApplicationProfileStartupTest {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
                 assertThat(bound.getLocations()).containsExactly(SCHEMA_LOCATION);
-                assertThat(bound.getTarget()).isEqualTo(HEAD_TARGET);
+                assertThat(bound.getTarget()).isEqualTo(SCHEMA_CEILING);
                 assertThat(bound.isCleanDisabled()).isTrue();
             });
         }
@@ -477,9 +479,10 @@ final class ApplicationProfileStartupTest {
                                 profile)
                         .doesNotContain(SHARED_PARENT_LOCATION);
                 assertThat(bound.getTarget())
-                        .as("%s declares the same open target every other profile declares; the "
-                                + "difference between the profiles is the location list and nothing "
-                                + "else", profile)
+                        .as("%s LIFTS the ceiling the shared baseline pins at %s, because a "
+                                + "fixture-bearing profile that stopped at the schema would load no "
+                                + "fixtures. The two profiles differ from production in both settings, "
+                                + "and each of the two is necessary", profile, SCHEMA_CEILING)
                         .isEqualTo(HEAD_TARGET);
                 assertThat(bound.isCleanDisabled())
                         .as("%s iterates on migrations, so dropping and re-applying is permitted here "
@@ -514,8 +517,9 @@ final class ApplicationProfileStartupTest {
                         .as("and it reaches neither of %s. For the second of those, applying it would "
                                 + "mean ten known sign-on identities in production. Note that this "
                                 + "holds however the seeds are NUMBERED - renumber one below the "
-                                + "withdrawn pin of %s and it is still excluded",
-                                SEEDS_WITHHELD_FROM_PRODUCTION, WITHDRAWN_SCHEMA_PIN)
+                                + "ceiling of %s and it is still excluded, because the location list "
+                                + "does not depend on a number",
+                                SEEDS_WITHHELD_FROM_PRODUCTION, SCHEMA_CEILING)
                         .doesNotContainAnyElementsOf(SEEDS_WITHHELD_FROM_PRODUCTION);
                 assertThat(deliveredMigrationsUnder(SEED_LOCATION))
                         .as("while the location production does NOT resolve carries exactly the two "
@@ -525,30 +529,28 @@ final class ApplicationProfileStartupTest {
         }
 
         @Test
-        @DisplayName("a future schema migration would be applied by this posture, which is the property "
-                + "the withdrawn version pin made impossible")
-        void aFutureSchemaMigrationWouldStillBeApplied() {
+        @DisplayName("a future schema migration cannot be skipped in silence, because the ceiling this "
+                + "posture pins is asserted against the versions the schema location delivers")
+        void aFutureSchemaMigrationCannotBeSkippedInSilence() {
             runner(MigrationSettings.class, PRODUCTION).run(context -> {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
                 assertThat(bound.getTarget())
-                        .as("the target must be the head sentinel and NOT a number. Under the withdrawn "
-                                + "pin of %s a V5 schema script would have been resolved, skipped and "
-                                + "reported as a successful migration, and the pin could not be raised "
-                                + "because the resolution refused every other value. The head sentinel "
-                                + "applies whatever the resolved location carries, so the sequence can "
-                                + "grow", WITHDRAWN_SCHEMA_PIN)
-                        .isEqualTo(HEAD_TARGET);
+                        .as("the ceiling must be exactly %s, which is the highest version the schema "
+                                + "location delivers. A number written down and never checked is the "
+                                + "shape that silently stops applying scripts: a V5 script would be "
+                                + "resolved, skipped and reported as a successful migration. That is "
+                                + "closed by CHECKING the number rather than by removing it - "
+                                + "FlywayConfigTest asserts the pin against the delivered scripts, so "
+                                + "adding V5 without raising the pin fails the build", SCHEMA_CEILING)
+                        .isEqualTo(SCHEMA_CEILING);
                 assertThat(bound.getTarget())
-                        .as("and specifically it must not be parsable as a version ceiling, which is "
-                                + "the only shape that can silently stop applying scripts")
-                        .isNotEqualTo(WITHDRAWN_SCHEMA_PIN)
-                        .satisfies(target -> assertThat(target.chars().allMatch(Character::isDigit))
-                                .isFalse());
+                        .as("and it must not be the head sentinel, which would apply whatever a resolved "
+                                + "location happened to carry above the delivered schema")
+                        .isNotEqualTo(HEAD_TARGET);
                 assertThat(bound.getLocations())
-                        .as("a future schema script is placed in %s, so the posture that applies it is "
-                                + "the same one that excludes the seeds - one control rather than two "
-                                + "pulling in opposite directions", SCHEMA_LOCATION)
+                        .as("a future schema script is placed in %s, so raising the schema is one commit: "
+                                + "the script, and the pin that reaches it", SCHEMA_LOCATION)
                         .containsExactly(SCHEMA_LOCATION);
             });
         }
@@ -559,11 +561,11 @@ final class ApplicationProfileStartupTest {
         void theResolvedTargetIsTheTargetTheCodeReapplies() {
             runner(MigrationSettings.class, PRODUCTION).run(context -> assertThat(
                     context.getBean(FlywayProperties.class).getTarget())
-                    .as("FlywayConfig re-applies %s whenever the %s profile is active and REFUSES any "
-                            + "numeric value. A configured number here would be refused at start-up "
-                            + "rather than silently corrected", FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
-                            FlywayConfig.PRODUCTION_PROFILE)
-                    .isEqualTo(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET));
+                    .as("FlywayConfig re-applies %s whenever the %s profile is active and REFUSES every "
+                            + "other value, the head sentinel included. A different value configured "
+                            + "here would be refused at start-up rather than silently corrected",
+                            FlywayConfig.PRODUCTION_TARGET, FlywayConfig.PRODUCTION_PROFILE)
+                    .isEqualTo(FlywayConfig.PRODUCTION_TARGET));
 
             assertThat(FlywayConfig.PRODUCTION_PROFILE)
                     .as("the code control is scoped by profile name; a name matching no profile would "
@@ -906,10 +908,11 @@ final class ApplicationProfileStartupTest {
                         .as("restarting a deployment must not fire a posting run")
                         .isFalse();
                 assertThat(environment.getProperty(KEY_FLYWAY_TARGET))
-                        .as("the open target, deliberately not a number: a number would freeze the "
-                                + "schema at its own version rather than protect anything, since the "
-                                + "seeds are held out by the location asserted immediately below")
-                        .isEqualTo(HEAD_TARGET);
+                        .as("the ceiling, pinned at the highest version the schema location delivers, so "
+                                + "the seeds are excluded by their NUMBER as well as by the location "
+                                + "asserted immediately below. The pin is asserted against the delivered "
+                                + "scripts by FlywayConfigTest, so it cannot freeze a later release")
+                        .isEqualTo(SCHEMA_CEILING);
                 assertThat(environment.getProperty(KEY_FLYWAY_LOCATIONS))
                         .as("the schema location alone. THIS is what keeps fifty synthetic customer rows "
                                 + "and ten known sign-on identities out of a production database: the "

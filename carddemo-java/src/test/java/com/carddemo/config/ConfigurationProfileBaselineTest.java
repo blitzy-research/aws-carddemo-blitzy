@@ -453,17 +453,25 @@ final class ConfigurationProfileBaselineTest {
     private static final String SHARED_PARENT_FOLDER = "db/migration";
 
     /**
-     * The migration target EVERY profile declares, production included.
+     * The migration target the two SEEDING profiles declare.
      *
-     * <p>{@code latest} applies every script the resolved locations carry and stops there. Production
-     * once declared {@code 2} instead and that ceiling was the exclusion; it also meant a {@code V5}
-     * schema script would never be applied while the migration still reported success, and the code
-     * control refused every other value so the pin could not be raised without editing code. A ceiling
-     * is the wrong instrument for a boundary that must never move AND the wrong instrument for a
-     * sequence that must keep growing, and it was being used for both. The location list carries the
-     * boundary now, so no profile declares a number and production REFUSES one.</p>
+     * <p>{@code latest} applies every script the resolved locations carry and stops there, which is what
+     * a fixture-bearing profile needs. Production declares {@link #PRODUCTION_TARGET} instead and the
+     * code control refuses every alternative to it there, this marker included.</p>
      */
     private static final String ALL_RESOLVED_VERSIONS_TARGET = "latest";
+
+    /**
+     * The migration target the shared baseline and the production overlay declare.
+     *
+     * <p>The highest version {@code classpath:db/migration/schema} delivers, so the two seeds are
+     * excluded by their NUMBER as well as by the location list. The known objection to a pin - that a
+     * number freezes the schema, so a {@code V5} script would never be applied while the migration still
+     * reported success - is answered by CHECKING the number: {@code FlywayConfigTest} asserts it against
+     * the versions the schema location delivers, so raising the schema without raising the pin fails the
+     * build. Recorded in docs/decision-log.md DL-334.</p>
+     */
+    private static final String PRODUCTION_TARGET = "2";
 
     /**
      * The version at which the seeds begin, which is what keeps cross-location apply order correct.
@@ -1981,15 +1989,16 @@ final class ConfigurationProfileBaselineTest {
      * Both the declared and the RESOLVED value are asserted, because inheritance is what a running
      * application reads and a per-document reading cannot answer an inheritance question.</p>
      *
-     * <p>This arrangement replaced a numeric ceiling of {@code spring.flyway.target: 2}, and the reason
-     * is not tidiness. A ceiling excluded the seeds by ARITHMETIC and therefore also froze the schema:
-     * the day a {@code V5} schema script shipped, production would have applied nothing above the pin
-     * and reported success, and the code control refused every value but {@code 2} so the pin could not
-     * be raised without editing code. A ceiling is the wrong instrument for a boundary that must never
-     * move AND the wrong instrument for a sequence that must keep growing, and it was serving as both.
-     * A location a document never lists is not a value an operator can widen and it constrains no
-     * future version, which is why the assertions below hold a location list rather than a number, and
-     * hold every document to declaring {@code latest}. See docs/decision-log.md DL-298.</p>
+     * <p>The location list is the PRIMARY separation and the version ceiling of
+     * {@code spring.flyway.target: 2} is held alongside it, and the reason for both is not tidiness. A
+     * location a document never lists is not a value an operator can widen: it produces no script to
+     * decline. A ceiling excludes by ARITHMETIC instead, which reaches a case the location list cannot -
+     * a look-alike location presenting a seed-numbered script - but which, left unchecked, freezes the
+     * schema: the day a {@code V5} schema script shipped, production would apply nothing above the pin
+     * and report success. That failure mode is closed by CHECKING the pin rather than by removing it, so
+     * the assertions below hold a location list AND a per-document ceiling, and
+     * {@code FlywayConfigTest} holds the pin to the versions the schema location delivers. See
+     * docs/decision-log.md DL-298 and DL-334.</p>
      *
      * <p>The second is the parent, which is the one way this arrangement can be silently defeated. A
      * Flyway location is scanned RECURSIVELY, so {@code classpath:db/migration} reaches BOTH children:
@@ -2019,7 +2028,7 @@ final class ConfigurationProfileBaselineTest {
      */
     @Nested
     @DisplayName("the documented migration set is the migration set that ships, and the location list "
-            + "alone is what excludes the seeds")
+            + "and the version ceiling both exclude the seeds")
     final class TheDocumentedMigrationSetIsTheDeliveredOne {
 
         @ParameterizedTest(name = "{0} declares the schema location and nothing else")
@@ -2114,23 +2123,27 @@ final class ConfigurationProfileBaselineTest {
                     .isEmpty();
         }
 
-        @ParameterizedTest(name = "{0} declares the target as latest rather than as a number")
+        @ParameterizedTest(name = "{0} declares the ceiling its own posture needs")
         @ValueSource(strings = {SHARED, PRODUCTION, LOCAL, TEST})
-        @DisplayName("every document declares the target as latest, because the boundary is the location "
-                + "list and a number here would constrain the schema instead")
-        void everyDocumentDeclaresTheOpenTarget(final String document) {
+        @DisplayName("each document declares the ceiling its own posture needs: the baseline and the "
+                + "production overlay pin it, and the two seeding profiles lift it")
+        void everyDocumentDeclaresTheCeilingItsPostureNeeds(final String document) {
+            final String expected = SHARED.equals(document) || PRODUCTION.equals(document)
+                    ? PRODUCTION_TARGET : ALL_RESOLVED_VERSIONS_TARGET;
+
             assertThat(text(document, KEY_FLYWAY_TARGET))
-                    .as("%s must declare %s. A number here reads as a safety control and is not one: it "
-                            + "would apply nothing above itself and still report success, so the day a "
-                            + "V5 schema script shipped the deployment would come up on an incomplete "
-                            + "schema. FlywayConfig refuses a number under the production profile for "
-                            + "exactly that reason", document, ALL_RESOLVED_VERSIONS_TARGET)
-                    .isEqualTo(ALL_RESOLVED_VERSIONS_TARGET);
+                    .as("%s must declare %s. The baseline carries the RESTRICTIVE value so a profile "
+                            + "silent about migrations inherits the production posture; the two seeding "
+                            + "profiles are the only documents that lift it, because a fixture-bearing "
+                            + "profile that stopped at the schema would load no fixtures. FlywayConfig "
+                            + "refuses any other value under the production profile and LIFTS a low one "
+                            + "for a seeding profile", document, expected)
+                    .isEqualTo(expected);
 
             assertThat(resolvedAcrossSharedThen(document, KEY_FLYWAY_TARGET))
                     .as("and the resolved value is what a running application migrates to, so the "
                             + "overlay must still carry it once layered over the baseline")
-                    .isEqualTo(ALL_RESOLVED_VERSIONS_TARGET);
+                    .isEqualTo(expected);
         }
 
         @Test
@@ -2157,10 +2170,16 @@ final class ConfigurationProfileBaselineTest {
                     .isEqualTo(SHARED_PARENT_LOCATION);
 
             assertThat(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
-                    .as("and the target the code re-applies after binding must be the one every document "
-                            + "declares, or a profile that stated a number would be corrected to a value "
-                            + "no document names")
+                    .as("and the marker the code lifts a low ceiling to must be the one the two seeding "
+                            + "documents declare, or a lifted profile would migrate to a value no "
+                            + "document names")
                     .isEqualTo(ALL_RESOLVED_VERSIONS_TARGET);
+
+            assertThat(FlywayConfig.PRODUCTION_TARGET)
+                    .as("and the pin the code re-applies under production must be the one the baseline "
+                            + "and the production overlay declare, or a deployment would be corrected to "
+                            + "a ceiling no document names")
+                    .isEqualTo(PRODUCTION_TARGET);
 
             assertThat(FlywayConfig.PRODUCTION_PROFILE)
                     .as("the code control is scoped by profile name; a name matching no profile would "

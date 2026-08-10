@@ -94,16 +94,19 @@ spring:
 
   flyway:
     enabled: true
-    # ONE SETTING ADMITS THE SEEDS: the second location. The delivered scripts sit in two sibling
-    # directories whose shared parent holds no script at all -
+    # TWO SETTINGS ADMIT THE SEEDS: the second location, and the lifted ceiling. The delivered scripts
+    # sit in two sibling directories whose shared parent holds no script at all -
     # classpath:db/migration/schema carries V1__create_schema.sql and V2__create_indexes.sql, and
     # classpath:db/migration/seed carries V3__seed_reference_data.sql and V4__seed_user_security.sql,
     # the reference-data and sign-on seeds the gate fixtures assert against. THE LOCATION LIST IS THE
     # SEPARATION: the shared baseline declares the schema location alone, which is the production
-    # posture, and naming the seed location here is what applies V3 and V4. Do not drop the second
-    # entry - it leaves every fixture asserting against an empty result set. Production resolves the
-    # schema location only, and com.carddemo.config.FlywayConfig refuses anything else there. See
-    # docs/decision-log.md DL-298.
+    # posture, and naming the seed location here is what makes V3 and V4 resolvable. Do not drop the
+    # second entry - it leaves every fixture asserting against an empty result set. The baseline also
+    # pins spring.flyway.target to "2", the highest version the schema location delivers, so the
+    # `target: latest` below is the second half of admitting the seeds: without it the two seed
+    # versions resolve and are reported above target rather than applied. Production resolves the
+    # schema location only and holds the pin, and com.carddemo.config.FlywayConfig refuses anything
+    # else there. See docs/decision-log.md DL-298 for the split and DL-334 for the ceiling.
     #
     # NEVER COLLAPSE THESE TWO INTO THEIR PARENT classpath:db/migration. A Flyway location is scanned
     # RECURSIVELY, so the parent resolves the same four scripts - but it records each one under a name

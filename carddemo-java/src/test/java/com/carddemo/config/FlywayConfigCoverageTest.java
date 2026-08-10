@@ -57,18 +57,21 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * location's set is asserted first, so a script added, removed or moved has to be accounted for here
  * before any claim about the control is made.
  *
- * <h2>Why placement rather than a version</h2>
+ * <h2>Why placement AND a version</h2>
  *
- * <p>The production exclusion used to be {@code spring.flyway.target: 2}, a numeric ceiling. It did hold
- * the seeds out, and it also froze the schema: the day a {@code V5} schema script shipped, production
- * would have applied nothing above the pin and reported success, and the resolution refused every value
- * but {@code 2} so the pin could not be raised without editing code. A ceiling is the wrong instrument
- * for a boundary that must never move AND the wrong instrument for a sequence that must keep growing,
- * and it was serving as both. The two halves of the migration set now ship from two sibling locations,
+ * <p>Two controls hold the production exclusion, and they answer different questions. PLACEMENT decides
+ * which scripts are resolved: the two halves of the migration set ship from two sibling locations,
  * production resolves one of them, and a location a profile never lists is not a value an operator can
- * widen. So the assertions here hold a location list, hold every profile to the open target, and hold
- * production to REFUSING a number - the exact reverse of what this file used to require. See
- * docs/decision-log.md DL-298.
+ * widen - it produces no script to decline. THE CEILING decides how far a resolved list may be applied:
+ * {@code spring.flyway.target: 2} is the highest version the schema location delivers, so a
+ * seed-numbered script presented by some other location would still not be applied.
+ *
+ * <p>The known objection to a ceiling is real and is answered rather than avoided. A number written down
+ * and never checked freezes the schema: the day a {@code V5} schema script shipped, production would
+ * apply nothing above the pin and report success. {@code FlywayConfigTest} therefore asserts the pin
+ * against the versions the schema location delivers, so raising the schema without raising the pin fails
+ * the build. So the assertions here hold a location list, hold production to the pin, and hold it to
+ * REFUSING every alternative - the open marker included. See docs/decision-log.md DL-298 and DL-334.
  *
  * <h2>The parent is the way this can be silently defeated</h2>
  *
@@ -112,8 +115,14 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 @DisplayName("Production migration scope, checked against the delivered scripts")
 final class FlywayConfigCoverageTest {
 
-    /** The target every profile declares, typed independently of the class under test. */
-    private static final String EXPECTED_TARGET = "latest";
+    /** The target the two seeding profiles declare, typed independently of the class under test. */
+    private static final String EXPECTED_SEEDING_TARGET = "latest";
+
+    /**
+     * The ceiling the shared baseline and the production overlay declare, typed independently of the
+     * class under test so a change to the constant cannot silently change what is asserted about it.
+     */
+    private static final String EXPECTED_TARGET = "2";
 
     /** The profile the refusal is scoped to. */
     private static final String EXPECTED_PROFILE = "prod";
@@ -152,12 +161,11 @@ final class FlywayConfigCoverageTest {
             List.of("V3__seed_reference_data.sql", "V4__seed_user_security.sql");
 
     /**
-     * The ceiling that used to be the production control, retained here as the value production must
-     * now REFUSE and a seeding profile must have lifted.
+     * The ceiling production is pinned at, which a seeding profile must have lifted for itself.
      */
-    private static final String WITHDRAWN_SCHEMA_CEILING = "2";
+    private static final String SCHEMA_CEILING = "2";
 
-    /** A numeric ceiling that reaches the seed versions, refused under production for the same reason. */
+    /** A numeric ceiling that reaches the seed versions, refused under production. */
     private static final String SEED_REACHING_CEILING = "4";
 
     @Nested
@@ -165,17 +173,26 @@ final class FlywayConfigCoverageTest {
     final class ThePublishedBoundary {
 
         @Test
-        @DisplayName("names the open target rather than a version, so no future schema script is frozen "
-                + "out by the constant that used to exclude the seeds")
-        void namesTheOpenTargetRatherThanAVersion() {
-            assertThat(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
-                    .as("the published target must be the apply-everything marker. A numeric constant "
-                            + "here would be the defect this arrangement removed: it excluded the seeds "
-                            + "by arithmetic and froze the schema at the same version, so a V5 schema "
-                            + "script would never be applied and the migration would still report "
-                            + "success")
+        @DisplayName("names both published targets: the pin production is held to, and the marker a "
+                + "seeding profile is lifted to")
+        void namesBothPublishedTargets() {
+            assertThat(FlywayConfig.PRODUCTION_TARGET)
+                    .as("the published pin must be the highest version the schema location delivers, "
+                            + "which is what makes it a boundary rather than an arbitrary stop")
                     .isEqualTo(EXPECTED_TARGET);
+            assertThat(deliveredMigrations(EXPECTED_SCHEMA_PATH))
+                    .as("and it must be measured against the delivered scripts rather than written down: "
+                            + "a pin that is never checked freezes the schema, so a V5 script added here "
+                            + "without raising the pin has to fail a build")
+                    .isNotEmpty()
+                    .allSatisfy(script -> assertThat(versionOf(script)
+                            .compareTo(MigrationVersion.fromVersion(FlywayConfig.PRODUCTION_TARGET)))
+                            .isLessThanOrEqualTo(0));
 
+            assertThat(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
+                    .as("the marker a seeding profile is lifted to must be the apply-everything marker, "
+                            + "so a fixture-bearing profile reaches every delivered version")
+                    .isEqualTo(EXPECTED_SEEDING_TARGET);
             assertThat(MigrationVersion.fromVersion(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET))
                     .as("and the migration tool must read it as its own latest marker, which is above "
                             + "every concrete version by construction rather than by comparison")
@@ -299,8 +316,8 @@ final class FlywayConfigCoverageTest {
                         .as("%s must not be resolvable from the location production reads. That is the "
                                 + "whole of the exclusion, and it does not depend on the version the "
                                 + "seed carries: renumber it to V1_5 and it is still excluded, whereas "
-                                + "under the withdrawn ceiling of %s it would have been applied",
-                                seedMigration, WITHDRAWN_SCHEMA_CEILING)
+                                + "the ceiling of %s alone would then have admitted it",
+                                seedMigration, SCHEMA_CEILING)
                         .doesNotContain(seedMigration);
             }
             for (final String schemaMigration : SCHEMA_MIGRATIONS) {
@@ -361,41 +378,37 @@ final class FlywayConfigCoverageTest {
             });
         }
 
-        @ParameterizedTest(name = "a bound ceiling of {0} is refused under production")
-        @ValueSource(strings = {WITHDRAWN_SCHEMA_CEILING, SEED_REACHING_CEILING, "1", "99"})
-        @DisplayName("refuses ANY numeric ceiling under production rather than replacing it, because a "
-                + "number freezes the schema at a version and the seeds are already held out by the "
-                + "location list")
-        void refusesAnyNumericCeilingUnderProduction(final String ceiling) {
-            runner(EXPECTED_PROFILE).run(context -> {
-                FluentConfiguration configuration = Flyway.configure()
-                        .locations(EXPECTED_SCHEMA_LOCATION)
-                        .target(MigrationVersion.fromVersion(ceiling));
-
-                assertThat(configuration.getTarget())
-                        .as("the starting state is deliberately a numeric ceiling, so a customizer that "
-                                + "did nothing would be visible here")
-                        .isEqualTo(MigrationVersion.fromVersion(ceiling));
-
-                assertThatExceptionOfType(IllegalStateException.class)
-                        .as("%s is refused whatever its value. Replacing it silently would leave the "
-                                + "misconfiguration in the source to survive into the next deployment; "
-                                + "refusing makes the operator remove it. %s in particular is the value "
-                                + "that USED to be the production control, and it is refused now for the "
-                                + "defect it always carried: it stops the sequence for ever, so a schema "
-                                + "script added later is never applied and the migration still reports "
-                                + "success", ceiling, WITHDRAWN_SCHEMA_CEILING)
-                        .isThrownBy(() -> context.getBean(FlywayConfigurationCustomizer.class)
-                                .customize(configuration))
-                        .withMessageContaining(EXPECTED_PROFILE)
-                        .withMessageContaining("ceiling");
-            });
+        @ParameterizedTest(name = "a declared ceiling of {0} refuses the production start-up")
+        @ValueSource(strings = {SEED_REACHING_CEILING, "1", "99", EXPECTED_SEEDING_TARGET})
+        @DisplayName("refuses every declared ceiling but the pin under production rather than replacing "
+                + "it, in both directions and including the head marker")
+        void refusesEveryDeclaredCeilingButThePinUnderProduction(final String ceiling) {
+            // Declared as a PROPERTY rather than only bound on a configuration object. The migration
+            // tool's own default ceiling is its head marker, so a value read off a bound configuration
+            // cannot distinguish a document that declared the marker from one that declared nothing - and
+            // those two are treated differently: the first is refused and the second is corrected. The
+            // refusal therefore has to be driven by what the environment actually states, which also
+            // means it lands during the refresh rather than on a later customize() call.
+            runner(EXPECTED_PROFILE).withPropertyValues("spring.flyway.target=" + ceiling)
+                    .run(context -> assertThat(context)
+                            .as("%s is refused. Replacing it silently would leave the misconfiguration "
+                                    + "in the source to survive into the next deployment; refusing makes "
+                                    + "the operator remove it. Below the pin of %s the migration stops "
+                                    + "before the indexes and constraints are created and reports success "
+                                    + "anyway; above it - the head marker included - it applies whatever "
+                                    + "a resolved location carries past the delivered schema",
+                                    ceiling, SCHEMA_CEILING)
+                            .hasFailed()
+                            .getFailure()
+                            .isInstanceOf(IllegalStateException.class)
+                            .hasMessageContaining(EXPECTED_PROFILE)
+                            .hasMessageContaining("ceiling"));
         }
 
         @Test
-        @DisplayName("accepts an absent ceiling under production and re-applies the open target, which "
-                + "is the reverse of what the withdrawn arrangement required")
-        void acceptsAnAbsentCeilingUnderProductionAndReAppliesTheOpenTarget() {
+        @DisplayName("accepts an absent ceiling under production and re-applies the pin, so a document "
+                + "that forgot the property still stops at the delivered schema")
+        void acceptsAnAbsentCeilingUnderProductionAndReAppliesThePin() {
             runner(EXPECTED_PROFILE).run(context -> {
                 FluentConfiguration configuration =
                         Flyway.configure().locations(EXPECTED_SCHEMA_LOCATION);
@@ -403,12 +416,11 @@ final class FlywayConfigCoverageTest {
                 context.getBean(FlywayConfigurationCustomizer.class).customize(configuration);
 
                 assertThat(configuration.getTarget())
-                        .as("silence used to be the dangerous case, because a migration tool with no "
-                                + "ceiling migrates to the latest version and the ceiling was the "
-                                + "exclusion. It is now the CORRECT case: the exclusion is the location "
-                                + "list, and applying every version the resolved location carries is "
-                                + "exactly what a production deployment must do")
-                        .isEqualTo(MigrationVersion.LATEST);
+                        .as("silence is the dangerous case, because a migration tool with no ceiling "
+                                + "migrates to the latest version. It is corrected rather than refused: "
+                                + "refusing would stop a deployment that had inherited the right posture "
+                                + "from the shared baseline, and correcting stops at the pin")
+                        .isEqualTo(MigrationVersion.fromVersion(EXPECTED_TARGET));
                 assertThat(Stream.of(configuration.getLocations()).map(Object::toString).toList())
                         .as("and the location list is still not rewritten - it is checked")
                         .containsExactly(EXPECTED_SCHEMA_LOCATION);
@@ -416,8 +428,8 @@ final class FlywayConfigCoverageTest {
         }
 
         @Test
-        @DisplayName("accepts the declared open target and changes nothing else, so it cannot quietly "
-                + "alter another migration setting on the way past")
+        @DisplayName("accepts the declared pin and changes nothing else, so it cannot quietly alter "
+                + "another migration setting on the way past")
         void acceptsTheDeclaredTargetAndChangesNothingElse() {
             runner(EXPECTED_PROFILE).run(context -> {
                 FluentConfiguration configuration = Flyway.configure()
@@ -431,7 +443,8 @@ final class FlywayConfigCoverageTest {
 
                 context.getBean(FlywayConfigurationCustomizer.class).customize(configuration);
 
-                assertThat(configuration.getTarget()).isEqualTo(MigrationVersion.LATEST);
+                assertThat(configuration.getTarget())
+                        .isEqualTo(MigrationVersion.fromVersion(EXPECTED_TARGET));
                 assertThat(configuration.isCleanDisabled()).isEqualTo(cleanDisabledBefore);
                 assertThat(configuration.isValidateOnMigrate()).isEqualTo(validateBefore);
                 assertThat(configuration.isBaselineOnMigrate()).isEqualTo(baselineBefore);
@@ -457,7 +470,8 @@ final class FlywayConfigCoverageTest {
                 customizer.customize(configuration);
                 customizer.customize(configuration);
 
-                assertThat(configuration.getTarget()).isEqualTo(MigrationVersion.LATEST);
+                assertThat(configuration.getTarget())
+                        .isEqualTo(MigrationVersion.fromVersion(EXPECTED_TARGET));
                 assertThat(Stream.of(configuration.getLocations()).map(Object::toString).toList())
                         .containsExactly(EXPECTED_SCHEMA_LOCATION);
             });
@@ -471,7 +485,7 @@ final class FlywayConfigCoverageTest {
             runner(profile).run(context -> {
                 FluentConfiguration configuration = Flyway.configure()
                         .locations(EXPECTED_SCHEMA_LOCATION)
-                        .target(MigrationVersion.fromVersion(WITHDRAWN_SCHEMA_CEILING));
+                        .target(MigrationVersion.fromVersion(SCHEMA_CEILING));
 
                 context.getBean(FlywayConfigurationCustomizer.class).customize(configuration);
 
@@ -501,7 +515,7 @@ final class FlywayConfigCoverageTest {
             runner(profile).run(context -> {
                 FluentConfiguration configuration = Flyway.configure()
                         .locations(EXPECTED_SHARED_PARENT_LOCATION)
-                        .target(MigrationVersion.fromVersion(EXPECTED_TARGET));
+                        .target(MigrationVersion.fromVersion(EXPECTED_SEEDING_TARGET));
 
                 assertThatExceptionOfType(IllegalStateException.class)
                         .as("the parent resolves the same four scripts under %s, so it looks like a "

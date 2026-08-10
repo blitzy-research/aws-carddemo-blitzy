@@ -115,13 +115,14 @@ import org.testcontainers.utility.DockerImageName;
  * per class also removes a source of ordering surprise.
  *
  * <h2>Why the migration runs to the head and is not pinned</h2>
- * All four delivered migrations sit FLAT in one location, {@code db/migration}: {@code V1} and
- * {@code V2} create the schema and the indexes, and {@code V3} and {@code V4} seed sample reference
- * rows and ten sign-on identities. No directory separates them, so a location list cannot either -
- * the VERSION is what separates them, and production sets {@code spring.flyway.target: 2} so the two
- * scripts numbered above it are never applied. <strong>This base reproduces the
+ * The four delivered migrations ship from two sibling locations: {@code db/migration/schema} carries
+ * {@code V1} and {@code V2}, which create the schema and the indexes, and {@code db/migration/seed}
+ * carries {@code V3} and {@code V4}, which seed sample reference rows and ten sign-on identities. Two
+ * controls separate them - production resolves the schema location alone AND pins
+ * {@code spring.flyway.target: 2}, so the two seed scripts are neither resolved nor reachable there.
+ * <strong>This base reproduces the
  * TEST profile rather than the production one</strong>, because that is the posture the module actually
- * ships for tests: {@code src/test/resources/application-test.yml} declares that same one location and
+ * ships for tests: {@code src/test/resources/application-test.yml} declares both locations and
  * lifts the ceiling to the head, and
  * the container-backed tier asserts against the seeded rows themselves - the fifty seeded customers and
  * their protected identifiers, the fifty seeded accounts, and the seventeen rows of each disclosure

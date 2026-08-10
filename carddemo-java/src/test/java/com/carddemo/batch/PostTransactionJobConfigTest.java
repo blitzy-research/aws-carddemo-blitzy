@@ -677,7 +677,7 @@ final class PostTransactionJobConfigTest {
             configuration.postingStepDiagnostics().afterStep(completed);
 
             final Timer published = meterRegistry.find("carddemo.batch.job.step")
-                    .tag("job", PostTransactionJobConfig.JOB_NAME)
+                    .tag("batchJob", PostTransactionJobConfig.JOB_NAME)
                     .tag("step", PostTransactionJobConfig.STEP_NAME)
                     .tag("outcome", BatchStatus.COMPLETED.name())
                     .timer();

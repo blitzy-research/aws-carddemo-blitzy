@@ -316,7 +316,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
         Flyway refusing = Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
                 .locations(FlywayConfig.SCHEMA_LOCATION)
-                .target(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
+                .target(FlywayConfig.PRODUCTION_TARGET)
                 .table("carddemo_history")
                 .callbacks(new ProductionSeedRejectionCallback())
                 .load();
@@ -430,7 +430,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.password=" + databasePassword(),
                         "spring.flyway.enabled=false",
                         "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
-                        "spring.flyway.target=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
+                        "spring.flyway.target=" + FlywayConfig.PRODUCTION_TARGET)
                 .run(refused -> assertThat(refused)
                         .as("switching migrations off is itself refused, before any bean is created, "
                                 + "so a deployment cannot reach a state where the migration-lifecycle "
@@ -470,7 +470,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.password=" + databasePassword(),
                         "spring.flyway.enabled=true",
                         "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
-                        "spring.flyway.target=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+                        "spring.flyway.target=" + FlywayConfig.PRODUCTION_TARGET);
     }
 
     /**
@@ -498,7 +498,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.username=" + databaseUser(),
                         "spring.datasource.password=" + databasePassword(),
                         "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
-                        "spring.flyway.target=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
+                        "spring.flyway.target=" + FlywayConfig.PRODUCTION_TARGET,
                         "spring.flyway.validate-on-migrate=true",
                         "spring.flyway.clean-disabled=true",
                         "spring.jpa.hibernate.ddl-auto=none",

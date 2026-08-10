@@ -25,14 +25,18 @@
 -- can start without V1. Sample rows and sign-on identities are V3 and V4, and they ship from the SIBLING
 -- classpath:db/migration/seed, which only the local and test overlays declare. THE LOCATION LIST IS WHAT
 -- HOLDS THEM OUT OF PRODUCTION: a production migration does not resolve them at all, so they appear in no
--- state - not applied, not pending, not above target. There is no version ceiling; every profile declares
--- spring.flyway.target: latest and FlywayConfig REFUSES a numeric one under prod, because a number would
--- freeze the schema at its own version and a script added later would never be applied while the
--- migration still reported success. The shared parent classpath:db/migration holds no script and is
+-- state - not applied, not pending, not above target. A VERSION CEILING SITS BESIDE THAT LIST: the shared
+-- baseline and prod declare spring.flyway.target: "2", the highest version this location delivers, while
+-- local and test lift it to latest alongside adding the seed location. FlywayConfig refuses any other
+-- production value in either direction, the head marker included, and corrects silence to the pin. The
+-- ceiling's one cost - that a V5 schema script would be skipped and the migration would still report
+-- success - is made loud rather than silent: FlywayConfigTest asserts the pin EQUALS the highest version
+-- this location delivers, so shipping a V5 fails the build until the pin is raised with it. The shared
+-- parent classpath:db/migration holds no script and is
 -- refused as a location under every profile: a Flyway location is scanned recursively, so the parent
 -- reaches both children, and it records each script under a name relative to itself. A production
 -- migration therefore inherits schema and indexes and nothing else. This file inserts no row of any kind.
--- See docs/decision-log.md DL-298.
+-- See docs/decision-log.md DL-298 for the location split and DL-334 for the ceiling held beside it.
 --
 -- Forward-only and in order: no schema.sql, no data.sql, no container init mount, no repeatable
 -- migration and no undo migration exists in this module. The one framework-issued script in the

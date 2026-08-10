@@ -95,16 +95,37 @@ import org.springframework.stereotype.Service;
  * channel permitted to lose messages cannot lose them unaccountably. See {@code docs/decision-log.md}
  * entry DL-306.
  *
- * <h2>The dependency is optional on every surface, not only on this one</h2>
+ * <h2>The dependency has two stages, and only the second one is best effort</h2>
  *
- * <p>A dependency cannot be optional here and required elsewhere, and it was: this class documented
- * best effort while {@code application.yml} listed the topic contributor in the <em>required</em>
- * readiness group, so an absent topic took the whole instance out of service - which is the treatment
- * given to a dependency whose absence prevents work, and the topic's absence prevents none. The
- * contributor is still published, so a deployment can see the topic's state at any time; it no longer
- * decides whether this instance may receive traffic. The contrast that settles it is the
- * job-submission queue, which stays in the group: a report request that cannot reach the queue never
- * runs its job, so an instance that cannot reach the queue genuinely cannot serve.
+ * <p>"Optional" on its own is not a contract, and reading it as one produced a genuine contradiction:
+ * this class documented an optional dependency while a production start-up <em>refuses to begin</em>
+ * without the topic. Both are true of different stages, and the distinction is what a reader needs.
+ *
+ * <p><strong>Stage one - provisioning and ownership are MANDATORY, and they are checked before this
+ * class publishes anything.</strong> On a production start-up
+ * {@code config/AwsResourceTrustVerifier} resolves the configured topic from a listing rather than by
+ * creating it, requires the resolved locator to be owned by the account the deployment declares, and
+ * requires the topic itself to answer an attribute read; any of the three failing <em>aborts the
+ * start-up</em>. In the local validation stack the same requirement is expressed by the emulator's
+ * health check, which does not report healthy until the topic exists, and the application container
+ * waits on that health rather than on the emulator merely having started. So there is no supported
+ * deployment in which this channel's destination is absent or belongs to somebody else.
+ *
+ * <p><strong>Stage two - after start-up, DELIVERY is best effort, and nothing downstream waits on
+ * it.</strong> A notification that is dropped, shed, refused or timed out leaves the job's status and
+ * exit code exactly as the framework recorded them, is counted on the shed meter above, and does not
+ * take the instance out of service: {@code application.yml} publishes the topic's health contributor
+ * but deliberately leaves it OUT of the readiness group, because the topic carries a notice that a
+ * batch job has <em>already</em> finished, so its absence loses a notice and prevents no work. An
+ * earlier revision did place it in the required group, which took a whole instance out of service for
+ * a lost notice - the treatment owed to a dependency whose absence prevents work, and this one
+ * prevents none. The contrast that settles the readiness question is the job-submission queue, which
+ * stays in the group: a report request that cannot reach the queue never runs its job, so an instance
+ * that cannot reach the queue genuinely cannot serve.
+ *
+ * <p>The two stages are not in tension. Stage one is about whether the destination this deployment was
+ * configured for is the one it will reach; stage two is about whether an individual notice arrives.
+ * Recorded as {@code DL-339}.
  *
  * <p><strong>The batch verdict is never a function of this channel.</strong> A notification that is
  * dropped, shed, refused or times out leaves the job's status and exit code exactly as the framework
@@ -141,7 +162,16 @@ public final class JobCompletionNotificationService
 
     public static final String TAG_TOPIC = "topic";
 
-    public static final String TAG_JOB = "job";
+    /**
+     * Tag naming the job a completion notification belongs to.
+     *
+     * <p><strong>Deliberately not {@code job}.</strong> Prometheus stamps its own {@code job} label onto
+     * every series it collects, naming the scrape target rather than the application dimension. Two
+     * labels of one name cannot coexist, so the exporter's value is renamed to {@code exported_job} on
+     * collection and every query grouping by {@code job} collapses to the single scrape target -
+     * silently, with the panel still rendering. Recorded as {@code DL-338}.
+     */
+    public static final String TAG_JOB = "batchJob";
 
     public static final String TAG_EXECUTION = "jobExecutionId";
 

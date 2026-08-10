@@ -62,20 +62,20 @@
 --   application.yml declares the schema location alone as the shared default, so a profile that stays
 --   silent inherits a schema-only migration, and application-prod.yml re-states it so the production
 --   posture is legible in the file that governs it. The local and test overlays add the seed location, so
---   a migration there ends at V4. Every profile declares spring.flyway.target: latest - there is no
---   version ceiling anywhere. Verified against Flyway 11.7.2: with the schema location alone the resolved
---   set is exactly {1, 2}, versions 3 and 4 appear in no state at all, and the migration validates
---   successfully.
+--   a migration there ends at V4, and those overlays also lift the version ceiling to latest. The shared
+--   baseline and application-prod.yml declare spring.flyway.target: "2", the highest version the schema
+--   location delivers. Verified against Flyway 11.7.2: with the schema location alone the resolved set is
+--   exactly {1, 2}, versions 3 and 4 appear in no state at all, and the migration validates successfully.
 --
---   WHY A DIRECTORY AND NOT A VERSION CEILING. The withdrawn control was spring.flyway.target=2. It did
---   hold this file out, and it also FROZE THE SCHEMA at version 2: the day a V5 schema script shipped,
---   production would have applied nothing above the pin and still reported success, and the pin could not
---   be raised because the production resolution refused every other value. A ceiling is the wrong
---   instrument for a boundary that must never move AND the wrong instrument for a sequence that must keep
---   growing, and it was serving as both. A location a profile never lists is not a value an operator can
---   widen, and it constrains no future version. The recursion premise that twice defeated this split is
---   retained and is the reason the parent must hold no script: both earlier attempts moved only the seeds
---   and left V1 and V2 in the parent, so the parent stayed a real migration source.
+--   WHY THE DIRECTORY IS THE PRIMARY CONTROL AND THE CEILING THE SECOND. The ceiling of 2 also holds this
+--   file out, and it is declared - but it is not what this boundary rests on. A ceiling excludes by
+--   ARITHMETIC, so renumbering this file to V1_5 would defeat it while leaving the location list
+--   untouched; and a ceiling freezes the schema at its own version, so a V5 schema script would be skipped
+--   while the migration still reported success. That cost is made loud rather than removed:
+--   FlywayConfigTest asserts the pin EQUALS the highest delivered schema version, so a V5 fails the build
+--   until the pin is raised with it. The recursion premise that twice defeated this split is retained and
+--   is the reason the parent must hold no script: both earlier attempts moved only the seeds and left V1
+--   and V2 in the parent, so the parent stayed a real migration source.
 --
 --   THE RULE FOR A NEW SEED: put it in THIS directory and number it above every schema version. Flyway
 --   orders by version across all resolved locations, so a seed numbered below a schema script would be

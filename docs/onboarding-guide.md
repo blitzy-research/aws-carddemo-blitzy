@@ -234,15 +234,20 @@ Flyway migrates the database forward only — there is no rollback script — fr
 
 **`V3` and `V4` apply under the `local` and `test` profiles only.** Both profiles declare BOTH locations;
 the shared configuration and the `prod` profile declare `classpath:db/migration/schema` alone, so a
-production migration does not resolve the seed scripts at all. Every profile declares
-`spring.flyway.target: latest` — the separation is the location list, and a number there is refused under
-`prod` because it would freeze the schema at its own version. A production migration therefore gets the
-schema and the indexes and inherits neither the sample data nor a seeded credential — which is Standard 6
-doing its job, and the reason the seed scripts can be as generous as they are.
+production migration does not resolve the seed scripts at all. That location list is what separates the
+seeds from the schema. A **version ceiling sits beside it**: the shared baseline and `prod` declare
+`spring.flyway.target: "2"`, the highest version the schema location delivers, and the two seeding profiles
+lift it to `latest` in the same block where they add the seed location. Under `prod` any other value is
+refused in either direction — `latest` included — and an absent value is corrected to the pin. A production
+migration therefore gets the schema and the indexes and inherits neither the sample data nor a seeded
+credential — which is Standard 6 doing its job, and the reason the seed scripts can be as generous as they
+are.
 
 Never declare the shared parent `classpath:db/migration`. A Flyway location is scanned recursively, so it
 reaches both children, and it records every script under a name relative to itself; `FlywayConfig` refuses
-it under every profile. See `docs/decision-log.md` DL-298.
+it under every profile. Adding a `V5` schema migration means raising the ceiling with it: the pin is
+asserted against the delivered scripts, so the build fails until `FlywayConfig.PRODUCTION_TARGET` and the
+two documents that declare it are raised together. See `docs/decision-log.md` DL-298 and DL-334.
 
 **`clean` follows the same split, and it is not disabled everywhere.** The shared baseline and `prod` set
 `clean-disabled: true`, which is the half that matters: an inherited relaxation would reach production. The
@@ -397,7 +402,7 @@ cd carddemo-java
 | **5** — Interface contracts | The sign-on message texts, the routing each delivered user type produces, and the 17-card job image drained back out of a real FIFO queue | `./mvnw -B clean verify`, or `./mvnw -B verify -Pscoped-tests -Dit.test=OnlineTransactionE2ETest` |
 | **6** — Unsafe and low-level audit | Counts of raw SQL concatenation, `Runtime.exec`, reflection, unchecked casts and suppressed warnings | The scoped grep below |
 | **7** — Scope tier | **Line** coverage at or above 80%, enforced as a build-failing JaCoCo rule over merged unit and integration data | `./mvnw -B clean verify`; report at `target/site/jacoco-merged/index.html` |
-| **8** — Integration sign-off | All of the above, plus zero unsuppressed critical or high CVEs and the full traceability row count | `./mvnw -B clean verify`; consolidated in [Gate Evidence](gate-evidence.md) |
+| **8** — Integration sign-off | All of the above, plus zero unsuppressed critical or high CVEs and the full traceability row count. The checklist the suite emits to `target/gate-evidence/gate8-sign-off.md` is an **interim** record and states that on a `Sign-off status:` line — it is written at `integration-test`, before the scan and the merged coverage report exist. CI discharges each outstanding row after `verify` and writes `final-sign-off.md`; locally, read the interim table and the artefacts it names (DL-340) | `./mvnw -B clean verify`; consolidated in [Gate Evidence](gate-evidence.md) |
 
 The two scoped forms above are diagnostics for one contract at a time. They carry `-Pscoped-tests` for the
 reason given in §2, they still run the whole unit tier unless you narrow `-Dtest` as well, and a scoped run
@@ -405,26 +410,32 @@ is never the evidence for a gate — the authoritative run is the unscoped `./mv
 
 ### Gate 6: the audit, and why its scope is the whole answer
 
-The audit is **four commands, not one**, because three of the five categories cannot be answered by a
-single forbidden-token grep and the fifth is not even measured over the same tree: a cast is a shape rather
-than a token, "SQL built from strings" is a question about how a literal is *joined* rather than about
-whether a literal exists, and warning suppression is forbidden by Gate 2 across both source trees rather
-than by Gate 6 across production alone. Run all four:
+The audit is **five commands, not one**, because three of the five categories cannot be answered by a
+single forbidden-token grep, the fifth is not even measured over the same tree, and one of the three is
+worth asking at two strengths: a cast is a shape rather than a token, "SQL built from strings" is a question
+about how a literal is *joined* rather than about whether a literal exists, and warning suppression is
+forbidden by Gate 2 across both source trees rather than by Gate 6 across production alone. Run all five:
 
 ```bash
 cd carddemo-java
 
-# 1 - the forbidden constructs of Gate 6's own scope. Expect no output at all: all four are zero.
+# 1 - the forbidden constructs of Gate 6's own scope. Expect no output at all: all five are zero.
 grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery' src/main/java/
 
 # 2 - cast candidates: every cast whose target is a parameterised type. Expect exactly five lines.
 grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/java/
 
-# 3 - SQL assembled from anything other than a literal. Expect no output at all.
+# 3 - a statement verb inside a literal, joined to something that is not a literal. Expect EXACTLY ONE
+#     line, and it is not SQL: service/MenuService.java's 3270 screen prompt "SELECT OPTION ".
 grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
 
+# 3b - the same question asked as the authoritative census asks it: a statement verb AND a clause keyword
+#      in one literal, joined to a non-literal. THIS is the command whose expectation is no output.
+grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*\b(from|into|set|values|where|table|join|index|sequence)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
+
 # 4 - warning suppression, and this is the one line that reaches BOTH trees: Gate 2's scope is not
-#     Gate 6's. Expect no output at all.
+#     Gate 6's. Expect EXACTLY TWELVE lines, every one in src/test/java and every one a MENTION rather
+#     than an annotation. Narrow it to src/main/java/ alone and it returns nothing.
 grep -rn '@SuppressWarnings' src/main/java/ src/test/java/
 ```
 
@@ -434,8 +445,9 @@ What each one returns today, so you can tell a clean run from a broken command:
 | :------ | :-------------- |
 | 1 — forbidden constructs | **no output**. No `Runtime.exec`, no `ProcessBuilder`, no `java.lang.reflect`, no `Class.forName` and no `createNativeQuery` |
 | 2 — cast candidates | **exactly five lines**, which is the budget rather than a coincidence: `service/PostgresJobSubmissionCoordinator.java`, `batch/step/AdvisoryGenerationPublicationLock.java`, `batch/BatchLaunchCoordinator.java`, `repository/TransactionInsertRepositoryImpl.java` and `config/FlywayConfig.java`. All five cast a lambda onto a parameterised `ConnectionCallback` or `PreparedStatementCallback` so the JDBC template resolves the right overload. **None is an unchecked operation** — the compiler would have made it an error, because every warning is one |
-| 3 — SQL assembly | **no output**. Every query string in the production tree is a compile-time literal; a variable is never joined into one |
-| 4 — warning suppression | **no output**, over both trees. Not one `@SuppressWarnings` exists in either, so the whole-source budget of three is unspent |
+| 3 — verb-only SQL shape | **exactly one line**, and it is a false positive rather than a finding: `service/MenuService.java`'s `"SELECT OPTION " + optionNumber`, the legacy 3270 menu prompt joined to the option the user typed. Nothing about it reaches a database. It is published rather than filtered out, because a command whose output is edited to agree with a claim is no longer evidence for the claim |
+| 3b — census-shaped SQL assembly | **no output**. Requiring a clause keyword beside the verb is what separates a query from a prompt, and it is the shape the gated census uses. Every query string in the production tree is a compile-time literal; a variable reaches a statement as a bound `?` or a named JPQL parameter, never joined into the text |
+| 4 — warning suppression | **exactly twelve lines over both trees, and none over `src/main/java` alone.** All twelve are in test sources and every one is a *mention* — a comment, a string literal or an assertion argument saying the annotation must not appear. **Not one is an annotation**, so the whole-source budget of three is unspent. The gated figure of zero is measured over source with comments, literals and text blocks blanked, by `GateVerificationTest.noWarningSuppressionExistsInEitherSourceTree`; a `grep` cannot tell a mention from a use, which is why the raw population and the gated figure are published as two numbers rather than one |
 
 Command 2 is deliberately narrow, and command 3 deliberately anchored, for the same reason: a looser
 pattern reports prose. A cast-shaped regex that also admits single-letter targets matches 23 lines, of

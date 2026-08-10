@@ -296,8 +296,19 @@ public final class BatchConfig {
             "Terminal outcomes of migrated CardDemo batch jobs, counted after the durable artifact"
                     + " boundary has been completed and the verdict is final";
 
-    /** Tag naming the job a terminal count belongs to. */
-    static final String TAG_JOB = "job";
+    /**
+     * Tag naming the job a terminal count belongs to.
+     *
+     * <p><strong>Deliberately not {@code job}.</strong> Prometheus stamps its own {@code job} label onto
+     * every series it collects, naming the scrape target rather than the application dimension. Two
+     * labels of one name cannot coexist, so the exporter's value is renamed to {@code exported_job} on
+     * collection and every query grouping by {@code job} collapses to the single scrape target -
+     * silently, with the panel still rendering. Recorded as {@code DL-338}.
+     *
+     * <p>Spelled in the camel case this module's other multi-word tag keys use - {@link #TAG_JOB_EXECUTION_ID}
+     * is declared on the same meters - so one meter does not carry two naming conventions.
+     */
+    static final String TAG_JOB = "batchJob";
 
     /**
      * Tag carrying the status that was <em>persisted</em>, which is the authoritative one.

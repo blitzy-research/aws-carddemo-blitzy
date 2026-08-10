@@ -16,13 +16,21 @@
  */
 package com.carddemo.batch;
 
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.observation.ObservationView;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -66,7 +74,12 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Verifies server-minted identity and the database-serialized one-active-execution boundary.
+ * Verifies server-minted identity, the database-serialized one-active-execution boundary, and the three
+ * properties of the asynchronous launch: that nominally independent jobs run CONCURRENTLY, that a dispatched
+ * execution is a CHILD of the launch's observation, and that stopping is a BOUNDED drain which fails the
+ * reservations it discards.
+ *
+ * <p>See {@code docs/decision-log.md} entry DL-337.
  */
 @DisplayName("batch launch coordinator: DB lock, active guard, server run identity")
 final class BatchLaunchCoordinatorTest {
@@ -84,6 +97,20 @@ final class BatchLaunchCoordinatorTest {
      */
     private static final long WORKER_TIMEOUT_MILLIS = 10_000L;
 
+    /**
+     * How long a deliberately blocked execution holds its worker, in milliseconds.
+     *
+     * <p>Longer than {@link #WORKER_TIMEOUT_MILLIS} on purpose, and the gap is what makes a concurrency
+     * assertion a measurement. If a blocked job released at the same moment an assertion gave up waiting,
+     * a serial pool would sometimes let the second job start just inside the window and the test would
+     * pass against the very topology it exists to refuse. A job that holds for three times the assertion
+     * window cannot be mistaken for one that finished in time.
+     *
+     * <p>Nothing waits this long in practice: every test that blocks a job either releases it in a
+     * {@code finally} or relies on the drain interrupting it, and the interruption is handled.
+     */
+    private static final long BLOCKED_JOB_HOLD_MILLIS = 30_000L;
+
     private JobRepository jobRepository;
 
     private JobExplorer jobExplorer;
@@ -97,6 +124,14 @@ final class BatchLaunchCoordinatorTest {
     private ResultSet lockResult;
 
     private BatchLaunchCoordinator coordinator;
+
+    private ObservationRegistry observations;
+
+    /** Reservations stubbed by {@link #blockingJob}, so a test can name the one it wants to assert on. */
+    private final List<StubbedLaunch> executionsByJob = new CopyOnWriteArrayList<>();
+
+    /** Next distinct execution identifier handed to a stubbed reservation. */
+    private long nextExecutionId = 100L;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -112,10 +147,17 @@ final class BatchLaunchCoordinatorTest {
         when(this.lockStatement.executeQuery()).thenReturn(this.lockResult);
         when(this.lockResult.next()).thenReturn(Boolean.TRUE);
         when(this.lockResult.getBoolean(1)).thenReturn(Boolean.TRUE);
+        this.observations = ObservationRegistry.create();
+        // A HANDLER IS REQUIRED FOR THIS TO MEASURE ANYTHING. A registry with no handler answers every
+        // start with the shared no-op observation, so "the worker sees the same observation as the
+        // caller" would hold whether anything was propagated or not - two references to one singleton.
+        // With a handler registered the registry mints real observations and the parent edge is real.
+        this.observations.observationConfig().observationHandler(context -> true);
         this.coordinator = new BatchLaunchCoordinator(
                 this.jobRepository,
                 this.jobExplorer,
-                new JdbcTemplate(this.dataSource));
+                new JdbcTemplate(this.dataSource),
+                this.observations);
     }
 
     @AfterEach
@@ -400,17 +442,302 @@ final class BatchLaunchCoordinatorTest {
     @DisplayName("constructor and operation reject absent collaborators")
     void absentCollaboratorsAreRejected() {
         assertThatNullPointerException().isThrownBy(() ->
-                new BatchLaunchCoordinator(
-                        null, this.jobExplorer, new JdbcTemplate(this.dataSource)));
+                new BatchLaunchCoordinator(null, this.jobExplorer,
+                        new JdbcTemplate(this.dataSource), this.observations));
         assertThatNullPointerException().isThrownBy(() ->
-                new BatchLaunchCoordinator(
-                        this.jobRepository, null, new JdbcTemplate(this.dataSource)));
+                new BatchLaunchCoordinator(this.jobRepository, null,
+                        new JdbcTemplate(this.dataSource), this.observations));
         assertThatNullPointerException().isThrownBy(() ->
-                new BatchLaunchCoordinator(this.jobRepository, this.jobExplorer, null));
+                new BatchLaunchCoordinator(this.jobRepository, this.jobExplorer, null,
+                        this.observations));
+        assertThatNullPointerException().isThrownBy(() ->
+                new BatchLaunchCoordinator(this.jobRepository, this.jobExplorer,
+                        new JdbcTemplate(this.dataSource), null));
         assertThatNullPointerException().isThrownBy(() ->
                 this.coordinator.start(null, Map.of()));
         assertThatNullPointerException().isThrownBy(() ->
                 this.coordinator.start(launchableJob(), null));
+    }
+
+    @Test
+    @DisplayName("two launches of different jobs run AT THE SAME TIME, because nominally independent jobs "
+            + "must not queue behind one another")
+    void twoLaunchesOfDifferentJobsRunConcurrently() throws Exception {
+        final CountDownLatch bothStarted = new CountDownLatch(2);
+        final CountDownLatch release = new CountDownLatch(1);
+        final Job first = blockingJob("concurrentJobOne", bothStarted, release);
+        final Job second = blockingJob("concurrentJobTwo", bothStarted, release);
+
+        this.coordinator.start(first, Map.of());
+        this.coordinator.start(second, Map.of());
+
+        try {
+            assertThat(bothStarted.await(WORKER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("THIS IS THE DEFECT THIS PINS. ThreadPoolExecutor.execute creates a worker only "
+                            + "while the live count is below the CORE size, and QUEUES once it is at or "
+                            + "above it - it grows towards the maximum only when the queue REFUSES. With "
+                            + "a core of zero and a nine-slot queue the second job could not begin until "
+                            + "the first had finished, so nine jobs sharing no data ran one after "
+                            + "another and the pool reported one active launch throughout. Both must be "
+                            + "inside execute at the same moment for this to pass")
+                    .isTrue();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("every job in the launchable inventory can be in flight at once, so the derived bound is "
+            + "capacity and not a label")
+    void theWholeInventoryCanBeInFlightAtOnce() throws Exception {
+        final int capacity = BatchLaunchCoordinator.MAX_CONCURRENT_LAUNCHES;
+        final CountDownLatch allStarted = new CountDownLatch(capacity);
+        final CountDownLatch release = new CountDownLatch(1);
+        for (int index = 0; index < capacity; index++) {
+            this.coordinator.start(blockingJob("inventoryJob" + index, allStarted, release), Map.of());
+        }
+
+        try {
+            assertThat(allStarted.await(WORKER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the bound is one worker per launchable job precisely so that the guard's own "
+                            + "ceiling of one active execution per job is reachable; a pool that cannot "
+                            + "hold the inventory makes the last job wait behind the others for nothing")
+                    .isTrue();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("the dispatched execution runs INSIDE the launch's observation, so the job is a child of "
+            + "the launch rather than a detached root")
+    void theDispatchedExecutionIsAChildOfTheLaunch() throws Exception {
+        final Job job = launchableJob();
+        final JobExecution reserved = reservedExecution();
+        final CountDownLatch executed = new CountDownLatch(1);
+        final AtomicReference<Observation> currentOnWorker = new AtomicReference<>();
+        final AtomicReference<ObservationView> parentOfChild = new AtomicReference<>();
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenReturn(reserved);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            currentOnWorker.set(this.observations.getCurrentObservation());
+            final Observation child = Observation.start("carddemo.test.child", this.observations);
+            parentOfChild.set(child.getContext().getParentObservation());
+            child.stop();
+            executed.countDown();
+            return null;
+        }).when(job).execute(reserved);
+
+        final Observation launch = Observation.start("carddemo.test.launch", this.observations);
+        // Scope opened and closed explicitly rather than by a resource declaration: the scope is not
+        // referenced in the body, and a declared-but-unused resource is a warning this build treats as an
+        // error. The finally is what matters - the scope must close whether the launch returns or raises.
+        final Observation.Scope launchScope = launch.openScope();
+        try {
+            this.coordinator.start(job, Map.of());
+        } finally {
+            launchScope.close();
+        }
+        launch.stop();
+
+        assertThat(executed.await(WORKER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(currentOnWorker.get())
+                .as("an observation is thread-bound, so handing the execution to a plain worker severs "
+                        + "it unless the submitting observation is captured on the CALLER's thread and "
+                        + "reopened on the worker. Without that the job's spans form a trace of their "
+                        + "own with no edge back to the request that launched it")
+                .isSameAs(launch);
+        assertThat(parentOfChild.get())
+                .as("and the edge is a real parent-child one: anything the execution observes names the "
+                        + "launch as its parent")
+                .isSameAs(launch);
+    }
+
+    @Test
+    @DisplayName("a launch with nothing observed still runs, because a caller with no trace context is a "
+            + "normal case rather than an error")
+    void aLaunchWithNoObservationStillRuns() throws Exception {
+        final Job job = launchableJob();
+        final JobExecution reserved = reservedExecution();
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenReturn(reserved);
+
+        assertThat(this.observations.getCurrentObservation())
+                .as("nothing is current, which is what a scheduled launch or a test looks like")
+                .isNull();
+
+        this.coordinator.start(job, Map.of());
+
+        verify(job, timeout(WORKER_TIMEOUT_MILLIS)).execute(reserved);
+    }
+
+    @Test
+    @DisplayName("a stop drains what is running within its window and reports a clean drain")
+    void aStopDrainsWhatIsRunningWithinItsWindow() throws Exception {
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        final Job job = blockingJob("drainableJob", started, release);
+        this.coordinator.start(job, Map.of());
+        assertThat(started.await(WORKER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+
+        // Released before the drain begins, so the window is long enough and nothing is interrupted.
+        release.countDown();
+        this.coordinator.drainWithin(Duration.ofMillis(WORKER_TIMEOUT_MILLIS), Duration.ofMillis(200L));
+
+        assertThat(this.coordinator.isRunning())
+                .as("a drained coordinator is no longer accepting, which is what the lifecycle reports")
+                .isFalse();
+        verify(this.jobRepository, never()).update(any(JobExecution.class));
+    }
+
+    @Test
+    @DisplayName("a stop against a WEDGED job is bounded, and the reservation that never started is "
+            + "failed rather than left recorded as running")
+    void aStopAgainstAWedgedJobIsBoundedAndFailsWhatNeverStarted() throws Exception {
+        final int capacity = BatchLaunchCoordinator.MAX_CONCURRENT_LAUNCHES;
+        final CountDownLatch allStarted = new CountDownLatch(capacity);
+        final CountDownLatch neverReleased = new CountDownLatch(1);
+        final List<Job> wedged = new ArrayList<>();
+        for (int index = 0; index < capacity; index++) {
+            final Job job = blockingJob("wedgedJob" + index, allStarted, neverReleased);
+            wedged.add(job);
+            this.coordinator.start(job, Map.of());
+        }
+        assertThat(allStarted.await(WORKER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS))
+                .as("every worker must be occupied before a further launch can reach the queue")
+                .isTrue();
+
+        // The tenth launch has no worker to take it, so it waits in the bounded queue - the one state in
+        // which a reserved execution exists in the metadata and has not begun.
+        final Job queued = blockingJob("queuedJob", new CountDownLatch(1), neverReleased);
+        final JobExecution queuedReservation = executionOf(queued);
+        this.coordinator.start(queued, Map.of());
+        verify(queued, never()).execute(queuedReservation);
+
+        final long before = System.nanoTime();
+        this.coordinator.drainWithin(Duration.ofMillis(300L), Duration.ofMillis(300L));
+        final Duration elapsed = Duration.ofNanos(System.nanoTime() - before);
+
+        assertThat(elapsed)
+                .as("the drain is BOUNDED. A stop that waited indefinitely would let one wedged job hold "
+                        + "a deployment open for ever, which is the failure an operator experiences as "
+                        + "'it will not shut down'")
+                .isLessThan(Duration.ofMillis(WORKER_TIMEOUT_MILLIS));
+        verify(queuedReservation).setStatus(BatchStatus.FAILED);
+        final ArgumentCaptor<ExitStatus> exitStatus = ArgumentCaptor.forClass(ExitStatus.class);
+        verify(queuedReservation).setExitStatus(exitStatus.capture());
+        assertThat(exitStatus.getValue().getExitDescription())
+                .as("TERMINAL CLEANUP. The metadata row already exists, so leaving it started would "
+                        + "report a run that nothing will advance and would make the per-job guard refuse "
+                        + "every future launch of that job. The description is the shutdown one and not "
+                        + "the capacity one, because an operator reading the repository afterwards has "
+                        + "only this sentence to tell the two events apart")
+                .isEqualTo(BatchLaunchCoordinator.SHUTDOWN_DISCARDED_EXIT_DESCRIPTION);
+        verify(this.jobRepository).update(queuedReservation);
+        neverReleased.countDown();
+        assertThat(wedged).hasSize(capacity);
+    }
+
+    @Test
+    @DisplayName("a stop is idempotent and close reaches the same drain, so a container that stops and "
+            + "then destroys drains once")
+    void stopIsIdempotentAndCloseReachesTheSameDrain() {
+        this.coordinator.stop();
+
+        assertThat(this.coordinator.isRunning()).isFalse();
+        // Neither of these may drain again: a second shutdownNow on a terminated pool is harmless, but a
+        // second terminal cleanup would re-fail reservations that were already accounted for.
+        this.coordinator.stop();
+        this.coordinator.close();
+        this.coordinator.close();
+        assertThat(this.coordinator.isRunning()).isFalse();
+    }
+
+    @Test
+    @DisplayName("the lifecycle phase is below the framework's own web-server phases, so the server has "
+            + "stopped accepting requests before the drain begins")
+    void theLifecyclePhaseIsBelowTheWebServerPhases() {
+        assertThat(this.coordinator.getPhase())
+                .as("stopping runs in DESCENDING phase order. Measured against Spring Boot 3.5.16, "
+                        + "graceful request shutdown is Integer.MAX_VALUE - 1024 and the container stop "
+                        + "is Integer.MAX_VALUE - 2048; draining above either would leave a window in "
+                        + "which a request could dispatch into a pool that had just shut down")
+                .isEqualTo(BatchLaunchCoordinator.SHUTDOWN_PHASE)
+                .isLessThan(Integer.MAX_VALUE - 2048);
+    }
+
+    @Test
+    @DisplayName("a restart after a stop is refused rather than silently accepted, because a stopped pool "
+            + "cannot take work")
+    void aRestartAfterAStopIsRefused() {
+        this.coordinator.start();
+
+        this.coordinator.stop();
+
+        assertThatIllegalStateException()
+                .isThrownBy(() -> this.coordinator.start())
+                .withMessageContaining("cannot be restarted");
+    }
+
+    /**
+     * Builds a launchable job whose execution blocks until released, with its reservation stubbed.
+     *
+     * <p>Each job carries its own name and its own reserved execution, because the per-job guard is what
+     * makes concurrent launches legitimate: two launches of the SAME job would be refused, so a
+     * concurrency claim can only be made across distinct names.
+     *
+     * @param  name    the registered job name, unique per job in a test
+     * @param  started counted down as the execution begins
+     * @param  release awaited by the execution before it returns
+     * @return the stubbed job
+     * @throws Exception if the framework's checked reservation signature requires it
+     */
+    private Job blockingJob(final String name, final CountDownLatch started,
+            final CountDownLatch release) throws Exception {
+        final Job job = mock(Job.class);
+        when(job.getName()).thenReturn(name);
+        when(job.getJobParametersIncrementer()).thenReturn(new RunIdIncrementer());
+        when(job.getJobParametersValidator()).thenReturn(parameters -> { });
+        final JobExecution reserved = mock(JobExecution.class);
+        this.nextExecutionId += 1L;
+        when(reserved.getId()).thenReturn(Long.valueOf(this.nextExecutionId));
+        this.executionsByJob.add(new StubbedLaunch(job, reserved));
+        when(this.jobExplorer.findRunningJobExecutions(name)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(name), any(JobParameters.class)))
+                .thenReturn(reserved);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            started.countDown();
+            try {
+                release.await(BLOCKED_JOB_HOLD_MILLIS, TimeUnit.MILLISECONDS);
+            } catch (final InterruptedException interrupted) {
+                // A forcible drain interrupts what is still running. Restoring the flag and returning is
+                // what a well-behaved job does; letting the interruption escape would reach the mock as a
+                // checked exception the job signature does not declare.
+                Thread.currentThread().interrupt();
+            }
+            return null;
+        }).when(job).execute(reserved);
+        return job;
+    }
+
+    /**
+     * Returns the reserved execution stubbed for one job built by {@link #blockingJob}.
+     *
+     * @param  job the job to look up
+     * @return its reserved execution
+     */
+    private JobExecution executionOf(final Job job) {
+        return this.executionsByJob.stream()
+                .filter(stubbed -> stubbed.job() == job)
+                .map(StubbedLaunch::reserved)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no reservation was stubbed for " + job.getName()));
+    }
+
+    /** One stubbed job and the reservation its launch returns. */
+    private record StubbedLaunch(Job job, JobExecution reserved) {
     }
 
     private void prepareAvailableLock() {

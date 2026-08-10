@@ -204,29 +204,33 @@ spring:
 
   # -----------------------------------------------------------------------------------------------
   # Schema evolution - versioned, forward-only, and the ONLY path by which an application table or a
-  # seeded row is created. What makes this a LOCAL profile is ONE setting: it LIFTS THE SHARED VERSION
-  # CEILING, which is what applies the two seed scripts that production stops short of.
+  # seeded row is created. What makes this a LOCAL profile is TWO settings, and it needs both: it ADDS
+  # THE SEED LOCATION and it LIFTS THE SHARED VERSION CEILING. Either one alone applies no fixture.
   #
-  #   classpath:db/migration                                                   EVERY profile
+  #   classpath:db/migration/schema                            EVERY profile, including production
   #     V1__create_schema.sql          the eleven application tables
   #     V2__create_indexes.sql         keys and alternate-index equivalents
+  #   ------------------------------------------ the shared baseline's ceiling: target 2 stops here
+  #   classpath:db/migration/seed                              local and test ONLY
   #     V3__seed_reference_data.sql    the nine measured ASCII reference datasets, 626 rows across
-  #                                    nine tables                             local and test ONLY
+  #                                    nine tables
   #     V4__seed_user_security.sql     the ten sign-on identities, five administrative and five
   #                                    standard, each credential stored only as a hash
-  #                                                                            local and test ONLY
   #
-  # ALL FOUR SCRIPTS ARE PHYSICALLY FLAT IN ONE DIRECTORY. There is no schema/ or seed/ child directory
-  # and none may be created, so the location list is identical in every profile and cannot carry any
-  # part of the separation. The separation is a ceiling on the migration VERSION, lifted here and only
-  # here (and identically in application-test.yml). See docs/decision-log.md DL-127, which supersedes
-  # DL-102 and DL-119.
+  # THE TWO SETTINGS ARE INDEPENDENT AND BOTH ARE REQUIRED HERE. The shared baseline in
+  # application.yml declares the schema location ALONE and pins spring.flyway.target at "2", which is
+  # the production posture. This overlay adds the seed location - the only setting that makes V3 and V4
+  # resolvable at all - and raises the ceiling to latest, so a local migration ends at V4. The
+  # production overlay re-asserts both restrictive values, and FlywayConfig re-applies them after
+  # binding so neither can be changed in silence; here it does the opposite and LIFTS an inherited "2"
+  # rather than refusing it, because a fixture-bearing profile that stopped at the schema would load no
+  # fixtures. See docs/decision-log.md DL-298 for the location split and DL-334 for the ceiling. A
+  # seeded sign-on credential is stored only as a hash regardless, so that even a mistake here leaks
+  # nothing.
   #
-  # THE CEILING IS THE WHOLE MECHANISM. The shared baseline in application.yml pins
-  # spring.flyway.target to "2", which stops a migration after the indexes; this overlay raises it to
-  # latest, so a local migration ends at V4. The production overlay re-asserts target: 2, and
-  # FlywayConfig re-applies that ceiling after binding so it cannot be lifted in silence. A seeded
-  # sign-on credential is stored only as a hash regardless, so that even a mistake here leaks nothing.
+  # NEVER RESOLVE THE SHARED PARENT classpath:db/migration. It holds no script itself, and a Flyway
+  # location is scanned RECURSIVELY, so naming the parent would reach both children under every profile
+  # and record each script under a name relative to the parent.
   #
   # TWO THINGS COM.CARDDEMO.CONFIG.FLYWAYCONFIG DOES TO THIS BLOCK, neither of which this document
   # could do for itself:
@@ -306,10 +310,11 @@ spring:
     locations:
       - classpath:db/migration/schema
       - classpath:db/migration/seed
-    # Restated for completeness rather than as a control. The baseline already declares it and no
-    # profile carries a numeric ceiling any more; FlywayConfig lifts a low one here rather than
-    # refusing it, because a fixture-bearing profile that stopped at the schema would load no
-    # fixtures.
+    # THE SECOND OF THE TWO SETTINGS THIS PROFILE NEEDS. The shared baseline pins the ceiling at "2",
+    # which stops a migration after the indexes; this raises it so the two seed versions apply.
+    # FlywayConfig lifts an inherited low ceiling here rather than refusing it, because a
+    # fixture-bearing profile that stopped at the schema would load no fixtures - the opposite of what
+    # it does under the production profile, where every value but "2" is refused.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -390,9 +395,9 @@ spring:
 # problem and the solution is not this profile: forward the port over an encrypted, authenticated
 # channel - `ssh -L 8080:127.0.0.1:8080 <host>` - which leaves the listener loopback-bound and puts
 # authentication and encryption in front of it. A service that genuinely has to answer other hosts
-# is a production deployment: the `prod` profile requires transport security and resolves all
-# thirteen of its secrets from the environment with no fallback, which is exactly the posture this
-# profile does not have. Overriding SERVER_ADDRESS to publish this profile on a routable address is
+# is a production deployment: the `prod` profile requires transport security - an authenticated,
+# non-downgradeable database channel among it - and resolves all fourteen of its required values from
+# the environment with no fallback, which is exactly the posture this profile does not have. Overriding SERVER_ADDRESS to publish this profile on a routable address is
 # UNSUPPORTED, and the paragraphs beside the signing secret and the operator credential below state
 # what it would cost.
 #
@@ -629,8 +634,9 @@ carddemo:
     # It is worth nothing anywhere else. It seals fixture identifiers in a database that is rebuilt
     # from migrations, it is self-describing so it cannot be mistaken for a deployed key, and it must
     # not be reused. Production binds this same property as an environment reference with NO fallback,
-    # so a missing key aborts start-up there, and production never applies V3 at all - spring.flyway
-    # .target caps it at version 2 - so no production row is ever sealed under this literal.
+    # so a missing key aborts start-up there, and production never applies V3 at all - it resolves
+    # neither the seed location nor any version above 2 - so no production row is sealed under this
+    # literal.
     #
     # STATED AS A BARE LITERAL, DELIBERATELY, AND NOT AS ${CARDDEMO_FIELD_ENCRYPTION_KEY:<default>}.
     # This profile is FIXTURE-BEARING: V3 inserts fifty govt_issued_id envelopes that are fixed

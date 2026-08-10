@@ -662,7 +662,7 @@ ssh -L 3000:127.0.0.1:3000 <host>        # Grafana; 9090 Prometheus, 16686 Jaege
 
 2. **Deploy the `prod` profile.** A service that must genuinely answer other hosts is a production
    deployment: [`application-prod.yml`](src/main/resources/application-prod.yml) requires transport
-   security and resolves all thirteen of its secrets from the environment with **no fallback**,
+   security and resolves all fourteen of its required values from the environment with **no fallback**,
    refusing to start without them. That is the posture for a routable address, and `local` is not it.
 
 The `*_BIND_ADDRESS` overrides remain in the Compose mappings for one legitimate purpose: selecting a
@@ -920,7 +920,7 @@ cd carddemo-java
 grep -oE '\$\{[A-Z_0-9]+\}' src/main/resources/application-prod.yml | sort -u | wc -l
 ```
 
-Note the scope of the claim: it is about *secrets*, not about every variable — five non-secret variables
+Note the scope of the claim: it is about *secrets*, not about every variable — six non-secret variables
 further down deliberately do carry defaults:
 
 | Variable | What it configures |
@@ -1040,8 +1040,22 @@ The shared batch-boundary listener builds one terminal snapshot and hands it to
 external publication path. Its bounded payload carries the schema version, event type, stable job
 name, job-instance and execution identifiers, batch status, a closed-vocabulary exit code, step count,
 and start and end **instants in UTC** — never parameters, execution context, exit descriptions,
-exceptions, record data or credentials. Readiness verifies the pre-provisioned topic rather than
-creating one on first use, and a refused notification is logged without changing the job's own outcome.
+exceptions, record data or credentials. The topic is verified rather than created on first use, and a
+refused notification is logged without changing the job's own outcome.
+
+**The dependency has two stages, and only the second is best effort.** *Provisioning and ownership are
+mandatory.* A `prod` start-up is refused outright by `config/AwsResourceTrustVerifier` when the configured
+topic cannot be resolved from a listing, is not owned by the account `CARDDEMO_AWS_ACCOUNT_ID` declares, or
+does not answer an attribute read — checked before any bean that could publish exists. Locally the same
+requirement is the emulator's health check, which does not report healthy until the topic exists, with the
+application container waiting on that health rather than on the emulator merely having started. There is
+therefore no supported deployment in which this channel's destination is absent or belongs to somebody
+else. *Delivery of an individual notice is best effort afterwards.* A dropped, shed, refused or timed-out
+notification leaves the job's status and exit code exactly as the framework recorded them, is counted on
+`carddemo.job.completion.shed`, and does not take the instance out of service. The two are not in tension:
+the first is about whether the destination is the one this deployment was configured for, the second about
+whether one notice arrives. Recorded as `DL-339` in
+[`../docs/decision-log.md`](../docs/decision-log.md).
 
 The channel is permitted to lose notifications, so every notification it loses is counted on
 `carddemo.job.completion.shed`, tagged `reason` with `QUEUE_FULL`, `NOTIFIER_CLOSED` or `SHUTDOWN`.
@@ -1072,9 +1086,10 @@ writes to is defined with four attributes that the SQS mapping preserves:
 That last row is a behavioural contract, not an oversight: the legacy program reports a queue-write
 failure on the screen and carries on, so the Java service logs a non-fatal failure and returns rather
 than propagating an exception. It is not a readiness exemption. The readiness health group checks the
-bucket, queue and topic without creating them, and becomes `DOWN` while any is absent so a router can
-stop assigning new work. Liveness checks only the process state: restarting a healthy process cannot
-provision an external resource.
+bucket and the queue without creating them, and becomes `DOWN` while either is absent so a router can stop
+assigning new work; the completion topic is checked and published as its own component but is deliberately
+**not** in that group, for the reason set out under the two-stage contract above. Liveness checks only the
+process state: restarting a healthy process cannot provision an external resource.
 
 ### Observability
 
@@ -1280,12 +1295,12 @@ true of an absent file and are false of a present one, so they are withdrawn rat
 |---|---|---|---|
 | 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for all five contractual widths** — the four this gate names are compared as byte arrays from one seeded pipeline pass, and the fifth 40-byte width is compared as a byte array against its own committed golden from a dedicated job run in `batch/CategoryBalanceReportJobConfigIT`. Four of the five reject reason codes are still uncovered by a golden record |
 | 2 | Zero-warning build | `./mvnw -B clean verify` | **complete** — enforced by the compiler |
-| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **fifteen** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes, and the most recent three attributed to the source revision they were taken at. Measurements, never thresholds |
+| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **eighteen** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
 | 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted, by name rather than by directory listing |
 | 5 | Interface contract verification | `./mvnw -B verify` (against a real queue and a real port) | **complete** — the card image drained back out of a real queue, and the sign-on texts and routing asserted against a booted context on a random port |
 | 6 | Unsafe and low-level code audit | the scoped grep list below | **complete** — mechanically re-runnable |
 | 7 | Scope matching + coverage floor | `./mvnw -B verify` (JaCoCo check) | **complete** — a failing check, not a report |
-| 8 | Integration sign-off | `./mvnw -B verify` + the traceability matrix | **complete** — every checklist row is computed from an artefact and written to `target/gate-evidence/gate8-sign-off.md`; the matrix and the evidence page are both published |
+| 8 | Integration sign-off | `./mvnw -B verify` + the traceability matrix | **complete** — every checklist row is computed from an artefact and written to `target/gate-evidence/gate8-sign-off.md`. That emitted table is an **interim** record and says so on a `Sign-off status:` line: it is written at `integration-test`, and two of its rows depend on artefacts a later phase writes, so it reads `PROVISIONAL` and names each outstanding row beside the artefact that discharges it. CI's *Reconcile the provisional sign-off into a final one* step reads those artefacts after `verify` and writes `target/gate-evidence/final-sign-off.md` reading `FINAL`; an undischargeable row fails the step and no final sign-off is written (DL-340). The matrix and the evidence page are both published |
 
 ### Gate 1 — end-to-end byte equivalence
 
@@ -1711,7 +1726,7 @@ first one changed, which is the failure mode recorded in
 | End-to-end verification | golden fixtures at **all five** contractual widths — 40, 80, 100, 133 and 430 bytes; four driven through one seeded pipeline pass, the 40-byte one through a dedicated run of the job that emits it | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte golden | **met** — the six-job pipeline runs against a Testcontainers PostgreSQL instance seeded from the fixtures and all four of its goldens are compared as byte arrays from that one run, with the comparison written to `target/gate-evidence/gate1-byte-equivalence.md`; the fifth golden is compared as a byte array against a real dataset the category-balance job wrote after reading a real server |
 | Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `service/JobSubmissionServiceIT`, and `e2e/OnlineTransactionE2ETest` driving the submission endpoint over HTTP and draining the queue | **met** for the queue contract |
 | Interface contract verification | the seven sign-on literals and the admin/user routing rule | `e2e/OnlineTransactionE2ETest` — a booted context on a random port with a real datasource — backed by `api/AuthControllerIT` and `api/AuthControllerTest` at the narrower boundaries | **met** — the five direct texts compared character for character, the two shared texts at their full padded width, and the destination asserted for all ten delivered identities, because the legacy branch is an `ELSE` rather than a second equality test |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **fifteen** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over, and the three most recent additionally attributed to the source revision they were taken at. They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **eighteen** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
 | Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
 | Zero **unsuppressed** critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included, reading exactly one analyst determination from [`owasp-suppressions.xml`](owasp-suppressions.xml) | `./mvnw -B clean verify`; `GateVerificationTest` asserts the determination's scope and reads both halves of the report | **met as stated, and the statement is the narrower one** — zero *unsuppressed* qualifying findings, plus **one** scoped HIGH determination that is part of the audited result rather than a silence. Set out below. Not "zero findings" |

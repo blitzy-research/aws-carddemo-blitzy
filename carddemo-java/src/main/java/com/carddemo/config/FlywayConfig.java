@@ -59,12 +59,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * inside the module plan's own {@code db/migration/**.sql} delivery pattern, whose {@code **}
  * anticipates nesting.
  *
- * <p><strong>The separation is the LOCATION LIST, and a location a profile never lists is not a value
- * an operator can widen.</strong> Production resolves {@value #SCHEMA_LOCATION} and nothing else, so the
- * seed scripts appear in no state whatsoever - not applied, not pending, not above a ceiling, not even
- * resolved. Local and test resolve both locations and apply everything. That is a stronger statement
- * than a version comparison can make, because a version comparison first resolves a script and then
- * declines to run it.
+ * <p><strong>The primary separation is the LOCATION LIST, and a location a profile never lists is not a
+ * value an operator can widen.</strong> Production resolves {@value #SCHEMA_LOCATION} and nothing else,
+ * so the seed scripts appear in no state whatsoever there - not applied, not pending, not even resolved.
+ * Local and test resolve both locations and apply everything. The location list is the stronger of the
+ * two statements available, because a version comparison first resolves a script and then declines to
+ * run it, whereas a location a profile never lists produces no script to decline. It is not the only
+ * statement made, though: production additionally pins its ceiling at {@value #PRODUCTION_TARGET}, so a
+ * seed-numbered script would be excluded by its number even if some other location ever presented one.
  *
  * <p><strong>Why the shared parent must stay empty, and why two earlier attempts at this split were
  * withdrawn.</strong> A Flyway location is scanned <em>recursively</em>, so a profile that resolves the
@@ -84,39 +86,43 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * belongs in a production database, and neither arriving there would be untidiness - it would be a
  * credential incident and a privacy incident respectively.
  *
- * <p><strong>There is no production version ceiling, and its removal is deliberate rather than
- * incidental.</strong> The previous arrangement pinned {@code spring.flyway.target} at the highest
- * delivered schema version and refused every other value. That held the seeds out correctly and it made
- * every future schema migration undeployable: the day a {@code V5} schema script shipped, a production
- * migration would have stopped below it and reported success, and the only way to raise the pin was to
- * edit this class, because {@link #resolveTarget(Collection, String)} refused any other value. A ceiling
- * is the wrong instrument for a boundary that must never move and the wrong instrument for a sequence
- * that must keep growing, and it was being asked to be both. {@code resolveTarget} now <strong>refuses a
- * numeric production ceiling outright</strong> and re-applies {@value #ALL_RESOLVED_VERSIONS_TARGET}, so
- * every version the schema location contains applies - including versions added after this class was
- * written.
+ * <p><strong>Production also carries a version ceiling, and the two mechanisms are deliberately kept
+ * together.</strong> {@code spring.flyway.target} is pinned at {@value #PRODUCTION_TARGET}, which is the
+ * highest version {@value #SCHEMA_LOCATION} delivers, and {@link #resolveTarget(Collection, String)}
+ * refuses any other production value. The objection once raised against a pin - that a number freezes the
+ * schema, so the day a {@code V5} schema script shipped a production migration would stop below it and
+ * still report success - is real, and it is answered by making the pin <em>checked</em> rather than by
+ * removing it: {@code FlywayConfigTest} asserts {@value #PRODUCTION_TARGET} against the versions the
+ * schema location actually carries, so a schema script added above the pin fails the build instead of
+ * being silently skipped at run time. That is the property the previous arrangement lacked, and it is
+ * what makes a ceiling safe to hold.
  *
- * <p><strong>Two independent controls hold the separation.</strong> The <em>location list</em> decides
+ * <p><strong>Three independent controls hold the separation.</strong> The <em>location list</em> decides
  * what is resolved: {@link #resolveLocations(Collection, Collection)} pins production to
  * {@value #SCHEMA_LOCATION} by <em>equality</em>, refusing the seed location, the shared parent, a
  * second entry, a file-system descriptor, a bare path, a deeper path and a blank entry - because another
  * location, or an operator-writable directory that merely ends in the same folder name, could present
- * seed content of its own. The <em>applied-state check</em> decides whether this database was ever
- * entitled to start under production at all: {@link ProductionSeedRejectionCallback} refuses a
- * production start against a database whose history records a seed migration or whose tables still hold
- * seeded rows.
+ * seed content of its own. The <em>version ceiling</em> decides how far a resolved list may be applied:
+ * {@link #resolveTarget(Collection, String)} pins production at {@value #PRODUCTION_TARGET} and refuses
+ * every other value, so even a location that presented a seed-numbered script could not have it applied.
+ * The <em>applied-state check</em> decides whether this database was ever entitled to start under
+ * production at all: {@link ProductionSeedRejectionCallback} refuses a production start against a
+ * database whose history records a seed migration or whose tables still hold seeded rows.
  *
- * <p>The two are genuinely independent, and each covers what the other cannot. The location list cannot
- * help a database that was already seeded before production was pointed at it. The applied-state check
- * cannot stop a seed being applied for the first time.
+ * <p>The three are genuinely independent, and each covers what the others cannot. The location list
+ * constrains <em>where</em> scripts come from and constrains no version. The ceiling constrains
+ * <em>which</em> versions apply and constrains no directory. Neither can help a database that was
+ * already seeded before production was pointed at it, and the applied-state check cannot stop a seed
+ * being applied for the first time.
  *
  * <p>Both settings declared in the profile documents are statements, and the documents were the whole
  * of the mechanism until this class existed. <strong>Text is not a control.</strong> The gaps that
  * followed from having no code behind it, and closing them, are this class's entire purpose.
  *
- * <p>Decision {@code DL-298} in {@code docs/decision-log.md} records why the location list is the
- * mechanism and why no production ceiling remains; it supersedes {@code DL-127}, whose own correction
- * had restored the flat layout and the pin. Decision {@code DL-110} records the sealing callback -
+ * <p>Decision {@code DL-298} in {@code docs/decision-log.md} records why the location list is the primary
+ * mechanism, and {@code DL-334} records why the production ceiling is held alongside it rather than
+ * removed, together with the delivered-version assertion that makes holding it safe. Decision
+ * {@code DL-110} records the sealing callback -
  * {@code com.carddemo.service.SeededIdentifierSealingCallback}, which registers itself for the two
  * seeding profiles rather than being published from here, so that this package declares no dependency on
  * the service package.
@@ -124,12 +130,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <p><strong>One point of history, recorded so the arrangement is not undone a fourth time.</strong> The
  * split has now been introduced three times. Twice it was withdrawn because the parent stayed reachable,
  * and the withdrawal reasoning was correct about recursion and wrong about the remedy. The third time it
- * was withdrawn in favour of the version pin on the ground that the delivered artefacts were flat and
- * the migration specifications forbade a child directory - which is true of those specifications and
+ * was withdrawn in favour of the version pin alone, on the ground that the delivered artefacts were flat
+ * and the migration specifications forbade a child directory - which is true of those specifications and
  * cannot be reconciled with the plan's own structural decision that this class resolve the seeds
- * <em>from profile-scoped locations</em>. The named structural decision governs over a path listing.
- * What settles it beyond that reading is the defect the pin brought with it: it froze the production
- * schema at a version. Nothing about the directory arrangement does that.
+ * <em>from profile-scoped locations</em>. The named structural decision governs over a path listing, so
+ * the split stands. What was wrong on the fourth pass was the opposite over-correction: the pin was
+ * <em>forbidden</em> as well, which discarded a working second control because its failure mode had not
+ * been closed. The failure mode is closed by asserting the pin against the delivered scripts, so both
+ * controls are held and neither is asked to do the other's work.
  *
  * <h2>Gap one: the profile list is a list, and a list can hold both</h2>
  *
@@ -168,12 +176,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * including no profile, it refuses the shared parent, because scanning is recursive and because the
  * recorded script names would change.
  *
- * <p>{@link #resolveTarget(Collection, String)} guards against a ceiling being used as a substitute.
- * When production is active it <strong>refuses a numeric ceiling outright</strong> and re-applies
- * {@value #ALL_RESOLVED_VERSIONS_TARGET}: a number freezes the schema at that version, so a schema
- * script added after the deployment is never applied while the migration still reports success, and a
- * low number additionally stops before the indexes and constraints are created. When local or test is
- * active it <strong>lifts</strong> a ceiling that would stop short of version
+ * <p>{@link #resolveTarget(Collection, String)} guards the ceiling, which is the second control. When
+ * production is active it <strong>refuses</strong> any value other than {@value #PRODUCTION_TARGET} and
+ * re-applies that pin: a <em>higher</em> value, {@value #ALL_RESOLVED_VERSIONS_TARGET} among them, would
+ * apply whatever a resolved location happened to carry above the delivered schema, and a <em>lower</em>
+ * one stops before the indexes and constraints are created and leaves an under-migrated schema behind a
+ * migration that reported success. The pin cannot silently under-migrate a future release either, because
+ * it is asserted against the versions {@value #SCHEMA_LOCATION} delivers rather than merely written down.
+ * When local or test is active it <strong>lifts</strong> a ceiling that would stop short of version
  * {@value #FIRST_SEED_VERSION}, because a fixture-bearing profile that stopped at the schema would
  * migrate no fixtures. With neither active the bound value is returned unchanged.
  *
@@ -205,9 +215,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <p>{@code V1__create_schema.sql} defines {@code customer.govt_issued_id} as {@code NOT NULL} and
  * states that any row a seed inserts must carry an application-produced envelope rather than a
  * cleartext identifier. The reference seed honours that directly, inserting fifty fixed envelopes
- * produced by the module's own encryption service and seeding {@code customer.cust_ssn} as
- * {@code null} in every row. {@link SeededIdentifierSealingCallback} is registered here for the two
- * seeding profiles alone, and it holds the columns to two distinct invariants.
+ * produced by the module's own encryption service for {@code customer.govt_issued_id} and a second
+ * fifty for {@code customer.cust_ssn}, so neither regulated column is ever seeded in cleartext.
+ * {@link SeededIdentifierSealingCallback} is registered here for the two seeding profiles alone, and it
+ * holds both columns to two distinct invariants.
  *
  * <p>The first is <strong>shape</strong>: any unsealed value it finds is sealed. On a delivered
  * database that converts nothing, and it stands as defence in depth against a future edit to the
@@ -220,8 +231,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * some other key still looks like an envelope, and the fifty seeded envelopes are fixed literals that
  * no pass can re-key. That is also why the two seeding profiles declare their fixture key as a bare
  * literal rather than as an environment-variable default. Production carries neither invariant nor
- * the component enforcing them, because its ceiling stops below both seeds and it therefore receives
- * no row from either.
+ * the component enforcing them, because it resolves neither seed script and its ceiling stops below
+ * both seed versions, so it receives no row from either.
  *
  * <h2>What this class deliberately does not do</h2>
  *
@@ -229,7 +240,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * not <em>supply</em> a location or a ceiling: the values live in the profile documents, where an
  * operator reads them, and supplying them here would create a second place for them to disagree. What
  * it does instead is <em>require</em> production's location, ceiling and enablement to be the canonical
- * ones and refuse the start-up otherwise. The ceiling it requires is the absence of one. Those two postures are not the same, and the difference is
+ * ones and refuse the start-up otherwise. Supplying a value and requiring one are not the same posture,
+ * and the difference is
  * the point of this class: a profile document is a default, and a default can be overridden on the
  * command line, in the environment, or by a co-activated overlay. Leaving the ceiling and the location
  * to the documents alone would leave them to whatever the last property source said. So this class
@@ -278,14 +290,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * </ul>
  *
  * <p>Those three are named here so the production migration can be audited by what it <em>admits</em>
- * as well as by what it excludes. Note where the guarantee that they exist now rests, because it moved:
- * {@link #resolveLocations(Collection, Collection)} requires the packaged schema location and
- * {@link #resolveTarget(Collection, String)} refuses a numeric ceiling of <em>any</em> value, so nothing
- * can stop a production migration short of the last script that location contains. Under the previous
- * arrangement the guarantee rested on the profile documents declaring a number that happened to be the
- * highest schema version, which meant a schema script added later was excluded by the same mechanism
- * that excluded the seeds. It is now excluded by nothing, and a seed script is excluded by not being in
- * the location production resolves - which is the separation each concern actually needs.
+ * as well as by what it excludes. Where the guarantee that they exist rests is worth stating precisely,
+ * because it rests on two members rather than one:
+ * {@link #resolveLocations(Collection, Collection)} requires the packaged schema location, so the three
+ * indexes are resolvable, and {@link #resolveTarget(Collection, String)} pins the ceiling at
+ * {@value #PRODUCTION_TARGET} - the version {@code V2__create_indexes.sql} occupies - so they are also
+ * <em>reached</em>. A lower ceiling would stop the migration before them and still report success, which
+ * is why every other value is refused rather than merely discouraged. The pin is held to the versions
+ * the location actually delivers by {@code FlywayConfigTest}, so raising the schema and forgetting the
+ * pin fails the build; and a seed script is excluded twice over - by not being in the location production
+ * resolves, and by being numbered above the pin.
  *
  * <p>Provenance: this configuration has no single legacy antecedent, because the separation it
  * enforces is one the legacy estate had no equivalent of - there, a provisioning job stream that was
@@ -324,9 +338,10 @@ public final class FlywayConfig {
      * {@code V3__seed_reference_data.sql} and {@code V4__seed_user_security.sql}.
      *
      * <p>Production {@link #resolveLocations(Collection, Collection) refuses} it, so under production
-     * these scripts appear in no state whatsoever - not applied, not pending, not above a ceiling, not
-     * even resolved. That is a stronger statement than a version comparison could make, because a
-     * version comparison first resolves the script and then declines to run it.
+     * these scripts appear in no state whatsoever - not applied, not pending, not even resolved. That is
+     * a stronger statement than a version comparison could make on its own, because a version comparison
+     * first resolves the script and then declines to run it. Both scripts are numbered above
+     * {@value #PRODUCTION_TARGET} as well, so the ceiling would decline them even if they were resolved.
      */
     public static final String SEED_LOCATION = "classpath:db/migration/seed";
 
@@ -365,25 +380,47 @@ public final class FlywayConfig {
     private static final String SEGMENT_SEPARATOR = "/";
 
     /**
-     * Flyway's own word for "apply every version the resolved locations contain", which every profile
-     * now declares.
+     * Flyway's own word for "apply every version the resolved locations contain", which the two seeding
+     * profiles declare and production refuses.
      *
-     * <p><strong>Production declares it too, and that is the point of this entry's revision.</strong>
-     * The previous arrangement pinned production at the highest delivered schema version and refused
-     * every other value, which held the seeds out correctly and made a future schema migration
-     * impossible to deploy: the day a {@code V5} schema script shipped, production could not apply it
-     * without editing this class, and the pin would have reported a successful migration while leaving
-     * the new structures absent. The separation is now the location list, which an operator cannot
-     * widen, so no ceiling is needed and none is permitted.
+     * <p>Under local and test it is exactly right: those profiles resolve both locations and need every
+     * delivered version, fixtures included. Under production it is refused, because production's ceiling
+     * is {@value #PRODUCTION_TARGET} and an open marker would apply whatever a resolved location happened
+     * to carry above the delivered schema.
      */
     public static final String ALL_RESOLVED_VERSIONS_TARGET = "latest";
 
     /**
-     * The first version a seed script occupies.
+     * The version a production migration stops at: the highest version {@value #SCHEMA_LOCATION}
+     * delivers, which is the one {@code V2__create_indexes.sql} occupies.
      *
-     * <p>No longer a production control - the location list is - but still the figure a seeding profile
-     * is measured against: an inherited ceiling below this version would migrate the schema and none of
-     * the fixtures the profile exists to load.
+     * <p><strong>Why a pin is held here at all, when the location list already separates the seeds.</strong>
+     * The two controls constrain different things and neither substitutes for the other. The location list
+     * says where scripts may come from and says nothing about versions; the pin says how far a resolved
+     * list may be applied and says nothing about directories. Held together, a seed script is excluded
+     * twice - by its directory and by its number - and a look-alike location that somehow presented a
+     * seed-numbered script would still not have it applied.
+     *
+     * <p><strong>Why holding a pin is safe here, when the objection to one was sound.</strong> A number
+     * written down and never checked does freeze the schema: the day a {@code V5} schema script shipped,
+     * a production migration would stop below it, apply nothing, and report success. That failure mode is
+     * closed by checking the number rather than by deleting it - {@code FlywayConfigTest} asserts this
+     * constant against the versions {@value #SCHEMA_LOCATION} actually carries, so a schema script added
+     * above the pin fails the build at the point it is added. Raising the schema and raising this
+     * constant are therefore one commit, enforced, rather than two commits, hoped for.
+     *
+     * <p>Held as a constant so the value this class requires and the value the shared baseline and the
+     * production overlay declare cannot drift apart.
+     */
+    public static final String PRODUCTION_TARGET = "2";
+
+    /**
+     * The first version a seed script occupies, which is one above {@value #PRODUCTION_TARGET}.
+     *
+     * <p>It is the figure a seeding profile is measured against: an inherited ceiling below this version
+     * would migrate the schema and none of the fixtures the profile exists to load. It is also the
+     * arithmetic reason production's pin is where it is - the last schema version and the first seed
+     * version are adjacent, so the pin lands exactly on the boundary between them.
      */
     private static final String FIRST_SEED_VERSION = "3";
 
@@ -396,7 +433,7 @@ public final class FlywayConfig {
 
     /**
      * The property carrying the migration target. Production must declare it as
-     * {@value #ALL_RESOLVED_VERSIONS_TARGET} or not at all; a numeric ceiling is refused.
+     * {@value #PRODUCTION_TARGET} or not at all; every other value, the open marker included, is refused.
      */
     private static final String MIGRATION_TARGET_KEY = "spring.flyway.target";
 
@@ -462,23 +499,39 @@ public final class FlywayConfig {
                         + " {} location(s) now resolve", resolved.size());
             }
             final MigrationVersion boundTarget = configuration.getTarget();
-            final String resolvedTarget = resolveTarget(activeProfiles, describe(boundTarget));
+            // UNDER PRODUCTION THE DECLARED CEILING IS READ FROM THE ENVIRONMENT, AND ONLY THERE.
+            // The migration tool's own default ceiling is its head marker, so a BOUND value of `latest`
+            // is indistinguishable from a document that declared it - and under production those two
+            // must be treated differently: silence has to be CORRECTED to the pin, while a declared head
+            // marker has to be REFUSED. The environment is the merged view of every property source, so
+            // it answers "what did a document, an operator or a co-activated overlay actually state"
+            // exactly, and null means nothing did. Under every other profile the bound value is resolved
+            // as before, because nothing there is refused - a low ceiling is lifted - so the ambiguity
+            // has no consequence and reading the bound value additionally catches one set programmatically
+            // by some other customizer.
+            final String declaredTarget = containsProfile(activeProfiles, PRODUCTION_PROFILE)
+                    ? environment.getProperty(MIGRATION_TARGET_KEY)
+                    : describe(boundTarget);
+            final String resolvedTarget = resolveTarget(activeProfiles, declaredTarget);
             if (resolvedTarget != null) {
                 final boolean changed = !resolvedTarget.equals(describe(boundTarget));
                 // Set unconditionally rather than only when it differs. Under production the value is
-                // already the apply-everything marker by the time control reaches here - resolveTarget
-                // refused every numeric value - so this is an idempotent re-statement, and re-stating it
-                // is what makes the setting a property of this code path rather than of the document
-                // that supplied it.
+                // already the pin by the time control reaches here - resolveTarget refused every other
+                // value - so this is an idempotent re-statement, and re-stating it is what makes the
+                // setting a property of this code path rather than of the document that supplied it.
                 configuration.target(resolvedTarget);
-                if (changed) {
+                if (changed && containsProfile(activeProfiles, PRODUCTION_PROFILE)) {
+                    LOGGER.info("Migration ceiling pinned at '{}' for the production profile, which is"
+                            + " the highest version the packaged schema location delivers",
+                            PRODUCTION_TARGET);
+                } else if (changed) {
                     LOGGER.info("Migration ceiling lifted to '{}' so every resolved version applies",
                             resolvedTarget);
                 } else if (containsProfile(activeProfiles, PRODUCTION_PROFILE)) {
                     LOGGER.info("Migration ceiling left at '{}' for the production profile; the seed"
-                            + " scripts are held out by the location list rather than by a version, so"
-                            + " a schema version added later still applies",
-                            ALL_RESOLVED_VERSIONS_TARGET);
+                            + " scripts are held out by that version AND by the location list, and the"
+                            + " pin is asserted against the delivered schema scripts",
+                            PRODUCTION_TARGET);
                 }
             }
         };
@@ -552,8 +605,8 @@ public final class FlywayConfig {
      *       the resulting diagnostic. Absence is refused rather than treated as the framework's
      *       {@code true} default, for the same reason the other two are: a production migration source
      *       is stated, not inferred.</li>
-     *   <li>{@value #MIGRATION_TARGET_KEY} absent or {@value #ALL_RESOLVED_VERSIONS_TARGET} and never a
-     *       number, enforced by handing the declared value to
+     *   <li>{@value #MIGRATION_TARGET_KEY} absent or exactly {@value #PRODUCTION_TARGET} and never any
+     *       other value, enforced by handing the declared value to
      *       {@link #resolveTarget(Collection, String)} - the same rule the customizer applies, called
      *       rather than copied, so the two can never drift apart.</li>
      *   <li>{@value #MIGRATION_LOCATIONS_KEY} exactly the one packaged schema location, enforced by
@@ -644,9 +697,9 @@ public final class FlywayConfig {
         resolveLocations(activeProfiles, Binder.get(environment)
                 .bind(MIGRATION_LOCATIONS_KEY, Bindable.listOf(String.class))
                 .orElseGet(List::of));
-        LOGGER.info("Production migration source accepted: migrations enabled, target '{}' with no"
-                + " version ceiling, one location '{}' and no seed location",
-                ALL_RESOLVED_VERSIONS_TARGET, SCHEMA_LOCATION);
+        LOGGER.info("Production migration source accepted: migrations enabled, ceiling pinned at"
+                + " version '{}', one location '{}' and no seed location",
+                PRODUCTION_TARGET, SCHEMA_LOCATION);
     }
 
     /**
@@ -849,24 +902,26 @@ public final class FlywayConfig {
      * <p>Three outcomes, mirroring {@link #resolveLocations(Collection, Collection)}:
      *
      * <ul>
-     *   <li>Production active - the ceiling must be absent or exactly
-     *       {@value #ALL_RESOLVED_VERSIONS_TARGET}; <strong>every numeric ceiling is refused</strong>,
-     *       and the method returns {@value #ALL_RESOLVED_VERSIONS_TARGET}. This is the reverse of what
-     *       this method used to require, and the reversal is the substance of the change. A ceiling
-     *       pinned at the highest delivered schema version did hold the seeds out - but it also made
-     *       every future schema migration undeployable: the day a {@code V5} schema script shipped,
-     *       production would have applied nothing above the pin and reported success, and the only way
-     *       to raise the pin was to edit this class, because this method refused every other value. A
-     *       ceiling is the wrong instrument for a boundary that must never move and the wrong instrument
-     *       for a sequence that must keep growing, and it was being used for both. The boundary is now
-     *       the location list, which an operator cannot widen, so the ceiling has no work left to do and
-     *       is refused rather than left as a trap. A ceiling below the highest schema version is refused
-     *       for the reason it always was: it stops before the indexes and constraints are created and
-     *       leaves an under-migrated schema behind a migration that reported success.</li>
+     *   <li>Production active - the ceiling must be absent or exactly {@value #PRODUCTION_TARGET}, and
+     *       every other value is <strong>refused</strong>; the method returns
+     *       {@value #PRODUCTION_TARGET}. A <em>higher</em> ceiling is refused, the open marker
+     *       {@value #ALL_RESOLVED_VERSIONS_TARGET} included, because it would apply whatever a resolved
+     *       location happened to carry above the delivered schema - the seed versions among them, if a
+     *       look-alike location ever presented one. A <em>lower</em> ceiling is refused because it stops
+     *       before the indexes and constraints are created and leaves an under-migrated schema behind a
+     *       migration that reported success. The known objection to pinning at all - that a number
+     *       freezes the schema, so a later {@code V5} schema script would never be applied while the
+     *       migration still reported success - is answered by checking the pin rather than by removing
+     *       it: {@value #PRODUCTION_TARGET} is asserted against the versions {@value #SCHEMA_LOCATION}
+     *       delivers, so a schema script added above the pin fails the build at the point it is added
+     *       rather than under-migrating a deployment months later.</li>
      *   <li>Local or test active - a ceiling that would stop short of the seeds is
      *       <strong>lifted</strong> to {@value #ALL_RESOLVED_VERSIONS_TARGET}, because an inherited
      *       ceiling reaching a seeding profile would migrate the schema and none of the fixtures the
-     *       profile exists to load.</li>
+     *       profile exists to load. This is the case that makes the shared baseline safe to pin: a
+     *       profile that inherits {@value #PRODUCTION_TARGET} and needs the fixtures gets it lifted
+     *       rather than refused, because completing is the useful outcome there where refusing is the
+     *       useful outcome under production.</li>
      *   <li>Neither active - the bound value is returned unchanged.</li>
      * </ul>
      *
@@ -878,39 +933,59 @@ public final class FlywayConfig {
      * @param declaredTarget the ceiling the property binding produced, which may be {@code null}
      * @return the ceiling to migrate to; the same value when nothing changed
      * @throws IllegalStateException when production is active and a ceiling other than
-     *                               {@value #ALL_RESOLVED_VERSIONS_TARGET} is declared
+     *                               {@value #PRODUCTION_TARGET} is declared
      */
     public static String resolveTarget(final Collection<String> activeProfiles,
             final String declaredTarget) {
         final String declared = declaredTarget == null ? null : declaredTarget.strip();
-        final boolean reachesSeeds = reachesSeedVersions(parseVersion(declared));
+        final MigrationVersion parsed = parseVersion(declared);
+        final boolean reachesSeeds = reachesSeedVersions(parsed);
         if (containsProfile(activeProfiles, PRODUCTION_PROFILE)) {
-            // NO CEILING, and a numeric one is refused rather than tolerated. Both halves matter. A
-            // numeric ceiling at or above the seed versions would once have admitted the seeds; it no
-            // longer can, because production does not resolve the location they live in. What it still
-            // does is freeze the schema: any number stops the sequence there for ever, so a schema
-            // version added later is silently never applied and the migration still reports success.
-            // A ceiling is therefore refused outright, and the separation is left to the location list
-            // where an operator cannot widen it.
-            if (declared != null && !declared.isEmpty()
-                    && !ALL_RESOLVED_VERSIONS_TARGET.equalsIgnoreCase(declared)) {
+            // THE PIN, RE-APPLIED AFTER BINDING. Silence is accepted and corrected to the pin rather
+            // than refused, because a profile that forgot the property must still migrate the delivered
+            // schema and no further - refusing silence would only stop a deployment that had inherited
+            // the right posture from the shared baseline. Every stated value other than the pin is
+            // refused, in both directions: above it applies scripts this deployment was never measured
+            // against, below it leaves the indexes and constraints uncreated behind a successful
+            // migration. The open marker is a value above it and is refused with the rest.
+            if (declared != null && !declared.isEmpty() && !isProductionCeiling(parsed)) {
                 throw new IllegalStateException("profile '" + PRODUCTION_PROFILE
-                        + "' must declare spring.flyway.target as '" + ALL_RESOLVED_VERSIONS_TARGET
-                        + "' or not at all. A NUMERIC ceiling is refused whatever its value: it freezes"
-                        + " the schema at that version, so a schema script added after this deployment"
-                        + " is never applied and the migration still reports success, and a low one"
-                        + " additionally stops before the indexes and constraints are created. The seed"
-                        + " scripts are held out of production by the location list - production"
-                        + " resolves '" + SCHEMA_LOCATION + "' and never '" + SEED_LOCATION + "' - so"
-                        + " no ceiling is needed and none may be used as a substitute for it");
+                        + "' must declare spring.flyway.target as '" + PRODUCTION_TARGET
+                        + "' or not at all. That version is the highest one '" + SCHEMA_LOCATION
+                        + "' delivers, and it is asserted against the delivered scripts rather than"
+                        + " merely written down, so it cannot silently under-migrate a later release."
+                        + " A HIGHER ceiling is refused - '" + ALL_RESOLVED_VERSIONS_TARGET + "'"
+                        + " included - because it applies whatever a resolved location carries above the"
+                        + " delivered schema, and the seed scripts are numbered there. A LOWER one is"
+                        + " refused because it stops before the indexes and constraints are created and"
+                        + " reports success anyway. The seed scripts are additionally held out by the"
+                        + " location list: production resolves '" + SCHEMA_LOCATION + "' and never '"
+                        + SEED_LOCATION + "'");
             }
-            return ALL_RESOLVED_VERSIONS_TARGET;
+            return PRODUCTION_TARGET;
         }
         if (!containsProfile(activeProfiles, LOCAL_PROFILE)
                 && !containsProfile(activeProfiles, TEST_PROFILE)) {
             return declared;
         }
         return reachesSeeds ? declared : ALL_RESOLVED_VERSIONS_TARGET;
+    }
+
+    /**
+     * Reports whether a parsed ceiling is the production pin.
+     *
+     * <p>Compared as a <em>version</em> rather than as text, so that the equivalent spellings a
+     * deployment legitimately produces - {@code 2} and {@code 2.0} - are both recognised, while a
+     * predefined marker never is: {@link MigrationVersion#isPredefined()} covers the latest, current,
+     * next and empty markers, none of which is a number and none of which can be shown to stop at the
+     * delivered schema.
+     *
+     * @param parsed the parsed ceiling, or {@code null} when it was absent, blank or unreadable
+     * @return {@code true} when the ceiling is exactly the production pin
+     */
+    private static boolean isProductionCeiling(final MigrationVersion parsed) {
+        return parsed != null && !parsed.isPredefined()
+                && MigrationVersion.fromVersion(PRODUCTION_TARGET).equals(parsed);
     }
 
     /**

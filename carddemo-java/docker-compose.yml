@@ -120,8 +120,9 @@
 #      for Jaeger - and each stays reachable only through the tunnel.
 #
 #   2. Deploy the `prod` profile. A service that must genuinely answer other hosts is a production
-#      deployment: application-prod.yml requires transport security and resolves all thirteen of its
-#      secrets from the environment with no fallback, refusing to start without them. That is the
+#      deployment: application-prod.yml requires transport security - including an authenticated,
+#      non-downgradeable database channel - and resolves all fourteen of its required values from the
+#      environment with no fallback, refusing to start without them. That is the
 #      posture for a routable address, and this profile is not it.
 #
 # The *_BIND_ADDRESS overrides remain in the mappings below for one legitimate purpose - selecting a
@@ -221,10 +222,12 @@ services:
   # column widths are the verified record layouts.
   #
   # SCHEMA OWNERSHIP IS EXCLUSIVE AND IT IS NOT HERE. Flyway owns every table and every seeded row:
-  # V1__create_schema.sql and V2__create_indexes.sql in every profile, and
-  # V3__seed_reference_data.sql and V4__seed_user_security.sql in the local and test profiles only.
-  # All four sit flat in db/migration, which every profile resolves; the version ceiling of 2 is what
-  # holds the two seeds out of a production migration. Deliberately NO script is mounted into /docker-entrypoint-initdb.d - a
+  # db/migration/schema holds V1__create_schema.sql and V2__create_indexes.sql and is resolved by every
+  # profile; db/migration/seed holds V3__seed_reference_data.sql and V4__seed_user_security.sql and is
+  # resolved by the local and test profiles only. Their shared parent db/migration holds no script and is
+  # resolved by no profile, because a Flyway location is scanned recursively. Two independent controls
+  # hold the seeds out of a production migration - that location list, and a version ceiling pinned at 2.
+  # Deliberately NO script is mounted into /docker-entrypoint-initdb.d - a
   # second path that creates a table would make the schema depend on which mechanism ran first, and
   # forward-only versioned migration is the whole guarantee being bought.
   postgres:
@@ -414,6 +417,17 @@ services:
     # legacy queue's open-at-initialisation attribute guaranteed. Because the ready hook runs after
     # the edge port starts serving, a check that stopped at the health endpoint would let the
     # application start against an emulator with no queue in it.
+    #
+    # THE TOPIC IS CHECKED HERE ON PURPOSE, AND THAT IS NOT IN TENSION WITH THE NOTIFICATION CHANNEL
+    # BEING BEST EFFORT. The contract has two stages. PROVISIONING AND OWNERSHIP ARE MANDATORY: this
+    # check is the local expression of it, and a production start-up is refused outright by
+    # com.carddemo.config.AwsResourceTrustVerifier when the topic cannot be resolved from a listing,
+    # is not owned by the declared account, or does not answer an attribute read. DELIVERY of an
+    # individual notice is best effort AFTERWARDS: a dropped notice leaves the job's status and exit
+    # code untouched, is counted on carddemo.job.completion.shed, and the awsSns health contributor is
+    # published but deliberately kept OUT of the readiness group, because a notice announces a job
+    # that has already finished. So there is no supported start in which the topic is absent, and no
+    # notice whose loss makes an instance unfit. See docs/decision-log.md DL-339.
     #
     # The endpoint's per-service status is deliberately NOT matched against a literal: it reports
     # "available" before first use and "running" afterwards, so asserting either string would make
@@ -625,8 +639,11 @@ services:
     depends_on:
       # Flyway applies four migrations during start-up and must not race initdb; the AWS clients
       # must not race the ready hook that creates the queue, the bucket and the topic. Both are
-      # therefore gated on health rather than on the container merely having been started. Optional
-      # observability services are intentionally absent from this required dependency set.
+      # therefore gated on health rather than on the container merely having been started, and the
+      # emulator's health includes all THREE resources - so this edge is what makes the topic's
+      # presence a start-up precondition here, exactly as the trust verifier makes it one under prod.
+      # Optional observability services are intentionally absent from this required dependency set;
+      # the topic is not one of them.
       postgres:
         condition: service_healthy
       localstack:

@@ -16,6 +16,7 @@
  */
 package com.carddemo.batch;
 
+import io.micrometer.observation.ObservationRegistry;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -54,7 +55,8 @@ final class BatchLaunchCoordinatorIT extends AbstractPostgresIT {
         final BatchLaunchCoordinator coordinator = new BatchLaunchCoordinator(
                 mock(JobRepository.class),
                 mock(JobExplorer.class),
-                new JdbcTemplate(dataSource));
+                new JdbcTemplate(dataSource),
+                ObservationRegistry.create());
         final Job job = mock(Job.class);
         when(job.getName()).thenReturn(JOB_NAME);
 

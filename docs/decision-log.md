@@ -146,13 +146,13 @@ clear — five administrative and five standard, every one of them sharing a sin
 same eight-character width. All ten are seeded, with their identifiers, names and user types reproduced
 exactly, and every credential stored as a **BCrypt hash**. The seeding migration reaches the local and
 test profiles only, so a production deployment migrates schema and indexes without inheriting a seeded
-credential of any kind. **The delivered mechanism is a version ceiling, not a location split**: all four
-migrations sit flat in `classpath:db/migration`, local and test migrate through V4, and production stops at
-target 2 and additionally refuses a database whose history or contents show a seed was applied — recorded as
-row D-47 of the conflict table in section 9. DL-127 reached the same guarantee through profile-scoped
-locations; that mechanism was an intermediate implementation, is superseded, and its entry carries the
-correction at its head. Cite D-47 for what the module does and DL-127 only for how the question was
-previously answered.
+credential of any kind. **The delivered mechanism is a profile-scoped location split, with a production
+version ceiling beside it**: the two schema scripts ship from `classpath:db/migration/schema` and the two
+seed scripts from `classpath:db/migration/seed`, local and test resolve both locations and migrate through
+V4, production resolves the schema location alone — so it does not resolve a seed script at all — and
+additionally declares `spring.flyway.target: "2"` and refuses a database whose history or contents show a
+seed was applied. Cite DL-298 for the location split, DL-334 for why the ceiling is held alongside it, and
+DL-127 and row D-47 of the conflict table in section 9 only for how the question was previously answered.
 
 **Nothing on this page reproduces a credential.** The field width and the fact that one literal is shared
 across all ten identities are recorded because they are what make hashing necessary; the literal itself
@@ -3347,10 +3347,11 @@ directly against the document.
 **Why the guarded set cannot drift from the profile.** `ProductionConfigurationValidatorTest` reads every
 declaration in `application-prod.yml`, selects those whose raw text is a bare reference with no fallback
 tail, and requires that set to equal the guard's list exactly - key for key and variable for variable. A
-thirteenth bare reference added to the profile fails the build until it is guarded, and a guarded key
+further bare reference added to the profile fails the build until it is guarded, and a guarded key
 given a fallback tail fails it until one of the two is changed. No count of the set is written in prose
 anywhere, in the profile document or in the test, for the reason recorded in DL-104: a number in a comment
-cannot survive an edit to the thing it counts.
+cannot survive an edit to the thing it counts - and the count is stated in the operator documents, where
+`DocumentedSourceCountsTest` derives it from the profile rather than transcribing it.
 
 **Decision - the profile test now observes what a running application observes.** The superseded
 assertion checked that the raw YAML text of three keys - later five - matched `\$\{[A-Z0-9_]+\}`. It
@@ -12591,7 +12592,20 @@ later cannot hide beside them.
 
 ---
 
-### DL-298 — The seeds are held out of production by the location list alone, and the version pin is withdrawn because it also froze the schema
+### DL-298 — The seeds are held out of production by the location list alone, and the version pin is withdrawn because it also froze the schema — **THE PIN IS RESTORED BY DL-334; THE LOCATION SPLIT STANDS**
+
+> **Superseded in one half, upheld in the other.** `DL-334` restores the production version ceiling of
+> `2`. Everything below about the **location split** — the two sibling locations, the empty refused parent,
+> the recursion premise, and the measurement that a production-shaped scope resolves the two seed versions
+> in *no state at all* — is delivered exactly as recorded here and is the primary seed boundary. What is
+> withdrawn is this entry's conclusion that the ceiling had therefore to be **removed**, and with it the
+> two statements that followed from it: that "no profile declares a version, and production refuses one",
+> and that `resolveTarget` returns the head marker under production. `DL-334` accepts this entry's
+> argument about the pin's defect in full and answers it differently — by asserting the pin against the
+> versions the schema location actually delivers, so a fifth schema script fails the build instead of
+> being silently skipped. One pointer below is renamed accordingly: the future-schema measurement is now
+> `SeedMigrationIT.aFutureSchemaMigrationIsSkippedByThePinAndAppliesWithoutIt`, which makes both
+> measurements this entry relied on rather than only the second.
 
 **This entry re-supersedes DL-102, DL-108, DL-111, DL-116, DL-119 and DL-127-as-corrected.** The
 delivered arrangement is the profile-scoped location split those entries reached for twice, withdrew
@@ -12635,10 +12649,11 @@ written yet:
 
 Nothing about the directory arrangement causes that defect, and the location list has no equivalent of
 it: a location a profile never lists is not a value an operator can widen, and it places no ceiling on
-any future version. `SeedMigrationIT.aFutureSchemaMigrationAppliesUnderTheProductionScope` is the
-measurement — it writes a real `V5` schema script, applies it against PostgreSQL 16 under the delivered
-posture and finds it applied with the eleven application tables still empty, then applies the identical
-configuration under the withdrawn pin of `2` and finds the table it creates absent.
+any future version. `SeedMigrationIT.aFutureSchemaMigrationIsSkippedByThePinAndAppliesWithoutIt` is the
+measurement — it writes a real `V5` schema script, applies it against PostgreSQL 16 with no ceiling in
+force and finds it applied with the eleven application tables still empty, then applies the identical
+configuration under the pin of `2` and finds the table it creates absent. `DL-334` keeps both halves of
+that measurement and adds the build-time assertion that makes the second one loud.
 
 **The recursion premise is retained, and it is why the parent must stay empty.** Every one of the
 superseded entries rests on one true observation, quoted here rather than paraphrased because it is the
@@ -15577,6 +15592,527 @@ named column moved.
 *Embodied in:* `resources/db/migration/seed/V3__seed_reference_data.sql`,
 `service/SeededIdentifierSealingCallback.java`, `resources/application-local.yml`,
 `resources/application-test.yml`.
+
+---
+
+### DL-334 — The production version ceiling is restored and held beside the location split, and the defect DL-298 found in it is answered by asserting the pin against the delivered scripts *(restores the pin half of DL-298)*
+
+**This restores one half of `DL-298` and leaves the other half exactly as delivered.** `DL-298` withdrew
+the production ceiling `spring.flyway.target=2` and made the profile-scoped location list the sole
+control. The location list is unchanged and remains the **primary** boundary. What is restored is the
+ceiling, which production now declares and which `FlywayConfig.resolveTarget` requires.
+
+**Why it is restored.** Two reasons, and the second is the one that decides it.
+
+- The migration specifications for `V3` and `V4` each name `spring.flyway.target=2` as the production
+  control. `DL-298` set that aside on the ground that the permission it granted for "equivalent
+  version-aware or filename-aware filtering" could not reach a filter that was not in fact equivalent.
+  That argument establishes that the location split is **necessary**; it does not establish that the
+  named control is **forbidden**, and reading it as forbidding the named value converted a
+  belt-and-braces posture into a single point of failure by choice.
+- A review of the delivered module recorded the absent ceiling as a departure from the frozen
+  requirement, with `FlywayConfig` "explicitly refusing every numeric production ceiling" as the finding.
+  Where a requirement names a value and the argument against it is about that value's *sufficiency*
+  rather than its *correctness*, the resolution is to satisfy the requirement and neutralise the
+  insufficiency, not to decline the requirement.
+
+**`DL-298`'s argument against the pin is accepted in full, and answered rather than dismissed.** That
+argument was not a matter of taste; it was a measurement. Under a ceiling of `2` a `V5` schema script is
+resolved, skipped, and reported as part of a **successful** migration: Flyway treats an unapplied version
+above the target as an ordinary `ABOVE_TARGET` state, so no log line, no exit code and no validation
+failure says the deployment came up on an incomplete schema. The answer is to make that condition
+impossible to reach silently:
+
+- `FlywayConfig.PRODUCTION_TARGET` is the single place the pin is written in code, and
+  `FlywayConfigTest.thePinIsTheHighestDeliveredSchemaVersion` asserts it **equals** the highest version
+  the schema location actually delivers, read off the class path rather than transcribed. Ship a `V5`
+  schema script and that assertion fails, so the build stops until the pin and the two documents that
+  declare it are raised together. The silent runtime under-migration `DL-298` measured becomes a loud
+  build failure.
+- `SeedMigrationIT.aFutureSchemaMigrationIsSkippedByThePinAndAppliesWithoutIt` keeps `DL-298`'s
+  measurement intact and both of its halves: the `V5` probe table is absent under the pin and present
+  without it. It is retained precisely because it demonstrates the cost the pin carries, which is what
+  the build-time assertion exists to catch.
+- The pin is refused in **both** directions and the head marker is refused with them. A value below `2`
+  stops before the indexes and constraints are created and still reports success; a value above `2` —
+  `latest` included — applies whatever a resolved location carries past the delivered schema. Only the
+  exact pin, or silence, is accepted, and silence is **corrected** to the pin rather than refused so that
+  a deployment which inherited the right posture is not stopped for saying nothing.
+
+**What each control now does, so neither is mistaken for the other.**
+
+| Control | Excludes | Fails how, if it drifts |
+| :------ | :------- | :---------------------- |
+| The location list — primary | the two seed scripts, which are resolved in **no state at all** under production | a production list that is not exactly the schema location is refused at start-up |
+| The version ceiling — second | any schema version above `2`, wherever it were resolved from | a pin that no longer equals the delivered head fails `FlywayConfigTest` at build time |
+
+The ordering matters for reading a failure. The seed exclusion does **not** depend on the ceiling: the
+`SeedMigrationIT` measurement above applies a future schema script with **no** ceiling in force and finds
+neither seed version in any state. So a stale pin can under-migrate the schema half, and it can never
+expose a seed. That asymmetry is the whole reason the ceiling is safe to hold as a second check.
+
+**Where the pin is declared.** `application.yml` declares `target: "2"` so that a profile silent about
+migrations inherits the production posture, and `application-prod.yml` re-declares it so the production
+document states its own posture rather than depending on inheritance. The two seeding profiles,
+`local` and `test`, each **lift** it to `latest` in the same block where they add the seed location, so
+the two settings a seeding profile needs sit together and neither can be supplied without the other being
+visible beside it. The value is quoted in every document: unquoted, YAML binds `2` as an integer and the
+property is a `String`.
+
+**One consequence named so it is not discovered as a surprise.** Adding a `V5` schema migration is now a
+three-file change — the script, `FlywayConfig.PRODUCTION_TARGET`, and the two documents that declare the
+ceiling — enforced by a failing test rather than by a convention. `DL-298` called that coupling "exactly
+the coupling a migration tool exists to remove", and it is retained deliberately: an explicit edit that
+the build demands is a smaller hazard than an incomplete schema that reports success.
+
+*Cited by:* `config/FlywayConfig.java`, `resources/application.yml`, `resources/application-local.yml`,
+`resources/application-test.yml`, `resources/application-prod.yml`, `docker-compose.yml`,
+`config/FlywayConfigTest.java`, `config/FlywayConfigCoverageTest.java`,
+`config/ConfigurationProfileBaselineTest.java`, `config/ApplicationProfileStartupTest.java`,
+`config/ProductionMigrationSourceGuardTest.java`, `config/SeedMigrationIT.java`,
+`config/ProductionSeedRejectionCallbackIT.java`, `support/AbstractPostgresIT.java`.
+
+*Embodied in:* `config/FlywayConfig.java`, `resources/application.yml`,
+`resources/application-prod.yml`, `resources/application-local.yml`, `resources/application-test.yml`.
+
+---
+
+### DL-335 — The migration record names the versions THIS start-up applied, and nothing about the version in force, because the callback's own context cannot tell it *(narrows the contract of DL-311)*
+
+**What was claimed and what is delivered.** The after-migrate record was documented as reporting "which
+version the schema reached". It does not, and cannot, report that. It observes each individual migration
+as the tool applies it, so it knows exactly the set of versions **this invocation** applied and the
+highest among them. Against an already-current database that set is empty, and the record then names no
+version at all — which read against the documented promise looked like a gap in the record rather than
+what it is, an accurate statement that this start-up applied nothing.
+
+**Why the stronger contract is not implementable here, stated rather than asserted.** The callback is
+handed a Flyway `Context`, which exposes the configuration and a JDBC `Connection` and no
+migration-information service. Reporting the version in force would therefore mean issuing a query
+against the schema history table from inside the callback — naming, in application code, the very table
+this class deliberately does not name, and reading it at a moment the migration has just written to it.
+That is a materially larger mechanism than the record it would improve, and it would put a second reader
+of the history table in the start-up path beside the tool that owns it.
+
+**The contract as delivered.** Two statements, both of which the mechanism can keep:
+
+- For each migration applied by this invocation, the version and description, in apply order.
+- On completion, the count applied and the **highest version this invocation applied**, or — when the
+  count is zero — an explicit line saying that this start-up applied no migration, so it names no
+  version, and that the schema history table is the authority for the version in force.
+
+The nothing-applied line is the whole of the change in behaviour: it previously left a reader to infer
+why no version appeared, and it now says why, and says where the answer actually lives.
+
+**What this does not weaken.** `DL-311`'s reason for the record existing is untouched: a deployment needs
+a durable, greppable statement of what a start-up did to the schema, at a log level an operator reads,
+without attaching to the database. Everything the record was relied on for — evidence that a migration
+ran, which scripts it applied, and in what order — is delivered. Only the claim that it names the version
+in force is withdrawn.
+
+*Cited by:* `config/MigrationVersionRecordCallback.java`,
+`config/MigrationVersionRecordCallbackTest.java`.
+
+*Embodied in:* `config/MigrationVersionRecordCallback.java`.
+
+---
+
+### DL-336 — The production data source location is held to `sslmode=verify-full`, because the driver's own default is a silent plaintext downgrade
+
+**What was wrong, and it was wrong by omission rather than by choice.** `application-prod.yml` required
+`CARDDEMO_DB_URL` to be declared, resolved and non-blank, and required nothing about it beyond that. The
+PostgreSQL JDBC driver **defaults `sslmode` to `prefer`**. So the shape a deployment writes by default —
+`jdbc:postgresql://host:5432/carddemo`, with no transport parameter at all — asks for encryption and
+*falls back to an unencrypted session without reporting that it did*. Nothing in a log, a health probe or a
+metric distinguishes the two outcomes. This module's own test suite made the point sharply: its example of
+an acceptable production location was `jdbc:postgresql://named/db`, a URL with no transport rule, so the
+suite's model of a good value was a downgradeable one and no assertion could have noticed.
+
+**What crosses that connection.** Every credential the deployment presents, every account balance and card
+number it reads, and both sealed regulated identifier columns — whose envelopes are opened by the running
+process, so on the wire beside them is a session that holds the means to read them. `prefer` and `require`
+additionally validate **no certificate at all**, so a party in the network path can present its own,
+terminate the session, and be believed.
+
+**Decision.** `ProductionConfigurationValidator.validateDatabaseTransport` refuses the production start-up
+unless the location satisfies six rules, and it runs in the same `BeanFactoryPostProcessor` as the checks
+beside it — before the pool is built, before a migration opens a connection, before the server reads a key
+store.
+
+| # | Rule | The failure it refuses |
+| :- | :--- | :--------------------- |
+| 1 | sub-protocol is `jdbc:postgresql:` | rules 2-6 are that driver's; it is also the only rule that refuses an embedded database outright |
+| 2 | `sslmode` present **and** exactly `verify-full` | absence *is* `prefer`, so an omitted parameter is a silent downgrade; every named alternative drops a guarantee |
+| 3 | no non-validating `sslfactory` | it replaces the trust decision with acceptance, leaving rule 2 stated and unenforced |
+| 4 | no `//user:pass@` userinfo and no `user` or `password` parameter | a credential in the one value that appears in configuration dumps and process listings, and it overrides the two settings guarded beside it |
+| 5 | the URL names a host | a production data source that is inferred from a driver default |
+| 6 | the host is not loopback | the database is not in this process, so loopback means the variable was never set |
+
+**Why each weaker mode is named individually rather than refused as a class.** The five the driver accepts
+are not a spectrum, and a deployer needs to know which guarantee their value gave up: `disable` forbids
+encryption outright; `allow` uses plaintext unless the server refuses, so the transport is chosen by
+whatever answers on the port; `prefer` downgrades silently; `require` encrypts but validates no certificate;
+`verify-ca` validates the chain but not the host name, so a certificate issued by the same authority for
+any other host is accepted. Only `verify-full` keeps encryption, chain validation and host-name validation
+together. A value the driver does not recognise is still refused, with its own wording, so the refusal
+arrives before a connection rather than after.
+
+**Three deliberate limits, recorded so they are not read as oversights.**
+
+- **A trust-anchor file is not required.** `sslrootcert` would be one more obligation with no added
+  guarantee: `verify-full` already refuses to connect when no anchor validates the server, so an
+  unresolvable anchor fails loudly at the first connection rather than degrading. Enforcing the mode is
+  the check; where the anchor lives is platform configuration this module has no authority over.
+- **Client-certificate authentication is not required.** It would be stronger, and asserting it would put
+  key material into this module's configuration surface. The same boundary `DL-311` draws for the trace
+  collector is drawn here, and for the same reason.
+- **A parameter the driver reads case-insensitively is matched case-insensitively, and a repeated
+  parameter is judged on its LAST value.** Both mirror the driver. A check stricter than the driver would
+  refuse a correct deployment; a check looser than it would be defeated by `sslMode=prefer` or by
+  appending a weaker mode after a stronger one, and both are asserted.
+
+**The refusal never repeats the configured value.** An embedded credential is one of the faults it reports,
+so echoing the location would write that credential into the start-up log the refusal is read from. The
+message names the property, the rule and the required form, and nothing else — the same rule `DL-041`
+states for the ceiling refusal.
+
+**One count corrected alongside it.** The required-settings list carries **fourteen** entries and its
+prose said thirteen, and four further documents repeated the wrong figure while the two with a derived
+assertion stayed right. The figure is no longer transcribed anywhere it can drift:
+`DocumentedSourceCountsTest` now derives both the required count and the defaulted count from the profile
+document and holds the module manual, the onboarding guide, the architecture page, the Compose file and the
+local overlay to the derived values. The defaulted count was wrong by the same mechanism — five stated
+against six actual, the trusted-proxy list being the unnamed one — and is derived too.
+
+*Cited by:* `config/ProductionConfigurationValidator.java`, `resources/application-prod.yml`,
+`config/ProductionConfigurationValidatorTest.java`, `docs/architecture.md`.
+
+*Embodied in:* `config/ProductionConfigurationValidator.java`, `resources/application-prod.yml`.
+
+---
+
+### DL-337 — The launch pool is sized core-equals-maximum, the worker runs inside the caller's observation, and stopping is a bounded managed drain with terminal cleanup
+
+Three defects in one class, recorded together because they share a cause: the asynchronous launch introduced by `DL-217` was reasoned about as *"the job no longer runs on the caller's thread"* and not as *"the job now runs on a pool, in a different context, with its own lifecycle"*. Each of the three is what that second sentence would have caught.
+
+**One — a core size of zero made a bounded pool a serial one.** The executor was built as
+`ThreadPoolExecutor(0, 9, 60s, ArrayBlockingQueue(9))`, with the intent recorded in the comment beside it:
+hold no thread when idle, grow to nine when busy. `ThreadPoolExecutor.execute` does not work that way. It
+creates a worker only while the live worker count is below the **core** size; at or above core it
+**queues**; and it grows towards the maximum only when the queue **refuses** a task. With core zero and a
+nine-slot queue, the first launch created one worker and the next eight were queued behind it — so nine
+jobs that share no data, no table and no output ran one after another, and the `activeLaunches` figure this
+class logs read one throughout. The whole point of a pool sized to the launchable inventory was capacity
+the guard permits, and none of it was reachable.
+
+Core is now `MAX_CONCURRENT_LAUNCHES` as well. `allowCoreThreadTimeOut(true)` is retained and is what
+keeps that free: the timeout applies to core workers too, so an idle instance still holds no thread and a
+burst does not park nine for the life of the process — the original intent, now actually expressed. The
+bounded queue stays and becomes a genuine backstop: under this sizing it is reached only when all nine
+workers are busy, which the one-active-execution-per-job reservation makes unreachable.
+
+*Measured rather than argued.* `twoLaunchesOfDifferentJobsRunConcurrently` and
+`theWholeInventoryCanBeInFlightAtOnce` require two and then all nine executions to be inside
+`Job.execute` at the same moment. Both were run against the previous topology and both fail there. The
+blocked jobs hold their worker for three times the assertion window on purpose: with the hold equal to the
+window, a serial pool would sometimes let the second job start just inside it and the test would pass
+against the very topology it exists to refuse.
+
+**Two — the asynchronous handoff severed the trace.** An observation is thread-bound, so handing the
+execution to a plain executor left the job observing with nothing current: its spans formed a **detached
+root**, a trace of their own with no edge back to the request that launched it. An operator holding the
+trace of a launch could not follow it into the work the launch caused, which is the one question a launch
+trace exists to answer. `util/ObservationPropagation` existed for exactly this — written for the completion
+notifier and the readiness probes by `DL-305` — and was not wired in here.
+
+The submitting observation is now captured **on the caller's thread** at dispatch and reopened around the
+work on the worker, so the execution is a child of the launch. The pool is untouched: a
+context-propagating executor would have altered the queue, ceiling and rejection semantics above as a side
+effect of fixing tracing, which is the wrong trade — the same reasoning `DL-305` records for the other two
+call sites. `ObservationRegistry` is injected rather than resolved statically, so a context with tracing
+off supplies the no-op registry and the class behaves as before with nothing to carry.
+
+*One incidental correction, and it is the more instructive half.* The new assertion initially passed
+against an unwired coordinator. A registry built by `ObservationRegistry.create()` with **no handler**
+answers every `start` with the shared no-op observation, so *"the worker sees the same observation as the
+caller"* holds whether anything was propagated or not — two references to one singleton. An
+accept-everything handler is now registered in both this test and `ObservationPropagationTest`, whose nine
+registries had the same latent vacuity, and the parent edge is asserted directly through
+`Observation.getContext().getParentObservation()` rather than by identity alone.
+
+**Three — stopping neither drained nor cleaned up.** `close()` called `shutdown()` and returned. Two
+consequences. It ran as the inferred **destroy** method, which is after the lifecycle phase and therefore
+alongside the destruction of the collaborators a tidy stop needs. And it waited for nothing and cleaned up
+nothing: whatever sat in the queue when the process stopped kept a metadata row recorded as *started* that
+nothing would ever advance — so the status surface would report it running for ever, and the per-job guard
+would refuse **every future launch of that job** because it would read that row as an active execution.
+
+Stopping is now `SmartLifecycle`, at phase `Integer.MAX_VALUE - 4096`. That figure is derived from
+measurement, not chosen: reading the delivered Spring Boot 3.5.16 classes, graceful request shutdown is at
+`Integer.MAX_VALUE - 1024` and the servlet container stop at `Integer.MAX_VALUE - 2048`, and stopping runs
+in **descending** phase order — so a lower phase drains *after* the server has stopped accepting the
+requests that launch anything. Draining above either would leave a window in which a request could reserve
+and dispatch into a pool that had just been shut down, and its reservation would then be failed for a
+capacity reason it did not have. Singleton destruction happens later still, so the job repository is
+available throughout.
+
+The drain has three bounded steps: stop accepting; wait up to thirty seconds for dispatched executions to
+finish; and if that window expires, stop forcibly — which discards what is queued and interrupts what is
+running — then wait a five-second grace and report what is still alive. The discarded tasks are the ones
+that definitively never ran, so each is marked `FAILED` with its own authored exit description. That is the
+**terminal cleanup**, and it is why the submitted object is a `ReservedLaunch` record carrying its
+reservation rather than a lambda: the pool hands back the tasks it discarded, and a lambda hands back
+nothing identifiable.
+
+Three deliberate details. The shutdown description is **distinct** from the dispatch-refusal one, because
+"the workers were saturated" and "the application was stopping" have different remedies and the repository
+is the only record an operator has to tell them apart. What was *interrupted* rather than discarded is left
+to the framework's own failure recording, which owns those rows and is writing to them concurrently — this
+class reports what is still running rather than racing it. And `close()` delegates to the same drain, so a
+container that destroys without stopping, and a caller that closes twice, behave identically; the drain is
+idempotent on an `accepting` flag rather than on the pool's internal state, so a second call cannot
+re-fail reservations already accounted for.
+
+**What deliberately did not change.** The reservation itself: the transaction-scoped advisory lock, the
+one-active-execution-per-job guard, the server-minted run identifier, the single retry on a transient store
+conflict, and the closed refusal vocabulary the caller receives. The workers are still not daemon threads.
+The bound is still derived from the launchable inventory rather than tuned. `start()` on the lifecycle
+refuses a restart rather than silently ignoring it, because a stopped pool cannot take work and pretending
+otherwise would let a caller believe a launch would be accepted.
+
+*Cited by:* `batch/BatchLaunchCoordinator.java`, `batch/BatchLaunchCoordinatorTest.java`,
+`batch/BatchLaunchCoordinatorIT.java`, `util/ObservationPropagationTest.java`.
+
+*Embodied in:* `batch/BatchLaunchCoordinator.java`.
+
+---
+
+### DL-338 — The batch identity tag is `batchJob`, not `job`, because `job` is the label the collector stamps on every series itself
+
+**The collision, and why it is silent.** Prometheus adds a `job` label to every series it collects, carrying
+the `job_name` of the scrape configuration that collected it — `carddemo-app` for this module's own target.
+Five application sites declared their batch dimension under that same name. Two labels of one name cannot
+coexist, and with the default `honor_labels: false` posture the collector does not reject the conflict: it
+**renames the exposed one** to `exported_job` and keeps its own. Every dashboard query grouping `by (job)`
+therefore collapsed every batch job of this module onto the single scrape target, and every legend reading
+`{{job}}` printed `carddemo-app` against each series. Nothing errors, nothing empties, and the panels keep
+rendering — a per-job panel simply charts one line, correctly labelled with the wrong thing.
+
+**Where it was.** `config/BatchConfig` (terminal-verdict counter and the job observation),
+`api/BatchJobController` (launch and status request timers), `service/JobCompletionNotificationService`
+(completion-publication observation), `batch/BackupTransactionJobConfig` and `batch/PostTransactionJobConfig`
+(step timers) — and, on the consuming side, panels 40, 41 and 42 of
+`config/grafana/dashboards/carddemo-overview.json`, in five groupings and five legends.
+
+**Decision.** The application dimension is `batchJob` at all five declaration sites, and the dashboard's
+groupings and legends read it. **The `{job="$job"}` series selector is deliberately unchanged** and is
+correct: it scopes a panel to this stack's own scrape target, which is exactly what the scrape label is for,
+and `config/prometheus/prometheus.yml` already records why the panels filter on it rather than on the
+`application` common tag. Only the aggregation and the legend moved.
+
+**Why `batchJob` and not the `batch_job` the finding suggested.** Spelled in the camel case this module
+already uses for every multi-word tag key — `jobExecutionId`, `eventType` — and `TAG_JOB_EXECUTION_ID` is
+declared on the *same* observation as this key. An underscore spelling beside it would put two naming
+conventions on one meter. Both spellings are equally non-reserved, so the choice is a consistency one and is
+recorded here rather than left as an unexplained departure from the suggestion. Prometheus label names admit
+camel case unchanged, so the exposition and the PromQL read `batchJob` literally.
+
+**Collector-level coverage, which is what makes this stay fixed.** Four assertions in
+`GrafanaDashboardMetricsContractTest`, each run against the old spelling first and each failing there:
+
+- a sweep of every `.java` file under `src/main/java` for a tag key written as a literal in any of the six
+  forms this module writes them, reporting file and line for any that declares the reserved name — this is
+  the one that covers the three sites whose constant is `private`;
+- the two publicly readable constants are asserted to be the application label, and the camel-case sibling
+  beside one of them is asserted too, so the spelling rationale is checked and not merely written down;
+- a real `PrometheusMeterRegistry` is populated through the production constant and **scraped**, and every
+  `carddemo_` line is required to carry `batchJob="` and forbidden to carry a `job="` label — read out of
+  the exporter rather than asserted about it;
+- every dashboard grouping and legend over a `carddemo_` series is checked, with the grouping compared as a
+  **whole label** rather than as a substring. That detail is load-bearing: the framework's own sanitized
+  labels `spring_batch_job_name` and `spring_batch_job_status` contain the reserved name and are legitimate
+  groupings, and a substring test reported both — the first version of this assertion did exactly that.
+
+**What deliberately did not change.** The scrape configuration, including `job_name: carddemo-app` and the
+absence of `honor_labels`. The `application` common tag, which identifies the service rather than the scrape
+and is not interchangeable with either. Every meter and observation name. And the `status`/`publication`
+grouping of the terminal-verdict panel, which never named the reserved label.
+
+*Cited by:* `config/BatchConfig.java`, `api/BatchJobController.java`,
+`service/JobCompletionNotificationService.java`, `batch/BackupTransactionJobConfig.java`,
+`batch/PostTransactionJobConfig.java`, `config/grafana/dashboards/carddemo-overview.json`,
+`config/GrafanaDashboardMetricsContractTest.java`.
+
+*Embodied in:* `config/BatchConfig.java`, `api/BatchJobController.java`,
+`service/JobCompletionNotificationService.java`, `batch/BackupTransactionJobConfig.java`,
+`batch/PostTransactionJobConfig.java`, `config/grafana/dashboards/carddemo-overview.json`.
+
+---
+
+### DL-339 — The completion-notification dependency has two stages: provisioning and ownership are mandatory at start-up, delivery of a notice is best effort afterwards
+
+**The delivered behaviour was right and the description of it was not.** Five artefacts described the
+notification channel as "optional", and one of them was a class whose sibling *refuses to let a production
+instance start* without the topic. Read as one claim the two are a contradiction, and a reviewer was right
+to record it. Read as two stages they are both true, and the stages are what a reader needs — so the word
+"optional" is withdrawn in favour of naming which stage is meant.
+
+**Stage one — provisioning and ownership are MANDATORY, and settled before anything can publish.**
+`config/AwsResourceTrustVerifier.verifyNotificationTopic` runs from `afterPropertiesSet`, so it precedes
+every bean that could publish. It resolves the configured topic by **listing** rather than by the
+convenient idempotent create call — which would create the very topic whose absence the check exists to
+report — then requires the resolved locator to be owned by the account `CARDDEMO_AWS_ACCOUNT_ID` declares,
+and requires the topic itself to answer an attribute read so that its existence rests on the topic and not
+on the listing alone. Any of the three failing aborts the start-up. In the local validation stack the same
+requirement is the emulator's health check, which does not report healthy until the bucket, the queue
+**and the topic** all exist, with the application container gated on that health rather than on the
+emulator merely having started. There is consequently no supported deployment in which this channel's
+destination is absent, or belongs to another account.
+
+**Stage two — DELIVERY of an individual notice is best effort, and nothing downstream waits on it.** A
+notification that is dropped, shed, refused or times out leaves the job's status and exit code exactly as
+the framework recorded them; it is counted on `carddemo.job.completion.shed` with a reason, per `DL-306`,
+so a channel permitted to lose messages cannot lose them unaccountably; and the `awsSns` health
+contributor is published but deliberately **outside** the readiness group, because the topic carries a
+notice that a batch job has *already* finished — so its absence loses a notice and prevents no work.
+`DL-155` established the readiness separation and originally put all three AWS resources in the group; the
+topic's removal from it was made later without an entry of its own, and this entry is where it is recorded.
+An earlier revision did place it in the required group, which took a whole instance out of service for a
+lost notice, and the contrast that settles the question is the job-submission queue, which stays in the
+group: a report request that cannot reach the queue never runs its job.
+
+**Why the two are not in tension.** Stage one asks whether the destination this deployment reaches is the
+one it was configured for and owns. Stage two asks whether one notice arrives. A best-effort *delivery* to
+a destination the deployment owns is a different claim from an optional *destination*, and only the first
+was ever true of this module.
+
+**What changed, and it is prose only.** No behaviour, no health group, no verifier and no meter was
+altered. `service/JobCompletionNotificationService`'s "the dependency is optional on every surface"
+section is replaced by the two stages; `config/AwsResourceHealthConfig` now states, at the contributor
+whose exclusion it explains, that the exclusion is a runtime judgement and not a statement that the topic
+is dispensable; `config/AwsResourceTrustVerifier` now states at the check itself that it is the mandatory
+stage and why it does not contradict the exclusion; `application.yml`'s health-group block, which asserted
+that "a dependency cannot be optional in one file and required in another" and concluded "it is optional,
+and it is optional here too", now names the stage its own exclusion belongs to; `docker-compose.yml`
+explains why the topic is in the emulator's health check and why the application's dependency edge makes
+its presence a local start-up precondition; and the module manual carries the two stages as a paragraph of
+its own.
+
+**One internal contradiction corrected while doing it.** The manual said in one place that "the readiness
+health group checks the bucket, queue and topic … and becomes `DOWN` while any is absent" and in another
+that the topic is deliberately not in the readiness group. The first was wrong: readiness covers the data
+source, the bucket and the queue, and the topic is published as its own component outside the group.
+
+*Cited by:* `service/JobCompletionNotificationService.java`, `config/AwsResourceHealthConfig.java`,
+`config/AwsResourceTrustVerifier.java`, `resources/application.yml`, `docker-compose.yml`, `README.md`.
+
+*Embodied in:* documentation only; no behaviour changed.
+
+---
+
+### DL-340 - Gate evidence is held to the artefact that decides it: a provisional sign-off is reconciled after verify, and every published inventory figure is derived rather than transcribed
+
+*Context.* A review found seven separate defects in the gate-evidence chain, and they turned out to be
+three shapes of one problem rather than seven problems. **A figure was transcribed from an artefact that
+kept changing** - the published coverage table was out by three lines, two hundred instructions and two
+methods; the dashboard was described as carrying 33 panels while it carried 46; the module manual published
+fifteen measured Gate 3 rows against a table of eighteen; two published cast sites named line numbers their
+casts had moved off. **A conclusion was published before its evidence existed** - the Gate 8 checklist is
+emitted at `integration-test`, the vulnerability report at `verify` and the merged coverage report at
+`post-integration-test`, so rows depending on either are necessarily outstanding when the checklist is
+written, and the workflow uploaded that checklist as the run's sign-off with nothing rejecting a PENDING
+row. **A published command did not produce its published result** - the Gate 6 audit told a reader to
+expect no output from two commands that return one line and twelve. A fourth, smaller shape sat beside
+them: the whitespace gate read three directories and could not reach the two files this migration authors
+at the repository root.
+
+*Decision.* Each shape is closed by the mechanism that its own failure mode requires, and the choice of
+mechanism is the whole of this entry.
+
+**Where the artefact and the figure can both be read by a test, the figure is derived.** The dashboard panel
+count, the measured-row count, the five cast sites and the two Gate 6 command populations are all measured
+from the tree by `config/DocumentedSourceCountsTest`, which is where DL-316 already put this class of check.
+A count that a test derives cannot go stale silently: the next panel, the next measured run and the next
+edit above a cast either update the prose or break the build.
+
+**Where the artefact does not exist until after every test has run, the check is a workflow step.** The
+merged JaCoCo report is written at `post-integration-test`; every test in this module runs at `test` or
+`integration-test`. So no test can read the report of its own build, and a test reading a previous build's
+report would pass or fail on a stale file - which is worse than not checking. *Reconcile the published
+coverage counters with the merged report* therefore runs after `verify`, compares all four published pairs
+with the report's own bundle counters, and fails with both figures named. This is the same reasoning, and
+the same placement, as the pre-existing step that reconciles the published test totals.
+
+**Where a conclusion is structurally premature, it states its own standing and a later step discharges it.**
+The emitted checklist now carries a `Sign-off status:` line: `PROVISIONAL` naming each outstanding row and
+the artefact that settles it, or `FINAL` when none is outstanding. *Reconcile the provisional sign-off into
+a final one*, placed between the bundle verification and the upload, reads each outstanding row's artefact
+now that it exists - no unsuppressed finding at or above CVSS 7.0 in the scan's own JSON, at least one
+run-scoped baseline carrying measured rows, the merged report's line counter at or above the floor - and only
+then writes `final-sign-off.md` reading `Sign-off status: FINAL`. An undischargeable row fails the step and
+no final sign-off is written, so a FINAL table in a bundle was always earned. The interim table is published
+beside it rather than replaced, so a reader sees what the build knew then and what it knows now.
+
+*Why the final artefact is not named `gate8-final-sign-off.md`.* The `gate<n>-` prefix denotes a file the
+**test suite** writes during the build, and `config/BuildAndCiContractTest` reads those names out of the
+suite's own sources and requires the bundle-verification step to name each one. That step runs before the
+reconciliation step, so a file the reconciliation writes would be required to exist before it is created.
+`final-sign-off.md` sits outside the namespace deliberately.
+
+*What the Gate 3 reconciliation can and cannot compare, since the gap looks like an omission.* A baseline row
+is five figures. The job name and the record count are properties of the code and the fixture and are
+compared exactly. The elapsed time, the peak heap and their quotient are properties of one run on one host,
+and requiring a generated row's three to appear verbatim on the page produces a build that can never be
+green: a clean build deletes the generated files, the tiers write new ones with new timings, those timings are
+by construction absent from a committed page, a person transcribes them, and the next run generates different
+ones. The regress is not an implementation difficulty - it is what "measurements, not thresholds" means taken
+seriously. What is gated instead is everything that can be: every measured run is published; **every
+published row a measurement reconciles against is a complete tuple** - five figures present, the quotient
+following from its own two, and the date and machine the generated file cannot supply - rather than a pair
+with filler beside it, which is what the previous reconciliation on job-and-volume alone accepted; no two
+published rows are one measurement written twice; and **every corroborating generated file names the revision
+this build is building**, because a build directory is not guaranteed clean and a leftover baseline
+reconciles with the page exactly as a fresh one does while corroborating nothing about the tree now.
+
+*Why the whitespace pathspec names two files beside its three directories.* `mkdocs.yml`, whose explicit
+`nav` list is what publishes this migration's documentation, and `catalog-info.yaml`, whose type and tags
+this migration updates, both sit at the repository root, and a pathspec of directories cannot reach a
+root-level file. Both were authored here and read by no whitespace gate. They are named individually rather
+than by widening the pathspec to `.`, which would pull in the read-only estate. The estate `README.md`
+remains excluded on a measured rather than a stylistic ground: it is upstream CRLF text carrying 59
+trailing-space lines, and `.gitattributes` exempts its carriage return rather than those spaces, so naming it
+would report 59 lines this migration did not write. `config/BuildAndCiContractTest` discovers the root
+descriptors by walking the root, so a third one enters the contract whether or not anyone widens the
+pathspec by hand.
+
+*Why the Gate 6 commands are five rather than four.* Command 3 asks its question with a statement verb
+alone, and one production literal answers it: `service/MenuService`'s 3270 screen prompt `"SELECT OPTION "`
+joined to the option the user typed, which reaches no database. It is published rather than filtered out,
+because a command whose output is edited to agree with a claim is no longer evidence for the claim. Command
+3b asks the same question the way the gated census asks it - a statement verb **and** a clause keyword in one
+literal - and that is the command whose expectation is genuinely no output. Command 4's raw population is
+twelve lines over both trees and none over the production tree, every one a mention of the annotation rather
+than a use of it; the gated zero is measured over source with comments and literals blanked, because a grep
+cannot tell a mention from a use. Both figures are published, because publishing only the population reads
+as twelve suppressions and publishing only the zero leaves a reader who runs the command unable to reconcile
+it. One consequence is worth recording: the test that counts that population assembles the annotation name
+from two halves rather than writing it whole, because a whole literal there would be a thirteenth mention and
+the assertion would perturb what it measures.
+
+*Alternative rejected: correct the figures and move on.* Every one of these figures was correct when it was
+written. Correcting them without a mechanism produces a page that is right at this revision and wrong at the
+next, which is the state this entry found and is the argument DL-316 already made for deriving rather than
+transcribing. The mechanism is the decision; the corrections are a consequence of it.
+
+*Cited by:* `.github/workflows/carddemo-java-ci.yml`, `pom.xml`,
+`src/test/java/com/carddemo/e2e/GateVerificationTest.java`,
+`src/test/java/com/carddemo/config/BuildAndCiContractTest.java`,
+`src/test/java/com/carddemo/config/DocumentedSourceCountsTest.java`, `docs/gate-evidence.md`,
+`docs/onboarding-guide.md`, `README.md`.
+
+*Embodied in:* two new workflow steps, a `Sign-off status:` line and a discharge block in the emitted
+checklist, a complete-tuple and build-provenance reconciliation for Gate 3, three new derived-count nests,
+and the corrected figures and commands in the published pages.
 
 ---
 

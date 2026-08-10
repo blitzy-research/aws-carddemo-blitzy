@@ -940,7 +940,7 @@ class BatchJobControllerTest {
             controller.launchJob(jobName, Map.of());
 
             final Timer timer = meterRegistry.find("carddemo.batch.joblaunch.request")
-                    .tag("job", jobName).tag("outcome", "launched").timer();
+                    .tag("batchJob", jobName).tag("outcome", "launched").timer();
             assertThat(timer).isNotNull();
             assertThat(timer.count()).isEqualTo(1L);
         }
@@ -953,11 +953,11 @@ class BatchJobControllerTest {
                     .isThrownBy(() -> controller.launchJob("caller-chosen-value", Map.of()));
 
             assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
-                    .tag("job", "caller-chosen-value").timer())
+                    .tag("batchJob", "caller-chosen-value").timer())
                     .as("no tag value may come from a caller")
                     .isNull();
             assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
-                    .tag("job", "unrecognised").tag("outcome", "absent").timer())
+                    .tag("batchJob", "unrecognised").tag("outcome", "absent").timer())
                     .isNotNull();
         }
 
@@ -972,7 +972,7 @@ class BatchJobControllerTest {
             controller.readJobExecution(EXECUTION_ID);
 
             assertThat(meterRegistry.find("carddemo.batch.jobstatus.request")
-                    .tag("job", jobName).tag("outcome", "reported").timer())
+                    .tag("batchJob", jobName).tag("outcome", "reported").timer())
                     .isNotNull();
         }
 
@@ -985,7 +985,7 @@ class BatchJobControllerTest {
                     .isThrownBy(() -> controller.readJobExecution(EXECUTION_ID));
 
             assertThat(meterRegistry.find("carddemo.batch.jobstatus.request")
-                    .tag("job", "unrecognised").tag("outcome", "absent").timer())
+                    .tag("batchJob", "unrecognised").tag("outcome", "absent").timer())
                     .isNotNull();
         }
 
@@ -1025,10 +1025,10 @@ class BatchJobControllerTest {
                     .isThrownBy(() -> controller.launchJob(jobName, Map.of("probeName", "probeValue")));
 
             assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
-                    .tag("job", jobName).tag("outcome", "refused").timer())
+                    .tag("batchJob", jobName).tag("outcome", "refused").timer())
                     .isNotNull();
             assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
-                    .tag("job", "probeName").timer())
+                    .tag("batchJob", "probeName").timer())
                     .as("no tag value may come from a caller")
                     .isNull();
         }
@@ -1046,7 +1046,7 @@ class BatchJobControllerTest {
                     .isThrownBy(() -> controller.launchJob(jobName, Map.of()));
 
             assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
-                    .tag("job", jobName).tag("outcome", "refused").timer())
+                    .tag("batchJob", jobName).tag("outcome", "refused").timer())
                     .isNotNull();
         }
     }

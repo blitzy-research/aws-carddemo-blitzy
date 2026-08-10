@@ -110,38 +110,43 @@ spring:
   # -----------------------------------------------------------------------------------------------
   # Schema evolution: versioned, forward-only, and the only path by which an application table or a
   # seeded row is created. There is no framework-managed initialisation script for the application
-  # tables, so the migrations on the one location below are the whole story for them.
+  # tables, so the migrations on the locations below are the whole story for them.
   #
-  #   classpath:db/migration                                                 EVERY profile
+  #   classpath:db/migration/schema                        THIS BASELINE, and the production posture
   #     V1__create_schema.sql        the eleven application tables
   #     V2__create_indexes.sql       keys and alternate-index equivalents
-  #     V3__seed_reference_data.sql  the sample reference rows       - above the production ceiling
-  #     V4__seed_user_security.sql   the ten seeded sign-on identities - above the production ceiling
+  #   ------------------------------------------------------------ ceiling: target 2
+  #   classpath:db/migration/seed                          THE local AND test OVERLAYS ONLY
+  #     V3__seed_reference_data.sql  the sample reference rows
+  #     V4__seed_user_security.sql   the ten seeded sign-on identities
   #
-  # ONE FLAT LOCATION, AND THE SEEDS ARE HELD BACK BY THE VERSION CEILING. All four delivered scripts
-  # sit directly in classpath:db/migration; there is no schema/, no seed/, no local/, no test/ and no
-  # prod/ child directory, and none may be created. A directory-scoped location list therefore cannot
-  # separate V3 and V4 from V1 and V2, which is why the separation is expressed as a ceiling on the
-  # migration VERSION instead. See docs/decision-log.md DL-127, which supersedes DL-102 and DL-119.
-  # The delivered inventory is exactly V1, V2, V3, V4 - there is no V1.1, because the batch metadata
-  # tables are owned by Spring Batch.
+  # TWO SIBLING LOCATIONS WHOSE SHARED PARENT HOLDS NO SCRIPT, AND A VERSION CEILING OVER THE TOP.
+  # The two controls are independent and neither substitutes for the other. The LOCATION LIST decides
+  # which scripts are resolved at all: this baseline and the production overlay name the schema
+  # location alone, so the seeds appear in no state whatsoever under that posture - not applied, not
+  # pending, not resolved. The CEILING decides how far a resolved list may be applied: target "2"
+  # applies 1 and 2 and declines everything above, so a seed-numbered script would be declined even if
+  # some other location ever presented one. See docs/decision-log.md DL-298 for the location split and
+  # DL-334 for why the ceiling is held alongside it.
   #
-  # THE CEILING IS THE CONTROL, NOT A BACKSTOP. target "2" applies 1 and 2 and declines 3 and 4. This
-  # shared baseline carries "2" rather than the convenience value, so a profile silent about migrations
-  # inherits the PRODUCTION posture; only the local and test overlays lift it, and each lifts it
-  # explicitly for itself.
+  # NEVER DECLARE THE PARENT classpath:db/migration. A Flyway location is scanned RECURSIVELY, so the
+  # parent reaches both children; it is also the reason both directories exist as siblings rather than
+  # the seeds alone being moved down. The delivered inventory is exactly V1, V2, V3, V4 - there is no
+  # V1.1, because the batch metadata tables are owned by Spring Batch.
   #
   # THE CONSEQUENCE FOR A NEW SCRIPT, stated once here and repeated at each profile: a script that
-  # production MUST run is numbered at or below 2; a script production must NEVER run is numbered above
-  # 2. The number is the whole of the decision, and it is the half that production cannot be talked out
-  # of, because FlywayConfig re-applies the ceiling after binding.
+  # production MUST run belongs in db/migration/schema and is numbered at or below the ceiling; a
+  # script production must NEVER run belongs in db/migration/seed and is numbered above it. Raising the
+  # ceiling is one commit with the script that needs it, and it is enforced rather than remembered:
+  # FlywayConfigTest asserts the pinned version against the versions the schema location actually
+  # delivers, so a V5 schema script added without raising the pin fails the build instead of being
+  # silently skipped at run time.
   #
-  # THE CEILING IS ENFORCED A SECOND TIME IN CODE, AND PRODUCTION ADDS A HISTORY-AND-DATA CHECK.
-  # com.carddemo.config.FlywayConfig refuses to start a production profile whose resolved ceiling
-  # reaches version 3 or beyond, re-applying the pin AFTER the configuration has been bound so an
-  # inherited value, an operator override or a merged property source cannot lift it in silence; it also
-  # refuses any resolved location other than the one packaged classpath:db/migration, because another
-  # location could carry scripts the ceiling never measured.
+  # BOTH SETTINGS ARE ENFORCED A SECOND TIME IN CODE, AND PRODUCTION ADDS A HISTORY-AND-DATA CHECK.
+  # com.carddemo.config.FlywayConfig re-applies the ceiling and the location list AFTER the
+  # configuration has been bound, so an inherited value, an operator override or a merged property
+  # source cannot change either in silence: under the production profile it refuses any ceiling but 2
+  # and any resolved location but the one packaged classpath:db/migration/schema, matched by equality.
   # com.carddemo.config.ProductionSeedRejectionCallback refuses a
   # production
   # start-up against a database whose migration history already records a seed version, whose
@@ -178,13 +183,17 @@ spring:
     # would write schema/V1__create_schema.sql into the history where the bring-up check expects
     # V1__create_schema.sql. See docs/decision-log.md DL-298.
     locations: classpath:db/migration/schema
-    # NO VERSION CEILING, AND THAT IS DELIBERATE. This key used to be pinned at "2" as the production
-    # control. It held the seeds out and it also froze the schema: a V5 schema script would never have
-    # been applied and the migration would still have reported success, and FlywayConfig refused every
-    # other value so the pin could not be raised without editing code. The separation is the location
-    # list now, so a number here has no work to do and FlywayConfig REFUSES one under the production
-    # profile rather than leaving it as a trap. See docs/decision-log.md DL-298.
-    target: latest
+    # THE VERSION CEILING, WHICH IS THE SECOND CONTROL AND NOT A BACKSTOP. "2" is the highest version
+    # the schema location delivers, so this applies V1 and V2 and declines everything above them. This
+    # shared baseline carries the restrictive value rather than the convenient one, so a profile silent
+    # about migrations inherits the PRODUCTION posture; only the local and test overlays lift it, and
+    # each lifts it explicitly for itself. FlywayConfig refuses any other value under the production
+    # profile - a higher one applies scripts production was never measured against, a lower one stops
+    # before the indexes and constraints are created and reports success anyway - and it LIFTS an
+    # inherited "2" for a seeding profile, which is what makes pinning the baseline safe.
+    # The number cannot go stale: FlywayConfigTest asserts it against the versions
+    # classpath:db/migration/schema actually delivers. See docs/decision-log.md DL-334.
+    target: "2"
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
@@ -303,8 +312,18 @@ management:
       # finished; its absence loses a notice and prevents no work, so taking the whole instance out of
       # service for it would be the wrong remedy applied to the wrong problem. An earlier revision had it
       # both ways - service/JobCompletionNotificationService documented the channel as best-effort while
-      # this group treated it as required - and a dependency cannot be optional in one file and required
-      # in another. It is optional, and it is optional here too.
+      # this group treated it as required.
+      #
+      # THIS EXCLUSION IS ABOUT DELIVERY, NOT ABOUT THE RESOURCE, and the distinction matters because the
+      # word "optional" on its own would be false here. The contract has TWO STAGES. PROVISIONING AND
+      # OWNERSHIP ARE MANDATORY: a prod start-up is refused outright by
+      # com.carddemo.config.AwsResourceTrustVerifier when the configured topic cannot be resolved from a
+      # listing, is not owned by the account this deployment declares, or does not answer an attribute
+      # read - and the local stack's emulator does not report healthy until the topic exists, with the
+      # application waiting on that health. DELIVERY OF AN INDIVIDUAL NOTICE IS BEST EFFORT afterwards,
+      # and that is the only thing this group's omission is about: a lost notice must not make an instance
+      # unfit. So the destination is never optional; the arrival of one notice is. See
+      # docs/decision-log.md DL-339.
       #
       # THE QUEUE STAYS IN THE GROUP, and the contrast is what settles the topic's case rather than a
       # preference. A report request that cannot reach the queue never runs its job, so an instance that

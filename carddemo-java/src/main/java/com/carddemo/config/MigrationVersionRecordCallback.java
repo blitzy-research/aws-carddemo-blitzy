@@ -27,16 +27,29 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Writes this module's own record of which schema versions a start-up applied and which version it reached.
+ * Writes this module's own record of which schema versions <strong>this invocation</strong> applied, and the
+ * highest version among them.
+ *
+ * <h2>What the record is, stated as narrowly as the mechanism can support</h2>
+ *
+ * <p>The contract is deliberately about the <em>effect of this start-up</em> and not about the state of the
+ * database, and the distinction is not pedantry: on every start-up after the first there is nothing to
+ * apply, so there is no version to name, and an earlier wording that promised "the version it reached"
+ * described something this callback cannot see. A Flyway callback receives a
+ * {@link org.flywaydb.core.api.callback.Context}, which offers the migration currently being applied and
+ * nothing about migrations applied by anyone else; establishing the version an already-current database
+ * stands at means querying the schema-history table, which is the one thing this record is written to
+ * avoid naming. So the promise is narrowed to what the events establish, and the already-current case says
+ * plainly that this invocation applied no version rather than implying a version it did not read.
  *
  * <h2>Why the application has to own this record</h2>
  *
  * <p>Local validation reads the application log to establish two things before anything else about a run is
- * believed: that every delivered migration was applied, and that the schema reached its highest delivered
- * version. Until now both were read out of the migration tool's own log output, which made a third party's
- * message text a load-bearing part of this module's validation - a dependency that a library upgrade can
- * break silently, and that offers no way to distinguish "the tool said nothing" from "the tool was
- * configured not to speak".
+ * believed: that every delivered migration was applied on a first start-up, and that the highest version
+ * applied is the highest one the resolved locations deliver. Until now both were read out of the migration
+ * tool's own log output, which made a third party's message text a load-bearing part of this module's
+ * validation - a dependency that a library upgrade can break silently, and that offers no way to
+ * distinguish "the tool said nothing" from "the tool was configured not to speak".
  *
  * <p>The immediate reason it moved is narrower. The migration tool's executor announces three lines before
  * any migration runs - the JDBC URL with the host, the port and the database name, the driver and its
@@ -49,14 +62,17 @@ import org.slf4j.LoggerFactory;
  * <h2>What it records, and what it deliberately does not</h2>
  *
  * <p>One line per applied migration, naming the version and the description, and one summary line naming
- * how many were applied and the highest version reached. Nothing else: no connection, no URL, no host, no
- * schema-history table name, no statement text and no row content. The version and the description are
- * values this module authored in its own migration filenames, so the record is composed entirely of things
- * this module already ships.
+ * how many this invocation applied and the highest version among them. Nothing else: no connection, no
+ * URL, no host, no schema-history table name, no statement text and no row content. The version and the
+ * description are values this module authored in its own migration filenames, so the record is composed
+ * entirely of things this module already ships.
  *
  * <p>When a start-up applies nothing - the ordinary case for every start-up after the first - it says so
  * once, and says so as information rather than as a warning: an already-current schema is the expected
- * state, and a warning there would train an operator to ignore the category.
+ * state, and a warning there would train an operator to ignore the category. It also says so without
+ * naming a version, because this invocation applied none and the version the database stands at is not a
+ * fact this callback is in a position to read. A reader who needs that figure reads the schema-history
+ * table, which is the authority for it.
  *
  * <h2>Why the count is held rather than read back</h2>
  *
@@ -76,7 +92,8 @@ import org.slf4j.LoggerFactory;
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
  *
- * <p>See {@code docs/decision-log.md} entry DL-311.
+ * <p>See {@code docs/decision-log.md} entries DL-311 and DL-335, the latter recording why the contract is
+ * the effect of one invocation rather than the state of the database.
  *
  * @since 1.0.0
  */
@@ -183,7 +200,8 @@ final class MigrationVersionRecordCallback implements Callback {
         final int count = this.applied.get();
         final MigrationVersion reached = this.highest.get();
         if (count == 0) {
-            LOGGER.info("SCHEMA ALREADY CURRENT - no migration was applied by this start-up");
+            LOGGER.info("SCHEMA ALREADY CURRENT - this start-up applied no migration, so it names no"
+                    + " version; the schema history table is the authority for the version in force");
             return;
         }
         LOGGER.info("SCHEMA MIGRATION COMPLETE - applied={} highestVersionApplied={}",

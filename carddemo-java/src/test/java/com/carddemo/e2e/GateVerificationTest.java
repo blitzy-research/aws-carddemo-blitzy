@@ -426,6 +426,24 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** File the sign-off summary is written to. */
     private static final String SIGN_OFF_FILE = "gate8-sign-off.md";
 
+    /**
+     * The line that says whether the emitted sign-off is the final statement of the build or an interim one.
+     *
+     * <p>The emitted table was previously indistinguishable from a final sign-off, and a workflow step
+     * uploaded it as one. It is written at {@code integration-test}, which is earlier than the phase that
+     * produces the vulnerability report and the merged coverage report, so a table emitted there is
+     * <em>structurally</em> unable to be final whenever a row depends on either. This line states which of
+     * the two it is, in a fixed, greppable form, so a later step can discharge the interim rows against the
+     * evidence that by then exists instead of publishing an interim table as a conclusion. DL-340.
+     */
+    private static final String SIGN_OFF_STATUS_PREFIX = "Sign-off status: ";
+
+    /** The status of a table with no outstanding row: nothing is waiting on a later phase. */
+    private static final String SIGN_OFF_FINAL = "FINAL";
+
+    /** The status of a table with at least one row whose evidence a later phase writes. */
+    private static final String SIGN_OFF_PROVISIONAL = "PROVISIONAL";
+
     /** Column header of the recorded Gate 3 table, which the measured rows are read from. */
     private static final String PERFORMANCE_ROW_HEADER = "| Date | Machine | Run | Records | "
             + "Elapsed (ms) | Peak heap (bytes) | Records/second |";
@@ -4325,7 +4343,56 @@ class GateVerificationTest extends AbstractPostgresIT {
                         .as("%s must state the fixture volumes its figures were measured over; a number "
                                 + "without them is not a baseline", baseline.location())
                         .isTrue();
+                // The stamp is what makes a generated file attributable, and attributability is what makes
+                // it corroboration rather than a file that happens to be in the directory. A build
+                // directory is not guaranteed clean: `verify` without `clean` inherits whatever the last
+                // run left, and an inherited baseline reconciles with the page exactly as a fresh one
+                // does. Asserted here as well as folded into the reconciliation state, so a polluted
+                // directory is reported by the test that reads the files rather than only by the sign-off.
+                assertThat(baseline.namedRevision())
+                        .as("%s must open with the provenance line the recorder stamps, naming the "
+                                + "revision this build is building. A file with no stamp, or one naming "
+                                + "another revision, is a leftover rather than a measurement of this tree",
+                                baseline.location())
+                        .isEqualTo(expectedBuildRevision());
             }
+        }
+
+        /**
+         * No two published rows are the same measurement written twice.
+         *
+         * <p>The page publishes a row count, and a count is only meaningful if each row is a distinct run.
+         * Two rows agreeing on all four of date, machine, job and volume are one measurement recorded
+         * twice - which inflates the published count while adding no evidence, and which no arithmetic
+         * check can see, because a duplicated row is internally consistent by construction. The run label
+         * inside the machine cell is what separates two runs on one host on one day, so a duplicate here
+         * means the label was not written rather than that the run was not distinct.
+         *
+         * @throws IOException if the page cannot be read
+         */
+        @Test
+        @DisplayName("no two published rows share a date, a machine, a job and a volume, because that is "
+                + "one measurement written twice rather than two runs")
+        void noPublishedRowIsTheSameMeasurementTwice() throws IOException {
+            final List<String> identities = new ArrayList<>();
+            final List<String> duplicates = new ArrayList<>();
+            for (final PerformanceRow row : recordedPerformanceRows()) {
+                final String identity =
+                        row.date() + " | " + row.machine() + " | " + row.run() + " | " + row.records();
+                if (identities.contains(identity)) {
+                    duplicates.add(identity);
+                } else {
+                    identities.add(identity);
+                }
+            }
+
+            assertThat(duplicates)
+                    .as("%s publishes a row count, so each row has to be a distinct run. A row agreeing "
+                            + "with another on date, machine, job and volume is the same measurement "
+                            + "twice: separate the runs with a label inside the machine cell, as the "
+                            + "same-day runs already are. Duplicated: %s",
+                            documentationFile(GATE_EVIDENCE), duplicates)
+                    .isEmpty();
         }
 
         /**
@@ -4343,8 +4410,19 @@ class GateVerificationTest extends AbstractPostgresIT {
          * hardware to take the same time, and a gate that fails whenever the hardware differs is not
          * measuring the code.
          *
+         * <p><strong>Why value equality on the machine-scoped three cannot be the gate, stated once so it is
+         * not mistaken for an omission.</strong> Requiring a generated row's elapsed time, peak and quotient
+         * to appear verbatim on the page produces a build that can never be green. A clean build removes the
+         * generated files, the measuring tiers write new ones with new timings, and those timings are by
+         * construction absent from a page committed before the run - so the gate fails, a person transcribes
+         * the rows, and the next run generates different timings that are absent again. The regress is not
+         * an implementation difficulty; it is what "these are measurements, not thresholds" means when it is
+         * taken seriously. What CAN be gated is that every measured run is published, that every published
+         * row is a whole measurement rather than a pair with filler beside it, and that the evidence
+         * corroborating the page belongs to this build. All three are gated below.
+         *
          * <p>So the reproducible pair is compared exactly, and the machine-scoped three are held to the
-         * arithmetic that ties them to each other. Three checks together close what positivity alone left
+         * arithmetic that ties them to each other. Five checks together close what positivity alone left
          * open:
          *
          * <ul>
@@ -4357,6 +4435,17 @@ class GateVerificationTest extends AbstractPostgresIT {
          *       table. This is the direction that catches invention: any record count divided by any
          *       elapsed time is a self-consistent quotient, so arithmetic alone can never distinguish a
          *       transcribed row from a fabricated one - only its attribution can.</li>
+         *   <li><strong>Every reconciling published row is a complete measured tuple, not a pair.</strong>
+         *       A row this build's measurement matches on job and volume must also carry an elapsed time, a
+         *       peak heap, a quotient that follows from its own two figures, and the date and machine the
+         *       generated file cannot supply. Reconciling on the pair alone accepted a page row bearing the
+         *       right job name beside any three numbers at all, which is the reconciliation this check
+         *       replaces.</li>
+         *   <li><strong>The corroborating evidence belongs to this build.</strong> Every generated file's
+         *       provenance line must name the revision this run was told it is building. A build directory
+         *       is not guaranteed clean, and a leftover baseline from an earlier revision reconciles with
+         *       the page exactly as a fresh one does while corroborating nothing about the code in the tree
+         *       now. A foreign file is reported as a polluted build directory rather than counted.</li>
          *   <li><strong>The gate is not fully signed off on the page alone.</strong> The state below is
          *       MEASURED only when this build produced run-scoped evidence that reconciles with the page.
          *       Without it the state is PENDING and the sign-off row says so.</li>
@@ -4369,8 +4458,9 @@ class GateVerificationTest extends AbstractPostgresIT {
          * @throws IOException if either side cannot be read
          */
         @Test
-        @DisplayName("every run this build measured is published on the page, every published run names a "
-                + "job this module defines, and the page alone leaves the gate PENDING")
+        @DisplayName("every run this build measured is published on the page as a complete tuple, every "
+                + "published run names a job this module defines, every corroborating file names this "
+                + "build, and the page alone leaves the gate PENDING")
         void theGeneratedAndRecordedRunsReconcileExactly() throws IOException {
             final PerformanceEvidence evidence = performanceEvidence();
 
@@ -4390,6 +4480,20 @@ class GateVerificationTest extends AbstractPostgresIT {
                             + "recorded leaves the page short of what the build produces: transcribe the "
                             + "rows from %s, with the date and the machine named beside them",
                             documentationFile(GATE_EVIDENCE), EVIDENCE_DIRECTORY.toAbsolutePath())
+                    .isEmpty();
+            assertThat(evidence.incomplete())
+                    .as("a published row that this build's own measurement reconciles against must be the "
+                            + "whole tuple, not a job name and a record count with filler beside them: five "
+                            + "figures present, the quotient following from its own two, and the date and "
+                            + "machine the generated file cannot supply. Incomplete rows in %s: %s",
+                            documentationFile(GATE_EVIDENCE), evidence.incomplete())
+                    .isEmpty();
+            assertThat(evidence.foreign())
+                    .as("every generated baseline corroborating the page must name the revision this build "
+                            + "is building. A leftover file from an earlier revision reconciles exactly as a "
+                            + "fresh one does and corroborates nothing about the tree now, so it is a "
+                            + "polluted build directory rather than corroboration - run a clean build. "
+                            + "Foreign: %s", evidence.foreign())
                     .isEmpty();
             assertThat(evidence.state())
                     .as("the gate stands at %s. MEASURED needs run-scoped evidence from THIS build that "
@@ -4521,7 +4625,9 @@ class GateVerificationTest extends AbstractPostgresIT {
                                     + (performance.measured().isEmpty()
                                             ? "the measuring tier has not run in this selection, so no "
                                                     + "run-scoped evidence corroborates the page yet"
-                                            : performance.measured() + " measured here, all published")
+                                            : performance.measured() + " measured here, each published as a "
+                                            + "complete tuple with its date and machine, from evidence "
+                                            + "naming revision " + expectedBuildRevision())
                                     + ". No service level is asserted anywhere, because none is "
                                     + "documented anywhere"));
             // "warning suppressions" rather than "suppressions": this row counts the annotation, and the
@@ -4619,6 +4725,58 @@ class GateVerificationTest extends AbstractPostgresIT {
                             + "adds for the named artefacts and the schema, and the final-boundary row "
                             + "that stops a sign-off passing through a class of failure it cannot state")
                     .hasSize(10);
+        }
+
+        /**
+         * The emitted table says whether it is the run's sign-off or an interim record of one.
+         *
+         * <p>This is the check that stops the file being read as more than it is. It is written at
+         * {@code integration-test}; the vulnerability report and the merged coverage report are written at
+         * {@code verify}. A table emitted here whose rows include either is <em>structurally</em> interim,
+         * and a workflow step that uploads it as the run's sign-off publishes an interim table as a
+         * conclusion - which is exactly what happened before this line existed.
+         *
+         * <p>So the status is stated in a fixed greppable form and it agrees with the rows: PROVISIONAL
+         * exactly when a row is PENDING, FINAL exactly when none is, with every outstanding row named
+         * beside the artefact that discharges it. The workflow's post-verify reconciliation step is what
+         * turns the one into the other, and {@code config/BuildAndCiContractTest} holds the workflow to
+         * having that step and to refusing to publish a table still reading PROVISIONAL.
+         *
+         * @throws IOException if the emitted record cannot be read or written
+         * @throws SQLException if the schema state cannot be read
+         */
+        @Test
+        @DisplayName("the emitted sign-off states whether it is FINAL or PROVISIONAL, agrees with its own "
+                + "rows, and names the artefact that discharges each outstanding one")
+        void theEmittedSignOffStatesWhetherItIsFinal() throws IOException, SQLException {
+            everyChecklistItemNamesAPresentArtefact();
+            final String emitted = Files.readString(EVIDENCE_DIRECTORY.resolve(SIGN_OFF_FILE),
+                    StandardCharsets.UTF_8);
+            final PerformanceEvidence performance = performanceEvidence();
+            final VulnerabilityEvidence supplyChain = vulnerabilityEvidence();
+            final boolean anythingOutstanding = performance.state() == EvidenceState.PENDING
+                    || supplyChain.state() == EvidenceState.PENDING;
+
+            assertThat(emitted)
+                    .as("the emitted record must state its own standing in a form a later step can read "
+                            + "without parsing the table, because a table with no stated standing is read "
+                            + "as a conclusion by whatever picks it up")
+                    .contains(SIGN_OFF_STATUS_PREFIX);
+            if (anythingOutstanding) {
+                assertThat(emitted)
+                        .as("a row awaits evidence a later phase writes (performance %s, supply chain "
+                                + "%s), so the table is interim and has to say so and name the discharge",
+                                performance.state(), supplyChain.state())
+                        .contains(SIGN_OFF_STATUS_PREFIX + SIGN_OFF_PROVISIONAL)
+                        .contains("Discharge required before this table is a final sign-off")
+                        .doesNotContain(SIGN_OFF_STATUS_PREFIX + SIGN_OFF_FINAL);
+            } else {
+                assertThat(emitted)
+                        .as("every row's evidence existed when the table was written, so it is the run's "
+                                + "sign-off and says so rather than leaving a reader to infer it")
+                        .contains(SIGN_OFF_STATUS_PREFIX + SIGN_OFF_FINAL)
+                        .doesNotContain(SIGN_OFF_STATUS_PREFIX + SIGN_OFF_PROVISIONAL);
+            }
         }
 
         /**
@@ -6554,6 +6712,15 @@ class GateVerificationTest extends AbstractPostgresIT {
             .ofPattern("uuuu-MM-dd", Locale.ROOT).withResolverStyle(ResolverStyle.STRICT);
 
     /**
+     * The provenance line every generated evidence file opens its body with, capturing the revision.
+     *
+     * <p>Anchored to the start of a line, because the same words appear inside the prose that explains the
+     * stamp and a floating match would read an explanation as a stamp.
+     */
+    private static final Pattern GENERATED_PROVENANCE = Pattern.compile(
+            "^Build provenance: revision ([^,]+),", Pattern.MULTILINE);
+
+    /**
      * One recorded measurement, as the evidence page publishes it.
      *
      * @param date             the day it was taken
@@ -6653,14 +6820,20 @@ class GateVerificationTest extends AbstractPostgresIT {
      * the two reconcile.
      *
      * @param state       MEASURED with reconciling run-scoped evidence from this build, PENDING before the
-     *                    measuring tier has run, MISSING when the page carries no measurement or a
-     *                    measurement this build took is unpublished
+     *                    measuring tier has run, MISSING when the page carries no measurement, a
+     *                    measurement this build took is unpublished, a published row that reconciles is
+     *                    incomplete, or a generated file belongs to a different build
      * @param measured    the pairs this build measured, which is empty when the measuring tier has not run
      * @param published   the pairs the evidence page publishes
      * @param unpublished the pairs measured here that the page does not carry
+     * @param incomplete  the reconciling published rows that are missing part of the measured tuple or its
+     *                    provenance, each named with what it lacks
+     * @param foreign     the generated files whose provenance names a build other than this one, each named
+     *                    with the revision it claims
      */
     private record PerformanceEvidence(EvidenceState state, Set<BaselineIdentity> measured,
-            Set<BaselineIdentity> published, List<BaselineIdentity> unpublished) { }
+            Set<BaselineIdentity> published, List<BaselineIdentity> unpublished,
+            List<String> incomplete, List<String> foreign) { }
 
     /**
      * Reconciles the recorded baseline against whatever this build measured.
@@ -6676,28 +6849,82 @@ class GateVerificationTest extends AbstractPostgresIT {
      */
     private static PerformanceEvidence performanceEvidence() throws IOException {
         final Set<BaselineIdentity> measured = new LinkedHashSet<>();
+        final List<String> foreign = new ArrayList<>();
+        final String expectedRevision = expectedBuildRevision();
         for (final GeneratedBaseline baseline : generatedPerformanceEvidence()) {
+            // A generated file is corroboration only if THIS build wrote it. The build directory is not
+            // guaranteed clean - a developer running `verify` without `clean` inherits the previous run's
+            // files - and a leftover baseline reconciles against the page exactly as a fresh one does while
+            // corroborating nothing about the code now in the tree. The stamp the recorder writes is what
+            // tells them apart, so a file naming another revision is recorded as foreign rather than
+            // counted, and a foreign file is a polluted build directory rather than an absent measurement.
+            if (!expectedRevision.equals(baseline.namedRevision())) {
+                foreign.add(baseline.location() + " names revision '"
+                        + (baseline.namedRevision().isEmpty() ? "<none>" : baseline.namedRevision())
+                        + "' while this build is '" + expectedRevision + "'");
+                continue;
+            }
             for (final GeneratedRow row : baseline.rows()) {
                 measured.add(new BaselineIdentity(row.run(), row.records()));
             }
         }
+        final List<PerformanceRow> recorded = recordedPerformanceRows();
         final Set<BaselineIdentity> published = new LinkedHashSet<>();
-        for (final PerformanceRow row : recordedPerformanceRows()) {
+        for (final PerformanceRow row : recorded) {
             published.add(new BaselineIdentity(row.run(), row.records()));
         }
         final List<BaselineIdentity> unpublished = measured.stream()
                 .filter(identity -> !published.contains(identity))
                 .toList();
 
+        // The reconciliation used to stop at the pair, which accepted a page row carrying the right job
+        // name and record count beside any elapsed time, any peak and any quotient at all. Every published
+        // row that a measured pair reconciles against is therefore held to the whole tuple here: five
+        // figures present, the quotient following from its own two, and the date and machine named - the
+        // two the generated file cannot supply and the page exists to add.
+        final List<String> incomplete = new ArrayList<>();
+        for (final PerformanceRow row : recorded) {
+            if (!measured.contains(new BaselineIdentity(row.run(), row.records()))) {
+                continue;
+            }
+            final List<String> lacking = new ArrayList<>();
+            if (row.date() == null) {
+                lacking.add("a date");
+            }
+            if (row.machine().isBlank()) {
+                lacking.add("a machine");
+            }
+            if (row.elapsedMillis() <= 0L) {
+                lacking.add("an elapsed time");
+            }
+            if (row.peakHeapBytes() <= 0L) {
+                lacking.add("a peak heap");
+            }
+            final BigDecimal derived = row.elapsedMillis() > 0L
+                    ? derivedRate(row.records(), row.elapsedMillis())
+                    : BigDecimal.ZERO;
+            if (row.elapsedMillis() > 0L && row.recordsPerSecond().subtract(derived).abs()
+                    .compareTo(derived.multiply(RATE_TOLERANCE)) > 0) {
+                lacking.add("a rate that follows from its own two figures (published "
+                        + row.recordsPerSecond() + ", derived " + derived + ")");
+            }
+            if (!lacking.isEmpty()) {
+                incomplete.add(row.run() + " at " + row.records() + " records lacks "
+                        + String.join(", ", lacking));
+            }
+        }
+
         final EvidenceState state;
-        if (!recordedEvidenceCoversPerformanceBaseline() || !unpublished.isEmpty()) {
+        if (!recordedEvidenceCoversPerformanceBaseline() || !unpublished.isEmpty()
+                || !incomplete.isEmpty() || !foreign.isEmpty()) {
             state = EvidenceState.MISSING;
         } else if (measured.isEmpty()) {
             state = EvidenceState.PENDING;
         } else {
             state = EvidenceState.MEASURED;
         }
-        return new PerformanceEvidence(state, Set.copyOf(measured), Set.copyOf(published), unpublished);
+        return new PerformanceEvidence(state, Set.copyOf(measured), Set.copyOf(published), unpublished,
+                List.copyOf(incomplete), List.copyOf(foreign));
     }
 
     /**
@@ -6777,9 +7004,37 @@ class GateVerificationTest extends AbstractPostgresIT {
      * @param location               where it was written
      * @param rows                   the rows it carries
      * @param namesItsFixtureVolumes whether it states the volumes its figures were measured over
+     * @param namedRevision          the build revision its provenance line names, or an empty string when
+     *                               it carries no provenance line at all
      */
     private record GeneratedBaseline(Path location, List<GeneratedRow> rows,
-            boolean namesItsFixtureVolumes) { }
+            boolean namesItsFixtureVolumes, String namedRevision) { }
+
+    /**
+     * The build revision this JVM was told it is building, which every file this build writes must name.
+     *
+     * <p>Read from the same system property {@code support/GateEvidenceProvenance} stamps into each
+     * generated file, so the comparison is between what the recorder wrote and what this run is. A plain
+     * local build leaves the property at its declared default and both sides read that default, which is
+     * what keeps the check meaningful on a developer machine instead of only in CI.
+     *
+     * @return the revision, or the not-supplied default
+     */
+    private static String expectedBuildRevision() {
+        return System.getProperty(GateEvidenceProvenance.BUILD_REVISION_PROPERTY,
+                GateEvidenceProvenance.UNSUPPLIED_REVISION);
+    }
+
+    /**
+     * The revision a generated file's provenance line names.
+     *
+     * @param  content the file's text
+     * @return the revision, or an empty string when the file carries no provenance line
+     */
+    private static String namedRevisionOf(final String content) {
+        final Matcher stamp = GENERATED_PROVENANCE.matcher(content);
+        return stamp.find() ? stamp.group(1) : "";
+    }
 
     /**
      * Reads whatever run-scoped baselines the build has written into its output directory.
@@ -6822,7 +7077,7 @@ class GateVerificationTest extends AbstractPostgresIT {
                         peak.longValue(), rate));
             }
             baselines.add(new GeneratedBaseline(file, List.copyOf(rows),
-                    content.contains("Fixture volumes")));
+                    content.contains("Fixture volumes"), namedRevisionOf(content)));
         }
         return List.copyOf(baselines);
     }
@@ -7908,6 +8163,56 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
+     * Renders the status line: FINAL when nothing is outstanding, PROVISIONAL naming every row that is.
+     *
+     * <p>Derived from the rows rather than passed in, so the line cannot disagree with the table it sits
+     * above. A MISSING row does not make the table PROVISIONAL: MISSING fails the emitting assertion, so no
+     * table carrying one is ever published at all. PENDING is the only state that produces an interim table,
+     * and PENDING means exactly one thing here - the row's evidence is written by a phase later than this
+     * tier.
+     *
+     * @param  rows the checklist rows
+     * @return the status line, without a trailing newline
+     */
+    private static String signOffStatusLine(final List<ChecklistRow> rows) {
+        final List<String> outstanding = rows.stream()
+                .filter(row -> row.state() == EvidenceState.PENDING)
+                .map(ChecklistRow::item)
+                .toList();
+        if (outstanding.isEmpty()) {
+            return SIGN_OFF_STATUS_PREFIX + SIGN_OFF_FINAL
+                    + " - every row's evidence existed when this table was written.";
+        }
+        return SIGN_OFF_STATUS_PREFIX + SIGN_OFF_PROVISIONAL + " - " + outstanding.size()
+                + " row(s) await evidence a later build phase writes: " + String.join("; ", outstanding)
+                + ". This table is not the run's sign-off until each is discharged.";
+    }
+
+    /**
+     * Names the post-verify artefact that discharges an outstanding row.
+     *
+     * <p>Only two rows can be outstanding at this tier, and each has exactly one artefact that settles it.
+     * Naming the artefact in the emitted file is what lets the workflow's reconciliation step - and a person
+     * holding nothing but a downloaded bundle - check the row rather than take it on trust.
+     *
+     * @param  item the checklist item
+     * @return the artefact and the condition it has to satisfy
+     */
+    private static String dischargeArtefactFor(final String item) {
+        if (item.startsWith("Zero unsuppressed critical")) {
+            return "target/dependency-check-report.json, written at verify: no unsuppressed finding at or "
+                    + "above CVSS " + QUALIFYING_SCORE;
+        }
+        if (item.startsWith("Performance baseline")) {
+            return EVIDENCE_DIRECTORY + "/gate3-*.md, written by the measuring tiers: at least one "
+                    + "run-scoped baseline naming this build's revision and reconciling with "
+                    + DOCUMENTATION_DIRECTORY + "/" + GATE_EVIDENCE;
+        }
+        return "no discharge artefact is defined for this row, which means the row should not be able to "
+                + "reach PENDING - see the assertion that restricts PENDING to the two rows above";
+    }
+
+    /**
      * Writes the sign-off checklist to the build directory for transcription into the recorded evidence.
      *
      * <p>Written to the build directory rather than to the documentation tree on purpose. A test that edited
@@ -7931,6 +8236,17 @@ class GateVerificationTest extends AbstractPostgresIT {
                 // This line names the build and the workflow run that produced this table, which is what
                 // lets a published bundle be attributed to the code it signed off. DL-315.
                 .append(GateEvidenceProvenance.stamp()).append("\n\n")
+                // WHETHER THIS TABLE IS THE BUILD'S CONCLUSION OR AN INTERIM STATEMENT OF IT, said in a
+                // fixed greppable form rather than left to a reader to infer from the State column. This
+                // table is written at integration-test. The vulnerability report and the merged coverage
+                // report are written at verify. So whenever a row's evidence is one of those, the table
+                // emitted here CANNOT be final - not because of a defect but because of the phase it is
+                // written in - and a workflow step that uploads it as the run's sign-off publishes an
+                // interim table as a conclusion. That is what this line stops: PROVISIONAL names every
+                // outstanding row and the artefact that discharges it, and the workflow's post-verify
+                // reconciliation step is what turns a PROVISIONAL table into a FINAL one against evidence
+                // that by then exists. DL-340.
+                .append(signOffStatusLine(rows)).append("\n\n")
                 .append("Procedure-unit coverage: ").append(TOTAL_PROCEDURE_UNITS).append(" rows = ")
                 .append(PROGRAM_PARAGRAPHS).append(" program paragraphs + ")
                 .append(DATE_COPYBOOK_PARAGRAPHS).append(" + ").append(PFKEY_COPYBOOK_PARAGRAPHS)
@@ -7946,6 +8262,25 @@ class GateVerificationTest extends AbstractPostgresIT {
                 .append("the scan and the coverage check are bound to a later phase than the tier ")
                 .append("that writes this table; neither is ever recorded as passing on the strength ")
                 .append("of an absent report.\n");
+        // The discharge instructions, written into the artefact rather than held only in the workflow, so a
+        // bundle downloaded on its own says what still has to happen to it. A PROVISIONAL table is not a
+        // failure and must not read as one; it is a table with named work left, and this is that work.
+        final List<ChecklistRow> outstanding = rows.stream()
+                .filter(row -> row.state() == EvidenceState.PENDING)
+                .toList();
+        if (outstanding.isEmpty()) {
+            rendered.append("\nEvery row's evidence existed when this table was written, so it is ")
+                    .append(SIGN_OFF_FINAL).append(" as emitted and needs no discharge.\n");
+        } else {
+            rendered.append("\nDischarge required before this table is a final sign-off, one line per ")
+                    .append("outstanding row:\n");
+            for (final ChecklistRow row : outstanding) {
+                rendered.append("- ").append(row.item()).append(" -> ")
+                        .append(dischargeArtefactFor(row.item())).append('\n');
+            }
+            rendered.append("\nUntil each line above is discharged against the artefact it names, this ")
+                    .append("table is an interim record of a build in progress and not its sign-off.\n");
+        }
 
         Files.createDirectories(EVIDENCE_DIRECTORY);
         Files.writeString(EVIDENCE_DIRECTORY.resolve(SIGN_OFF_FILE), rendered.toString(),

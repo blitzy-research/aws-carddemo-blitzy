@@ -53,10 +53,10 @@ vulnerability threshold.
 
 | Property | Value |
 | --- | --- |
-| Date, in UTC | 2026-08-10, build finished 06:32:58Z |
+| Date, in UTC | 2026-08-10, build finished 18:39:35Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
-| Result | `BUILD SUCCESS`, total time 11:32 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 549 source counts, the same single `[WARNING]` block and it the scanner's rather than the compiler's, the same 26,896 and 1,643 test cases with no failure, the same 23,131 of 24,082 lines and 7,694 of 8,594 branches across the same 492 analysed classes, the same five byte-equal Gate 1 comparisons, and the same 168 dependencies with one below-threshold finding and one written determination. Only the timings differed, which is the distinction this table exists to draw |
+| Result | `BUILD SUCCESS`, total time 11:35 min |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 549 source counts, the same single `[WARNING]` block and it the scanner's rather than the compiler's, the same 26,962 and 1,645 test cases with no failure, the same 23,236 of 24,193 lines and 7,755 of 8,664 branches across the same 493 analysed classes, the same five byte-equal Gate 1 comparisons, and the same 168 dependencies with one below-threshold finding and one written determination. Only the timings differed, which is the distinction this table exists to draw |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -431,13 +431,13 @@ The lines that matter, quoted from the recorded run rather than paraphrased. Eve
 [INFO] Compiling 549 source files with javac [debug parameters release 25] to target/test-classes
 ...
 [INFO] --- jacoco:0.8.15:check (jacoco-check-line-coverage) @ carddemo-java ---
-[INFO] Analyzed bundle 'carddemo-java' with 492 classes
+[INFO] Analyzed bundle 'carddemo-java' with 493 classes
 [INFO] All coverage checks have been met.
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  11:32 min
-[INFO] Finished at: 2026-08-10T06:32:58Z
+[INFO] Total time:  11:35 min
+[INFO] Finished at: 2026-08-10T18:39:35Z
 ```
 
 **Warning accounting, stated precisely rather than rounded off.** 245 production sources and 549 test
@@ -548,7 +548,7 @@ are that record.
 | Micrometer timers on every REST endpoint and every Spring Batch step | the instrumentation, exported through the Prometheus registry |
 | `/actuator/prometheus` | where the registry is exposed. A scrape of the running local stack carries the framework's own series — `http_server_requests_seconds`, `spring_batch_job_launch_count_total` and the `jvm_memory_*` family — alongside this module's own, which are named `carddemo_*`: `carddemo_batch_posting_record_seconds`, `carddemo_online_signon_turn_seconds`, and, once a batch endpoint has served a request, `carddemo_batch_joblaunch_request_seconds` and `carddemo_batch_jobstatus_request_seconds` |
 | `carddemo-java/config/prometheus/prometheus.yml` | the scrape configuration, job `carddemo-app`, `metrics_path: /actuator/prometheus` |
-| `carddemo-java/config/grafana/dashboards/carddemo-overview.json` | the provisioned dashboard, "CardDemo Overview", 33 panels with per-endpoint and per-step views |
+| `carddemo-java/config/grafana/dashboards/carddemo-overview.json` | the provisioned dashboard, "CardDemo Overview", 46 panels with per-endpoint and per-step views. The figure counts the whole panel array, row panels included, because that is what a reader opening the file counts; it is derived by `config/DocumentedSourceCountsTest` rather than transcribed, so the next panel updates this sentence or breaks the build (DL-340) |
 | `support/RunScopedPerformanceRecorder` | the run-scoped measurement that produces the quotable figures |
 
 **Two kinds of meter live at that endpoint, and confusing them reads as a missing meter.** The framework's
@@ -599,9 +599,9 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 
 | Date | Machine | Run | Records | Elapsed (ms) | Peak heap (bytes) | Records/second |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 06:32:58Z | `postTransactionJob` | 300 | 2286 | 290691480 | 131.22 |
-| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 06:32:58Z | `interestCalculationJob` | 100 | 377 | 173250968 | 264.76 |
-| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 06:32:58Z | `interestCalculationJob` | 3 | 21 | 475657928 | 137.78 |
+| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 18:39:35Z | `postTransactionJob` | 300 | 3091 | 284161880 | 97.03 |
+| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 18:39:35Z | `interestCalculationJob` | 100 | 377 | 140319384 | 265.00 |
+| 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 18:39:35Z | `interestCalculationJob` | 3 | 21 | 430584504 | 140.84 |
 | 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 15:45:40Z | `postTransactionJob` | 300 | 2577 | 237471008 | 116.39 |
 | 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 15:45:40Z | `interestCalculationJob` | 100 | 408 | 266912400 | 244.68 |
 | 2026-08-09 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 15:45:40Z | `interestCalculationJob` | 3 | 84 | 347133808 | 35.67 |
@@ -618,11 +618,20 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 100 | 2600 | 474827040 | 38.46 |
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 3 | 107 | 235653920 | 27.91 |
 
-The first nine rows are three full runs on the same host on the same day — the recorded run, and the two
-earlier ones described at the top of this page — and the machine column carries the label that tells them
-apart. They are the clearest illustration on this page of what these figures are and are not: the same job at
-the same volume on the same machine posted the same 300 records in **2,577 ms, 2,545 ms and 3,713 ms**, and
-the three-record accrual run took **84 ms, 25 ms and 27 ms**. Every row
+**Eighteen rows, and the machine column is what tells them apart rather than the date.** The count is not
+transcribed here: `config/DocumentedSourceCountsTest` derives it from this table and holds the module
+manual's published figure to it, so the next measured run updates the prose or breaks the build (DL-340).
+Rows 1 to 3 are the recorded run this page carries, taken on 2026-08-10 and finishing 18:39:35Z, and
+their five figures are the ones the generated baselines of that run carry; rows 4 to 12 are three further full runs taken on
+2026-08-09 and separated by the run label inside the machine column — "earlier revision", "earlier run" and
+"repeat run"; rows 13 to 18 are two earlier runs on 2026-08-08 whose machine descriptions differ. An earlier
+revision of this page grouped "the first nine rows" as one day's work, which was true of the table it was
+written against and is false of this one — the first nine rows now span two dates. The date alone therefore
+does not identify a run, and the label beside the host is what does.
+
+The 2026-08-09 group is the clearest illustration on this page of what these figures are and are not: the
+same job at the same volume on the same machine posted the same 300 records in **2,577 ms, 2,545 ms and
+3,713 ms**, and the three-record accrual run took **84 ms, 25 ms and 27 ms**. Every row
 was measured by
 `support/RunScopedPerformanceRecorder` inside the integration tier and copied across verbatim from a
 generated file, with the date and the machine added here — the two things a run cannot know about itself.
@@ -1023,7 +1032,8 @@ or a request.
 
 ### The audit command, verbatim
 
-**Four commands, not one.** A single forbidden-token grep cannot answer three of the five categories: a
+**Five commands, not one, and two of them ask the same question at two strengths.** A single
+forbidden-token grep cannot answer three of the five categories: a
 cast is a *shape* rather than a token, and "SQL built from strings" is a question about how a literal is
 *joined* rather than about whether a literal exists. Earlier revisions of this page published a cast check
 narrowed to `List`, `Map`, `Set` and `Collection` targets, which returns nothing here — not because no cast
@@ -1040,10 +1050,20 @@ grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName
 # 2 - every cast whose target is a parameterised type. Expect exactly the five sites named below.
 grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/java/
 
-# 3 - SQL assembled from anything other than a literal. Expect no output at all.
+# 3 - a statement verb inside a literal, joined to something that is not a literal. Expect EXACTLY ONE
+#     line: service/MenuService.java's 3270 screen prompt "SELECT OPTION ", which is not SQL. The line is
+#     published verbatim below and the paragraph after it explains why a verb-only pattern cannot avoid it.
 grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
 
-# 4 - warning suppression, over BOTH trees: Gate 2's scope is not Gate 6's. Expect no output at all.
+# 3b - the same question asked the way the authoritative census asks it: a statement verb AND a clause
+#      keyword in one literal, joined to a non-literal. This is the command whose expectation is genuinely
+#      no output, and it is the one that reproduces the gated figure of zero.
+grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*\b(from|into|set|values|where|table|join|index|sequence)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
+
+# 4 - warning suppression, over BOTH trees: Gate 2's scope is not Gate 6's. Expect EXACTLY TWELVE lines,
+#     every one of them in src/test/java and every one of them a MENTION - a comment, a string literal or
+#     an assertion argument - rather than an annotation. The annotation count is zero and is measured over
+#     blanked source rather than by this grep, for the reason given immediately below.
 grep -rn '@SuppressWarnings' src/main/java/ src/test/java/
 ```
 
@@ -1070,11 +1090,26 @@ $ grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/ja
 
 $ grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
 src/main/java/com/carddemo/service/MenuService.java:527:                "SELECT OPTION " + optionNumber,
+
+$ grep -rnP '(?i)"[^"]*\b(select|insert|update|delete|merge|truncate|drop|alter|create)\b[^"]*\b(from|into|set|values|where|table|join|index|sequence)\b[^"]*"\s*\+\s*[^"[:space:]]' src/main/java/
+$ echo $?
+1
+
+$ grep -rn '@SuppressWarnings' src/main/java/ src/test/java/ | wc -l
+12
+
+$ grep -rn '@SuppressWarnings' src/main/java/ | wc -l
+0
 ```
 
 Command 1 produces **no output at all**; an exit status of 1 from `grep` is the no-match status, which is the
 result this gate wants. Command 2 produces exactly five lines, which is the budget rather than a coincidence,
-and they are enumerated below.
+and they are enumerated below. Command 3b produces **no output**, and command 4 produces **twelve** lines
+over both trees and **none** over the production tree alone — the two figures that together say what the
+twelve are. Each stated expectation above is the output reproduced here; an earlier revision of this page
+told a reader to expect no output from commands 3 and 4 while publishing, a few lines further down, the one
+line and the twelve lines they actually return. The comment beside a command and the output beneath it are
+the same claim made twice, and a reader who tries the command reads the comment first.
 
 **Command 3 produces exactly one line, and publishing it is the point.** The line is not SQL: it is the
 legacy menu prompt `SELECT OPTION` joined to the option number the user typed, reproduced from the 3270
@@ -1137,10 +1172,15 @@ here rather than left to look like a contradiction:
 ```text
 service/PostgresJobSubmissionCoordinator.java:226     (ConnectionCallback<Void>)
 batch/step/AdvisoryGenerationPublicationLock.java:135 (ConnectionCallback<Void>)
-batch/BatchLaunchCoordinator.java:399                 (ConnectionCallback<JobExecution>)
+batch/BatchLaunchCoordinator.java:711                 (ConnectionCallback<JobExecution>)
 repository/TransactionInsertRepositoryImpl.java:94    (PreparedStatementCallback<Void>)
-config/FlywayConfig.java:673                          (ConnectionCallback<Void>)
+config/FlywayConfig.java:726                          (ConnectionCallback<Void>)
 ```
+
+The file-and-line of each is derived by `config/DocumentedSourceCountsTest` from the production tree rather
+than transcribed, because a published line number is the most perishable figure on this page: two of the five
+above moved when their enclosing classes gained code, and a stale line number sends a reader to the wrong
+statement while every count on the page stays correct. DL-340.
 
 Every one is a lambda cast to a functional interface, present only to select between overloads of the same
 `execute` method. Each is checked at compile time, none narrows a wildcard or a type variable, and none
@@ -1312,7 +1352,7 @@ hits in this file.
 | **Requirement** | The extended specification tier: multi-subsystem batch processing, file I/O, inter-program calls, JCL orchestration and AWS service integration, with at least 80% line coverage. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/site/jacoco-merged/index.html` — the report over the merged unit and integration data, which is the data the failing check measures. `target/site/jacoco/index.html` and `target/site/jacoco-it/index.html` are the per-tier reports and are informational: either alone understates the figure. A report produced by a scoped run is not this artefact and cannot occupy its path — the `scoped-tests` profile writes under `target/scoped-site/` (DL-284) — so a figure quoted from here always comes from a full unscoped `verify`. |
-| **Recorded status** | **PASS (measured).** Merged line coverage 96.05% against a build-failing floor of 80%. |
+| **Recorded status** | **PASS (measured).** Merged line coverage 96.04% against a build-failing floor of 80%. |
 
 ### The acceptance criterion, stated precisely
 
@@ -1327,23 +1367,38 @@ The recorded run's figures, read from the merged report:
 
 | Metric | Covered | Total | Percentage | Gated |
 | --- | ---: | ---: | ---: | :---: |
-| **Line** | 23,131 | 24,082 | **96.05%** | **yes, floor 80%** |
-| Branch | 7,694 | 8,594 | 89.53% | no |
-| Instruction | 100,151 | 104,011 | 96.29% | no |
-| Method | 4,411 | 4,464 | 98.81% | no |
+| **Line** | 23,236 | 24,193 | **96.04%** | **yes, floor 80%** |
+| Branch | 7,755 | 8,664 | 89.51% | no |
+| Instruction | 100,822 | 104,689 | 96.31% | no |
+| Method | 4,427 | 4,480 | 98.82% | no |
 
-The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 492 classes` followed by
-`All coverage checks have been met.` **Every repeat run measured these figures to the line** — 23,131 covered of
-24,082 in each — which is what a coverage figure should do when the code has not changed, and is the reason
-it is recorded here as a property of the code rather than in the dated table under Gate 3.
+The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 493 classes` followed by
+`All coverage checks have been met.` **Every repeat run over one tree measured these figures to the line** —
+23,236 covered of 24,193 in each — which is what a coverage figure should do when the code has not changed.
+The figures move when the tree does, which is the ordinary case rather than an exception: they are read from
+the merged report of the run that carries this page, and the workflow's *Reconcile the published coverage
+counters with the merged report* step fails the build whenever this table and that report disagree, so the
+pair here is the pair the report states.
 
 Per tier, which is why the merged report and not either component is the gated artefact:
 
 | Report | Line | Branch |
 | --- | ---: | ---: |
-| Unit only — `target/site/jacoco/` | 94.58% | 88.65% |
-| Integration only — `target/site/jacoco-it/` | 75.07% | 59.55% |
-| **Merged — `target/site/jacoco-merged/`** | **96.05%** | **89.51%** |
+| Unit only — `target/site/jacoco/` | 94.57% | 88.62% |
+| Integration only — `target/site/jacoco-it/` | 74.96% | 59.33% |
+| **Merged — `target/site/jacoco-merged/`** | **96.04%** | **89.51%** |
+
+**Every counter above is reconciled against the merged report by CI, and three of them were wrong before it
+was.** The four covered-and-total pairs in the metric table are read out of
+`target/site/jacoco-merged/jacoco.xml`, and until the *Reconcile the published coverage counters with the
+merged report* step existed nothing compared the two: the line pair was out by three, the instruction pair by
+two hundred, and the method pair by two, while every gate in the pipeline stayed green. That is the shape of
+the problem rather than an accident of care — the coverage **gate** reads the report and passes, so a page
+transcribing the same report can say anything at all and no gate notices. The step now fails the build on any
+mismatch and prints both figures, so a stale pair is a build failure with the correction in the log. It runs
+after `verify` because no test in this module can read the report of its own build: the merged report is
+written at `post-integration-test` and every test runs earlier than that. Recorded as
+[decision-log.md](decision-log.md) DL-340.
 
 One asymmetry in that table is worth stating rather than leaving for a reader to trip over. The unit row and
 the merged row reproduce **to the line** on every run; the integration row moves by a tenth of a point or so
@@ -1388,18 +1443,27 @@ point of this subsection: an earlier revision published 26,235 unit and 1,601 in
 time it was read the tree had moved underneath it — the numbers were a transcription of a run nobody could
 still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
 
-The suite behind those figures is the whole estate rather than a sample: the unit tier runs 26,896 test
-executions across 449 classes and the integration and end-to-end tier runs 1,643 across 80 classes,
+The suite behind those figures is the whole estate rather than a sample: the unit tier runs 26,962 test
+executions across 449 classes and the integration and end-to-end tier runs 1,645 across 80 classes,
 under the two inclusion rules stated above. Those class counts are the asserted half of the sentence —
 `config/DocumentedSourceCountsTest` measures both against this tree and fails the build on a
 disagreement — and the execution counts beside them are the dated half, read out of the runners' own
 XML on the recorded run.
 
+**Why the integration tier reads 80 above and 76 in the table below, which is not a discrepancy.** The
+sentence counts the classes the tier's inclusion rules select **in this source tree**; the table counts the
+**report files** a run wrote. They differ by four because a report file is written per top-level class with
+nested classes rolled into their outer class's file, and because an abstract support base class is selected by
+name and executed as part of its subclasses rather than on its own. The first figure is a property of the tree
+and is asserted by `config/DocumentedSourceCountsTest`; the second is a property of a run and is reconciled
+against the run's own XML by the workflow. Correcting either one to the other would break both checks, and an
+earlier attempt at exactly that is what prompted this paragraph.
+
 | Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Unit | `target/surefire-reports/` | 449 | 26,896 | 0 | 0 | 0 |
-| Integration and end-to-end | `target/failsafe-reports/` | 76 | 1,643 | 0 | 0 | 0 |
-| **Whole suite** | both directories | **525** | **28,539** | **0** | **0** | **0** |
+| Unit | `target/surefire-reports/` | 449 | 26,962 | 0 | 0 | 0 |
+| Integration and end-to-end | `target/failsafe-reports/` | 76 | 1,645 | 0 | 0 | 0 |
+| **Whole suite** | both directories | **525** | **28,607** | **0** | **0** | **0** |
 
 Derive them for yourself from any completed unscoped run. One report file per top-level class, with nested
 classes rolled into their outer class's file, so the file count is the count of classes that **ran**:
@@ -1537,7 +1601,7 @@ bound always reached the index — it was a wider index range than necessary. DL
 | Interface contract verification | seven sign-on message texts; the seventeen-card job image with its four slots and transmitted sentinel; a real SQS FIFO queue | `e2e/OnlineTransactionE2ETest`, plus `service/JobSubmissionServiceIT` | **PASS (measured)** |
 | Performance baseline | `support/RunScopedPerformanceRecorder`, whose generated `target/gate-evidence/gate3-*.md` files are where every quotable figure comes from; the Micrometer timers at `/actuator/prometheus` corroborate them. Transcribed into this page's *Measured runs* table | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md` | **PASS (measured)** — eighteen dated rows, each with its machine and its fixture volumes, the newest three from the recorded run |
 | Unsafe code audit | the fixed grep list scoped to `src/main/java/**` | the commands and raw output under Gate 6 | **PASS (measured)** — every count zero |
-| Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 96.05% |
+| Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 96.04% |
 | Zero critical/high CVEs | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0 over compile, runtime and test scope | `./mvnw -B clean verify`; report published below | **PASS (measured)** — zero unsuppressed critical, zero unsuppressed high |
 | Traceability 100% | [traceability-matrix.md](traceability-matrix.md) | `e2e/GateVerificationTest` row-count assertion at **544** | **PASS (measured)** |
 | Final-boundary criteria, each held by an executed suite | ten criteria covering bounded provider calls and pinned retry, resource trust and proven capability, durable publication integrity under an ambiguous upload, bounded cross-system coordination, trace continuity across the durable and notification boundaries, provider-log containment, truthful terminal and refused-request telemetry, the boundary panel inventory, collector trust and sampling, and durable attributable evidence | `e2e/GateVerificationTest` resolves each criterion to a suite under `src/test/java` and checks that one of the two tiers actually executes it | **PASS (measured)** — 10 of 10 held |
@@ -1546,6 +1610,28 @@ The run also emits its own machine-readable copy of this checklist to
 `target/gate-evidence/gate8-sign-off.md`, one row per item with the artefact, the state and the evidence
 narrative. A row that named an absent artefact would be emitted as MISSING and would fail the assertion that
 writes the table, so the checklist cannot record a pass it did not establish.
+
+**That emitted table is an interim record, it now says so on its own face, and a workflow step is what turns
+it into a sign-off.** The table is written by `e2e/GateVerificationTest` at `integration-test`. The
+vulnerability report is written at `verify` and the merged coverage report at `post-integration-test` — both
+later. So a checklist row whose evidence is either of those *cannot* have its evidence at the moment the
+table is written, and the table records it as PENDING. That is honest, and it was being published as though
+it were not: the workflow uploaded the interim table as the run's sign-off and no step anywhere rejected a
+PENDING row, so a reviewer downloading the bundle received a Gate 8 checklist in which two rows read PENDING
+with nothing to say whether they had since passed.
+
+Two things close that. The emitted table now carries a `Sign-off status:` line — `PROVISIONAL` naming each
+outstanding row and the artefact that discharges it, or `FINAL` when none is outstanding — so nothing that
+picks the file up has to infer its standing. And the workflow gained a *Reconcile the provisional sign-off
+into a final one* step, placed after the bundle verification and before the upload, which reads each
+outstanding row's artefact now that it exists: no unsuppressed finding at or above CVSS 7.0 in the scan's own
+JSON report, at least one run-scoped baseline carrying measured rows, and the merged report's own line
+counter at or above the floor. Only then does it write `target/gate-evidence/final-sign-off.md` carrying
+`Sign-off status: FINAL` and a row per discharge. If a row cannot be discharged the step fails and no final
+sign-off is written at all, so the bundle can never contain a FINAL table that was not earned. The interim
+table is published beside the final one rather than replaced by it, so a reader sees both what the build knew
+then and what it knows now. `config/BuildAndCiContractTest` holds the workflow to having that step, in that
+position, refusing an undischarged row. Recorded as [decision-log.md](decision-log.md) DL-340.
 
 **Why the tenth row exists.** The nine rows above it are the seven items the plan's Gate 8 enumerates plus
 the two it adds for the named artefacts and the schema, and not one of them is about the boundary where this
@@ -1567,7 +1653,7 @@ The executed result, from the recorded run:
 | Scanner | `dependency-check-maven` 12.1.3, bound to `verify` |
 | Report | `target/dependency-check-report.html`, with `.json` and `.xml` beside it |
 | Tree scanned | the module as it stands in the revision that carries this page; the scan reads `target/` artefacts of that build rather than a named commit |
-| Scan completed | **2026-08-10T06:32:58Z**, the report date carried inside `dependency-check-report.json` itself, in the recorded run, which is where the figures below were read from; every other full verify over this tree scanned the same dependency set against the same data and returned the same outcome |
+| Scan completed | **2026-08-10T18:39:33Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the figures below were read from; every other full verify over this tree scanned the same dependency set against the same data and returned the same outcome |
 | Vulnerability data state | NVD API last checked 2026-08-10T03:23:14Z, last modified 2026-08-10T03:16:40Z |
 | Dependencies scanned | 168 |
 | **Unsuppressed critical** | **0** |

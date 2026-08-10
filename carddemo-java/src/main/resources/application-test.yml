@@ -234,24 +234,25 @@ spring:
         highlight_sql: false
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTING IN THIS FILE IS THE LIFTED VERSION CEILING. WITHOUT IT,
-  # THIS PROFILE MIGRATES AN UNSEEDED DATABASE.
+  # SCHEMA EVOLUTION - THE TWO LOAD-BEARING SETTINGS IN THIS FILE ARE THE ADDED SEED LOCATION AND THE
+  # LIFTED VERSION CEILING. WITHOUT EITHER ONE, THIS PROFILE MIGRATES AN UNSEEDED DATABASE.
   #
-  # One flat location, resolved identically by every profile:
+  # Two sibling locations whose shared parent holds no script:
   #
-  #   classpath:db/migration                                              EVERY profile
+  #   classpath:db/migration/schema                                       EVERY profile
   #     V1__create_schema.sql          the eleven application tables
   #     V2__create_indexes.sql         keys and alternate-index equivalents
-  #     V3__seed_reference_data.sql    sample rows                        local and test ONLY
-  #     V4__seed_user_security.sql     sign-on identities, hashed         local and test ONLY
+  #   -------------------------------------- the shared baseline's ceiling: target 2 stops here
+  #   classpath:db/migration/seed                                         local and test ONLY
+  #     V3__seed_reference_data.sql    sample rows
+  #     V4__seed_user_security.sql     sign-on identities, hashed
   #
-  # All four scripts sit directly in that directory; there is no schema/ or seed/ child directory and
-  # none may be created, so the location list cannot carry any part of the separation. The production
-  # overlay pins spring.flyway.target to "2", so V3 and V4 sit above its ceiling and are never executed
-  # there - it migrates schema and indexes without inheriting sample rows or seeded identities. See
-  # docs/decision-log.md DL-127, which supersedes DL-102 and DL-119. This profile raises the ceiling,
-  # and that is the one setting that applies the seeds. Any seed script added must be numbered above 2
-  # and must store a sign-on credential only as a hash.
+  # The production overlay declares the schema location alone AND pins spring.flyway.target at "2", so
+  # V3 and V4 are neither resolved nor reachable there - it migrates schema and indexes without
+  # inheriting sample rows or seeded identities. See docs/decision-log.md DL-298 for the location split
+  # and DL-334 for the ceiling. This profile adds the seed location and raises the ceiling, and it needs
+  # both. Any seed script added must live in db/migration/seed, must be numbered above 2, and must store
+  # a sign-on credential only as a hash.
   #
   # LOSING THAT SETTING DOES NOT PRODUCE AN ERROR - IT PRODUCES EMPTY RESULT SETS. Without the
   # seeds the container-backed tiers have nothing to assert against: acceptance reads the seeded
@@ -344,10 +345,10 @@ spring:
   # clean-disabled is relaxed here and in the development profile only, so a test that needs a
   # pristine schema can drop and re-apply; the baseline and the production overlay both forbid it.
   # `target: latest` lifts the version ceiling the shared baseline pins at "2", so a migration under
-  # this overlay applies V1 and V2 and then the two seeds. The baseline and the production overlay
-  # both pin `target: 2`, and com.carddemo.config.FlywayConfig re-applies that ceiling unconditionally
-  # whenever the production profile is active, so seeded reference rows and seeded sign-on identities
-  # cannot reach a production migration however this file is edited.
+  # this overlay applies V1 and V2 and then the two seeds. The baseline and the production overlay both
+  # pin `target: "2"`, and com.carddemo.config.FlywayConfig re-applies that pin - and the schema-only
+  # location list - unconditionally whenever the production profile is active, so seeded reference rows
+  # and seeded sign-on identities cannot reach a production migration however this file is edited.
   flyway:
     enabled: true
     # See docs/decision-log.md DL-298.
@@ -362,7 +363,9 @@ spring:
     locations:
       - classpath:db/migration/schema
       - classpath:db/migration/seed
-    # Restated for completeness rather than as a control; no profile carries a numeric ceiling now.
+    # THE SECOND LOAD-BEARING SETTING: the shared baseline pins the ceiling at "2", and this raises it so
+    # the two seed versions apply. FlywayConfig lifts an inherited low ceiling for this profile rather
+    # than refusing it, which is the opposite of what it does under the production profile.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -666,8 +669,9 @@ carddemo:
     # unreadable under the other, with the failure surfacing only when something decrypted it.
     #
     # Test-only, never deployed, worth nothing outside this suite. Production declares this same key
-    # as an environment reference with NO fallback, and production never applies V3 at all -
-    # spring.flyway.target caps it at version 2 - so no production row is sealed under this literal.
+    # as an environment reference with NO fallback, and production never applies V3 at all - it resolves
+    # neither the seed location nor any version above 2 - so no production row is sealed under this
+    # literal.
     #
     # STATED AS A BARE LITERAL, DELIBERATELY, AND NOT AS ${CARDDEMO_FIELD_ENCRYPTION_KEY:<default>},
     # which is also how the suite's own src/test/resources/application-test.yml has always stated it.

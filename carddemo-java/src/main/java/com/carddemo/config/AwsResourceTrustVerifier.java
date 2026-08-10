@@ -545,6 +545,16 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
      * an idempotent create call - convenient, and it would create the very topic whose absence this
      * check exists to report.</p>
      *
+     * <p><strong>This is the mandatory stage of the notification contract, and it does not contradict the
+     * readiness exclusion that accompanies it.</strong> The publication path is documented as best effort
+     * and the {@code awsSns} health contributor is deliberately outside the readiness group, because a
+     * notice announces a batch job that has <em>already</em> finished, so losing one prevents no work.
+     * Neither statement is about the resource existing. This check settles that question once, before any
+     * bean that could publish is created: a topic that cannot be resolved from a listing, is owned by
+     * another account, or does not answer an attribute read stops the start-up. Best-effort <em>delivery</em>
+     * to a destination this deployment owns is a different claim from an optional destination, and only the
+     * first is made anywhere. Recorded as {@code DL-339}.
+     *
      * @param proven collects the capability names that were exercised
      */
     private void verifyNotificationTopic(final List<String> proven) {

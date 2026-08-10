@@ -323,6 +323,17 @@ public final class AwsResourceHealthConfig {
      * the contrast that settles it: the queue stays required, because a request that cannot reach the
      * queue never runs its job.
      *
+     * <p><strong>This exclusion is a runtime judgement and not a statement that the topic is dispensable,
+     * and the two must not be confused.</strong> A production start-up will not begin without it:
+     * {@link AwsResourceTrustVerifier} resolves the configured topic from a listing, requires the resolved
+     * locator to be owned by the declared account, requires the topic to answer an attribute read, and
+     * <em>aborts the start-up</em> if any of the three fails - and the local stack's emulator does not
+     * report healthy until the topic exists, with the application waiting on that health. So the split is
+     * between <em>provisioning and ownership</em>, which are mandatory and are settled once before any
+     * traffic arrives, and <em>delivery of an individual notice</em>, which is best effort and is what
+     * this contributor reports on afterwards. An instance is never made unfit by the second. Recorded as
+     * {@code DL-339}.
+     *
      * <p>The default topic resolver creates a topic when given a name, so it is intentionally not used
      * here. {@link TopicsListingTopicArnResolver} lists and matches instead. An already configured ARN
      * is still verified through {@link SnsOperations#topicExists(String)} rather than accepted on

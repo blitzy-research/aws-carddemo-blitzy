@@ -1122,7 +1122,21 @@
                  build information carries as source-revision, deliberately: the published artefact and
                  the evidence measured against it then name one commit rather than two independently
                  editable ones. A plain local build leaves it at the declared default and the stamp
-                 says so instead of inventing a revision. Recorded in docs/decision-log.md DL-315. -->
+                 says so instead of inventing a revision. Recorded in docs/decision-log.md DL-315.
+
+                 WHAT THE SIGN-OFF FILE THIS TIER EMITS IS, AND WHAT IT IS NOT. This runner is bound to
+                 integration-test. The vulnerability report and the merged coverage report are written
+                 later - the merge and the merged report at post-integration-test, the coverage check and
+                 the scan at verify - so a checklist row whose evidence is one of those CANNOT have its
+                 evidence when this tier writes the checklist. No reordering inside this file changes
+                 that: moving the writer later would move the tests that measure everything else later
+                 with it, and binding the scan earlier would make evidence conditional on gates ahead of
+                 it, which the jacoco comment below rejects for the same reason. So the emitted table is
+                 deliberately an INTERIM record and states its own standing on a `Sign-off status:` line -
+                 PROVISIONAL while a row awaits a later phase, FINAL when none does. The mechanism that
+                 turns one into the other is not in this file at all: it is the workflow's post-verify
+                 reconciliation step, which discharges each outstanding row against the artefact that by
+                 then exists and writes final-sign-off.md. Reasoned in docs/decision-log.md DL-340. -->
             <carddemo.build.revision>${build.revision}</carddemo.build.revision>
           </systemPropertyVariables>
         </configuration>

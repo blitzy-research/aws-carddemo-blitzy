@@ -48,8 +48,9 @@ import org.slf4j.LoggerFactory;
  * <h2>What is actually being asserted here</h2>
  *
  * <p>Local validation establishes two facts about a start-up before it believes anything else: that every
- * delivered migration was applied, and that the schema reached its highest delivered version. Those two
- * facts used to be read out of the migration tool's own log text. The tool's opening announcement publishes
+ * delivered migration was applied on a first start-up, and that the highest version applied is the highest
+ * one the resolved locations deliver. Those two facts used to be read out of the migration tool's own log
+ * text. The tool's opening announcement publishes
  * the JDBC URL, the driver and the database type - the host, the port, the database name and an exact
  * server-and-driver version pair - so that category is now held above the level it speaks at, and this
  * callback exists so the validation need not depend on a third party's message text at all.
@@ -70,6 +71,17 @@ class MigrationVersionRecordCallbackTest {
 
     /** A later description, from the highest delivered migration. */
     private static final String LAST_DESCRIPTION = "seed user security";
+
+    /**
+     * The line an already-current database produces, in full.
+     *
+     * <p>Asserted verbatim rather than by prefix, because the substance of the narrowed contract is the
+     * second half of the sentence: this invocation applied nothing, so it names no version and points at
+     * the authority that does. A prefix match would pass over a wording that quietly implied one.
+     */
+    private static final String NOTHING_APPLIED_LINE =
+            "SCHEMA ALREADY CURRENT - this start-up applied no migration, so it names no version;"
+                    + " the schema history table is the authority for the version in force";
 
     /** The callback under test. */
     private MigrationVersionRecordCallback callback;
@@ -157,8 +169,8 @@ class MigrationVersionRecordCallbackTest {
         }
 
         @Test
-        @DisplayName("closes with the count applied and the highest version reached, which is the pair the "
-                + "validation asserts")
+        @DisplayName("closes with the count this invocation applied and the highest version among them, "
+                + "which is the pair the validation asserts")
         void closesWithTheCountAndTheHighestVersion() {
             migrate(List.of(appliedMigration("1", FIRST_DESCRIPTION),
                     appliedMigration("2", "create indexes"),
@@ -184,12 +196,12 @@ class MigrationVersionRecordCallbackTest {
 
         @Test
         @DisplayName("says so as information, not as a warning, when a start-up applies nothing - which is "
-                + "every start-up after the first")
+                + "every start-up after the first - and names no version, because it read none")
         void saysSoWhenNothingWasApplied() {
             migrate(List.of());
 
             assertThat(recorded())
-                    .containsExactly("SCHEMA ALREADY CURRENT - no migration was applied by this start-up");
+                    .containsExactly(NOTHING_APPLIED_LINE);
             assertThat(recorder.list.get(0).getLevel())
                     .as("a warning on the expected state trains an operator to ignore the category")
                     .isEqualTo(Level.INFO);
@@ -244,7 +256,7 @@ class MigrationVersionRecordCallbackTest {
             migrate(List.of());
 
             assertThat(recorded())
-                    .containsExactly("SCHEMA ALREADY CURRENT - no migration was applied by this start-up");
+                    .containsExactly(NOTHING_APPLIED_LINE);
         }
 
         @Test

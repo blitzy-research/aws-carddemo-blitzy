@@ -428,7 +428,7 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
     private static final String STEP_TIMER = "carddemo.batch.job.step";
 
     /** Tag naming the job a timed step belongs to. */
-    private static final String TAG_JOB = "job";
+    private static final String TAG_JOB = "batchJob";
 
     /** Tag naming the step being timed. */
     private static final String TAG_STEP = "step";

@@ -21,11 +21,15 @@ import com.carddemo.service.BatchLaunchGateway;
 import com.carddemo.service.BatchLaunchGateway.LaunchRejectedException;
 import com.carddemo.service.BatchLaunchGateway.RejectionReason;
 import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.ObservationPropagation;
+import io.micrometer.observation.ObservationRegistry;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -51,6 +55,7 @@ import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteExcep
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.dao.DataAccessException;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.dao.TransientDataAccessException;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcOperations;
@@ -96,9 +101,65 @@ import org.springframework.stereotype.Component;
  * unreachable rather than merely generous. A refusal is nevertheless handled rather than assumed away: the
  * reservation is marked failed so no execution is left recorded as started that will never run, and the
  * caller receives the same "not now" refusal a busy lock produces.
+ *
+ * <h2>The pool is sized core-equals-maximum, and that is the difference between concurrent and serial</h2>
+ *
+ * <p><strong>A core size of zero made this pool serial.</strong> {@code ThreadPoolExecutor.execute}
+ * creates a worker only while the live worker count is below the <em>core</em> size; once it is at or above
+ * core it <em>queues</em>, and it grows towards the maximum only when the queue <em>refuses</em> a task. So
+ * with a core of zero and a nine-slot queue, the first launch created one worker and the next eight were
+ * queued behind it - the second job did not begin until the first had finished. Nine jobs that share no
+ * data, no table and no output ran one after another, and the "activeLaunches" line this class logs
+ * reported one every time.
+ *
+ * <p>Core is therefore {@value #MAX_CONCURRENT_LAUNCHES} as well, so a launch creates its own worker up to
+ * the derived ceiling and nominally independent jobs actually run at the same time.
+ * {@code allowCoreThreadTimeOut(true)} is retained, which is what keeps that sizing free of cost: an
+ * instance that launches nothing still holds <strong>no</strong> thread, and a burst does not leave nine
+ * threads parked for the life of the process. The bounded queue stays, and under this sizing it is reached
+ * only when all {@value #MAX_CONCURRENT_LAUNCHES} workers are busy - which the per-job reservation makes
+ * unreachable - so it is a backstop rather than a path.
+ *
+ * <h2>The worker runs inside the caller's observation</h2>
+ *
+ * <p>An observation, and so a trace context, is thread-bound, and handing work to a plain executor severs
+ * it. Without propagation the job execution became a <em>detached root</em>: a trace of its own, with no
+ * edge back to the request that launched it, so an operator holding the trace of a launch could not follow
+ * it into the work it caused - which is the one question a launch trace exists to answer. The submitting
+ * observation is therefore captured on the caller's thread by
+ * {@link ObservationPropagation#inCurrentObservation} and reopened around the work on the worker, so the
+ * execution is a child of the launch. Nothing about the pool changes to achieve it: a context-propagating
+ * executor would have altered the queue, ceiling and rejection semantics above as a side effect of fixing
+ * tracing.
+ *
+ * <h2>Shutdown is a bounded managed drain, not a bare stop</h2>
+ *
+ * <p>Stopping is a {@link SmartLifecycle} concern rather than a destruction concern, because destruction
+ * runs after the collaborators this class needs in order to finish tidily. The phase is
+ * {@value #SHUTDOWN_PHASE}, which is below both of the framework's own web-server lifecycle phases -
+ * measured at {@code Integer.MAX_VALUE - 1024} for graceful request shutdown and
+ * {@code Integer.MAX_VALUE - 2048} for the container stop against Spring Boot 3.5.16 - and stopping runs in
+ * <em>descending</em> phase order, so by the time the drain begins the server has already stopped accepting
+ * the requests that would launch anything new. It is far above the ordinary phase of a non-smart lifecycle
+ * bean, and singleton destruction happens later still, so the job repository is available throughout.
+ *
+ * <p>The drain has three steps and each is bounded. New launches stop being accepted; work already
+ * dispatched is waited for, for at most {@value #DRAIN_TIMEOUT_SECONDS} seconds; and if the window expires
+ * the pool is stopped forcibly, which discards whatever was queued and interrupts what was running. The
+ * discarded reservations definitively never ran, so each is marked failed with an authored exit
+ * description - without that <em>terminal cleanup</em> the metadata would keep a row recorded as started
+ * that nothing will ever advance, the status surface would report it running for ever, and the per-job
+ * guard would refuse every future launch of that job because it would read that row as an active
+ * execution. {@link #close()} delegates to the same drain so a container that destroys without stopping,
+ * and a caller that closes twice, both behave identically.
+ *
+ * <p>See {@code docs/decision-log.md} entries DL-217 for the asynchronous launch this refines, DL-305 for
+ * the propagation utility, and DL-337 for the pool sizing, the propagation and the managed drain recorded
+ * together.
  */
 @Component
-public final class BatchLaunchCoordinator implements BatchLaunchGateway, AutoCloseable {
+public final class BatchLaunchCoordinator
+        implements BatchLaunchGateway, SmartLifecycle, AutoCloseable {
 
     /** The identifying key produced by the shared {@code RunIdIncrementer}. */
     public static final String SERVER_RUN_ID_PARAMETER = "run.id";
@@ -134,11 +195,45 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway, AutoClo
      * How long an idle worker is kept before it retires, in seconds.
      *
      * <p>The JDK's own figure for a cached pool. It is a thread-lifetime housekeeping value and not a
-     * performance setting: with a core size of zero and core timeout allowed, it means an instance that
-     * launches nothing holds no thread at all, and a burst of launches does not leave nine threads parked
-     * for the life of the process.
+     * performance setting: paired with {@code allowCoreThreadTimeOut(true)} it applies to <em>every</em>
+     * worker including the core ones, so an instance that launches nothing holds no thread at all and a
+     * burst of launches does not leave {@value #MAX_CONCURRENT_LAUNCHES} threads parked for the life of the
+     * process. That pairing is what makes a core size equal to the maximum free of standing cost.
      */
     static final long WORKER_KEEP_ALIVE_SECONDS = 60L;
+
+    /**
+     * How long a managed stop waits for dispatched executions to finish, in seconds.
+     *
+     * <p>Bounded on purpose, and this is the figure the bound is set to rather than a tuning knob. A stop
+     * that waited indefinitely would let one wedged job hold a deployment open for ever, which is the
+     * failure an operator experiences as "it will not shut down"; a stop that waited for nothing would cut
+     * off a job midway through writing whenever the process was asked to stop. Thirty seconds is long
+     * enough for a chunk to commit and a step to close its resources, and short enough that a wedged
+     * execution is escalated rather than waited on.
+     */
+    static final long DRAIN_TIMEOUT_SECONDS = 30L;
+
+    /**
+     * How long a forcible stop waits after interrupting, in seconds.
+     *
+     * <p>Only reached when the drain window above has already expired. It exists so that the interruption
+     * has a chance to take effect before this class reports what is still running: a report written
+     * immediately after the interrupt would name threads that were about to finish anyway.
+     */
+    static final long TERMINATION_GRACE_SECONDS = 5L;
+
+    /**
+     * The lifecycle phase this coordinator stops at.
+     *
+     * <p>Stopping runs in <strong>descending</strong> phase order. This value is below the framework's own
+     * web-server phases - measured against Spring Boot 3.5.16 as {@code Integer.MAX_VALUE - 1024} for
+     * graceful request shutdown and {@code Integer.MAX_VALUE - 2048} for the container stop - so the server
+     * has stopped accepting the requests that launch jobs before the drain begins. Draining first would
+     * leave a window in which a request could reserve and dispatch an execution into a pool that had just
+     * been shut down, whose reservation would then be failed for a capacity reason it did not have.
+     */
+    static final int SHUTDOWN_PHASE = Integer.MAX_VALUE - 4096;
 
     /**
      * The exit description recorded on a reservation that could not be handed to a worker.
@@ -149,6 +244,18 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway, AutoClo
     static final String DISPATCH_REFUSED_EXIT_DESCRIPTION =
             "The reserved execution was never started because the batch launch workers could not accept"
                     + " it; no step of this execution ran.";
+
+    /**
+     * The exit description recorded on a reservation discarded by a forcible stop.
+     *
+     * <p>Distinct from {@link #DISPATCH_REFUSED_EXIT_DESCRIPTION} because the two are different operational
+     * events with different remedies: a refusal means the workers were saturated, and this means the
+     * application was stopping. An operator reading the repository afterwards needs to be able to tell them
+     * apart, and a shared sentence would hide the distinction the repository is the only record of.
+     */
+    static final String SHUTDOWN_DISCARDED_EXIT_DESCRIPTION =
+            "The reserved execution was never started because the application stopped before a batch"
+                    + " launch worker took it; no step of this execution ran.";
 
     /** Logger for reservation conflicts, which are operational events rather than caller errors. */
     private static final Logger LOG = LoggerFactory.getLogger(BatchLaunchCoordinator.class);
@@ -166,13 +273,31 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway, AutoClo
      * a deployment choice: a caller free to supply an unbounded executor could reintroduce exactly the
      * unbounded concurrency this bound exists to prevent. The threads are <strong>not</strong> daemon
      * threads - a batch job that has begun writing should finish rather than be cut off when the context
-     * closes - and with a core size of zero and core timeout allowed, none exists until a job is
-     * dispatched and none survives idleness.
+     * closes - and with core timeout allowed, none exists until a job is dispatched and none survives
+     * idleness.
      */
     private final ThreadPoolExecutor launchWorkers;
 
+    /**
+     * The registry the submitting thread's observation is read from.
+     *
+     * <p>Injected rather than resolved statically, so a context with tracing disabled supplies the
+     * framework's no-op registry and this class behaves identically with nothing to carry.
+     */
+    private final ObservationRegistry observationRegistry;
+
     /** Serial number for worker thread names, so a stack trace names which worker it was on. */
     private final AtomicLong workerNumber = new AtomicLong();
+
+    /**
+     * Whether this coordinator is accepting launches, as {@link SmartLifecycle} reads it.
+     *
+     * <p>Held separately from the pool's own {@code isShutdown} because the two answer different questions:
+     * the pool is shut down once a drain has begun, while this records whether the lifecycle has been
+     * stopped at all - which is what makes {@link #stop()} and {@link #close()} idempotent without either
+     * having to inspect the pool's internal state.
+     */
+    private volatile boolean accepting = true;
 
     /**
      * Creates the coordinator over framework metadata and the application transaction boundary.
@@ -180,25 +305,33 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway, AutoClo
      * @param jobRepository framework metadata writer used to reserve the next execution
      * @param jobExplorer framework metadata reader used to advance the server run identifier
      * @param jdbcOperations configured PostgreSQL access used for the short advisory-lock transaction
+     * @param observationRegistry registry the submitting thread's observation is carried from, so a
+     *                            dispatched execution is a child of the launch rather than a detached root
      */
     public BatchLaunchCoordinator(
             final JobRepository jobRepository,
             final JobExplorer jobExplorer,
-            final JdbcOperations jdbcOperations) {
+            final JdbcOperations jdbcOperations,
+            final ObservationRegistry observationRegistry) {
         this.jobRepository = Objects.requireNonNull(
                 jobRepository, "jobRepository must not be null");
         this.jobExplorer = Objects.requireNonNull(jobExplorer, "jobExplorer must not be null");
         this.jdbcOperations = Objects.requireNonNull(
                 jdbcOperations, "jdbcOperations must not be null");
+        this.observationRegistry = Objects.requireNonNull(
+                observationRegistry, "observationRegistry must not be null");
         this.launchWorkers = new ThreadPoolExecutor(
-                0, MAX_CONCURRENT_LAUNCHES,
+                MAX_CONCURRENT_LAUNCHES, MAX_CONCURRENT_LAUNCHES,
                 WORKER_KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(MAX_CONCURRENT_LAUNCHES),
                 runnable -> new Thread(runnable,
                         "batch-launch-" + this.workerNumber.incrementAndGet()),
                 new ThreadPoolExecutor.AbortPolicy());
-        // A core of zero with a maximum above it needs the pool to create a worker on demand and to let it
-        // retire; without this the pool would hold no thread and queue everything behind nothing.
+        // CORE EQUALS MAXIMUM, AND THE TIMEOUT IS WHAT MAKES THAT FREE. execute() creates a worker only
+        // while the live count is below CORE; at or above core it queues, and it grows towards the maximum
+        // only once the queue REFUSES. A core of zero therefore ran one launch at a time and queued the
+        // rest behind it. With core at the ceiling every launch gets its own worker, and with core timeout
+        // allowed an idle instance still holds no thread at all.
         this.launchWorkers.allowCoreThreadTimeOut(true);
     }
 
@@ -258,8 +391,14 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway, AutoClo
      */
     private void dispatch(final Job job, final JobExecution reserved, final long executionId) {
         final String jobName = job.getName();
+        // Captured HERE, on the caller's thread, because by the time a worker runs the task this thread has
+        // moved on and its observation is current nowhere. Wrapping the work rather than the executor keeps
+        // the queue, ceiling and rejection semantics documented above exactly as they are.
+        final Runnable observed = ObservationPropagation.inCurrentObservation(
+                this.observationRegistry, () -> run(job, reserved, jobName, executionId));
         try {
-            this.launchWorkers.execute(() -> run(job, reserved, jobName, executionId));
+            this.launchWorkers.execute(
+                    new ReservedLaunch(reserved, jobName, executionId, observed));
         } catch (final RejectedExecutionException refused) {
             failUndispatchedReservation(reserved, jobName, executionId, refused);
             throw new LaunchRejectedException(RejectionReason.ACTIVE_EXECUTION, refused);
@@ -346,21 +485,194 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway, AutoClo
     }
 
     /**
-     * Stops accepting new launches, leaving those already dispatched to finish.
+     * Reports the phase this coordinator stops at, which is below the framework's own web-server phases.
      *
-     * <p>Called by the container as this bean's inferred destroy method. Nothing is cancelled and nothing
-     * is waited for: a job that has begun writing should finish rather than be cut off, and the workers
-     * are not daemon threads, so the process stays alive until they are done without the context close
-     * having to block on them. What closing does change is that a launch arriving afterwards is refused by
-     * the workers and its reservation is failed rather than left recorded as started.
+     * @return {@value #SHUTDOWN_PHASE}
+     */
+    @Override
+    public int getPhase() {
+        return SHUTDOWN_PHASE;
+    }
+
+    /**
+     * Reports whether launches are still being accepted.
+     *
+     * <p>Answers the lifecycle's question and not the pool's: it is {@code false} from the moment a stop
+     * begins, which is what lets a container call {@link #stop()} and then {@link #close()} without the
+     * drain running twice.
+     *
+     * @return {@code true} until a stop has begun
+     */
+    @Override
+    public boolean isRunning() {
+        return this.accepting;
+    }
+
+    /**
+     * Starts accepting launches, which is the state this bean is constructed in.
+     *
+     * <p>Present because the lifecycle contract requires it, and deliberately not a way to resume after a
+     * stop: a stopped pool cannot be restarted, and pretending otherwise would let a caller believe a
+     * launch would be accepted when the workers would refuse it. A start after a stop is therefore refused
+     * rather than silently ignored.
+     *
+     * @throws IllegalStateException when called after a stop, because the workers cannot be restarted
+     */
+    @Override
+    public void start() {
+        if (!this.accepting) {
+            throw new IllegalStateException("batch launch workers cannot be restarted once stopped;"
+                    + " a new application context is required");
+        }
+    }
+
+    /**
+     * Stops accepting launches and drains what is already dispatched, within a bounded window.
+     *
+     * <p>Delegates to {@link #drainWithin(Duration, Duration)} with the published windows. Idempotent: a
+     * second call finds the lifecycle already stopped and returns without touching the pool again.
+     */
+    @Override
+    public void stop() {
+        drainWithin(Duration.ofSeconds(DRAIN_TIMEOUT_SECONDS),
+                Duration.ofSeconds(TERMINATION_GRACE_SECONDS));
+    }
+
+    /**
+     * Runs the same drain as {@link #stop()}, so a container that destroys without stopping still drains.
+     *
+     * <p>Kept alongside the lifecycle rather than replaced by it. The lifecycle is what runs at the right
+     * moment in a managed context; this is what a test, or a container that only calls the inferred destroy
+     * method, gets. Both reach one routine, so there is one drain and one set of semantics to reason about.
      */
     @Override
     public void close() {
+        stop();
+    }
+
+    /**
+     * Stops accepting launches and drains the workers within the given windows.
+     *
+     * <p>Three bounded steps:
+     *
+     * <ol>
+     *   <li><strong>Stop accepting.</strong> {@code shutdown()} lets everything already dispatched -
+     *       running and queued alike - proceed, and refuses anything new.</li>
+     *   <li><strong>Wait, for at most {@code drainWindow}.</strong> A job that has begun writing gets the
+     *       chance to commit its chunk and close its resources.</li>
+     *   <li><strong>Escalate, once.</strong> If the window expires, {@code shutdownNow()} discards what is
+     *       still queued and interrupts what is still running. The discarded tasks are the ones that
+     *       definitively never ran, and each carries its own reservation, so each is marked failed - the
+     *       terminal cleanup without which the metadata would keep an execution recorded as started that
+     *       nothing will advance, and the per-job guard would refuse every future launch of that job. What
+     *       was interrupted is left to the framework's own failure recording, which owns those rows and is
+     *       writing to them concurrently; this method reports what is still running rather than racing
+     *       it.</li>
+     * </ol>
+     *
+     * <p>Package-visible with explicit windows so the bounded behaviour can be <em>measured</em> with a
+     * short window instead of by making a test wait {@value #DRAIN_TIMEOUT_SECONDS} seconds. Production
+     * always enters through {@link #stop()} and always uses the published figures.
+     *
+     * @param drainWindow  how long to wait for dispatched executions to finish; must not be {@code null}
+     * @param graceWindow  how long to wait after interrupting; must not be {@code null}
+     */
+    void drainWithin(final Duration drainWindow, final Duration graceWindow) {
+        Objects.requireNonNull(drainWindow, "drainWindow must not be null");
+        Objects.requireNonNull(graceWindow, "graceWindow must not be null");
+        if (!this.accepting) {
+            return;
+        }
+        this.accepting = false;
+
         this.launchWorkers.shutdown();
-        final int queuedButNotStarted = this.launchWorkers.getQueue().size();
-        LOG.info("Batch launch workers stopped accepting launches: active={} queued={}",
+        LOG.info("Batch launch workers stopped accepting launches, draining: active={} queued={}"
+                        + " drainMillis={}",
                 Integer.valueOf(this.launchWorkers.getActiveCount()),
-                Integer.valueOf(queuedButNotStarted));
+                Integer.valueOf(this.launchWorkers.getQueue().size()),
+                Long.valueOf(drainWindow.toMillis()));
+
+        if (awaitTermination(drainWindow)) {
+            LOG.info("Batch launch workers drained cleanly; every dispatched execution finished");
+            return;
+        }
+
+        final List<Runnable> discarded = this.launchWorkers.shutdownNow();
+        LOG.warn("Batch launch workers did not drain within {}ms, so the remainder is being stopped:"
+                        + " interrupted={} discarded={}",
+                Long.valueOf(drainWindow.toMillis()),
+                Integer.valueOf(this.launchWorkers.getActiveCount()),
+                Integer.valueOf(discarded.size()));
+        failDiscardedReservations(discarded);
+
+        if (!awaitTermination(graceWindow) && this.launchWorkers.getActiveCount() > 0) {
+            LOG.error("Batch launch workers are still running {}ms after being interrupted; their"
+                            + " executions remain as the framework last recorded them",
+                    Long.valueOf(graceWindow.toMillis()));
+        }
+    }
+
+    /**
+     * Waits for the pool to terminate, treating an interruption as a failure to drain.
+     *
+     * <p>The interrupt flag is restored rather than swallowed, because the thread being interrupted here is
+     * the container's shutdown thread and whatever asked it to stop is entitled to see that it was asked.
+     *
+     * @param  window how long to wait
+     * @return {@code true} when the pool terminated inside the window
+     */
+    private boolean awaitTermination(final Duration window) {
+        try {
+            return this.launchWorkers.awaitTermination(window.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return this.launchWorkers.isTerminated();
+        }
+    }
+
+    /**
+     * Marks every reservation a forcible stop discarded as a failed execution.
+     *
+     * <p>Normally there is nothing to do, and that is the point of doing it anyway: with the pool sized to
+     * the launchable inventory and the reservation admitting one execution per job, the queue is
+     * unreachable, so this list is empty on every ordinary stop. It is the path that keeps the metadata
+     * honest in the case the sizing argument is wrong.
+     *
+     * @param discarded the tasks the pool returned as never commenced
+     */
+    private void failDiscardedReservations(final List<Runnable> discarded) {
+        for (final Runnable task : discarded) {
+            if (task instanceof final ReservedLaunch launch) {
+                LOG.warn("A reserved execution was discarded by shutdown, so it is failed rather than"
+                                + " left started: job={} jobExecutionId={}",
+                        launch.jobName(), Long.valueOf(launch.executionId()));
+                markFailed(launch.reserved(), launch.jobName(), launch.executionId(),
+                        SHUTDOWN_DISCARDED_EXIT_DESCRIPTION);
+            }
+        }
+    }
+
+    /**
+     * One dispatched launch, carrying the reservation it belongs to.
+     *
+     * <p>A plain lambda would have been enough to run the work, and it is deliberately not used: the pool
+     * hands back the tasks a forcible stop discarded, and a lambda hands back nothing identifiable. Carrying
+     * the reservation and its identifiers on the task is what lets the drain above name the executions that
+     * never ran and fail them, rather than leaving rows recorded as started.
+     *
+     * @param reserved    the reserved execution this task would have run
+     * @param jobName     the job's registered name, for diagnostics
+     * @param executionId the reserved execution's identifier, for diagnostics
+     * @param work        the work to run, already wrapped in the submitting observation
+     */
+    private record ReservedLaunch(
+            JobExecution reserved, String jobName, long executionId, Runnable work)
+            implements Runnable {
+
+        @Override
+        public void run() {
+            this.work.run();
+        }
     }
 
     /**

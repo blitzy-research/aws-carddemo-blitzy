@@ -451,8 +451,16 @@ public final class PostTransactionJobConfig {
     private static final String STEP_TIMER_DESCRIPTION =
             "Elapsed time of one step of a migrated CardDemo batch job stream";
 
-    /** Tag naming the job a sample belongs to. */
-    private static final String TAG_JOB = "job";
+    /**
+     * Tag naming the job a sample belongs to.
+     *
+     * <p><strong>Deliberately not {@code job}.</strong> Prometheus stamps its own {@code job} label onto
+     * every series it collects, naming the scrape target rather than the application dimension. Two
+     * labels of one name cannot coexist, so the exporter's value is renamed to {@code exported_job} on
+     * collection and every query grouping by {@code job} collapses to the single scrape target -
+     * silently, with the panel still rendering. Recorded as {@code DL-338}.
+     */
+    private static final String TAG_JOB = "batchJob";
 
     /** Tag naming the step a sample belongs to. */
     private static final String TAG_STEP = "step";

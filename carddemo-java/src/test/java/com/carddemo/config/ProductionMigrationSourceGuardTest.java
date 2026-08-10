@@ -187,7 +187,7 @@ final class ProductionMigrationSourceGuardTest {
         void anAbsentEnablementSettingIsRefused() {
             final MockEnvironment silent = new MockEnvironment();
             silent.setActiveProfiles(PRODUCTION);
-            silent.setProperty(TARGET_KEY, FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+            silent.setProperty(TARGET_KEY, FlywayConfig.PRODUCTION_TARGET);
             silent.setProperty(LOCATIONS_KEY, FlywayConfig.SCHEMA_LOCATION);
 
             assertThatExceptionOfType(IllegalStateException.class)
@@ -197,29 +197,29 @@ final class ProductionMigrationSourceGuardTest {
         }
 
         @ParameterizedTest(name = "the target [{0}] is refused")
-        @ValueSource(strings = {"1", "1.1", "2", "3", "4", "current", "not-a-version"})
-        @DisplayName("every target other than the open one is refused, and every NUMBER is refused "
-                + "whatever its value, from the same resolution the customizer applies")
-        void everyTargetOtherThanTheOpenOneIsRefused(final String target) {
+        @ValueSource(strings = {"1", "1.1", "3", "4", "latest", "current", "not-a-version"})
+        @DisplayName("every target other than the pin is refused, in both directions and including the "
+                + "open marker, from the same resolution the customizer applies")
+        void everyTargetOtherThanThePinIsRefused(final String target) {
             final MockEnvironment environment = canonicalProduction();
             environment.setProperty(TARGET_KEY, target);
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .as("a target of %s is refused. The value 2 in particular USED to be the accepted "
-                            + "one - it was the production seed exclusion - and it is refused now for "
-                            + "the defect it always carried: a number stops the sequence at itself, so "
-                            + "a schema script added after this deployment is silently never applied and "
-                            + "the migration still reports success. The seeds are held out by the "
-                            + "location list, which an operator cannot widen", target)
+                    .as("a target of %s is refused. BELOW the pin the migration stops before the indexes "
+                            + "and constraints are created and reports success anyway. ABOVE it - and the "
+                            + "open marker is above it - the migration applies whatever a resolved "
+                            + "location carries past the delivered schema, and the seed scripts are "
+                            + "numbered there. The pin itself is asserted against the delivered scripts, "
+                            + "so it cannot freeze a later release", target)
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(environment))
-                    .withMessageContaining(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
+                    .withMessageContaining(FlywayConfig.PRODUCTION_TARGET)
                     .satisfies(refusal -> assertCarriesNoRawTerminator(refusal.getMessage()));
         }
 
         @Test
-        @DisplayName("an absent target is ACCEPTED, because the migration tool then applies every "
-                + "version the resolved location carries - which is exactly the production scope")
+        @DisplayName("an absent target is ACCEPTED, because the resolution corrects silence to the pin "
+                + "rather than refusing a deployment that inherited the right posture")
         void anAbsentTargetIsAccepted() {
             final MockEnvironment silent = new MockEnvironment();
             silent.setActiveProfiles(PRODUCTION);
@@ -227,12 +227,12 @@ final class ProductionMigrationSourceGuardTest {
             silent.setProperty(LOCATIONS_KEY, FlywayConfig.SCHEMA_LOCATION);
 
             assertThatNoException()
-                    .as("silence used to be refused, because a migration tool with no target migrates "
-                            + "to the latest version and the version ceiling WAS the seed exclusion. It "
-                            + "is accepted now: the exclusion is the location list asserted below, and "
-                            + "the resolved location carries no seed for a latest-version migration to "
-                            + "reach. What is still refused is the location being anything but the "
-                            + "packaged schema directory, and the enablement setting being absent")
+                    .as("silence is accepted because the resolution corrects it to the pin: a migration "
+                            + "tool with no target migrates to the latest version, so silence left alone "
+                            + "would be the dangerous case, and refusing it would stop a deployment that "
+                            + "had inherited the right posture from the shared baseline. What is still "
+                            + "refused is the location being anything but the packaged schema directory, "
+                            + "and the enablement setting being absent")
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(silent));
 
@@ -311,7 +311,7 @@ final class ProductionMigrationSourceGuardTest {
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(environment))
                     .satisfies(refusal -> assertThat(refusal.getMessage())
-                            .contains(FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET)
+                            .contains(FlywayConfig.PRODUCTION_TARGET)
                             .doesNotContain("planted-version"));
         }
 
@@ -322,7 +322,7 @@ final class ProductionMigrationSourceGuardTest {
             final MockEnvironment silent = new MockEnvironment();
             silent.setActiveProfiles(PRODUCTION);
             silent.setProperty(ENABLED_KEY, "true");
-            silent.setProperty(TARGET_KEY, FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+            silent.setProperty(TARGET_KEY, FlywayConfig.PRODUCTION_TARGET);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() ->
@@ -351,7 +351,7 @@ final class ProductionMigrationSourceGuardTest {
             final MockEnvironment indexed = new MockEnvironment();
             indexed.setActiveProfiles(PRODUCTION);
             indexed.setProperty(ENABLED_KEY, "true");
-            indexed.setProperty(TARGET_KEY, FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+            indexed.setProperty(TARGET_KEY, FlywayConfig.PRODUCTION_TARGET);
             indexed.setProperty(LOCATIONS_KEY + "[0]", "filesystem:/tmp/attacker/db/migration");
 
             assertThatExceptionOfType(IllegalStateException.class)
@@ -364,7 +364,7 @@ final class ProductionMigrationSourceGuardTest {
             final MockEnvironment canonical = new MockEnvironment();
             canonical.setActiveProfiles(PRODUCTION);
             canonical.setProperty(ENABLED_KEY, "true");
-            canonical.setProperty(TARGET_KEY, FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+            canonical.setProperty(TARGET_KEY, FlywayConfig.PRODUCTION_TARGET);
             canonical.setProperty(LOCATIONS_KEY + "[0]", FlywayConfig.SCHEMA_LOCATION);
 
             assertThatNoException()
@@ -381,7 +381,7 @@ final class ProductionMigrationSourceGuardTest {
             final MockEnvironment two = new MockEnvironment();
             two.setActiveProfiles(PRODUCTION);
             two.setProperty(ENABLED_KEY, "true");
-            two.setProperty(TARGET_KEY, FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+            two.setProperty(TARGET_KEY, FlywayConfig.PRODUCTION_TARGET);
             two.setProperty(LOCATIONS_KEY + "[0]", FlywayConfig.SCHEMA_LOCATION);
             two.setProperty(LOCATIONS_KEY + "[1]", "filesystem:/tmp/attacker/db/migration");
 
@@ -400,7 +400,7 @@ final class ProductionMigrationSourceGuardTest {
                 other.setActiveProfiles(profile);
             }
             other.setProperty(ENABLED_KEY, "false");
-            other.setProperty(TARGET_KEY, FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+            other.setProperty(TARGET_KEY, FlywayConfig.PRODUCTION_TARGET);
             other.setProperty(LOCATIONS_KEY, "filesystem:/tmp/anywhere");
 
             assertThatNoException().isThrownBy(() ->
@@ -437,7 +437,7 @@ final class ProductionMigrationSourceGuardTest {
                     .withPropertyValues(
                             "spring.profiles.active=" + PRODUCTION,
                             ENABLED_KEY + "=false",
-                            TARGET_KEY + "=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
+                            TARGET_KEY + "=" + FlywayConfig.PRODUCTION_TARGET,
                             LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION)
                     .run(context -> assertThat(context)
                             .hasFailed()
@@ -454,7 +454,7 @@ final class ProductionMigrationSourceGuardTest {
                     .withPropertyValues(
                             "spring.profiles.active=" + PRODUCTION,
                             ENABLED_KEY + "=true",
-                            TARGET_KEY + "=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
+                            TARGET_KEY + "=" + FlywayConfig.PRODUCTION_TARGET,
                             LOCATIONS_KEY + "=filesystem:/tmp/attacker/db/migration")
                     .run(context -> assertThat(context)
                             .hasFailed()
@@ -471,7 +471,7 @@ final class ProductionMigrationSourceGuardTest {
                     .withPropertyValues(
                             "spring.profiles.active=" + PRODUCTION,
                             ENABLED_KEY + "=true",
-                            TARGET_KEY + "=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
+                            TARGET_KEY + "=" + FlywayConfig.PRODUCTION_TARGET,
                             LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION)
                     .run(context -> assertThat(context).hasNotFailed());
         }
@@ -572,7 +572,7 @@ final class ProductionMigrationSourceGuardTest {
                     .withPropertyValues(
                             "spring.profiles.active=" + PRODUCTION,
                             ENABLED_KEY + "=true",
-                            TARGET_KEY + "=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
+                            TARGET_KEY + "=" + FlywayConfig.PRODUCTION_TARGET,
                             LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION)
                     .run(context -> assertThat(context)
                             .hasNotFailed()
@@ -597,7 +597,7 @@ final class ProductionMigrationSourceGuardTest {
         final MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles(PRODUCTION);
         environment.setProperty(ENABLED_KEY, "true");
-        environment.setProperty(TARGET_KEY, FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET);
+        environment.setProperty(TARGET_KEY, FlywayConfig.PRODUCTION_TARGET);
         environment.setProperty(LOCATIONS_KEY, FlywayConfig.SCHEMA_LOCATION);
         return environment;
     }
@@ -611,7 +611,7 @@ final class ProductionMigrationSourceGuardTest {
         return new String[] {
             "spring.profiles.active=" + PRODUCTION,
             ENABLED_KEY + "=true",
-            TARGET_KEY + "=" + FlywayConfig.ALL_RESOLVED_VERSIONS_TARGET,
+            TARGET_KEY + "=" + FlywayConfig.PRODUCTION_TARGET,
             LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION,
         };
     }

@@ -30,12 +30,14 @@
 -- location EVERY profile configures, so every profile receives an identical schema and integrity layer.
 -- Sample rows and sign-on identities are V3 and V4, and they ship from the SIBLING
 -- classpath:db/migration/seed, which only the local and test overlays declare - so only those two
--- profiles resolve them at all. There is no version ceiling: every profile declares
--- spring.flyway.target: latest, and FlywayConfig refuses a numeric one under prod, because a number
--- would freeze the schema at its own version. The shared parent classpath:db/migration holds no script
--- and is refused as a location under every profile: a location is scanned recursively, so the parent
--- reaches both children and records each script under a name relative to itself. See
--- docs/decision-log.md DL-298.
+-- profiles resolve them at all. A VERSION CEILING SITS BESIDE THAT LIST: the shared baseline and prod
+-- declare spring.flyway.target: "2" - the version THIS script carries, and the highest the schema
+-- location delivers - while local and test lift it to latest. FlywayConfig refuses any other production
+-- value in either direction, the head marker included, and corrects silence to the pin; a ceiling of 1
+-- would stop before these nine integrity statements and still report success. The shared parent
+-- classpath:db/migration holds no script and is refused as a location under every profile: a location is
+-- scanned recursively, so the parent reaches both children and records each script under a name relative
+-- to itself. See docs/decision-log.md DL-298 for the location split and DL-334 for the ceiling.
 --
 -- V1 IS A REQUIRED PREDECESSOR. The nine relational-integrity statements name tables, columns and
 -- primary keys that V1 creates and none is guarded, so applying V2 without V1 fails immediately and

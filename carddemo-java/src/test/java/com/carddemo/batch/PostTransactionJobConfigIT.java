@@ -1417,7 +1417,7 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
         final List<Meter> stepTimers = this.meterRegistry.getMeters().stream()
                 .filter(meter -> meter.getId().getType() == Meter.Type.TIMER)
                 .filter(meter -> PostTransactionJobConfig.JOB_NAME.equals(
-                        meter.getId().getTag("job")))
+                        meter.getId().getTag("batchJob")))
                 .filter(meter -> PostTransactionJobConfig.STEP_NAME.equals(
                         meter.getId().getTag("step")))
                 .toList();

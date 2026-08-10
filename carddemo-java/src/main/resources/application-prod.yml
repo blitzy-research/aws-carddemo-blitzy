@@ -105,7 +105,19 @@
 #   worse than a failed start. Guarded on exactly the same terms as the secrets above: a location is
 #   as capable of pointing somewhere accidental as a credential is of being forged.
 #     CARDDEMO_DB_URL                  JDBC location of the PostgreSQL 16 server. Never defaulted: a
-#                                      production data source must not be inferred
+#                                      production data source must not be inferred. THE TRANSPORT IS
+#                                      PART OF THE REQUIRED VALUE, not a separate setting: the form
+#                                      must be
+#                                        jdbc:postgresql://host:port/database?sslmode=verify-full
+#                                      naming a non-loopback host, carrying no user or password
+#                                      parameter and no userinfo, and declaring no non-validating
+#                                      sslfactory. The driver DEFAULTS sslmode to `prefer`, which
+#                                      falls back to a plaintext session without reporting it, so an
+#                                      omitted mode is refused rather than assumed;
+#                                      com.carddemo.config.ProductionConfigurationValidator
+#                                      .validateDatabaseTransport refuses every weaker mode -
+#                                      disable, allow, prefer, require and verify-ca - before any
+#                                      bean is created. See docs/decision-log.md DL-336
 #     CARDDEMO_DB_USERNAME             data source user
 #     CARDDEMO_TLS_KEYSTORE            location of the server key store
 #     CARDDEMO_TLS_KEYSTORE_TYPE       key store format, for example PKCS12
@@ -199,9 +211,9 @@
 # least one of them.
 #
 # The same class also refuses, at migration time, any resolved location other than the one packaged
-# classpath:db/migration, and refuses any resolved version ceiling that reaches a seed version. So a
-# merged environment, an operator override or a copied overlay block cannot reintroduce the seeds in
-# silence even if the co-activation guard were ever removed.
+# classpath:db/migration/schema, and any resolved version ceiling other than 2. So a merged environment,
+# an operator override or a copied overlay block cannot reintroduce the seeds in silence even if the
+# co-activation guard were ever removed.
 #
 # And because no configuration control can reach a database that was ALREADY seeded before this
 # process existed, com.carddemo.config.ProductionSeedRejectionCallback refuses a production start-up
@@ -229,6 +241,34 @@ spring:
   # far from the missing variable and in words that do not name it. An EMPTY credential variable is
   # worse: it binds as an empty string and is offered to the server as a password, and whether that
   # is refused is the server's decision rather than this module's. See docs/decision-log.md DL-105.
+  #
+  # AND THE LOCATION IS HELD TO ITS TRANSPORT, NOT ONLY TO BEING SUPPLIED. The value of
+  # CARDDEMO_DB_URL must be
+  #
+  #     jdbc:postgresql://host:port/database?sslmode=verify-full
+  #
+  # and ProductionConfigurationValidator.validateDatabaseTransport refuses anything else before a
+  # single bean is created. Six rules, each for a distinct failure:
+  #
+  #   * the sub-protocol must be jdbc:postgresql: - the rules below are that driver's, and this is
+  #     also the one rule that refuses an embedded database outright;
+  #   * sslmode must be PRESENT and exactly verify-full. PRESENT because the driver's own default is
+  #     `prefer`, which asks for encryption and FALLS BACK TO A PLAINTEXT SESSION WITHOUT REPORTING
+  #     IT - so a URL that simply omits the parameter is a downgradeable channel that looks
+  #     configured. EXACTLY because each weaker mode drops a different guarantee: `disable` forbids
+  #     encryption, `allow` lets the server choose, `prefer` downgrades silently, `require` encrypts
+  #     but validates no certificate, and `verify-ca` validates the chain but not the host name. Only
+  #     verify-full keeps encryption, chain validation and host-name validation together;
+  #   * no non-validating sslfactory, which would leave verify-full stated and unenforced;
+  #   * no user or password parameter and no //user:pass@ userinfo - either is a credential in the
+  #     one value that appears in configuration dumps and process listings, and either silently
+  #     overrides the two settings guarded beside it;
+  #   * the URL must name a host, so the server is stated rather than inferred;
+  #   * the host must not be loopback, because the database is not in this process.
+  #
+  # A trust-anchor file is deliberately NOT required. verify-full already refuses to connect when no
+  # anchor validates the server, so a deployment whose anchor is unresolvable fails loudly at the
+  # first connection; demanding sslrootcert would add an obligation without adding a guarantee.
   #
   # THE POOL KEEPS ITS SHIPPED DEFAULTS, AND THAT IS DELIBERATE. No sizing property and no time-out
   # override is declared, here or anywhere else in this module. A production profile is exactly where
@@ -261,29 +301,37 @@ spring:
       ddl-auto: validate
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - AND THE CEILING BELOW IS A SECURITY CONTROL, NOT A TIDINESS PREFERENCE.
+  # SCHEMA EVOLUTION - AND BOTH SETTINGS BELOW ARE SECURITY CONTROLS, NOT TIDINESS PREFERENCES.
   #
-  # THE PRODUCTION CONTROL IS THE VERSION CEILING: TARGET 2 AND NOTHING ABOVE IT. Four migrations exist
-  # in this module and they are physically FLAT in one directory that every profile resolves:
+  # TWO CONTROLS, INDEPENDENT, AND NEITHER SUBSTITUTES FOR THE OTHER. Four migrations exist in this
+  # module and they ship from two sibling directories whose shared parent holds no script at all:
   #
-  #   classpath:db/migration            RESOLVED HERE, as by every profile
+  #   classpath:db/migration/schema     RESOLVED HERE, and the only location this profile resolves
   #     V1__create_schema.sql           the eleven application tables         APPLIED HERE
   #     V2__create_indexes.sql          keys and alternate-index equivalents  APPLIED HERE
   #   ------------------------------------------------------------ ceiling: target 2
+  #   classpath:db/migration/seed       NEVER RESOLVED HERE
   #     V3__seed_reference_data.sql     sample reference rows                 NEVER APPLIED HERE
   #     V4__seed_user_security.sql      sign-on identities                    NEVER APPLIED HERE
   #
-  # There is no schema/ or seed/ child directory, and none may be created; a directory-scoped location
-  # list therefore cannot separate the seeds from the schema, and the version ceiling is the control
-  # that can. A script above the ceiling is reported as pending-above-target and the migration still
-  # validates successfully, so the production migration history ends at V2 and that is not a condition a
-  # deployment must suppress. See docs/decision-log.md DL-127.
+  # THE LOCATION LIST decides which scripts are resolved: this profile names the schema location alone,
+  # so the two seeds appear in no state whatsoever here - not applied, not pending, not resolved. THE
+  # CEILING decides how far a resolved list may be applied: target 2 is the highest version the schema
+  # location delivers, so a seed-numbered script would be declined by its number even if some other
+  # location ever presented one. See docs/decision-log.md DL-298 for the location split and DL-334 for
+  # why the ceiling is held alongside it rather than removed.
   #
-  # THE CEILING IS RE-ASSERTED HERE rather than inherited - the shared baseline in application.yml
-  # already carries the same restrictive value, so a profile that forgets the property inherits the safe
-  # one, and this overlay states it out loud for anyone reading only this file. FlywayConfig re-applies
-  # the same value under this profile AFTER the configuration has been bound, so an inherited value, an
-  # operator override or a merged property source cannot lift it in silence.
+  # BOTH ARE RE-ASSERTED HERE rather than inherited - the shared baseline in application.yml already
+  # carries the same restrictive pair, so a profile that forgets either property inherits the safe one,
+  # and this overlay states both out loud for anyone reading only this file. FlywayConfig re-applies
+  # both under this profile AFTER the configuration has been bound, so an inherited value, an operator
+  # override or a merged property source cannot change either in silence.
+  #
+  # THE CEILING CANNOT GO STALE, WHICH IS THE ONE OBJECTION A PIN HAS TO ANSWER. A number written down
+  # and never checked would freeze the schema: the day a V5 schema script shipped, this deployment would
+  # stop below it, apply nothing and report success. FlywayConfigTest therefore asserts the pinned
+  # version against the versions classpath:db/migration/schema actually delivers, so raising the schema
+  # without raising the pin fails the BUILD rather than under-migrating a deployment later.
   #
   # The batch framework's own metadata tables are created by Spring Batch itself rather than by a
   # migration, which is why the inventory above is four scripts and not five; see the batch block
@@ -298,25 +346,27 @@ spring:
   # module encrypts at rest. Neither belongs in production, and neither reaching it would be
   # untidiness: it would be a credential incident and a privacy incident respectively.
   #
-  # WHY A CEILING AND NOT A DIRECTORY. A Flyway location is scanned RECURSIVELY, so a child directory
-  # under a location a profile resolves is reached anyway; and because all four delivered scripts sit in
-  # ONE flat directory, a location list is the same value in every profile and can express no separation
-  # at all. An earlier revision introduced schema/ and seed/ child directories to try, which contradicted
-  # the delivered layout and left two competing migration models in the same module. The version ceiling
-  # is the control the artefacts actually support: it is measured against the script NUMBER, which is
-  # part of the file name and therefore cannot drift from the file. Verified against Flyway 11.7.2 and
-  # PostgreSQL 16: under target 2 the two seeds are discovered, reported as above-target, and not
-  # executed, and the migration validates successfully. See docs/decision-log.md DL-127, which supersedes
-  # DL-102, DL-111, DL-116 and DL-119.
+  # WHY A DIRECTORY AND A CEILING, RATHER THAN ONE OF THEM. A Flyway location is scanned RECURSIVELY,
+  # so moving the seeds into a child of a resolved directory separates nothing - which is why the SCHEMA
+  # scripts moved down as well and the shared parent classpath:db/migration holds no script and is
+  # resolved by no profile. That makes the location list a real separation: a location this profile never
+  # names produces no script to decline. The ceiling then answers a different question - not where a
+  # script comes from but how far a resolved list may be applied - and it is measured against the script
+  # NUMBER, which is part of the file name and therefore cannot drift from the file. Verified against
+  # Flyway 11.7.2 and PostgreSQL 16: with the seed location unresolved the two seeds are not discovered
+  # at all, and where they are discovered under a seeding profile the ceiling reports them as
+  # above-target without executing them, and the migration validates successfully either way.
   #
-  # THE RULE FOR ANY FUTURE SCRIPT: a script production MUST run is numbered at or below 2; a script
-  # production must NEVER run is numbered above 2. Do not create a child directory under db/migration.
-  # Raise this ceiling only in the same commit that adds a production-required script above it, and never
-  # to admit a seed. A sign-on credential is stored only as a hash regardless, so that even a mistake
-  # here leaks no usable secret.
+  # THE RULE FOR ANY FUTURE SCRIPT: a script production MUST run belongs in db/migration/schema and is
+  # numbered at or below the ceiling; a script production must NEVER run belongs in db/migration/seed and
+  # is numbered above it. Do not resolve the shared parent from any profile. Raise this ceiling only in
+  # the same commit that adds a production-required script above it, and never to admit a seed - and the
+  # build enforces that pairing rather than trusting it, because FlywayConfigTest asserts the pin against
+  # the versions the schema location delivers. A sign-on credential is stored only as a hash regardless,
+  # so that even a mistake here leaks no usable secret.
   #
-  # `target` does not weaken validation: validate-on-migrate stays on, and it catches a CHANGED
-  # already-applied script. What it does NOT catch, and this was measured rather than assumed, is a
+  # NEITHER SETTING WEAKENS VALIDATION: validate-on-migrate stays on, and it catches a CHANGED
+  # already-applied script. What neither of them catches, and this was measured rather than assumed, is a
   # database that was seeded under local or test and is then opened by this profile. Version 11 of the
   # migration tool ignores FUTURE migrations by default, so applied versions 3 and 4 that sit above this
   # ceiling are not a validation failure - the migration REPORTS SUCCESS over them,
@@ -330,16 +380,18 @@ spring:
   # refuses, whenever this profile is active:
   #
   #   * any location list that is not EXACTLY ONE entry equal, character for character, to the packaged
-  #     classpath:db/migration. A file-system descriptor, a bare path, a nested sub-path, a trailing
-  #     separator, a second entry and an empty list are each refused. The match is equality and not
-  #     containment on purpose: containment cannot separate the packaged directory from an
-  #     operator-writable directory that merely ends in the same folder name, and such a directory
-  #     could present its own V1 and V2 carrying seed content the ceiling would then never stop;
+  #     classpath:db/migration/schema. A file-system descriptor, a bare path, a nested sub-path, a
+  #     trailing separator, a second entry, the seed location, the shared parent and an empty list are
+  #     each refused. The match is equality and not containment on purpose: containment cannot separate
+  #     the packaged directory from an operator-writable directory that merely ends in the same folder
+  #     name, and such a directory could present its own V1 and V2 carrying seed content;
   #
-  #   * any ceiling that is not EXACTLY "2". Above it lie the seeds. BELOW IT LIES AN UNDER-MIGRATED
-  #     SCHEMA: a ceiling of "1.1" reaches no seed and so would satisfy a seeds-only test, yet it stops
-  #     before V2 and leaves the indexes and constraints V2 creates absent - a database that reports a
-  #     successful migration while missing the structures every alternate-index query depends on;
+  #   * any ceiling that is not EXACTLY "2". ABOVE IT lie the seed versions, and an open marker such as
+  #     `latest` is a value above it: it would apply whatever a resolved location carried. BELOW IT LIES
+  #     AN UNDER-MIGRATED SCHEMA: a ceiling of "1.1" reaches no seed and so would satisfy a seeds-only
+  #     test, yet it stops before V2 and leaves the indexes and constraints V2 creates absent - a
+  #     database that reports a successful migration while missing the structures every alternate-index
+  #     query depends on;
   #
   #   * migrations switched OFF. `enabled: false` builds no migration tool, which applies no
   #     configuration customizer and offers no callback event, so ONE property would otherwise switch
@@ -404,15 +456,16 @@ spring:
     # seed directory. A look-alike directory on disk could carry seed content under a schema-looking
     # name, which is why containment will not do.
     locations: classpath:db/migration/schema
-    # NO CEILING, AND A NUMBER HERE IS REFUSED. This key used to read "2" and was the production
-    # control. It held the seeds out and it also froze the schema at version 2: a V5 schema script would
-    # never have been applied and the migration would still have reported success, and the pin could not
-    # be raised because FlywayConfig refused every other value. The separation is the location list
-    # above, which an operator cannot widen, so FlywayConfig now refuses a numeric ceiling under this
-    # profile and re-applies `latest` after binding. ProductionSeedRejectionCallback remains the third
-    # control and refuses a start against a database that was seeded before this profile was pointed at
-    # it.
-    target: latest
+    # THE SECOND CONTROL: THE CEILING, PINNED AT THE HIGHEST VERSION THE SCHEMA LOCATION DELIVERS.
+    # "2" applies V1 and V2 and declines everything above them, so the two seed versions are excluded by
+    # their NUMBER as well as by their DIRECTORY. FlywayConfig refuses every other value under this
+    # profile and re-applies the pin after binding: a higher value - `latest` among them - would apply
+    # whatever a resolved location carried above the delivered schema, and a lower one would stop before
+    # the indexes and constraints and report success anyway. The pin is asserted against the delivered
+    # schema scripts by FlywayConfigTest, so it cannot silently under-migrate a later release.
+    # ProductionSeedRejectionCallback remains the third control and refuses a start against a database
+    # that was seeded before this profile was pointed at it.
+    target: "2"
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true

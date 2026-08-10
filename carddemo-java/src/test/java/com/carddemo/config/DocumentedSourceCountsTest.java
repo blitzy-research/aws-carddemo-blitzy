@@ -18,6 +18,9 @@ package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -69,6 +72,19 @@ final class DocumentedSourceCountsTest {
     private static final Path PRODUCTION_PROFILE =
             Path.of("src", "main", "resources", "application-prod.yml");
 
+    /**
+     * Every further document that states how many values the production profile requires.
+     *
+     * <p>Held here because the count had drifted in all four of them at once while the two documents
+     * with a derived assertion stayed correct — which is the argument for the assertion rather than for
+     * another correction. Each writes the figure in the same "resolves all N of its required values"
+     * sentence, so one derived check covers them.</p>
+     */
+    private static final List<Path> DOCUMENTS_STATING_THE_REQUIRED_COUNT = List.of(
+            Path.of("README.md"),
+            Path.of("docker-compose.yml"),
+            Path.of("src", "main", "resources", "application-local.yml"));
+
     /** A variable the production profile resolves with no fallback. */
     private static final Pattern NO_FALLBACK_REFERENCE =
             Pattern.compile("\\$\\{([A-Z][A-Z0-9_]*)\\}");
@@ -91,6 +107,46 @@ final class DocumentedSourceCountsTest {
     /** A fully-qualified reference into the platform's own cryptography namespace. */
     private static final Pattern QUALIFIED_JAVAX =
             Pattern.compile("\\bjavax\\.[A-Za-z0-9_.]+");
+
+    /**
+     * A cast whose target is a parameterised type, in the shape the published audit command matches.
+     *
+     * <p>The same expression the evidence page publishes as its second audit command, so the figures this
+     * class derives and the command a reader runs answer one question rather than two.
+     */
+    private static final Pattern PARAMETERISED_CAST =
+            Pattern.compile("\\(\\s*[A-Za-z_$][\\w.$]*\\s*<[^<>()]*>\\s*\\)\\s*[A-Za-z_$(]");
+
+    /**
+     * A statement verb inside a literal, joined to something that is not a literal: the published audit's
+     * verb-only SQL shape.
+     *
+     * <p>Deliberately the loose form, because the point of publishing it is that it returns a false positive
+     * a keyword grep cannot avoid. The strict form is {@link #CENSUS_SHAPED_SQL_ASSEMBLY}.
+     */
+    private static final Pattern VERB_ONLY_SQL_ASSEMBLY = Pattern.compile(
+            "(?i)\"[^\"]*\\b(select|insert|update|delete|merge|truncate|drop|alter|create)"
+                    + "\\b[^\"]*\"\\s*\\+\\s*[^\"\\s]");
+
+    /**
+     * The same shape with a clause keyword required beside the verb, which is how the gated census counts a
+     * query and is the command whose published expectation is no output.
+     */
+    private static final Pattern CENSUS_SHAPED_SQL_ASSEMBLY = Pattern.compile(
+            "(?i)\"[^\"]*\\b(select|insert|update|delete|merge|truncate|drop|alter|create)\\b[^\"]*"
+                    + "\\b(from|into|set|values|where|table|join|index|sequence)\\b[^\"]*\"\\s*\\+"
+                    + "\\s*[^\"\\s]");
+
+    /**
+     * The annotation whose raw grep population and gated figure are two different numbers.
+     *
+     * <p>Assembled from two halves rather than written as one literal, and that is not fussiness. This
+     * constant is used to <em>count</em> the lines of both source trees that mention the annotation, and a
+     * whole literal here would be one more such line - so the assertion would measure itself, and adding it
+     * would falsify the very figure it exists to protect. The population was 12 before this constant and
+     * would have been 13 after it. A measurement must not perturb what it measures.
+     */
+    private static final String SUPPRESSION_ANNOTATION = "@Suppress" + "Warnings";
 
     /** This module's README, which publishes the security-remediation override table. */
     private static final Path MODULE_README = Path.of("README.md");
@@ -127,6 +183,19 @@ final class DocumentedSourceCountsTest {
 
     /** A published class count, as {@code across 448 classes} is written. */
     private static final Pattern CLASS_COUNT = Pattern.compile("across\\s+([\\d,]+)\\s+classes");
+
+    /** The provisioned Grafana dashboard, the authority for how many panels it carries. */
+    private static final Path DASHBOARD =
+            Path.of("config", "grafana", "dashboards", "carddemo-overview.json");
+
+    /**
+     * The header of the Gate 3 measured-runs table, which is where the published row count is decided.
+     *
+     * <p>Matched in full rather than by a substring, because the page carries other seven-column tables and
+     * a looser anchor would count rows from whichever one appeared first.
+     */
+    private static final String PERFORMANCE_TABLE_HEADER = "| Date | Machine | Run | Records | "
+            + "Elapsed (ms) | Peak heap (bytes) | Records/second |";
 
     /** The root the compiler's production pass walks. */
     private static final Path MAIN_SOURCE_ROOT = Path.of("src", "main", "java");
@@ -504,6 +573,52 @@ final class DocumentedSourceCountsTest {
         }
 
         @Test
+        @DisplayName("every other document stating the count states the measured one, so a correction "
+                + "in one place cannot leave the others behind")
+        void everyOtherDocumentStatingTheCountStatesTheMeasuredOne() throws IOException {
+            final String required = numberWord(requiredProductionVariables().size());
+
+            for (final Path document : DOCUMENTS_STATING_THE_REQUIRED_COUNT) {
+                assertThat(read(document))
+                        .as("%s tells a reader how many values a production deployment must supply; a "
+                                + "stale figure there reads as a complete obligation and is not one",
+                                document)
+                        .contains("all " + required + " of its required values");
+            }
+        }
+
+        @Test
+        @DisplayName("the architecture page states the measured count and names every required "
+                + "variable, so its table cannot omit one")
+        void theArchitecturePageStatesTheMeasuredCountAndNamesEveryVariable() throws IOException {
+            final TreeSet<String> required = requiredProductionVariables();
+            final String page = read(ARCHITECTURE_PAGE);
+
+            assertThat(page)
+                    .as("the page publishes the count in its own prose as well as in the standards "
+                            + "table, and both must be the measured one")
+                    .contains("resolves **" + numberWord(required.size()) + "** values from the "
+                            + "environment")
+                    .contains("the production profile's **" + numberWord(required.size())
+                            + "** no-fallback values");
+            required.forEach(variable -> assertThat(page)
+                    .as("the architecture page must name required variable %s; the omission this "
+                            + "assertion exists for was a variable present in the profile and absent "
+                            + "from the table", variable)
+                    .contains("`" + variable + "`"));
+        }
+
+        @Test
+        @DisplayName("the architecture page states the measured count of defaulted variables too")
+        void theArchitecturePageStatesTheMeasuredDefaultedCount() throws IOException {
+            assertThat(read(ARCHITECTURE_PAGE))
+                    .as("the secret / non-secret split is the substance of the claim on both pages "
+                            + "that make it, so both sides are counted on both")
+                    .contains(capitalise(numberWord(defaultedProductionVariables().size()))
+                            + " further production variables");
+        }
+
+        @Test
         @DisplayName("the reproduction command reports the raw line count, placeholder included")
         void theReproductionCommandAccountsForThePlaceholder() throws IOException {
             final int required = requiredProductionVariables().size();
@@ -614,6 +729,286 @@ final class DocumentedSourceCountsTest {
                     .as("the row must name %s, the class carrying qualified javax references", name)
                     .contains("`" + name + "`"));
         }
+
+        /**
+         * Every published cast site names the file and the line the cast is actually on.
+         *
+         * <p>A published line number is the most perishable figure in this documentation set: it is
+         * falsified by any edit above it in the same file, while every count on the page stays correct - so
+         * nothing else on the page can signal that it has gone stale. Two of the five had gone stale exactly
+         * that way, by classes gaining code above the cast. Deriving the pair means the next such edit
+         * either updates the page or breaks the build.
+         *
+         * <p>The path is written page-relative, as {@code service/MenuService.java:527} is, so the assertion
+         * compares the string a reader sees rather than an absolute path they never do.
+         *
+         * @throws IOException if the tree or the page cannot be read
+         */
+        @Test
+        @DisplayName("every published cast site names the file and line the cast is on, derived from the "
+                + "source rather than transcribed")
+        void thePublishedCastSitesNameTheirActualLines() throws IOException {
+            final List<String> sites = new ArrayList<>();
+            for (final Path source : applicationSources()) {
+                final List<String> lines = List.of(read(source).split("\n", -1));
+                for (int index = 0; index < lines.size(); index++) {
+                    if (PARAMETERISED_CAST.matcher(lines.get(index)).find()) {
+                        sites.add(SOURCE_ROOT.relativize(source).toString().replace('\\', '/')
+                                + ":" + (index + 1));
+                    }
+                }
+            }
+
+            assertThat(sites)
+                    .as("the page publishes a cast census, so the tree must carry the casts it counts")
+                    .isNotEmpty();
+            final String page = read(GATE_EVIDENCE_PAGE);
+            for (final String site : sites) {
+                assertThat(page)
+                        .as("%s carries a cast to a parameterised type, so the published census must name "
+                                + "it at that line: a line number is falsified by any edit above it and no "
+                                + "other figure on the page can report that it has drifted", site)
+                        .contains(site);
+            }
+        }
+    }
+
+    /**
+     * Holds the two documents that publish the Gate 6 audit commands to what those commands actually return.
+     *
+     * <p>A published command carries its expected output in the comment beside it, and that comment is a
+     * claim like any other figure on the page. Two of them were false: commands 3 and 4 both told a reader
+     * to expect no output, while command 3 returns one line - a 3270 screen prompt that a verb-only grep
+     * cannot help matching - and command 4 returns twelve, every one a mention of the annotation rather than
+     * a use of it. The evidence page published the true output a few lines below the false expectation, so
+     * the page disagreed with itself; the onboarding guide published the false expectation in both its
+     * comment and its result table, so it simply disagreed with the tree.
+     *
+     * <p>Both are corrected, and the correction is held here by running each published pattern over the
+     * source it is scoped to and requiring both documents to state that result. Recorded as {@code DL-340}.
+     */
+    @Nested
+    @DisplayName("the published Gate 6 audit commands return what both documents say they return")
+    class ThePublishedAuditCommands {
+
+        /** Creates the nested test class. */
+        ThePublishedAuditCommands() {
+        }
+
+        /**
+         * The verb-only SQL shape returns exactly one line, and both documents say so and say what it is.
+         *
+         * <p>The one line is the legacy menu prompt, and the assertion names the class rather than only the
+         * count, because "one line" that moved to a different file would be a different fact.
+         *
+         * @throws IOException if the tree or either document cannot be read
+         */
+        @Test
+        @DisplayName("the verb-only SQL command returns exactly one line, the screen prompt, and both "
+                + "documents publish that rather than an absence")
+        void theVerbOnlySqlCommandReturnsTheOneScreenPrompt() throws IOException {
+            final List<String> matches = new ArrayList<>();
+            for (final Path source : applicationSources()) {
+                for (final String line : read(source).split("\n", -1)) {
+                    if (VERB_ONLY_SQL_ASSEMBLY.matcher(line).find()) {
+                        matches.add(SOURCE_ROOT.relativize(source).toString().replace('\\', '/'));
+                    }
+                }
+            }
+
+            assertThat(matches)
+                    .as("the published expectation is one line and the documents name where it is, so a "
+                            + "second match or a different file makes both documents wrong")
+                    .containsExactly("service/MenuService.java");
+            for (final Path document : List.of(GATE_EVIDENCE_PAGE, ONBOARDING_PAGE)) {
+                assertThat(flattened(document))
+                        .as("%s publishes this command, so it must state that it returns one line rather "
+                                + "than none: a reader runs the command and reads the comment first",
+                                document)
+                        .contains("EXACTLY ONE")
+                        .contains("MenuService");
+            }
+        }
+
+        /**
+         * The census-shaped SQL command returns nothing, and both documents publish it as the zero.
+         *
+         * @throws IOException if the tree or either document cannot be read
+         */
+        @Test
+        @DisplayName("the census-shaped SQL command returns nothing, and both documents name it as the "
+                + "command whose expectation is no output")
+        void theCensusShapedSqlCommandReturnsNothing() throws IOException {
+            final List<String> matches = new ArrayList<>();
+            for (final Path source : applicationSources()) {
+                for (final String line : read(source).split("\n", -1)) {
+                    if (CENSUS_SHAPED_SQL_ASSEMBLY.matcher(line).find()) {
+                        matches.add(SOURCE_ROOT.relativize(source).toString().replace('\\', '/')
+                                + ": " + line.strip());
+                    }
+                }
+            }
+
+            assertThat(matches)
+                    .as("a statement verb AND a clause keyword in one literal, joined to a value, is SQL "
+                            + "assembled from strings - the construct Gate 6 budgets at zero")
+                    .isEmpty();
+            for (final Path document : List.of(GATE_EVIDENCE_PAGE, ONBOARDING_PAGE)) {
+                assertThat(flattened(document))
+                        .as("%s must publish the census-shaped command as the one whose expectation is no "
+                                + "output, so the zero on the page is reproducible from the page", document)
+                        .contains("clause keyword");
+            }
+        }
+
+        /**
+         * The suppression grep returns twelve lines over both trees and none over production, and both
+         * documents publish both figures.
+         *
+         * <p>Two numbers rather than one, because a grep cannot tell a mention from a use and the gated
+         * figure is the use count. Publishing only the raw population reads as twelve suppressions;
+         * publishing only the gated zero leaves a reader who runs the command unable to reconcile it.
+         *
+         * @throws IOException if either tree or either document cannot be read
+         */
+        @Test
+        @DisplayName("the suppression grep returns twelve lines over both trees and none over production, "
+                + "and both documents publish both figures")
+        void theSuppressionGrepReturnsItsPublishedPopulation() throws IOException {
+            final int bothTrees = suppressionMentions(MAIN_SOURCE_ROOT) + suppressionMentions(TEST_SOURCE_ROOT);
+            final int production = suppressionMentions(MAIN_SOURCE_ROOT);
+
+            assertThat(production)
+                    .as("the production tree carries no mention of the annotation at all, which is the "
+                            + "second figure both documents publish")
+                    .isZero();
+            for (final Path document : List.of(GATE_EVIDENCE_PAGE, ONBOARDING_PAGE)) {
+                assertThat(flattened(document))
+                        .as("%s must state that the raw grep returns %d lines over both trees, because it "
+                                + "does, and a document telling a reader to expect none is falsified the "
+                                + "moment the reader runs it", document, bothTrees)
+                        .contains(numberWord(bothTrees));
+            }
+            assertThat(flattened(ONBOARDING_PAGE))
+                    .as("and the guide must say the twelve are mentions rather than annotations, which is "
+                            + "the whole reason the gated figure is zero while the grep is not")
+                    .contains("Not one is an annotation");
+        }
+    }
+
+    /**
+     * Guards the two mutable inventories the gate-evidence page and the manual publish as figures: how
+     * many panels the provisioned dashboard carries, and how many measured runs the Gate 3 table records.
+     *
+     * <p>Both had drifted, and both drifted for the same reason as every figure DL-316 records: they read
+     * as background rather than as claims. The page published 33 panels against a dashboard carrying 46,
+     * and the manual published fifteen measured rows against a table carrying eighteen - each correct when
+     * written, each falsified by the next panel and the next run. A panel added to a dashboard and a row
+     * added to a baseline are the two things this documentation set does most often, so a transcribed total
+     * is guaranteed to go stale.
+     *
+     * <p>The remedy is the same too: the figure is derived from the artefact that decides it - the
+     * dashboard JSON's own panel array and the evidence page's own table - so the next panel or the next
+     * measured run either updates the prose or breaks the build. Recorded as {@code DL-340}.
+     */
+    @Nested
+    @DisplayName("the mutable inventories: dashboard panels and measured Gate 3 rows")
+    class TheMutableInventories {
+
+        /** Creates the nested test class. */
+        TheMutableInventories() {
+        }
+
+        /**
+         * The published panel count is the dashboard's own panel count.
+         *
+         * <p>Counted over the whole {@code panels} array rather than over the non-row panels, because the
+         * page describes the dashboard as carrying that many panels with per-endpoint and per-step views -
+         * a claim about the file's contents. Row panels are panels: Grafana renders them, they carry titles
+         * and collapse state, and excluding them would publish a figure a reader cannot reproduce by
+         * opening the file.
+         *
+         * @throws IOException if the dashboard or the page cannot be read
+         */
+        @Test
+        @DisplayName("the published dashboard panel count is the count in the provisioned dashboard")
+        void thePublishedPanelCountMatchesTheDashboard() throws IOException {
+            final JsonNode dashboard = new ObjectMapper().readTree(DASHBOARD.toFile());
+            final JsonNode panels = dashboard.path("panels");
+
+            assertThat(panels.isArray())
+                    .as("%s must carry a panel array for this figure to mean anything", DASHBOARD)
+                    .isTrue();
+            final int panelCount = panels.size();
+            assertThat(panelCount)
+                    .as("a dashboard with no panel is not the artefact the page describes")
+                    .isPositive();
+
+            assertThat(read(GATE_EVIDENCE_PAGE))
+                    .as("%s names the provisioned dashboard as evidence of the Gate 3 measurement "
+                            + "mechanism, and it carries %d panels. A transcribed total is falsified by "
+                            + "the next panel, which is why this one is derived", GATE_EVIDENCE_PAGE,
+                            panelCount)
+                    .contains("\"CardDemo Overview\", " + panelCount + " panels");
+        }
+
+        /**
+         * The published count of measured Gate 3 rows is the number of rows the table carries.
+         *
+         * <p>Counted off the page's own table rather than off a constant, and counted the way a reader
+         * would: the lines between the measured-runs header and the first line that is not a table row.
+         * The manual states the figure in words because that is how it states every count, so the word is
+         * derived from the number rather than the number from the word.
+         *
+         * @throws IOException if the page or the manual cannot be read
+         */
+        @Test
+        @DisplayName("the manual's count of measured Gate 3 rows is the number of rows the evidence table "
+                + "carries")
+        void theManualsMeasuredRunCountMatchesTheEvidenceTable() throws IOException {
+            final int rows = measuredPerformanceRowCount();
+
+            assertThat(rows)
+                    .as("Gate 3 is discharged by a recorded measurement, so %s must carry at least one "
+                            + "row under %s", GATE_EVIDENCE_PAGE, PERFORMANCE_TABLE_HEADER)
+                    .isPositive();
+            // Both sentences, because the manual states the figure twice - once in the gate table and once
+            // in the sign-off checklist - and a check that reached only the first would leave the second
+            // free to drift, which is the failure this whole class exists to stop.
+            assertThat(read(MODULE_README))
+                    .as("%s publishes how many measured rows the evidence page records, in both its gate "
+                            + "table and its sign-off checklist, and the page records %d. The figure is "
+                            + "derived from the table so the next measured run either updates both "
+                            + "sentences or breaks the build", MODULE_README, rows)
+                    .contains("**" + numberWord(rows) + "** measured rows recorded")
+                    .contains("**" + numberWord(rows) + "** measured rows are recorded");
+        }
+
+        /**
+         * No document attributes a Gate 3 row to a source revision, because no row carries one.
+         *
+         * <p>The manual claimed the most recent three rows were attributed to the revision they were taken
+         * at. The table's machine column carries a host description and a run label; the recorder cannot
+         * write a revision into a row because a run does not know the revision it is running - which is
+         * exactly why the emitted evidence files carry a separate {@code Build provenance} line and the
+         * table does not. An attribution a reader cannot find is worse than an absent one, so the claim is
+         * asserted absent rather than corrected once.
+         *
+         * @throws IOException if the manual or the page cannot be read
+         */
+        @Test
+        @DisplayName("no document claims a Gate 3 row is attributed to a source revision, because the "
+                + "table carries no revision")
+        void noDocumentClaimsARevisionAttributionTheTableDoesNotCarry() throws IOException {
+            assertThat(read(MODULE_README))
+                    .as("%s must not claim a revision attribution the Gate 3 table cannot carry: a run "
+                            + "does not know its own revision, which is why the emitted evidence files "
+                            + "carry a Build provenance line and the table does not", MODULE_README)
+                    .doesNotContain("attributed to the source revision");
+            assertThat(read(GATE_EVIDENCE_PAGE))
+                    .as("%s must not make the same claim about its own table", GATE_EVIDENCE_PAGE)
+                    .doesNotContain("attributed to the source revision");
+        }
     }
 
     /**
@@ -723,6 +1118,62 @@ final class DocumentedSourceCountsTest {
         } catch (final IOException problem) {
             throw new AssertionError("the " + root + " tree must be walkable", problem);
         }
+    }
+
+    /**
+     * How many lines of a source tree mention the warning-suppression annotation, as the raw grep counts.
+     *
+     * <p>Counted as {@code grep -rn} counts: one per matching line, over the file as written, with no
+     * comment or literal stripping. That is deliberately the number the published command produces rather
+     * than the gated number, which the blanked-source measurement in {@code e2e/GateVerificationTest}
+     * produces.
+     *
+     * @param  root the tree to count over
+     * @return the number of matching lines
+     * @throws IOException if the tree cannot be walked
+     */
+    private static int suppressionMentions(final Path root) throws IOException {
+        int mentions = 0;
+        try (Stream<Path> tree = Files.walk(root)) {
+            for (final Path source : tree.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".java")).toList()) {
+                for (final String line : read(source).split("\n", -1)) {
+                    if (line.contains(SUPPRESSION_ANNOTATION)) {
+                        mentions++;
+                    }
+                }
+            }
+        }
+        return mentions;
+    }
+
+    /**
+     * How many measured runs the Gate 3 table on the evidence page records.
+     *
+     * <p>Counted off the page the way a reader counts: find the measured-runs header, skip the alignment
+     * line beneath it, and count the table lines that follow until one is not a table line. A row whose
+     * figures are placeholders is still a line of the table and is still counted, because the figure this
+     * feeds is "how many rows the table carries" - the separate question of whether every row is a
+     * well-formed measurement belongs to {@code e2e/GateVerificationTest}, which parses the figures.
+     *
+     * @return the number of data rows beneath the measured-runs header
+     * @throws IOException if the page cannot be read
+     */
+    private static int measuredPerformanceRowCount() throws IOException {
+        final List<String> lines = List.of(read(GATE_EVIDENCE_PAGE).split("\n", -1));
+        int rows = 0;
+        for (int index = 0; index < lines.size(); index++) {
+            if (!PERFORMANCE_TABLE_HEADER.equals(lines.get(index).strip())) {
+                continue;
+            }
+            int cursor = index + 2;
+            while (cursor < lines.size() && lines.get(cursor).startsWith("|")) {
+                rows++;
+                cursor++;
+            }
+            return rows;
+        }
+        return 0;
     }
 
     /**

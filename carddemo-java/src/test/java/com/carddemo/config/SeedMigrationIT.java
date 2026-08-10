@@ -272,8 +272,11 @@ final class SeedMigrationIT extends AbstractPostgresIT {
     private static final List<String> SEEDING_LOCATIONS =
             List.of(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION);
 
-    /** The version the withdrawn production ceiling pinned, retained to show what it cost. */
-    private static final String WITHDRAWN_SCHEMA_CEILING = "2";
+    /**
+     * The version the production ceiling pins, which is the highest version the schema location
+     * delivers. Held here to measure what the ceiling contributes on its own and what it does not.
+     */
+    private static final String SCHEMA_CEILING = "2";
 
     /**
      * Migration state of the production-shaped schema, captured once so every assertion reads one
@@ -739,11 +742,13 @@ final class SeedMigrationIT extends AbstractPostgresIT {
 
             assertThat(states.keySet())
                     .as("a production-shaped scope resolves the schema location alone, so only the two "
-                            + "schema versions exist for it. THIS IS STRONGER THAN THE WITHDRAWN "
-                            + "CEILING: under a ceiling all four scripts were resolved and the seeds "
-                            + "were reported ABOVE_TARGET, which means the tool held a pending "
+                            + "schema versions exist for it. THIS IS STRONGER THAN THE CEILING ON ITS "
+                            + "OWN: under a ceiling alone all four scripts are resolved and the seeds "
+                            + "are reported ABOVE_TARGET, which means the tool holds a pending "
                             + "instruction to apply them that one property could release. A script in a "
-                            + "location the deployment does not resolve is not pending anything")
+                            + "location the deployment does not resolve is not pending anything, which "
+                            + "is why the location list is the primary control and the ceiling is the "
+                            + "second one")
                     .containsExactly("1", "2");
             assertThat(states.get("1")).isEqualTo(MigrationState.SUCCESS);
             assertThat(states.get("2")).isEqualTo(MigrationState.SUCCESS);
@@ -825,9 +830,10 @@ final class SeedMigrationIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("a FUTURE schema migration applies under the production scope, which is the "
-                + "property the withdrawn version ceiling made impossible")
-        void aFutureSchemaMigrationAppliesUnderTheProductionScope(@TempDir final Path futureSchema)
+        @DisplayName("a FUTURE schema migration is skipped by the pin and applies without it, so the "
+                + "pin's cost is measured here and is answered by asserting it against the delivered "
+                + "scripts rather than by removing it")
+        void aFutureSchemaMigrationIsSkippedByThePinAndAppliesWithoutIt(@TempDir final Path futureSchema)
                 throws IOException, SQLException {
             Files.writeString(futureSchema.resolve("V5__add_future_schema_object.sql"),
                     "CREATE TABLE future_schema_probe (probe_id VARCHAR(4) PRIMARY KEY);\n",
@@ -836,16 +842,19 @@ final class SeedMigrationIT extends AbstractPostgresIT {
             productionPlusFuture.add("filesystem:" + futureSchema.toAbsolutePath());
 
             String withCeiling = "seed_future_under_ceiling";
-            flywayFor(withCeiling, productionPlusFuture, WITHDRAWN_SCHEMA_CEILING).migrate();
+            flywayFor(withCeiling, productionPlusFuture, SCHEMA_CEILING).migrate();
 
             assertThat(scalar("SELECT count(*) FROM information_schema.tables WHERE table_schema = '"
                     + withCeiling + "' AND table_name = 'future_schema_probe'"))
-                    .as("THIS IS THE DEFECT THE WITHDRAWN CEILING CARRIED. Under a ceiling of %s the "
-                            + "V5 schema script is resolved, skipped and reported as a successful "
-                            + "migration: the deployment comes up on an incomplete schema and says so "
-                            + "nowhere. And the pin could not be raised, because the production "
-                            + "resolution refused every value but that one - so shipping a fifth schema "
-                            + "script required editing the application", WITHDRAWN_SCHEMA_CEILING)
+                    .as("THIS IS THE COST THE CEILING CARRIES, MEASURED RATHER THAN ARGUED. Under a "
+                            + "ceiling of %s the V5 schema script is resolved, skipped and reported as a "
+                            + "successful migration: nothing here fails, so a deployment would come up "
+                            + "on an incomplete schema and say so nowhere. That is why the pin is not "
+                            + "merely written down - FlywayConfigTest asserts it EQUALS the highest "
+                            + "version the schema location delivers, so shipping a fifth schema script "
+                            + "fails the build until the pin and the two documents that declare it are "
+                            + "raised together. A loud build failure replaces the silent runtime one "
+                            + "this assertion demonstrates", SCHEMA_CEILING)
                     .isZero();
 
             String withoutCeiling = "seed_future_under_open_target";
@@ -855,9 +864,10 @@ final class SeedMigrationIT extends AbstractPostgresIT {
             assertThat(scalar("SELECT count(*) FROM information_schema.tables WHERE table_schema = '"
                     + withoutCeiling + "' AND table_name = 'future_schema_probe'"))
                     .as("with no ceiling and the same location list, the future schema script APPLIES. "
-                            + "That is what the delivered arrangement buys: the sequence can grow "
-                            + "without an edit to the application, because the boundary is a directory "
-                            + "rather than a number")
+                            + "That is what makes the location list the PRIMARY control: the seed "
+                            + "exclusion does not depend on the ceiling at all, so the ceiling can be a "
+                            + "second, narrower check on the schema half rather than the thing the "
+                            + "seed exclusion rests on")
                     .isEqualTo(1L);
 
             Map<String, MigrationState> states = new LinkedHashMap<>();
@@ -868,9 +878,10 @@ final class SeedMigrationIT extends AbstractPostgresIT {
             }
             assertThat(states.keySet())
                     .as("and it applies WITHOUT exposing a seed: the resolved set is the two schema "
-                            + "versions plus the future one, and neither seed version appears. An open "
-                            + "target is only safe because the seed location is absent - the two halves "
-                            + "of this arrangement are what make each other possible")
+                            + "versions plus the future one, and neither seed version appears. The seed "
+                            + "exclusion is the location list acting alone, with no ceiling in force at "
+                            + "all - which is the measurement that makes the ceiling defence in depth "
+                            + "rather than the seed boundary")
                     .containsExactly("1", "2", "5");
             assertThat(states.get("5")).isEqualTo(MigrationState.SUCCESS);
             for (final String table : ALL_TABLES) {
@@ -892,8 +903,8 @@ final class SeedMigrationIT extends AbstractPostgresIT {
      * production-shaped run and the seeding run pass DIFFERENT lists and the same {@code target} - null,
      * meaning apply everything resolved - so the parameter that varies is the one carrying the control.
      * The {@code target} parameter survives for one purpose only, which is to demonstrate in
-     * {@link TheProductionScopeWithholdsBothSeeds#aFutureSchemaMigrationAppliesUnderTheProductionScope}
-     * what the withdrawn version ceiling cost.
+     * {@link TheProductionScopeWithholdsBothSeeds#aFutureSchemaMigrationIsSkippedByThePinAndAppliesWithoutIt}
+     * what the version ceiling costs on its own, and what the location list delivers without it.
      *
      * <p>{@code cleanDisabled} is left at its safe default: nothing here drops a schema, and a
      * configuration that could would be one edit away from dropping the shared one.</p>

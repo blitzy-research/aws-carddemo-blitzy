@@ -921,7 +921,7 @@ final class BackupTransactionJobConfigTest {
 
         private long timerCount(final String stepName, final String outcome) {
             final Timer timer = meterRegistry.find(STEP_TIMER)
-                    .tag("job", BackupTransactionJobConfig.JOB_NAME)
+                    .tag("batchJob", BackupTransactionJobConfig.JOB_NAME)
                     .tag("step", stepName)
                     .tag("outcome", outcome)
                     .timer();

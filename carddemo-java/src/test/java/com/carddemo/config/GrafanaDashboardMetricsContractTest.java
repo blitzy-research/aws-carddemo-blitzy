@@ -18,6 +18,7 @@ package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.service.JobCompletionNotificationService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zaxxer.hikari.HikariConfig;
@@ -33,15 +34,18 @@ import io.micrometer.core.instrument.binder.system.UptimeMetrics;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -84,6 +88,14 @@ class GrafanaDashboardMetricsContractTest {
      */
     private static final Pattern METRIC_SELECTOR =
             Pattern.compile("([a-zA-Z_:][a-zA-Z0-9_:]*)\\s*\\{");
+
+    /**
+     * A PromQL aggregation grouping, capturing the label list inside {@code by ( ... )}.
+     *
+     * <p>Reads the grouping and nothing else, so a series selector such as {@code {job="$job"}} - which is
+     * a correct use of the scrape label - is not mistaken for an aggregation over it.
+     */
+    private static final Pattern GROUPING = Pattern.compile("\\bby\\s*\\(([^)]*)\\)");
 
     private static final Set<String> EXACT_COUNTERS = Set.of(
             "carddemo_batch_posting_records_total",
@@ -478,6 +490,168 @@ class GrafanaDashboardMetricsContractTest {
         }
         return counterNames;
     }
+    /**
+     * Holds the module's batch identity off the label the collector stamps on every series itself.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-338.
+     */
+    @Nested
+    @DisplayName("the reserved scrape label is not an application dimension")
+    class TheReservedScrapeLabelIsNotAnApplicationDimension {
+
+        /** The label Prometheus stamps onto every series it collects, naming the scrape target. */
+        private static final String RESERVED_SCRAPE_LABEL = "job";
+
+        /** The application dimension that replaced it, spelled as this module spells its tag keys. */
+        private static final String APPLICATION_BATCH_LABEL = "batchJob";
+
+        /** The root of the application source the tag-key sweep reads. */
+        private static final Path MAIN_SOURCE = Path.of("src", "main", "java");
+
+        /** A tag key written as a literal, in any of the four forms this module writes them. */
+        private static final Pattern TAG_KEY_LITERAL = Pattern.compile(
+                "(?:\\.tag\\(|Tag\\.of\\(|lowCardinalityKeyValue\\(|highCardinalityKeyValue\\("
+                        + "|KeyValue\\.of\\(|TAG_[A-Z_]+\\s*=\\s*)\"([A-Za-z0-9_.]+)\"");
+
+        /** Creates the nested test class. */
+        TheReservedScrapeLabelIsNotAnApplicationDimension() {
+        }
+
+        @Test
+        @DisplayName("no application source declares a tag key named after the reserved scrape label, "
+                + "which is the whole of the collision")
+        void noApplicationSourceDeclaresTheReservedLabel() throws IOException {
+            final Map<Path, List<Integer>> offenders = new LinkedHashMap<>();
+            try (Stream<Path> sources = Files.walk(MAIN_SOURCE)) {
+                for (final Path source : sources.filter(path -> path.toString().endsWith(".java"))
+                        .toList()) {
+                    final List<String> lines = Files.readAllLines(source);
+                    for (int index = 0; index < lines.size(); index++) {
+                        final Matcher keys = TAG_KEY_LITERAL.matcher(lines.get(index));
+                        while (keys.find()) {
+                            if (RESERVED_SCRAPE_LABEL.equals(keys.group(1))) {
+                                offenders.computeIfAbsent(source, key -> new ArrayList<>())
+                                        .add(Integer.valueOf(index + 1));
+                            }
+                        }
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("THIS IS THE DEFECT THIS PINS. Prometheus stamps its own '%s' label onto every "
+                            + "series it collects, naming the SCRAPE TARGET. Two labels of one name cannot "
+                            + "coexist, so with the default honour-labels posture the exporter's value is "
+                            + "renamed to 'exported_%s' on collection - and every query grouping by '%s' "
+                            + "then collapses to the single target, SILENTLY, with the panel still "
+                            + "rendering. The module's batch identity is '%s'. Each entry below is a file "
+                            + "and the lines on which it declares the reserved name as an application tag "
+                            + "key", RESERVED_SCRAPE_LABEL, RESERVED_SCRAPE_LABEL, RESERVED_SCRAPE_LABEL,
+                            APPLICATION_BATCH_LABEL)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the two published batch-identity constants carry the application label, so a "
+                + "consumer reading them by name gets the same dimension the meters carry")
+        void thePublishedConstantsCarryTheApplicationLabel() {
+            assertThat(BatchConfig.TAG_JOB)
+                    .as("the terminal-verdict counter's job dimension")
+                    .isEqualTo(APPLICATION_BATCH_LABEL);
+            assertThat(JobCompletionNotificationService.TAG_JOB)
+                    .as("the completion-publication observation's job dimension")
+                    .isEqualTo(APPLICATION_BATCH_LABEL);
+            assertThat(BatchConfig.TAG_JOB_EXECUTION_ID)
+                    .as("and the sibling declared on the same observation is camel case too, which is "
+                            + "why the replacement is spelled this way rather than with an underscore: "
+                            + "one meter must not carry two naming conventions")
+                    .isEqualTo("jobExecutionId");
+        }
+
+        @Test
+        @DisplayName("a real exposition of the module's own batch series carries the application label "
+                + "and no reserved one, read out of the exporter rather than asserted about it")
+        void theExpositionCarriesTheApplicationLabelAndNoReservedOne() {
+            final PrometheusMeterRegistry registry =
+                    new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+            Timer.builder("carddemo.batch.joblaunch.request")
+                    .tag(BatchConfig.TAG_JOB, "postTransactionJob")
+                    .tag("outcome", "launched")
+                    .register(registry).record(Duration.ofMillis(5));
+            Counter.builder("carddemo.batch.job.terminal")
+                    .tag(BatchConfig.TAG_JOB, "postTransactionJob")
+                    .tag("status", "COMPLETED")
+                    .register(registry).increment();
+
+            final List<String> applicationSeries = Stream.of(registry.scrape().split("\n"))
+                    .filter(line -> line.startsWith("carddemo_"))
+                    .toList();
+
+            assertThat(applicationSeries)
+                    .as("the fixture must actually produce series, or the assertion below is vacuous")
+                    .isNotEmpty();
+            assertThat(applicationSeries)
+                    .as("every application series must name its job through the application label")
+                    .allMatch(line -> line.contains(APPLICATION_BATCH_LABEL + "=\""));
+            assertThat(applicationSeries)
+                    .as("and none may present a label named after the scrape label; a collector would "
+                            + "rename it and the dimension would be lost before any query saw it")
+                    .noneMatch(line -> line.contains("," + RESERVED_SCRAPE_LABEL + "=\"")
+                            || line.contains("{" + RESERVED_SCRAPE_LABEL + "=\""));
+        }
+
+        @Test
+        @DisplayName("every dashboard grouping and legend over an application series names the "
+                + "application label, and the reserved one survives only as the target selector")
+        void everyApplicationGroupingNamesTheApplicationLabel() {
+            final List<String> offendingExpressions = new ArrayList<>();
+            final List<String> offendingLegends = new ArrayList<>();
+            for (final JsonNode candidate : dashboard.path("panels")) {
+                for (final JsonNode target : candidate.path("targets")) {
+                    final String expression = target.path("expr").asText();
+                    if (!expression.contains("carddemo_")) {
+                        continue;
+                    }
+                    if (GROUPING.matcher(expression).results()
+                            .flatMap(match -> Stream.of(match.group(1).split(",")))
+                            .map(String::strip)
+                            // Compared as a WHOLE label rather than as a substring. The framework's own
+                            // sanitized labels - spring_batch_job_name, spring_batch_job_status - contain
+                            // the reserved name and are perfectly legitimate groupings; a substring test
+                            // would report them and the real offence would be lost in the noise.
+                            .anyMatch(RESERVED_SCRAPE_LABEL::equals)) {
+                        offendingExpressions.add(expression);
+                    }
+                    final String legend = target.path("legendFormat").asText();
+                    if (legend.contains("{{" + RESERVED_SCRAPE_LABEL + "}}")) {
+                        offendingLegends.add(legend);
+                    }
+                }
+            }
+
+            assertThat(offendingExpressions)
+                    .as("a grouping by the scrape label collapses every batch job of this module onto "
+                            + "the one scrape target, so a per-job panel charts one line labelled with "
+                            + "the application's own name")
+                    .isEmpty();
+            assertThat(offendingLegends)
+                    .as("and a legend reading the scrape label prints that target name against every "
+                            + "series, which is how the collapse goes unnoticed")
+                    .isEmpty();
+            assertThat(expressionsOf(panel(41)))
+                    .as("the selector that scopes a panel to this stack's own target is CORRECT and is "
+                            + "deliberately retained; only the grouping and the legend moved")
+                    .allMatch(expression -> expression.contains(
+                            RESERVED_SCRAPE_LABEL + "=\\\"$" + RESERVED_SCRAPE_LABEL + "\\\"")
+                            || expression.contains(RESERVED_SCRAPE_LABEL + "=\"$"
+                                    + RESERVED_SCRAPE_LABEL + "\""));
+            assertThat(expressionsOf(panel(41)))
+                    .as("and each of that panel's targets groups by the application label")
+                    .allMatch(expression -> expression.contains(
+                            "by (" + APPLICATION_BATCH_LABEL + ","));
+        }
+    }
+
     /**
      * The operational panel inventory, asserted in the direction the contract was missing.
      *

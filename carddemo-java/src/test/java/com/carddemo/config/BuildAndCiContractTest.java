@@ -271,10 +271,22 @@ final class BuildAndCiContractTest {
                 .contains("target/gate-evidence/gate8-sign-off.md")
                 .contains("target/gate-evidence/gate3-pipeline-baseline.md")
                 .contains("target/gate-evidence/gate3-interest-calculation.md")
-                .doesNotContain("target/gate-evidence/gate3-*.md")
                 .as("and a file that does not name this run's revision must not be published as its "
                         + "evidence")
                 .contains("^Build provenance: revision ${SOURCE_REVISION},");
+        // The no-glob rule belongs to the step that decides EXISTENCE, and only to that step. A glob there
+        // is satisfied by whichever baseline happens to be present, so half a gate's evidence passes as
+        // whole - which is the defect the individual names above fix. A later step that iterates the same
+        // glob and checks EVERY file it finds cannot hide an absent one, because absence is already settled
+        // by the time it runs, so the rule does not extend to it. Scoped to the verification step's own
+        // text rather than to the whole workflow for exactly that reason.
+        final String verificationStep = workflow.substring(
+                workflow.indexOf("- name: Verify the gate evidence bundle"),
+                workflow.indexOf("- name: Reconcile the provisional sign-off into a final one"));
+        assertThat(verificationStep)
+                .as("the step that decides whether the bundle is complete must name each Gate 3 baseline, "
+                        + "never a glob that one of them can satisfy alone")
+                .doesNotContain("target/gate-evidence/gate3-*.md");
 
         // The other three report uploads are the opposite case on purpose and must stay that way: a
         // FAILED run should still publish whatever coverage, scan and test output it produced, and may
@@ -414,6 +426,125 @@ final class BuildAndCiContractTest {
     }
 
     @Test
+    @DisplayName("the provisional sign-off is reconciled into a final one after verify, and nothing "
+            + "undischarged can be published as a sign-off")
+    void theProvisionalSignOffIsReconciledAfterVerify() throws IOException {
+        // THE DEFECT THIS PINS. The sign-off checklist is emitted by GateVerificationTest at
+        // integration-test. The vulnerability report and the merged coverage report are written at verify -
+        // a later phase - so a checklist row whose evidence is either of those is outstanding when the
+        // table is written, and the table says PENDING. Nothing rejected that: the upload published the
+        // interim table as the run's conclusion, and a reviewer downloading the bundle received a sign-off
+        // in which two rows read PENDING with no artefact anywhere saying whether they had since passed.
+        //
+        // WHAT IS ASSERTED. A step exists between the bundle verification and the upload; it discharges
+        // each outstanding row against the real post-verify artefact rather than re-reading the interim
+        // table; it refuses a MISSING row and refuses to publish anything still reading PROVISIONAL; and
+        // it writes the file the upload then publishes. Position matters as much as existence - a
+        // reconciliation after the upload reconciles a bundle that has already been published.
+        final String workflow = read(WORKFLOW_PATH);
+        final int verification = workflow.indexOf("name: Verify the gate evidence bundle");
+        final int reconciliation =
+                workflow.indexOf("name: Reconcile the provisional sign-off into a final one");
+        final int upload = workflow.indexOf("name: Upload gate evidence");
+
+        assertThat(reconciliation)
+                .as("a step must reconcile the interim sign-off after verify; without it the interim table "
+                        + "is what the run publishes as its conclusion")
+                .isNotNegative();
+        assertThat(verification)
+                .as("the bundle must be verified before it is reconciled, so a reconciliation never runs "
+                        + "against a bundle that is missing a file")
+                .isLessThan(reconciliation);
+        assertThat(reconciliation)
+                .as("and the reconciliation must precede the upload: reconciling after publication "
+                        + "reconciles something already published")
+                .isLessThan(upload);
+
+        final String step = workflow.substring(reconciliation, upload);
+        assertThat(step)
+                .as("the outstanding rows are discharged against the artefacts the interim table names, "
+                        + "each read after verify rather than taken on trust")
+                .contains("target/dependency-check-report.json")
+                .contains("target/gate-evidence/gate3-")
+                .contains("target/site/jacoco-merged/jacoco.xml");
+        assertThat(step)
+                .as("an outstanding row must end the step rather than be published: a MISSING row, an "
+                        + "absent status line, a qualifying unsuppressed finding, a baseline with no "
+                        + "measured row and coverage below the floor each fail it")
+                .contains("carries a MISSING row")
+                // Anchored to a TABLE ROW rather than to the word. The table's own explanatory paragraph
+                // says "A row marked MISSING is an outstanding work item", so a bare token search reports
+                // the sentence explaining the state as though it were the state - which it did, on the
+                // first run of this step against a real bundle, failing a green build on its own prose.
+                .contains("'^\\|.*\\*\\*MISSING\\*\\*'")
+                .doesNotContain("grep -q 'MISSING'")
+                .contains("carries no 'Sign-off status:' line")
+                .contains("unsuppressed finding(s) at or above CVSS 7.0")
+                .contains("carries no measured row beneath its header")
+                // Written as the shell carries it: the message is emitted by printf, so the literal per
+                // cent in the format string is doubled. Matching the undoubled form would assert against
+                // text the workflow does not contain.
+                .contains("below the 80%% floor");
+        assertThat(step)
+                .as("and the final sign-off it writes must be the one the upload publishes, must be named "
+                        + "outside the gate<n>- namespace the suite owns, and must never read PROVISIONAL")
+                .contains("target/gate-evidence/final-sign-off.md")
+                .contains("Sign-off status: FINAL")
+                .contains("still reads PROVISIONAL");
+        assertThat(step)
+                .as("it carries the same build-provenance line every other file in the bundle carries, so "
+                        + "the conclusion is attributable to the commit its evidence was measured on")
+                .contains("Build provenance: revision");
+    }
+
+    @Test
+    @DisplayName("the published coverage counters are reconciled against the merged report after verify, "
+            + "because no test in the build can read its own build's report")
+    void thePublishedCoverageCountersAreReconciledAfterVerify() throws IOException {
+        // THE DEFECT THIS PINS. The evidence page publishes a four-row covered-and-total table read from
+        // the merged JaCoCo report, and nothing compared those figures with the report. Three of the four
+        // rows had drifted - line by three, instruction by two hundred, method by two - and no other check
+        // in this pipeline can see it: the coverage GATE reads the report and passes, and the page's
+        // transcription of the same report is free to say anything.
+        //
+        // WHY IT IS A WORKFLOW STEP RATHER THAN A TEST. The merged report is written at
+        // post-integration-test. Every test in this module runs at test or integration-test, so no test can
+        // read the report of its own build; one reading a previous build's report would pass or fail on a
+        // stale file, which is worse than not checking at all. After verify both the page and the report
+        // exist, and that is where this runs.
+        final String workflow = read(WORKFLOW_PATH);
+        final int reconciliation =
+                workflow.indexOf("name: Reconcile the published coverage counters with the merged report");
+        final int reproducibility = workflow.indexOf("name: Reproducible artifact gate");
+
+        assertThat(reconciliation)
+                .as("a step must hold the published coverage counters to the merged report; without it a "
+                        + "transcribed counter can drift while every gate stays green")
+                .isNotNegative();
+        assertThat(reconciliation)
+                .as("and it must run before the reproducibility gate, whose `clean package` deletes the "
+                        + "merged report it reads")
+                .isLessThan(reproducibility);
+
+        final String step = workflow.substring(reconciliation, reproducibility);
+        assertThat(step)
+                .as("it reads the merged report and the published page, and compares all four counters "
+                        + "the page publishes rather than only the gated one")
+                .contains("target/site/jacoco-merged/jacoco.xml")
+                .contains("../docs/gate-evidence.md")
+                .contains("'LINE:Line' 'BRANCH:Branch' 'INSTRUCTION:Instruction' 'METHOD:Method'");
+        assertThat(step)
+                .as("a mismatch must fail the step and name both figures, so the diagnosis is the "
+                        + "correction rather than a hunt")
+                .contains("the page publishes ${expected_covered}, this run measured ${covered}")
+                .contains("Update the table in docs/gate-evidence.md from the figures above");
+        assertThat(step)
+                .as("the bundle counter is the LAST of its type in the report - JaCoCo writes per-class "
+                        + "counters first - so the step must take the last rather than the first")
+                .contains("tail -1");
+    }
+
+    @Test
     @DisplayName("workflow commentary describes the actual linear verdict model")
     void workflowCommentaryMatchesItsControlFlow() throws IOException {
         final String workflow = read(WORKFLOW_PATH);
@@ -465,11 +596,50 @@ final class BuildAndCiContractTest {
                 .contains("git diff --check \"$(git hash-object -t tree /dev/null)\" HEAD --")
                 .as("and it must be scoped to those paths, never to the read-only legacy estate")
                 .contains("carddemo-java docs .github");
+        // The root-level publication descriptors this migration authors, named individually because a
+        // pathspec of directories cannot reach a file at the repository root. Both were authored here and
+        // read by no whitespace gate until they were named, which is a hole a directory list cannot
+        // close and cannot report. `.` is not the fix: it would pull in the estate tree the assertion
+        // below excludes. DL-340.
+        //
+        // The list is DERIVED rather than transcribed, which is the difference between a check and a
+        // second copy of the pathspec: every YAML descriptor at the repository root is discovered by
+        // walking it, so adding a third one puts it in this loop whether or not anyone remembers to widen
+        // the pathspec. Membership is defined by shape rather than by name - a root-level .yml or .yaml
+        // file is a publication descriptor this module owns, which is what mkdocs.yml and
+        // catalog-info.yaml both are. The governance text beside them (LICENSE, NOTICE, CONTRIBUTING.md,
+        // CODE_OF_CONDUCT.md) is deliberately NOT pulled in: the plan excludes it from modification, and
+        // a gate over a file this migration does not author would fail on an upstream edit.
+        final List<String> authoredRootDescriptors = authoredRootDescriptors();
+        assertThat(authoredRootDescriptors)
+                .as("the repository root carries the publication descriptors this migration updates, so "
+                        + "discovering none of them means this contract stopped reading the root")
+                .isNotEmpty();
+        for (final String descriptor : authoredRootDescriptors) {
+            assertThat(executable)
+                    .as("%s is a root-level descriptor this migration authors, so the whitespace pathspec "
+                            + "has to name it: a directory list cannot reach a file at the root, and an "
+                            + "unnamed authored file is read by no gate at all", descriptor)
+                    .contains(descriptor);
+        }
         assertThat(executable)
                 .as("app/ and samples/ are the parity baseline and must stay byte-identical, so no "
                         + "whitespace pathspec may name them")
                 .doesNotContain("git diff --check \"$(git hash-object -t tree /dev/null)\" HEAD -- app")
                 .doesNotContain("HEAD -- . ");
+        // The estate README is the one authored root file deliberately NOT in the pathspec, and the
+        // reason is measurable rather than stylistic: it is upstream CRLF text carrying 59 trailing-space
+        // lines, and .gitattributes exempts its carriage return rather than those spaces. Naming it would
+        // report 59 lines this migration did not write. Asserted so the exclusion stays a stated decision.
+        assertThat(executable)
+                .as("the estate README carries upstream trailing whitespace, so the pathspec must not "
+                        + "name it - the exclusion is deliberate and the workflow says why")
+                .doesNotContain("catalog-info.yaml mkdocs.yml README.md");
+        assertThat(read(WORKFLOW_PATH))
+                .as("and the reason both root files are named, and the estate README is not, belongs "
+                        + "beside the pathspec rather than in a reviewer's memory")
+                .contains("WHY TWO FILES ARE NAMED BESIDE THE THREE DIRECTORIES")
+                .contains("59 trailing-space lines");
     }
 
     @Test
@@ -1165,6 +1335,38 @@ final class BuildAndCiContractTest {
             }
         }
         return List.copyOf(names);
+    }
+
+    /**
+     * The publication descriptors this migration authors at the repository root, discovered by walking it.
+     *
+     * <p>Discovered rather than listed, for the reason the neighbour above is: a constant would be a second
+     * copy of the whitespace pathspec, and a third descriptor added to the root would satisfy the copy
+     * while escaping the gate. Membership is defined by <em>shape</em> - a depth-one {@code .yml} or
+     * {@code .yaml} file - because that is what the two known members are: {@code mkdocs.yml}, whose
+     * explicit {@code nav} list is what publishes this migration's documentation pages, and
+     * {@code catalog-info.yaml}, whose component type and tags this migration updates.
+     *
+     * <p>The governance text beside them is deliberately outside this rule. {@code LICENSE},
+     * {@code NOTICE}, {@code CONTRIBUTING.md} and {@code CODE_OF_CONDUCT.md} are unaffected by the
+     * migration, and a hygiene gate over a file this module does not author would fail the build on an
+     * upstream edit. So would the estate {@code README.md}, which is upstream CRLF text carrying 59
+     * trailing-space lines of its own.
+     *
+     * @return the descriptor file names, without duplicates, in a stable order
+     * @throws IOException if the repository root cannot be listed
+     */
+    private static List<String> authoredRootDescriptors() throws IOException {
+        final java.util.SortedSet<String> descriptors = new java.util.TreeSet<>();
+        try (Stream<Path> root = Files.list(Path.of(".."))) {
+            for (final Path candidate : root.filter(Files::isRegularFile).toList()) {
+                final String name = candidate.getFileName().toString();
+                if (name.endsWith(".yml") || name.endsWith(".yaml")) {
+                    descriptors.add(name);
+                }
+            }
+        }
+        return List.copyOf(descriptors);
     }
 
     private static String read(final Path path) throws IOException {

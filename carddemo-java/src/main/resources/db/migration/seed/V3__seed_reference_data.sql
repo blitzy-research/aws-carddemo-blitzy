@@ -60,14 +60,17 @@
 --   file. Verified against Flyway 11.7.2: with the schema location alone the resolved set is exactly
 --   {1, 2} - versions 3 and 4 appear in NO state - and the migration validates successfully.
 --
---   WHY A DIRECTORY AND NOT A VERSION CEILING. The withdrawn control was spring.flyway.target=2. It did
---   hold this file out, and it also FROZE THE SCHEMA at version 2: the day a V5 schema script shipped,
---   production would have applied nothing above the pin and still reported success, and the pin could
---   not be raised because the production resolution refused every other value. A ceiling is the wrong
---   instrument for a boundary that must never move AND the wrong instrument for a sequence that must
---   keep growing. A location a profile never lists is not a value an operator can widen and it
---   constrains no future version. Every profile now declares target: latest. See docs/decision-log.md
---   DL-298, which re-supersedes DL-102, DL-108, DL-111, DL-116, DL-119 and DL-127.
+--   WHY THE DIRECTORY IS THE PRIMARY CONTROL AND THE CEILING THE SECOND. A version ceiling of 2 also
+--   holds this file out, and the shared baseline and prod do declare spring.flyway.target: "2" - but it
+--   is not what this boundary rests on, because a ceiling excludes by ARITHMETIC and arithmetic cannot
+--   tell a script that must never be applied from one that has not been written yet. Renumber this file
+--   to V1_5 and a ceiling of 2 admits it; the location list does not notice. A ceiling also freezes the
+--   schema at its own version, so a V5 schema script would be skipped while the migration still reported
+--   success - which is why the pin is asserted against the delivered scripts and a V5 fails the build
+--   instead. The two controls therefore fail differently and are held together: the location list is what
+--   excludes this file, and a stale ceiling can under-migrate the schema half but can never reach this
+--   file. See docs/decision-log.md DL-298 for the split - which re-supersedes DL-102, DL-108, DL-111,
+--   DL-116, DL-119 and DL-127 - and DL-334 for the ceiling restored beside it.
 --
 --   WHAT MUST NOT CHANGE. Do not move this file into db/migration/schema or into the shared parent, do
 --   not add classpath:db/migration/seed to the base or production profile, and do not declare the shared
@@ -81,7 +84,8 @@
 --   production profile it REFUSES any list that is not exactly classpath:db/migration/schema, matched by
 --   equality rather than containment - so a file-system look-alike, a bare path, a deeper sub-path, the
 --   seed location, the shared parent, a second entry and a blank entry are all refused. It additionally
---   refuses a NUMERIC target under production, so the withdrawn ceiling cannot return as a trap. The
+--   refuses any production target other than the pin of 2, in either direction and including the head
+--   marker, so a ceiling that under-migrates the schema or over-reaches it cannot be configured. The
 --   controls fail in the same direction and none is relied on alone: the location is visible in the
 --   profile documents and invisible in code, and the refusals are unconditional in code and invisible in
 --   the documents.
