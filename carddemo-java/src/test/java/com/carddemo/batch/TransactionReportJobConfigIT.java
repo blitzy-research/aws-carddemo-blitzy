@@ -98,7 +98,7 @@ import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
 import com.carddemo.service.DateValidationService;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.support.AbstractPostgresIT;
@@ -2609,7 +2609,7 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({TransactionReportJobConfig.class, PostTransactionJobConfig.class, BatchConfig.class,
             JobParameterValidators.class, DateValidationService.class, TransactionReportService.class,
-            TransactionPostingService.class, PostingRecordTransactionBoundary.class,
+            TransactionPostingService.class, PostingStageTransactionBoundary.class,
             RecordWriter.class, AbendService.class, FixedWidthFlatFileReaderFactory.class,
             StagedGenerationStore.class, AdvisoryGenerationPublicationLock.class})
     @EnableConfigurationProperties(AwsProperties.class)

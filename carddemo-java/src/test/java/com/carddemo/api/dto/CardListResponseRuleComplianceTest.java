@@ -153,7 +153,7 @@ class CardListResponseRuleComplianceTest {
                 "CardDemo", "10:30:00", "001", "00000000011", "4111111111111111", rows,
                 selectionErrorFlags, CardListResponse.MSG_ROW_ACTION_PROMPT, null, false,
                 PageMetadata.forward(PageMetadata.CARD_LIST_PAGE_SIZE, null, "next", true, false,
-                        "001"), false, List.of(), "CRDSEL1", "card-list", NavigationContext.empty());
+                        "001"), false, List.of(), "CRDSEL1", "card-list", NavigationContext.empty(), null);
     }
 
     /**
@@ -522,8 +522,8 @@ class CardListResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares twenty components in screen order")
-        void theResponseDeclaresTwentyComponents() {
+        @DisplayName("the response declares twenty-one components in screen order")
+        void theResponseDeclaresTwentyOneComponents() {
             final List<String> declared = Arrays.stream(CardListResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
@@ -531,8 +531,8 @@ class CardListResponseRuleComplianceTest {
                     "programName", "title02", "currentTime", "displayedPageNumber", "accountFilter",
                     "cardNumberFilter", "rows", "selectionErrorFlags", "infoMessage", "errorMessage",
                     "generalError", "pageMetadata", "lastPageAlreadyShown", "fieldErrors",
-                    "focusScreenFieldId", "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(20);
+                    "focusScreenFieldId", "nextRoute", "navigationContext", "rowSnapshotToken");
+            assertThat(declared).hasSize(21);
         }
 
         @ParameterizedTest(name = "{0} bounded at {1}")
@@ -580,7 +580,7 @@ class CardListResponseRuleComplianceTest {
                 + "lists")
         void anEmptyResponsePassesValidationAndPublishesTwoEmptyLists() {
             final CardListResponse empty = new CardListResponse(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, false, null, false, List.of(), null, null, null);
+                    null, null, null, null, null, null, null, false, null, false, List.of(), null, null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(empty)).isEmpty();
@@ -594,7 +594,7 @@ class CardListResponseRuleComplianceTest {
         void aFilterOneDigitOverItsKeyWidthIsReported() {
             final CardListResponse overBound = new CardListResponse(null, null, null, null, null,
                     null, null, "0".repeat(CardListResponse.ACCOUNT_NUMBER_LENGTH + 1), null, null,
-                    null, null, null, false, null, false, List.of(), null, null, null);
+                    null, null, null, false, null, false, List.of(), null, null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(overBound))

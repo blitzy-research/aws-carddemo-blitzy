@@ -139,15 +139,17 @@ import org.springframework.stereotype.Service;
  * page is cached; the client echoes the paging state back, exactly as the pseudo-conversational turn
  * carried it in the communication area.
  *
- * <p><strong>One value the legacy read back from the terminal is not echoed but re-read.</strong> The
- * selection clauses take the identifier the map is displaying on the marked row, and that identifier
- * returns from the device on a real 3270. Accepting it from a request body would make the identity of
- * the selected transaction something the submitter states rather than something this service
- * established, so the marked row's identifier is re-read from the page the echoed cursor names, on the
- * one kind of turn that marks a row. Everything else about the browse - which key to resume from, which
- * direction, the page counter, the next-page indicator - remains echoed state, because each of those is
- * a value the legacy held in its own commarea and none of them can name a record the browse does not
- * find for itself. Decision log entry DL-299 records the divergence.
+ * <p><strong>One value the legacy read back from the terminal travels sealed rather than in the
+ * clear.</strong> The selection clauses take the identifier the map is displaying on the marked row, and
+ * that identifier returns from the device on a real 3270. Accepting it from a request body would make the
+ * identity of the selected transaction something the submitter states rather than something this service
+ * established, so the response carries the page's ten slot identifiers as one authenticated, encrypted
+ * token and a marking turn echoes that token back. The identifier a transfer receives is therefore the
+ * one that stood in the marked slot on the page that was sent - which is what the legacy map holds - and
+ * no second read of a table that may have moved is involved. Everything else about the browse - which key
+ * to resume from, which direction, the page counter, the next-page indicator - remains echoed state in the
+ * clear, because each of those is a value the legacy held in its own commarea and none of them can name a
+ * record the browse does not find for itself.
  *
  * <p>The turn is deliberately non-transactional. A repository browse that fails completes its own
  * transaction before this service maps the failure, so no rollback-only marker can replace the
@@ -276,17 +278,6 @@ public final class TransactionListService {
     private static final String BLANK = "";
 
     /**
-     * Label the re-read of a displayed row reports under when it fails.
-     *
-     * <p>Deliberately not one of the four legacy browse command names. That read has no counterpart in
-     * the source - the source read the map - so naming it after a legacy command would attribute a
-     * failure to a statement the member does not execute. It shares the failure arm because the arm's
-     * outcome, an error flag and the unable-to-look-up message, is the one composition the legacy screen
-     * has for a read it could not complete.
-     */
-    private static final String RESELECT_READ_COMMAND = "REREAD-DISPLAYED-PAGE";
-
-    /**
      * Fixed stand-in the diagnostic renderings of this class's three carried shapes emit in place of a
      * regulated value.
      *
@@ -351,27 +342,33 @@ public final class TransactionListService {
 
     private final NavigationService navigationService;
 
+    private final TransactionListPageTokenService pageTokenService;
+
     private final Clock clock;
 
     /**
-     * Constructor injection of the four collaborators, each of which replaces a distinct legacy
+     * Constructor injection of the five collaborators, each of which replaces a distinct legacy
      * mechanism: the ordered-read view replaces the keyed cluster the browse walks, the message catalogue
      * replaces the common message copybook the invalid-key arm reads at line 132 and the screen
      * titles the header paragraph reads at lines 571-572, the navigation service replaces the
-     * transfer-control dispatch of lines 192-195 and 518-521, and the clock replaces the intrinsic
-     * current-date function of line 569.
+     * transfer-control dispatch of lines 192-195 and 518-521, the page-token service replaces the screen
+     * map as the channel that carries the ten displayed identifiers across a pseudo-conversational turn,
+     * and the clock replaces the intrinsic current-date function of line 569.
      *
      * @param transactionScanRepository transaction master the browse reads, through its bounded
      *                               ordered-read view; must not be {@code null}
      * @param messageCatalogService  common message and screen title catalogue; must not be {@code null}
      * @param navigationService      route resolver for every transfer this screen performs; must not
      *                               be {@code null}
+     * @param pageTokenService       seals the slot-to-identifier map of a sent page and resolves a marked
+     *                               slot against it; must not be {@code null}
      * @param clock                  clock the screen header is rendered from; must not be {@code null}
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public TransactionListService(final TransactionScanRepository transactionScanRepository,
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
+            final TransactionListPageTokenService pageTokenService,
             final Clock clock) {
         this.transactionScanRepository = Objects.requireNonNull(transactionScanRepository,
                 "transactionScanRepository must not be null");
@@ -379,6 +376,8 @@ public final class TransactionListService {
                 Objects.requireNonNull(messageCatalogService, "messageCatalogService must not be null");
         this.navigationService =
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
+        this.pageTokenService =
+                Objects.requireNonNull(pageTokenService, "pageTokenService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -548,16 +547,9 @@ public final class TransactionListService {
             }
         }
         if (selectedRow > 0) {
-            // Lines 151-178 pair the marked selector with the identifier the map echoed beside it. The
-            // identifier is re-read from the page the browse cursor names instead - see the method note.
-            final String reReadIdentifier = reReadDisplayedIdentifier(state, command, selectedRow);
-            if (reReadIdentifier == null) {
-                // The re-read failed. Its arm has already raised the error flag, emitted the
-                // unable-to-look-up message and sent the screen, so the turn is complete: continuing
-                // would open a browse the guard below would never close.
-                return;
-            }
-            state.selectedTransactionId = reReadIdentifier;
+            // Lines 151-178 pair the marked selector with the identifier the map was displaying beside
+            // it. The sealed snapshot of the sent page is that map here - see the method note.
+            state.selectedTransactionId = identifierDisplayedInSlot(command, selectedRow);
         }
 
         // Lines 183-204.
@@ -625,89 +617,97 @@ public final class TransactionListService {
     }
 
     /**
-     * Re-reads the identifier the marked row is displaying, from the page the submitted browse cursor
-     * names, rather than believing an identifier the submission echoed.
+     * Resolves the identifier the marked slot was displaying, from the sealed snapshot of the page that
+     * displayed it.
      *
      * <p><strong>What this replaces, and why it is not the same shape as the source.</strong> Each of the
      * ten selection clauses at lines 150 to 178 does two moves: the row's selector into the selection
      * flag, and the identifier the map is displaying <em>on that same row</em> into the selected-record
      * field. The second move reads the map, and the map on a returning turn is what the terminal
-     * transmitted back. On the mainframe that is a device the region itself painted a moment earlier over
-     * a private connection, so the value it returns is the value the program sent. Over HTTP the
-     * submission is composed by the caller, so the equivalent move would let a submission mark row three
-     * and name any sixteen-character identifier as the one supposedly shown there - and the hand-off at
-     * lines 186 to 195 would carry that identifier to the transaction-view screen as though the operator
-     * had chosen it. The identifier is therefore established from the browse rather than from the
-     * submission. Decision log entry DL-299 records the divergence; it is a labelled improvement on the
-     * legacy trust posture, in the same family as hashing a credential the legacy compared in the clear,
-     * and it changes no outcome for a submission that echoes what it was sent.
+     * transmitted back - a device the region itself painted a moment earlier over a private connection, so
+     * the value it returns is the value the program sent. Over HTTP the submission is composed by the
+     * caller, so accepting an identifier from it would let a submission mark slot three and name any
+     * sixteen-character identifier as the one supposedly shown there, and the hand-off at lines 186 to 195
+     * would carry that identifier to the transaction-view screen as though the operator had chosen it.
      *
-     * <p><strong>Which read reproduces which page, and why the direction decides it.</strong> The
-     * population paragraph writes the page's first boundary key only from slot one, lines 392-393, and
-     * its last only from slot ten, lines 438-439. A page assembled by the forward paragraph fills slot
-     * one upward, so its first key is genuinely the identifier of its top row, and reading <em>ascending
-     * from that key inclusive</em> for one screen's worth of rows returns the same rows in the same slot
-     * order. A page assembled by the backward paragraph fills slot ten downward from line 349, so its
-     * last key is the identifier of its bottom row, and reading <em>descending from that key
-     * inclusive</em> returns the same rows in the same slot order - counting slots downward from ten,
-     * exactly as that paragraph does. Taking the ascending reading for a backward page would agree
-     * whenever the page filled completely and disagree whenever it did not: a short backward page is
-     * bottom-aligned, its slot one is never populated, and every identifier would land one or more rows
-     * away from the row the operator marked. The direction the submission carries is the one the previous
-     * response published for the page it produced, which is what makes it the right discriminator here.
+     * <p><strong>Why the sealed page rather than a second read of the store.</strong> The arrangement this
+     * replaces re-derived the page from the echoed browse cursor and took the marked slot out of that
+     * second read. It never trusted the caller, but it answered a different question from the one the
+     * legacy answers: not <em>which row did the operator mark</em> but <em>which row stands in that
+     * position now</em>. Between the display and the selection an insert, a delete or a posted transaction
+     * shifts every later row by one, so the two answers differ by exactly one row - and the screen the
+     * identifier is handed to is the transaction-view screen. The sealed snapshot removes the second read
+     * altogether: the identifier comes from the page that was sent, which is what the legacy map holds.
      *
-     * <p>Nothing is compared against a submitted identifier, because none is accepted: there is one
-     * source for the value and it is this read. A row the page did not fill answers blank, which is what
-     * the legacy's own catch-all leaves in the field at lines 180 to 181, and the selection dispatch then
-     * declines to act on it exactly as it declines to act on a blank echo. A cursor the page never
-     * carried answers blank for the same reason.
+     * <p>A slot the page never filled resolves to blank, which is what the legacy's own catch-all leaves
+     * in the field at lines 180 to 181, and the selection dispatch then declines to act on it exactly as
+     * it declines to act on a blank echo. A submission that presents no snapshot, or one this server did
+     * not mint, resolves to blank for the same reason and takes the same outcome: nothing is handed on and
+     * the page is sent again. That is the arrangement the previous read-based form already had for a
+     * cursor it could not use, so no new message text and no new arm is introduced, and the refusal is
+     * logged rather than shown.
      *
-     * <p>One bounded query, one screen's worth of rows, issued only on a turn that actually marked a row.
+     * <p>No store read is issued on this path at all, which is also why a selection turn that transfers
+     * touches the repository not at all.
      *
-     * @param state     per-call working storage, which receives the failure arm's flag and message
-     * @param command   the submitted turn, whose paging component supplies the cursor and the direction
+     * @param command   the submitted turn, whose sealed page snapshot names what was displayed
      * @param screenRow the one-based slot the marked selector sits on
-     * @return the identifier that row is displaying, blank when that slot carries none, or {@code null}
-     *     when the read itself failed - in which case the failure arm has already been applied
+     * @return the identifier that slot was displaying, or blank when the slot displayed none and when the
+     *     snapshot is absent, unopenable or foreign
      */
-    private String reReadDisplayedIdentifier(final BrowseState state,
-            final TransactionListCommand command, final int screenRow) {
-        final boolean filledDownward =
-                command.pageCursor().direction() == BrowseWindow.PagingDirection.BACKWARD;
-        final String boundaryKey = filledDownward
-                ? blankToNull(command.pageCursor().nextCursorKey())
-                : blankToNull(command.pageCursor().previousCursorKey());
-        if (boundaryKey == null) {
-            LOG.debug("Transaction list could not re-read a marked row: rule=row-selection"
-                    + " screenRow={} reason=NO BOUNDARY KEY filledDownward={}",
-                    screenRow, filledDownward);
+    private String identifierDisplayedInSlot(final TransactionListCommand command,
+            final int screenRow) {
+        final String snapshot = command.rowSnapshotToken();
+        if (snapshot == null || snapshot.isBlank()) {
+            LOG.warn("Transaction list selection was refused for want of a page snapshot:"
+                    + " rule=row-selection screenRow={} reason=SNAPSHOT REQUIRED", screenRow);
             return BLANK;
         }
-
-        final List<Transaction> displayedPage;
         try {
-            displayedPage = filledDownward
-                    ? transactionScanRepository.findByTranIdLessThanEqualOrderByTranIdDesc(
-                            boundaryKey, Limit.of(SCREEN_ROW_COUNT))
-                    : transactionScanRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
-                            boundaryKey, Limit.of(SCREEN_ROW_COUNT));
-        } catch (final DataAccessException failure) {
-            reportBrowseFailure(state, failure, RESELECT_READ_COMMAND);
+            return pageTokenService.resolve(snapshot, screenRow).orElse(BLANK);
+        } catch (final IllegalArgumentException rejected) {
+            LOG.warn("Transaction list page snapshot was refused: rule=row-selection screenRow={}"
+                    + " failureChain={}", screenRow, FailureDiagnostics.failureChainOf(rejected));
+            return BLANK;
+        }
+    }
+
+    /**
+     * Seals the slot-to-identifier map of the page this turn is sending.
+     *
+     * <p>Every one of the ten slots is described, empty ones included, because the two paging paragraphs
+     * fill in opposite directions and a bottom-aligned short page has empty low slots. A page that filled
+     * no slot at all - an empty cluster, or a turn whose error arm sent no rows - is sealed as no snapshot
+     * rather than as ten empty slots, so a following submission that marks a row is refused for want of a
+     * page rather than resolving a slot of a page that displayed nothing.
+     *
+     * <p>A mint that cannot be performed does not fail the turn. The page itself is correct and sending it
+     * is the legacy behaviour; what a missing snapshot costs is the next turn's ability to mark a row, and
+     * that turn refuses safely on its own. The condition is logged so it cannot pass unnoticed.
+     *
+     * @param  state per-call working storage, whose slot array is the page being sent
+     * @return the sealed snapshot, or {@code null} when this turn sent no row
+     */
+    private String sealDisplayedPage(final BrowseState state) {
+        final List<String> slotIdentifiers = new ArrayList<>(SCREEN_ROW_COUNT);
+        boolean anyFilled = false;
+        for (int screenRow = FIRST_SCREEN_ROW; screenRow <= SCREEN_ROW_COUNT; screenRow++) {
+            final Transaction record = state.screenRows[screenRow - 1];
+            final String identifier = (record == null) ? null : record.getTranId();
+            slotIdentifiers.add(identifier);
+            anyFilled = anyFilled || (identifier != null && !identifier.isBlank());
+        }
+        if (!anyFilled) {
             return null;
         }
-
-        // A downward-filled page puts its first read in slot ten and each later read one slot higher up;
-        // an upward-filled page puts its first read in slot one.
-        final int readIndex = filledDownward
-                ? SCREEN_ROW_COUNT - screenRow
-                : screenRow - FIRST_SCREEN_ROW;
-        if (readIndex < 0 || readIndex >= displayedPage.size()) {
-            LOG.debug("Transaction list re-read a marked row that the page did not fill:"
-                    + " rule=row-selection screenRow={} rowsOnPage={}", screenRow,
-                    displayedPage.size());
-            return BLANK;
+        try {
+            return pageTokenService.mint(slotIdentifiers);
+        } catch (final IllegalArgumentException | NullPointerException rejected) {
+            LOG.warn("Transaction list could not seal the page it displayed:"
+                    + " rule=row-selection failureChain={}",
+                    FailureDiagnostics.failureChainOf(rejected));
+            return null;
         }
-        return nullToBlank(displayedPage.get(readIndex).getTranId());
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1597,7 +1597,8 @@ public final class TransactionListService {
                 state.currentDate,
                 state.currentTime,
                 TRANSACTION_ID,
-                PROGRAM_NAME);
+                PROGRAM_NAME,
+                sealDisplayedPage(state));
     }
 
     /**
@@ -1831,6 +1832,12 @@ public final class TransactionListService {
      * @param currentPageNumber the page number the previous turn settled on, an unsigned eight-digit
      *     field. Used as a decision only by the first-page tests at lines 245 and 363, and otherwise
      *     displayed. Must not be negative, because the legacy field is unsigned and cannot hold one
+     * @param rowSnapshotToken the sealed slot-to-identifier map of the page the previous response sent,
+     *     echoed unchanged. It is what the ten selection clauses at lines 150-178 read out of the screen
+     *     map, carried here in a form a caller can neither read nor forge, and it is consulted only on a
+     *     turn that marks a row. A turn that only pages carries none and needs none; a turn that marks a
+     *     row without one selects nothing, which is the outcome a blank echoed identifier reaches at
+     *     lines 180-181
      */
     public record TransactionListCommand(
             KeyAction keyAction,
@@ -1839,7 +1846,8 @@ public final class TransactionListService {
             List<String> rowSelectors,
             BrowseWindow.CursorRequest pageCursor,
             boolean nextPageAvailable,
-            int currentPageNumber) {
+            int currentPageNumber,
+            String rowSnapshotToken) {
 
         /**
          * Canonical constructor. Requires an attention key, rejects a negative page number, and
@@ -1888,6 +1896,7 @@ public final class TransactionListService {
                     + ", pageCursor=" + pageCursor
                     + ", nextPageAvailable=" + nextPageAvailable
                     + ", currentPageNumber=" + currentPageNumber
+                    + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                     + "]";
         }
     }
@@ -1940,6 +1949,11 @@ public final class TransactionListService {
      * @param currentTime the header time, lines 582-586
      * @param transactionName this screen's own transaction identifier, line 573
      * @param programName this screen's own legacy program name, line 574
+     * @param rowSnapshotToken the sealed slot-to-identifier map of the page this turn sent, to be echoed
+     *     unchanged by the next submission. It is what lets a following turn mark a row: the legacy read
+     *     those identifiers back off the screen map, and this is the same content in a form a caller can
+     *     neither read nor forge. {@code null} on a turn that sent no row - the three transfer paths and
+     *     an empty cluster - because a page that displayed nothing has no slot to mark
      */
     public record TransactionListResult(
             NavigationService.Route route,
@@ -1959,7 +1973,8 @@ public final class TransactionListService {
             String currentDate,
             String currentTime,
             String transactionName,
-            String programName) {
+            String programName,
+            String rowSnapshotToken) {
 
         /**
          * Canonical constructor. Copies both collections defensively into unmodifiable views so a result
@@ -1972,9 +1987,11 @@ public final class TransactionListService {
         }
 
         /**
-         * Renders the result with the rows, the echoed filter and the selected identifier withheld, for
-         * the reason the command withholds its own keys: all three carry transaction identifiers, and the
-         * rows additionally carry a card number and an amount.
+         * Renders the result with the rows, the echoed filter, the selected identifier and the sealed page
+         * snapshot withheld, for the reason the command withholds its own keys: all four carry transaction
+         * identifiers, and the rows additionally carry a card number and an amount. The snapshot is
+         * unreadable without the field key, but a log line is not a place to put a continuation credential
+         * either.
          *
          * @return the paging and screen state, with every regulated component replaced by a placeholder
          */
@@ -2000,6 +2017,7 @@ public final class TransactionListService {
                     + ", currentTime=" + currentTime
                     + ", transactionName=" + transactionName
                     + ", programName=" + programName
+                    + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                     + "]";
         }
     }

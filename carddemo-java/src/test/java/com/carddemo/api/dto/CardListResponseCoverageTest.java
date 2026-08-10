@@ -142,13 +142,13 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 @DisplayName("CardListResponse :: card-list page contract of legacy transaction CCLI")
 class CardListResponseCoverageTest {
 
-    /** The twenty components in declaration order. */
+    /** The twenty-one components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "displayedPageNumber", "accountFilter", "cardNumberFilter", "rows", "selectionErrorFlags",
             "infoMessage", "errorMessage", "generalError", "pageMetadata", "lastPageAlreadyShown",
             "fieldErrors", "focusScreenFieldId", "nextRoute",
-            "navigationContext");
+            "navigationContext", "rowSnapshotToken");
 
     /** The fifteen components that declare a width bound. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
@@ -297,7 +297,7 @@ class CardListResponseCoverageTest {
                 false, null, false, List.of(),
                 "focusScreenFieldId".equals(component) ? value : null,
                 "nextRoute".equals(component) ? value : null,
-                null);
+                null, null);
     }
 
     /**
@@ -309,7 +309,7 @@ class CardListResponseCoverageTest {
      */
     private static CardListResponse withLists(List<CardListRow> rows, List<Boolean> flags) {
         return new CardListResponse(null, null, null, null, null, null, null, null, null, rows,
-                flags, null, null, false, null, false, List.of(), null, null, null);
+                flags, null, null, false, null, false, List.of(), null, null, null, null);
     }
 
     /**
@@ -322,7 +322,7 @@ class CardListResponseCoverageTest {
         return new CardListResponse(TRANSACTION_NAME, TITLE_01, CURRENT_DATE, PROGRAM_NAME, TITLE_02,
                 CURRENT_TIME, DISPLAYED_PAGE_NUMBER, ACCOUNT_FILTER, CARD_FILTER, threeAscendingRows(),
                 List.of(false, false, false), CardListResponse.MSG_ROW_ACTION_PROMPT, null, false,
-                forwardFirstPage(), false, List.of(), FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, navigation);
+                forwardFirstPage(), false, List.of(), FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, navigation, null);
     }
 
     /**
@@ -335,7 +335,7 @@ class CardListResponseCoverageTest {
         return new CardListResponse(TRANSACTION_NAME, TITLE_01, CURRENT_DATE, PROGRAM_NAME, TITLE_02,
                 CURRENT_TIME, DISPLAYED_PAGE_NUMBER, ACCOUNT_FILTER, CARD_FILTER, threeAscendingRows(),
                 List.of(false, false, false), CardListResponse.MSG_ROW_ACTION_PROMPT, null, false,
-                null, false, List.of(), FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, null);
+                null, false, List.of(), FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, null, null);
     }
 
     /**
@@ -463,7 +463,7 @@ class CardListResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("no member is declared beyond the twenty accessors, so this type chooses no "
+        @DisplayName("no member is declared beyond the twenty-one accessors, so this type chooses no "
                 + "message and orders no row")
         void noMemberIsDeclaredBeyondTheAccessors() {
             List<String> instanceMethods = Arrays.stream(CardListResponse.class.getDeclaredMethods())
@@ -1250,9 +1250,9 @@ class CardListResponseCoverageTest {
         /** The fixed stand-in both overrides write in place of a withheld value. */
         private static final String PLACEHOLDER = "***REDACTED***";
 
-        /** The four components this type withholds, in declaration order. */
+        /** The five components this type withholds, in declaration order. */
         private static final List<String> WITHHELD_BY_THIS_TYPE = List.of(
-                "accountFilter", "cardNumberFilter", "rows", "pageMetadata");
+                "accountFilter", "cardNumberFilter", "rows", "pageMetadata", "rowSnapshotToken");
 
         /** The two row components the row's own override withholds. */
         private static final List<String> WITHHELD_BY_THE_ROW = List.of(
@@ -1298,8 +1298,9 @@ class CardListResponseCoverageTest {
          * it, so the rendering still names {@code rows} under its declared name.</p>
          */
         @Test
-        @DisplayName("the page rendering names all twenty components plus the row count, and "
-                + "withholds exactly the two filters, the row list and the browse position")
+        @DisplayName("the page rendering names all twenty-one components plus the row count, and "
+                + "withholds exactly the two filters, the row list, the browse position and the row "
+                + "snapshot")
         void thePageRenderingIsTheGeneratedOne() {
             String rendered = filledPage(null).toString();
 
@@ -1321,7 +1322,8 @@ class CardListResponseCoverageTest {
                     .filter(component -> rendered.contains(component + "=" + PLACEHOLDER))
                     .toList();
             assertThat(withheld)
-                    .as("the four regulated components are withheld and the other sixteen are not")
+                    .as("the four regulated components are withheld, the already-opaque row snapshot is "
+                            + "withheld with them, and the other sixteen are not")
                     .containsExactlyElementsOf(WITHHELD_BY_THIS_TYPE);
         }
 
@@ -1367,7 +1369,7 @@ class CardListResponseCoverageTest {
             PageMetadata position = PageMetadata.forward(PageMetadata.CARD_LIST_PAGE_SIZE,
                     "PREVCURSORKEY7788", "NEXTCURSORKEY9911", true, true, "002");
             CardListResponse response = new CardListResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, false, position, false, List.of(), null, null, null);
+                    null, null, null, null, null, null, false, position, false, List.of(), null, null, null, null);
 
             assertThat(response.toString())
                     .as("the paging record is substituted whole, so this type cannot become the "

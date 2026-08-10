@@ -315,7 +315,7 @@ class CardListRequestTest {
                 null,
                 cursor(PageMetadata.PagingDirection.FORWARD), false,
                 KeyAction.PFK08,
-                navigation());
+                navigation(), null);
     }
 
     /**
@@ -343,7 +343,7 @@ class CardListRequestTest {
                 "",
                 cursor(PageMetadata.PagingDirection.FORWARD), false,
                 KeyAction.PFK08,
-                navigation());
+                navigation(), null);
     }
 
     /**
@@ -353,7 +353,7 @@ class CardListRequestTest {
      */
     private static CardListRequest firstEntry() {
         return new CardListRequest(null, null, null, null, null, null, null, null, null, null, null, false,
-                null, null);
+                null, null, null);
     }
 
     /**
@@ -371,7 +371,7 @@ class CardListRequestTest {
     private static CardListRequest marked(String row1, String row2, String row3, String row4,
             String row5, String row6, String row7) {
         return new CardListRequest(null, null, null, row1, row2, row3, row4, row5, row6, row7, null, false,
-                null, null);
+                null, null, null);
     }
 
     /**
@@ -406,7 +406,7 @@ class CardListRequestTest {
     private static CardListRequest filtered(String accountFilter, String cardFilter,
             String pageEcho) {
         return new CardListRequest(accountFilter, cardFilter, pageEcho, null, null, null, null, null,
-                null, null, null, false, null, null);
+                null, null, null, false, null, null, null);
     }
 
     /**
@@ -828,7 +828,7 @@ class CardListRequestTest {
                 + "presence rule fires anywhere")
         void aSubmissionWhoseEveryTextComponentIsEmptyReportsNothing() {
             CardListRequest allEmpty = new CardListRequest("", "", "", "", "", "", "", "", "", "",
-                    null, false, null, null);
+                    null, false, null, null, null);
 
             assertThat(violations(allEmpty))
                     .as("no presence, pattern, digit or range rule is declared on any component")
@@ -851,7 +851,7 @@ class CardListRequestTest {
                     exactlyAsWide(CardListRequest.SELECTION_LENGTH),
                     cursor(PageMetadata.PagingDirection.BACKWARD), false,
                     KeyAction.PFK07,
-                    navigation());
+                    navigation(), null);
 
             assertThat(violations(atWidth)).isEmpty();
         }
@@ -964,7 +964,7 @@ class CardListRequestTest {
                     null, null, null,
                     new PageMetadata.PageCursorRequest(paddedKey, null,
                             PageMetadata.PagingDirection.FORWARD, null, false), false,
-                    null, null);
+                    null, null, null);
 
             assertThat(request.pageMetadata().previousCursorKey())
                     .isEqualTo(paddedKey)
@@ -980,10 +980,10 @@ class CardListRequestTest {
             // reverses them for display, so the two directions are not interchangeable.
             CardListRequest walkingForward = new CardListRequest(null, null, null, null, null, null,
                     null, null, null, null, cursor(PageMetadata.PagingDirection.FORWARD), false, null,
-                    null);
+                    null, null);
             CardListRequest walkingBackward = new CardListRequest(null, null, null, null, null, null,
                     null, null, null, null, cursor(PageMetadata.PagingDirection.BACKWARD), false, null,
-                    null);
+                    null, null);
 
             assertThat(walkingForward.pageMetadata().direction())
                     .isEqualTo(PageMetadata.PagingDirection.FORWARD);
@@ -1018,7 +1018,7 @@ class CardListRequestTest {
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
                     null, null, null,
                     new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR, null, null, false), false, null,
-                    null);
+                    null, null);
 
             assertThat(request.pageMetadata().direction()).isNull();
             assertThat(violations(request)).isEmpty();
@@ -1032,7 +1032,7 @@ class CardListRequestTest {
                     oneCharacterTooWide(PageMetadata.CURSOR_KEY_MAX_LENGTH), null,
                     PageMetadata.PagingDirection.BACKWARD, null, false);
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, tooWide, false, KeyAction.PFK07, null);
+                    null, null, null, tooWide, false, KeyAction.PFK07, null, null);
 
             Set<ConstraintViolation<CardListRequest>> reported = violations(request);
 
@@ -1176,7 +1176,7 @@ class CardListRequestTest {
         @DisplayName("the submission carries the key it was given and tolerates its absence")
         void theSubmissionCarriesTheKeyAndToleratesItsAbsence() {
             CardListRequest withKey = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, false, KeyAction.PFK07, null);
+                    null, null, null, null, false, KeyAction.PFK07, null, null);
 
             assertThat(withKey.keyAction()).isEqualTo(KeyAction.PFK07);
             assertThat(violations(withKey)).isEmpty();
@@ -1197,7 +1197,7 @@ class CardListRequestTest {
                     "ANN", "SMITH", "00000000001", "Y", "0000000000000001", "CCRDLIA", "COCRDLI");
 
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, false, KeyAction.ENTER, echoed);
+                    null, null, null, null, false, KeyAction.ENTER, echoed, null);
 
             assertThat(request.navigationContext()).isEqualTo(echoed);
             assertThat(request.navigationContext().accountId())
@@ -1227,7 +1227,7 @@ class CardListRequestTest {
                     "000000011", "MARY", "ANN", "SMITH", ACCOUNT_FILTER, "Y", CARD_FILTER, "CCRDLIA",
                     "COCRDLI");
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, false, KeyAction.ENTER, tooWide);
+                    null, null, null, null, false, KeyAction.ENTER, tooWide, null);
 
             Set<ConstraintViolation<CardListRequest>> reported = violations(request);
 
@@ -1367,7 +1367,7 @@ class CardListRequestTest {
 
             CardListRequest expected = new CardListRequest(ACCOUNT_FILTER, CARD_FILTER, null, null,
                     "", VIEW_MARK, " ", null, null, null,
-                    cursor(PageMetadata.PagingDirection.FORWARD), false, KeyAction.PFK08, navigation());
+                    cursor(PageMetadata.PagingDirection.FORWARD), false, KeyAction.PFK08, navigation(), null);
             assertThat(returned).isEqualTo(expected);
             assertThat(returned.selectionsInRowOrder())
                     .containsExactly(null, "", VIEW_MARK, " ", null, null, null);
@@ -1390,7 +1390,7 @@ class CardListRequestTest {
         private CardListRequest withoutNavigation(String accountFilter, String cardFilter,
                 PageMetadata.PageCursorRequest resumeCursor) {
             return new CardListRequest(accountFilter, cardFilter, PAGE_ECHO, null, "", VIEW_MARK,
-                    " ", null, null, null, resumeCursor, false, KeyAction.PFK08, null);
+                    " ", null, null, null, resumeCursor, false, KeyAction.PFK08, null, null);
         }
 
         @Test

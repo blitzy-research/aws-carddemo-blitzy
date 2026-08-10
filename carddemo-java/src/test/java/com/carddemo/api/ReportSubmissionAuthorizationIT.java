@@ -29,7 +29,6 @@ import com.carddemo.service.JobSubmissionService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ReportRequestService;
-import com.carddemo.service.ReportRetryTokenService;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.AbstractLocalStackIT;
 import com.carddemo.support.InMemoryCredentialMaster;
@@ -88,8 +87,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * not depend on who asked for them, so wiring a filter chain there would add machinery to a specification
  * about bytes.
  *
- * <p>It cannot, however, prove anything about <strong>who</strong> may submit or about whose namespace a
- * submission lands in, and those are security properties rather than contract properties. A handed-in
+ * <p>It cannot, however, prove anything about <strong>who</strong> may submit, or that one caller's
+ * submission can neither borrow nor suppress another's, and those are security properties rather than
+ * contract properties. A handed-in
  * principal is an assumption: it asserts that the boundary uses the identity it is given, not that the
  * delivered route establishes one, not that a caller presenting nothing is refused before the queue is
  * touched, and not that two different callers are kept apart. Every one of those questions needs the chain
@@ -104,14 +104,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  *       submission.</strong> The token is minted by the shipped provider from a seeded record, so the
  *       identity under test is the one a signed-on caller actually holds rather than one this file
  *       invented.</li>
- *   <li><strong>Two different operators presenting the same retry token produce two complete streams.</strong>
- *       This is the defect the operator component of the submission identity closes, and it is only
- *       observable when two <em>real</em> identities are established: with a handed-in principal both
- *       submissions carry the same subject and the queue collapses the second, which is precisely the
- *       behaviour that used to be shipped.</li>
- *   <li><strong>The same operator repeating a token does not double its stream.</strong> The other half of
- *       the same property: the identity is a pure function of the range, the token and the operator, so a
- *       retry reissues the earlier identifiers and the queue collapses them.</li>
+ *   <li><strong>Every confirmed submission publishes its own complete stream.</strong> Two operators, and
+ *       one operator twice, each reach the queue in full: the transient data queue this replaces was
+ *       defined with append disposition and had no notion of identity, so a second request for the same
+ *       period appended a second stream and the job ran again. Nothing a caller sends can suppress a
+ *       stream, because no caller-supplied value takes part in the submission identity at all - the bridge
+ *       mints it with a nonce.</li>
  *   <li><strong>An echoed navigation identity is ignored.</strong> A caller writes another operator's
  *       identifier and the administrative type into the record it echoes back; the submission still lands
  *       in the token subject's namespace. Over a standalone harness this cannot be tested at all, because
@@ -128,13 +126,14 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * <h2>Provenance</h2>
  *
  * <p>{@code app/cbl/CORPT00C.cbl} lines 462 to 535 and {@code app/csd/CARDDEMO.CSD} lines 499 to 505, read
- * as read-only reference. The legacy queue had no notion of identity, so the namespace separation asserted
- * here has no legacy counterpart and is recorded as a target-only property in
- * {@code docs/decision-log.md}; no legacy source line is transcribed.
+ * as read-only reference. The queue's deduplication identifier has no legacy counterpart - it is forced by
+ * the target technology and is recorded as such in {@code docs/decision-log.md} - and it is composed from a
+ * minted nonce so that it never suppresses a submission the legacy queue would have appended. No legacy
+ * source line is transcribed.
  */
 @SpringBootTest(classes = ReportSubmissionAuthorizationIT.SecuredReportBridgeContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.MOCK)
-@DisplayName("Gate 5 executed :: who may submit a report, and whose namespace it lands in")
+@DisplayName("Gate 5 executed :: who may submit a report, and that every submission is its own")
 class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
 
     /** Cards one complete submission transmits, the end-of-stream card included. */
@@ -142,9 +141,6 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
 
     /** The route the report-request transaction is published at. */
     private static final String REPORT_REQUEST_ROUTE = "/api/reports/request";
-
-    /** Header the effective logical-request token travels on. */
-    private static final String RETRY_TOKEN_HEADER = "Idempotency-Key";
 
     /** Presentation prefix a bearer credential is offered under. */
     private static final String BEARER_PREFIX = "Bearer ";
@@ -154,19 +150,6 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
 
     /** Second fixture operator, an ordinary signed-on identity, because the route admits either type. */
     private static final String SECOND_OPERATOR = "TESTUSR1";
-
-    /**
-     * A value that makes every token this class mints unique to this run.
-     *
-     * <p><strong>This is load-bearing and not hygiene.</strong> The queue deduplicates by identifier over a
-     * five-minute window, and emptying the queue between tests removes the <em>messages</em> without
-     * clearing that window. Two tests presenting the same token for the same period as the same operator
-     * would therefore be one logical submission as far as the queue is concerned, and the second test
-     * would drain nothing and report a defect that does not exist. Each test names its own token, and the
-     * nonce keeps those names distinct from a previous run's as well.
-     */
-    private static final String RUN_NONCE =
-            Long.toHexString(new SecureRandom().nextLong() & Long.MAX_VALUE);
 
     /** Signing material, generated so no secret literal enters version control. */
     private static final String SIGNING_SECRET = generatedSecret();
@@ -196,20 +179,6 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
     /** The shipped provider, which is what mints a credential a signed-on caller would hold. */
     @Autowired
     private JwtTokenProvider tokenProvider;
-
-    /**
-     * The shipped token boundary, so a test presents a token this deployment actually issued.
-     *
-     * <p>A retry token is minted material carrying an authenticated instant and is honoured only inside the
-     * queue service's deduplication window, so a label a test invented is refused before the turn begins.
-     * The namespace assertions below need a token that is <em>shared between two operators</em> and
-     * <em>honoured</em>, which is exactly one this service minted: the authentication code covers the
-     * instant and the nonce and deliberately not the operator, so a token remains presentable by anyone who
-     * holds it while the identity it feeds still separates one operator from another. That separation is the
-     * property under test, and it is asserted from the outside.
-     */
-    @Autowired
-    private ReportRetryTokenService retryTokens;
 
     /**
      * Publishes the credential settings the chain and the provider read.
@@ -247,24 +216,6 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
     @AfterEach
     void emptyTheQueue() {
         resetJobSubmissionQueue();
-    }
-
-    /**
-     * A value shaped like a token but issued by nobody, for the cases that must be decided before a token
-     * is ever inspected.
-     *
-     * <p>The boundary honours only a token it minted, so a label a test invented is refused. That makes it
-     * exactly the right value for the credential cases: a request carrying one and no credential must be
-     * answered by the security chain, not by the token check, and the refusal these cases assert is
-     * therefore evidence that authentication precedes idempotency. The honoured cases mint through
-     * {@link #retryTokens} instead. The run nonce still keeps two tests from arriving at the same value;
-     * see {@link #RUN_NONCE}.
-     *
-     * @param  label what the test is about, so a value in a diagnostic says which test built it
-     * @return a value this deployment did not issue
-     */
-    private static String tokenFor(final String label) {
-        return label + "-" + RUN_NONCE;
     }
 
     /**
@@ -308,16 +259,15 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
     }
 
     /**
-     * Posts one confirmed operator-range request, optionally presenting a credential and a retry token.
+     * Posts one confirmed operator-range request, optionally presenting a credential.
      *
      * @param  credential the authorization header value, or {@code null} to present none
-     * @param  retryToken the logical-request token, or {@code null} to send none
      * @param  echoedUserId an identifier to write into the echoed navigation record, or {@code null}
      * @param  echoedUserType a user-type code to write into the echoed record, or {@code null}
      * @return the completed result, so status and body can both be read
      * @throws Exception if the request cannot be dispatched
      */
-    private MvcResult submit(final String credential, final String retryToken,
+    private MvcResult submit(final String credential,
             final String echoedUserId, final String echoedUserType) throws Exception {
         var request = post(REPORT_REQUEST_ROUTE)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -326,9 +276,6 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
                 .content(confirmedRangeRequest(echoedUserId, echoedUserType));
         if (credential != null) {
             request = request.header(HttpHeaders.AUTHORIZATION, credential);
-        }
-        if (retryToken != null) {
-            request = request.header(RETRY_TOKEN_HEADER, retryToken);
         }
         return securedBoundary().perform(request).andReturn();
     }
@@ -390,7 +337,7 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
         @DisplayName("a request presenting no credential is refused as unauthorized and publishes nothing, "
                 + "so a refusal is not a refusal in the reply and a submission in the estate")
         void aRequestWithNoCredentialPublishesNothing() throws Exception {
-            final MvcResult refused = submit(null, tokenFor("no-credential"), null, null);
+            final MvcResult refused = submit(null, null, null);
 
             assertThat(refused.getResponse().getStatus())
                     .as("no identity was established, so there is no entitlement to have been found "
@@ -406,7 +353,7 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
                 + "likewise publishes nothing")
         void aRequestWithAnUnverifiableCredentialPublishesNothing() throws Exception {
             final MvcResult refused = submit(BEARER_PREFIX + "not-a-credential-this-chain-would-mint",
-                    tokenFor("unverifiable-credential"), null, null);
+                    null, null);
 
             assertThat(refused.getResponse().getStatus()).isEqualTo(401);
             assertThat(drainedBodies(1)).isEmpty();
@@ -417,7 +364,7 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
                 + "complete stream")
         void aVerifiedCredentialPublishesOneCompleteStream() throws Exception {
             final MvcResult served = submit(credentialFor(FIRST_OPERATOR, UserType.ADMIN),
-                    retryTokens.mint(), null, null);
+                    null, null);
 
             assertThat(served.getResponse().getStatus())
                     .as("every outcome of this transaction is a screen the legacy program composed and "
@@ -430,29 +377,22 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
     }
 
     @Nested
-    @DisplayName("one operator's retry token cannot reach another operator's submission")
-    class TheSubmissionNamespace {
+    @DisplayName("every confirmed submission publishes its own complete stream")
+    class TheSubmissionStream {
 
         /** Creates the nested specification. */
-        TheSubmissionNamespace() {
+        TheSubmissionStream() {
             // Intentionally empty.
         }
 
         @Test
-        @DisplayName("two operators presenting the SAME retry token for the same period each publish a "
-                + "complete stream, because the authenticated operator scopes the deduplication namespace")
-        void twoOperatorsSharingATokenEachPublishAStream() throws Exception {
-            // THE DEFECT THIS ASSERTS IS CLOSED. With the operator left out of the submission identity,
-            // the identity was a function of the dates and the token alone - so the second operator's
-            // seventeen cards were collapsed as duplicates of the first's and the second operator was told
-            // its request had been submitted, having published nothing at all. Two REAL identities are
-            // what make this observable: handed-in principals would both carry the same subject.
-            final String shared = retryTokens.mint();
-
-            assertThat(submit(credentialFor(FIRST_OPERATOR, UserType.ADMIN), shared,
-                    null, null).getResponse().getStatus()).isEqualTo(200);
-            assertThat(submit(credentialFor(SECOND_OPERATOR, UserType.USER), shared,
-                    null, null).getResponse().getStatus()).isEqualTo(200);
+        @DisplayName("two operators submitting the same period each publish a complete stream, because "
+                + "nothing a caller sends takes part in the submission identity")
+        void twoOperatorsEachPublishAStream() throws Exception {
+            assertThat(submit(credentialFor(FIRST_OPERATOR, UserType.ADMIN), null, null)
+                    .getResponse().getStatus()).isEqualTo(200);
+            assertThat(submit(credentialFor(SECOND_OPERATOR, UserType.USER), null, null)
+                    .getResponse().getStatus()).isEqualTo(200);
 
             assertThat(drainedBodies(2 * CARD_COUNT + 1))
                     .as("two complete streams: neither operator suppressed the other")
@@ -460,59 +400,26 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
         }
 
         @Test
-        @DisplayName("the SAME operator repeating a retry token for the same period does not double its "
-                + "stream, because the identity is a pure function of the range, the token and the operator")
-        void oneOperatorRepeatingATokenDoesNotDoubleItsStream() throws Exception {
-            final String credential = credentialFor(FIRST_OPERATOR, UserType.ADMIN);
-            final String repeated = retryTokens.mint();
-
-            assertThat(submit(credential, repeated, null, null)
-                    .getResponse().getStatus()).isEqualTo(200);
-            assertThat(submit(credential, repeated, null, null)
-                    .getResponse().getStatus()).isEqualTo(200);
-
-            assertThat(drainedBodies(2 * CARD_COUNT + 1))
-                    .as("an interrupted request resubmitted under the same token completes its stream "
-                            + "rather than doubling behind itself")
-                    .hasSize(CARD_COUNT);
-        }
-
-        @Test
-        @DisplayName("a token this deployment never issued is refused with 400 and publishes nothing, so "
-                + "an idempotency promise the queue can no longer keep is not made at all")
-        void aTokenThisDeploymentNeverIssuedPublishesNothing() throws Exception {
-            // The window this refusal enforces is the queue service's own: it collapses a repeated
-            // deduplication identifier for five minutes and then forgets it, so a token presented later
-            // would reissue identifiers the broker treats as new and publish the whole stream again while
-            // the caller was told it had retried. A value that is not a token of this deployment cannot be
-            // aged at all, so it is refused for the same reason.
-            final MvcResult refused = submit(credentialFor(FIRST_OPERATOR, UserType.ADMIN),
-                    tokenFor("never-issued-by-this-deployment"), null, null);
-
-            assertThat(refused.getResponse().getStatus()).isEqualTo(400);
-            assertThat(drainedBodies(1))
-                    .as("nothing is published, so there is no prefix for a later retry to complete")
-                    .isEmpty();
-        }
-
-        @Test
-        @DisplayName("the same operator submitting the same period WITHOUT a token publishes a second "
-                + "stream, because a fresh logical request is what the legacy queue did unconditionally")
-        void thesameOperatorWithoutATokenPublishesASecondStream() throws Exception {
+        @DisplayName("the SAME operator submitting the same period twice publishes a second stream, "
+                + "because appending a second request is what the queue this replaces did unconditionally")
+        void theSameOperatorPublishesASecondStream() throws Exception {
+            // The identity the bridge mints carries a nonce, so the two submissions cannot collide on a
+            // deduplication identifier. That is the property this asserts: the estate appended a second
+            // request for the same period and ran the job again, and no target-only protocol may turn the
+            // second submission into a silently suppressed retry of the first.
             final String credential = credentialFor(FIRST_OPERATOR, UserType.ADMIN);
 
-            assertThat(submit(credential, null, null, null).getResponse().getStatus()).isEqualTo(200);
-            assertThat(submit(credential, null, null, null).getResponse().getStatus()).isEqualTo(200);
+            assertThat(submit(credential, null, null).getResponse().getStatus()).isEqualTo(200);
+            assertThat(submit(credential, null, null).getResponse().getStatus()).isEqualTo(200);
 
             assertThat(drainedBodies(2 * CARD_COUNT + 1))
-                    .as("the estate appended a second request for the same period and ran the job again; "
-                            + "that remains reachable, and it is the absence of a token that reaches it")
+                    .as("two complete streams, so the second request was appended rather than collapsed")
                     .hasSize(2 * CARD_COUNT);
         }
     }
 
     @Nested
-    @DisplayName("the namespace comes from the established identity and never from the echoed record")
+    @DisplayName("publication depends on the established identity and never on the echoed record")
     class TheEchoedIdentityIsIgnored {
 
         /** Creates the nested specification. */
@@ -522,23 +429,20 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
 
         @Test
         @DisplayName("a caller that writes another operator's identifier into the echoed record still "
-                + "publishes in its own namespace, so it can neither borrow nor suppress that operator")
+                + "publishes its own complete stream, so it can neither borrow nor suppress that operator")
         void anEchoedIdentifierNeitherBorrowsNorSuppresses() throws Exception {
             // The first operator submits under its own identity. The second then submits the same period
-            // under the same token while claiming, in the record it echoes back, to be the first operator
-            // and to hold the administrative type. Were the echoed record consulted, the two identities
-            // would coincide and the queue would collapse the second stream - so the second stream
-            // arriving is the assertion that the echoed value decided nothing.
-            final String shared = retryTokens.mint();
-
-            assertThat(submit(credentialFor(FIRST_OPERATOR, UserType.ADMIN), shared,
+            // while claiming, in the record it echoes back, to be the first operator and to hold the
+            // administrative type. The second stream arriving in full is the assertion that the echoed
+            // value decided nothing about the submission.
+            assertThat(submit(credentialFor(FIRST_OPERATOR, UserType.ADMIN),
                     null, null).getResponse().getStatus()).isEqualTo(200);
-            assertThat(submit(credentialFor(SECOND_OPERATOR, UserType.USER), shared,
+            assertThat(submit(credentialFor(SECOND_OPERATOR, UserType.USER),
                     FIRST_OPERATOR, UserType.ADMIN.getCode()).getResponse().getStatus()).isEqualTo(200);
 
             assertThat(drainedBodies(2 * CARD_COUNT + 1))
-                    .as("two complete streams: the echoed identifier did not move the second submission "
-                            + "into the first operator's namespace")
+                    .as("two complete streams: the echoed identifier neither suppressed the second "
+                            + "submission nor published it as the first operator")
                     .hasSize(2 * CARD_COUNT);
         }
 
@@ -546,7 +450,7 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
         @DisplayName("and an echoed identifier does not stand in for an absent credential, so it cannot "
                 + "become an identity of its own")
         void anEchoedIdentifierIsNotACredential() throws Exception {
-            final MvcResult refused = submit(null, tokenFor("echoed-not-a-credential"), FIRST_OPERATOR,
+            final MvcResult refused = submit(null, FIRST_OPERATOR,
                     UserType.ADMIN.getCode());
 
             assertThat(refused.getResponse().getStatus())
@@ -576,7 +480,6 @@ class ReportSubmissionAuthorizationIT extends AbstractLocalStackIT {
             SqsAutoConfiguration.class, JacksonAutoConfiguration.class})
     @Import({AwsConfig.class, ReportController.class, ReportContractAdapter.class,
             ConversationStateAdapter.class, GlobalExceptionHandler.class, ReportRequestService.class,
-            ReportRetryTokenService.class,
             JobSubmissionService.class, DateValidationService.class, MessageCatalogService.class,
             NavigationService.class, SecurityConfig.class, JwtTokenProvider.class,
             SignOnStateService.class, JsonRefusalBodyRenderer.class, WebMvcConfig.class})

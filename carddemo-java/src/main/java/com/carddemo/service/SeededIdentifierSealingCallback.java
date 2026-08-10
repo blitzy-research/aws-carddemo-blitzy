@@ -43,11 +43,18 @@ import org.springframework.stereotype.Component;
  * <p>{@code V1__create_schema.sql} defines two protected customer columns and states the invariant
  * plainly: {@code govt_issued_id} is {@code NOT NULL}, and any row a seed migration inserts must carry
  * an envelope rather than a cleartext identifier. {@code V3__seed_reference_data.sql} honours that
- * directly - it inserts fifty fixed {@code ENC1} envelopes, each produced by
- * {@link SensitiveFieldEncryptionService} over the twenty characters the fixture record holds, under
- * the one non-production key the seed-bearing profiles commit - and it seeds {@code cust_ssn} as
- * {@code null} in every row so that no national identifier is transcribed into a checked-in artifact
- * at all.
+ * directly, and for both columns: it inserts one hundred fixed {@code ENC1} envelopes, each produced
+ * by {@link SensitiveFieldEncryptionService} under the one non-production key the seed-bearing
+ * profiles commit - fifty over the twenty characters the fixture record holds at offset 288, and fifty
+ * over the nine digits it holds at offset 279.
+ *
+ * <p>The national identifier was once seeded as {@code null} in every row, on the reasoning that a
+ * value sealed under a committed key is recoverable by anyone holding the repository. That premise is
+ * true and the conclusion did not follow: those same nine bytes are already committed in cleartext
+ * twice, in the read-only parity baseline at {@code app/data/ASCII/custdata.txt} and in this module's
+ * own fixture at {@code src/test/resources/fixtures/input/custdata.txt}. Absence protected nothing and
+ * cost the only proof that mattered, because no delivered row then exercised a stored national
+ * identifier at all - so the reveal and mask paths were verified against an empty column.
  *
  * <p>So on a delivered database this class converts nothing, and that is the intended outcome rather
  * than a sign it is idle. It exists for the two ways the invariant can still be broken, and it
@@ -59,10 +66,12 @@ import org.springframework.stereotype.Component;
  *       setter both refuse such a value, but object-relational hydration assigns fields directly and
  *       consults neither, so nothing else would object. Every unsealed value found is sealed.</li>
  *   <li><strong>Key and column binding.</strong> An envelope opens under exactly one key and carries
- *       exactly one column binding. Fifty of them are fixed literals in a committed script, so a
- *       process whose configured key is not the key they were sealed under - or a literal sealed
- *       without the binding of the column it sits in - holds fifty rows of regulated data it cannot
- *       read. <strong>The marker check that decides the first invariant is blind to both</strong>,
+ *       exactly one column binding. One hundred of them are fixed literals in a committed
+ *       script, so a process whose configured key is not the key they were sealed under - or a
+ *       literal sealed
+ *       without the binding of the column it sits in - holds fifty rows of regulated data, in two
+ * columns, that it cannot read. <strong>The marker check that decides the first invariant is blind to
+ * both</strong>,
  *       because an envelope sealed under a foreign key, and one sealed for another column, are each
  *       still shaped like an envelope. Every stored value is therefore <em>opened under its column's
  *       own binding</em> rather than merely recognised, which is the same question every reader of
@@ -294,14 +303,14 @@ public final class SeededIdentifierSealingCallback implements Callback {
      * <p>This is the check the envelope-marker test cannot make. {@link #needsSealing(String)} asks
      * whether a value <em>looks</em> like an envelope, which is the right question for the shape
      * invariant and the wrong one for the key invariant: an envelope sealed under some other key looks
-     * exactly like an envelope sealed under this one. The fifty envelopes in
+     * exactly like an envelope sealed under this one. The one hundred envelopes in
      * {@code V3__seed_reference_data.sql} are fixed literals that no pass can re-key, so the only way
      * to know they are readable by the process that just migrated them is to read them.
      *
      * <p><strong>The check is authenticated decryption <em>under the column binding</em>, and the binding
      * half is the half that matters most.</strong> Only one form of envelope legitimately occupies these
-     * columns: one bound to the column it is stored in. The fifty seeded literals carry that binding and
-     * so does every value this class seals, because both are produced by
+     * columns: one bound to the column it is stored in. The hundred seeded literals carry that
+     * binding and so does every value this class seals, because both are produced by
      * {@link SensitiveFieldEncryptionService#protect(String, String)}. Opening under the binding is
      * therefore the same question the application asks: every reader of these two columns - the account
      * view transaction, the account update transaction and the statement job - opens them through
@@ -322,7 +331,7 @@ public final class SeededIdentifierSealingCallback implements Callback {
      * may legitimately carry it.
      *
      * @param connection the migration's open connection
-     * @return the number of stored values proved openable, which is fifty on a delivered database
+     * @return the number of stored values proved openable, one hundred on a delivered database
      * @throws SQLException    when the read fails
      * @throws FlywayException when a stored value does not open under the configured key
      */
@@ -344,9 +353,11 @@ public final class SeededIdentifierSealingCallback implements Callback {
      * Opens one stored value, or fails the migration naming the column and the property and nothing
      * else.
      *
-     * <p>An absent or blank value is not a failure and is not counted: the national identifier is
-     * deliberately unseeded, and {@link #needsSealing(String)} leaves a blank alone for the same
-     * reason, so the two passes agree about what is and is not a value.
+     * <p>An absent or blank value is not a failure and is not counted. The national identifier column
+     * is nullable because the schema permits a customer with no identifier on file, and although the
+     * delivered seed now fills all fifty rows, a row arriving by any other means may still leave it
+     * empty. {@link #needsSealing(String)} leaves a blank alone for the same reason, so the two passes
+     * agree about what is and is not a value.
      *
      * @param column the column the value was read from, one of this class's own literals
      * @param stored the value read from the column, possibly {@code null}
@@ -482,9 +493,9 @@ public final class SeededIdentifierSealingCallback implements Callback {
     /**
      * Reports whether a stored value has to be converted.
      *
-     * <p>Absent and blank values are left alone - the first is deliberately unseeded and the second
-     * would seal nothing meaningful - and a value already shaped as an envelope is left alone
-     * because it already is one.
+     * <p>Absent and blank values are left alone - the column is nullable, and a blank would seal
+     * nothing meaningful - and a value already shaped as an envelope is left alone because it
+     * already is one.
      *
      * @param stored the value read from the column
      * @return {@code true} when the value is present, not blank and not already an envelope

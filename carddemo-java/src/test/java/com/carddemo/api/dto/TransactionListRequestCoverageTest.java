@@ -130,7 +130,7 @@ class TransactionListRequestCoverageTest {
     /** The five components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "transactionIdFilter", "displayedPageNumber", "rowSelectors", "keyAction",
-            "navigationContext", "pageMetadata");
+            "navigationContext", "pageMetadata", "rowSnapshotToken");
 
     /** Declared width of the transaction-identifier filter, restated from the symbolic map. */
     private static final int EXPECTED_FILTER_WIDTH = 16;
@@ -173,7 +173,7 @@ class TransactionListRequestCoverageTest {
      * @return a request with no filter, indicator, key, navigation or paging state
      */
     private static TransactionListRequest carryingSelectors(List<String> selectors) {
-        return new TransactionListRequest(null, null, selectors, null, null, null);
+        return new TransactionListRequest(null, null, selectors, null, null, null, null);
     }
 
     /**
@@ -207,7 +207,7 @@ class TransactionListRequestCoverageTest {
     class DeclaredContract {
 
         @Test
-        @DisplayName("the six components are declared in the order the screen submits them")
+        @DisplayName("the seven components are declared in the order the screen submits them")
         void componentsAreDeclaredInScreenOrder() {
             List<String> declared = Arrays.stream(
                             TransactionListRequest.class.getRecordComponents())
@@ -515,7 +515,7 @@ class TransactionListRequestCoverageTest {
                 + "reported as a violation rather than silently reset")
         void theDeclaredPatternRefusesAnEmbeddedSpace() {
             TransactionListRequest request = new TransactionListRequest(
-                    null, null, null, null, NavigationContext.empty(), echoing("1 2"));
+                    null, null, null, null, NavigationContext.empty(), echoing("1 2"), null);
 
             assertThat(validator.validate(request)).singleElement()
                     .satisfies(violation -> assertThat(violation.getPropertyPath())
@@ -528,7 +528,7 @@ class TransactionListRequestCoverageTest {
             for (String admitted : List.of("00000001", "1       ", "       1", "  7     ", "",
                     "        ")) {
                 TransactionListRequest request = new TransactionListRequest(
-                        null, null, null, null, NavigationContext.empty(), echoing(admitted));
+                        null, null, null, null, NavigationContext.empty(), echoing(admitted), null);
 
                 assertThat(validator.validate(request))
                         .as("the map produces \"%s\", so validation has to admit it", admitted)
@@ -552,7 +552,7 @@ class TransactionListRequestCoverageTest {
                             "1".repeat(EXPECTED_FILTER_WIDTH),
                             "2".repeat(EXPECTED_FILTER_WIDTH),
                             PageMetadata.PagingDirection.FORWARD,
-                            "00000001", true));
+                            "00000001", true), null);
 
             assertThat(validator.validate(request)).isEmpty();
         }
@@ -578,7 +578,7 @@ class TransactionListRequestCoverageTest {
             TransactionListRequest request = new TransactionListRequest(
                     "transactionIdFilter".equals(component) ? tooLong : null,
                     "displayedPageNumber".equals(component) ? tooLong : null,
-                    null, null, null, carriedPaging);
+                    null, null, null, carriedPaging, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = validator.validate(request);
 
@@ -625,7 +625,7 @@ class TransactionListRequestCoverageTest {
                 + "entry into the screen")
         void anEntirelyEmptyRequestReportsNoViolation() {
             assertThat(validator.validate(
-                            new TransactionListRequest(null, null, null, null, null, null)))
+                            new TransactionListRequest(null, null, null, null, null, null, null)))
                     .isEmpty();
         }
 
@@ -636,7 +636,7 @@ class TransactionListRequestCoverageTest {
                 + "service stage")
         void aBlankOrNonNumericFilterIsAcceptedByTheBoundary(String filter) {
             assertThat(validator.validate(
-                            new TransactionListRequest(filter, null, null, null, null, null)))
+                            new TransactionListRequest(filter, null, null, null, null, null, null)))
                     .isEmpty();
         }
 
@@ -663,18 +663,25 @@ class TransactionListRequestCoverageTest {
     class WireShape {
 
         @Test
-        @DisplayName("a fully populated request renders all six components in the body")
-        void aFullyPopulatedRequestRendersAllSixMembers() throws JsonProcessingException {
+        @DisplayName("a fully populated request renders its six outbound components in the body, and "
+                + "the sealed page snapshot is not one of them because it is bound inbound only")
+        void aFullyPopulatedRequestRendersItsSixOutboundMembers() throws JsonProcessingException {
             TransactionListRequest request = new TransactionListRequest(
                     FILTER, "00000002", tenRowsWithOneMark(2, "S"), KeyAction.PFK07,
                     JsonContractSupport.populatedNavigation(),
                     new PageMetadata.PageCursorRequest(
                             "prev", "next", PageMetadata.PagingDirection.BACKWARD,
-                            "00000002", true));
+                            "00000002", true), "ENC1:sealed-page-snapshot-stand-in");
 
             JsonNode payload = payloadOf(request);
 
-            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size());
+            // One fewer than the declared components. The snapshot is write-only on this contract: a
+            // client echoes the one the response gave it and this type never publishes its own, so a
+            // request rendering that emitted it would describe a channel that does not exist.
+            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size() - 1);
+            assertThat(payload.has("rowSnapshotToken"))
+                    .as("the sealed snapshot is bound inbound and never serialised back")
+                    .isFalse();
             assertThat(payload.get("transactionIdFilter").asText()).isEqualTo(FILTER);
             assertThat(payload.get("keyAction").asText()).isEqualTo("PFK07");
             assertThat(payload.get("displayedPageNumber").asText()).isEqualTo("00000002");
@@ -739,7 +746,7 @@ class TransactionListRequestCoverageTest {
                     KeyAction.PFK08, JsonContractSupport.populatedNavigation(),
                     new PageMetadata.PageCursorRequest(
                             "p", "n", PageMetadata.PagingDirection.FORWARD,
-                            "00000007", true));
+                            "00000007", true), null);
 
             ObjectMapper mapper = JsonContractSupport.declaredSettingsMapper();
             TransactionListRequest returned = mapper.readValue(
@@ -826,7 +833,7 @@ class TransactionListRequestCoverageTest {
                 + "card holder's transaction with a fixed marker")
         void theRenderingWithholdsTheBrowseKeyAndTheCursor() {
             TransactionListRequest request = new TransactionListRequest(
-                    FILTER, "00000004", tenRowsWithOneMark(1, "S"), KeyAction.PFK07, null, null);
+                    FILTER, "00000004", tenRowsWithOneMark(1, "S"), KeyAction.PFK07, null, null, null);
 
             assertThat(request.toString())
                     .as("the page number, the ten marks and the attention key are screen-interaction "
@@ -853,7 +860,7 @@ class TransactionListRequestCoverageTest {
                 + "cannot become the path by which they surface")
         void aNestedNavigationStateWithholdsItsOwnValues() {
             TransactionListRequest request = new TransactionListRequest(
-                    FILTER, null, null, null, JsonContractSupport.populatedNavigation(), null);
+                    FILTER, null, null, null, JsonContractSupport.populatedNavigation(), null, null);
 
             assertThat(request.toString())
                     .contains("navigationContext=NavigationContext[")

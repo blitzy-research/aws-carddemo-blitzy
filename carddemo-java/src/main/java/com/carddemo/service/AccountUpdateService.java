@@ -225,15 +225,15 @@ public final class AccountUpdateService {
     static final String LEGACY_TRANSACTION_ID = "CAUP";
 
     /**
-     * The character a withheld regulated value is composed of on its way out to an unauthorized caller.
+     * The receiving field every keyed monetary lexeme is stored into, named for the codec's diagnostics.
      *
-     * <p>Declared here because this is the layer that has to recognise it coming back, and it must be the
-     * same character the outbound gate composes with -
-     * {@code com.carddemo.api.AccountProtectedDataAdapter.MASK_CHARACTER} - which a suite pins by
-     * comparing the two. It cannot be imported from there: that class sits in the boundary layer and
-     * nothing in this layer may depend upward.
+     * <p>All five monetary items of this screen share one geometry - {@code PIC S9(10)V99}, declared as
+     * numeric redefinitions of twelve-character work items at lines 762 to 771 - so one name stands for the
+     * family rather than five names standing one each. It reaches a message only on the two arms the codec
+     * refuses for, an absent value and a geometry that cannot describe a field, neither of which this
+     * screen can present.
      */
-    static final char WITHHELD_VALUE_CHARACTER = '*';
+    private static final String MONETARY_RECEIVING_FIELD = "ACUP-NEW-<amount>-N";
 
     /** {@code LIT-THISMAPSET}, line 538, with its trailing pad removed for the response contract. */
     static final String LEGACY_MAPSET = "COACTUP";
@@ -916,10 +916,10 @@ public final class AccountUpdateService {
          * <p>{@code 1100-RECEIVE-MAP} moves every transmitted field into working storage and every
          * paragraph after it reads working storage rather than the map buffer. This translation takes the
          * command itself as the received map, which is faithful for the forty-three fields it copies
-         * unchanged; the exception is the regulated group, whose withheld stand-in cannot be told from a
-         * typed value until the old image has been read. Once it has, the restored submission is held here
-         * so that the comparison, the edits, the write and the redisplay all read one received image -
-         * exactly as they all read one working-storage group in the source.
+         * unchanged; the exception is the regulated group, which a withheld caller may not write and which
+         * therefore cannot be settled until the old image has been read. Once it has, the restored
+         * submission is held here so that the comparison, the edits, the write and the redisplay all read
+         * one received image - exactly as they all read one working-storage group in the source.
          *
          * <p>{@code null} until the edit driver establishes it, which is every path that does not reach
          * the driver at all; {@link #receivedDetails(EditState, AccountUpdateCommand)} answers the
@@ -1478,9 +1478,10 @@ public final class AccountUpdateService {
             return;
         }
 
-        // The old image is now available, which is the earliest point at which a withheld stand-in can be
-        // told from a typed value. Everything downstream reads the restored submission, so no comparison,
-        // no edit and no write ever sees a stand-in.
+        // The old image is now available, which is the earliest point at which the regulated group can be
+        // restored to what the record holds. Everything downstream reads the restored submission, so no
+        // comparison, no edit and no write ever sees a stand-in - nor a value a withheld caller typed in
+        // place of one.
         final AccountUpdateCommand submitted = restoreWithheldValues(state, request);
         state.receivedDetails = submitted;
 
@@ -1595,7 +1596,8 @@ public final class AccountUpdateService {
     }
 
     /**
-     * Restores the regulated values a caller was not permitted to see, so an unrelated change can be saved.
+     * Restores every regulated value a caller was not permitted to see, so an unrelated change can be saved
+     * and a value the caller never saw cannot be written.
      *
      * <p><strong>The problem this exists to solve.</strong> The legacy screen withheld nothing: the map
      * carried the national identifier, the date of birth, the government-issued identifier and the
@@ -1608,33 +1610,54 @@ public final class AccountUpdateService {
      * carries no edit at all, so a stand-in would compare as a difference and then be <em>written</em>,
      * replacing a stored identifier with a row of asterisks.
      *
-     * <p><strong>Why this is safe, and where it is bounded.</strong> Three conditions must hold together
-     * before any value is restored, and each closes a way the substitution could otherwise be abused.
-     * First, the boundary must have recorded that the values were withheld from this caller; that fact
-     * comes from the authenticated principal and never from the body, so a caller cannot ask for its own
-     * typed values to be replaced. Second, the submitted value must consist solely of the stand-in
-     * character, which is not legal input for any of these fields - the identifier parts and the transfer
-     * account are digits and the date parts are digits - so a value an operator could legitimately have
-     * typed is never reinterpreted. Third, its length must equal the stored value's, which is the width the
-     * stand-in is composed at.
+     * <p><strong>Why the stored value unconditionally, rather than only where a stand-in came back.</strong>
+     * An earlier form of this method substituted the stored value only when the submitted one was the
+     * stand-in itself - the withheld character repeated to the stored value's own width - on the reasoning
+     * that anything else had been typed and should be honoured. The reasoning inverted the authorization it
+     * was implementing. A caller shown a mask has not been shown the value, so nothing it submits in that
+     * position can be an edit <em>of</em> that value; it is an assertion about a value the caller never saw.
+     * The narrow test therefore left every one of these fields writable by exactly the callers the mask
+     * exists to keep away from them: replacing a mask with a well-formed alternative identifier, date of
+     * birth, government-issued identifier or transfer account passed straight through to the record. A
+     * value a caller may not read is a value it may not write, and only the reveal-authorized caller - who
+     * receives these values in the clear and edits them as the legacy screen let anyone edit them - can
+     * change them here.
      *
-     * <p><strong>What is deliberately <em>not</em> restored.</strong> The final part of the national
-     * identifier, because the outbound gate does not withhold it - an operator is shown those digits so an
-     * identity can be confirmed - so a stand-in in that component did not come from this server.
+     * <p><strong>Why every component, the retained digits included.</strong> The outbound gate discloses the
+     * final part of the national identifier so an identity can be confirmed, which makes that component the
+     * one place a withheld caller does see real digits. It is still restored, because the identifier is one
+     * regulated value rather than three: leaving its last component writable would let a withheld caller
+     * change the stored identifier while seeing only a mask of the rest of it, which is the same defect in a
+     * smaller field. The date of birth is restored as three components for the same reason.
+     *
+     * <p><strong>Why restoring rather than refusing.</strong> The other way to close this is to reject a
+     * submission that deviates, and the source gives no basis for it: {@code 1250-EDIT-SIGNED-9V2} and its
+     * neighbours carry no arm for a value the operator was not entitled to send, because the legacy screen
+     * withheld nothing and no operator could be in that position. Refusing would mean inventing a message
+     * and an outcome this screen has none of. Restoring reproduces the outcome the source <em>does</em>
+     * have for a submission that carries the value already on file: the comparison reads unchanged, and if
+     * nothing else moved the turn reports that no change was detected.
+     *
+     * <p><strong>The old image this restores from never crosses the wire.</strong> It is the record this
+     * turn read a few lines above, under the same lock the write will use. Nothing about the restoration is
+     * client-supplied - not the values, and not the fact that they were withheld, which comes from the
+     * authenticated principal and never from the body, so a caller cannot ask for its own typed values to
+     * be replaced.
      *
      * <p><strong>The consequence, stated plainly.</strong> A caller without the authority to see these
-     * values also cannot change them by echoing the screen: the stand-in restores to the stored value, so
-     * the comparison reads unchanged and the record keeps what it held. Such a caller <em>can</em> still
-     * change them by typing a real value over the stand-in, which is what the legacy permitted, so no
-     * capability is removed. This is a documented divergence from a screen that withheld nothing, recorded
-     * in {@code docs/decision-log.md}; the alternative - leaving the stand-in to be edited - is not a
-     * stricter reading of the legacy but a total loss of the update transaction for every ordinary
-     * operator.
+     * values can neither change them nor clear them: whatever it submits in those positions is replaced by
+     * what the record holds, so the comparison reads unchanged and the write stores what was already there.
+     * Every other field on the screen remains fully editable, which is the point - the restoration exists so
+     * that an ordinary operator can save a limit or an address, not so that the transaction can be refused.
+     * This extends the masking divergence recorded in {@code docs/decision-log.md} DL-135 from what a caller
+     * may see to what it may write, and it can only permit less than the legacy did, never more. The
+     * extension itself, including why the disclosed component is restored too and why refusal was
+     * rejected, is recorded as DL-327.
      *
      * @param state the turn's working storage, holding the old image this restores from
      * @param request the submission as transmitted
-     * @return the submission with every withheld stand-in replaced by the stored value, or the submission
-     *         itself when nothing was withheld
+     * @return the submission with every regulated value replaced by the stored one, or the submission itself
+     *         when nothing was withheld
      */
     private AccountUpdateCommand restoreWithheldValues(final EditState state,
             final AccountUpdateCommand request) {
@@ -1669,12 +1692,12 @@ public final class AccountUpdateService {
                 request.accountGroupId(),
                 request.currentCycleDebit(),
                 request.customerId(),
-                restoredValue(request.ssnPart1(), storedSsn[0]),
-                restoredValue(request.ssnPart2(), storedSsn[1]),
-                request.ssnPart3(),
-                restoredValue(request.dateOfBirthYear(), storedBirthDate[0]),
-                restoredValue(request.dateOfBirthMonth(), storedBirthDate[1]),
-                restoredValue(request.dateOfBirthDay(), storedBirthDate[2]),
+                storedSsn[0],
+                storedSsn[1],
+                storedSsn[2],
+                storedBirthDate[0],
+                storedBirthDate[1],
+                storedBirthDate[2],
                 request.ficoScore(),
                 request.firstName(),
                 request.middleName(),
@@ -1688,41 +1711,16 @@ public final class AccountUpdateService {
                 request.phone1AreaCode(),
                 request.phone1Prefix(),
                 request.phone1LineNumber(),
-                restoredValue(request.governmentIssuedId(), storedGovernmentId),
+                storedGovernmentId,
                 request.phone2AreaCode(),
                 request.phone2Prefix(),
                 request.phone2LineNumber(),
-                restoredValue(request.eftAccountId(), customer.getEftAccountId()),
+                customer.getEftAccountId(),
                 request.primaryCardHolderIndicator(),
                 request.keyAction(),
                 request.navigationContext(),
                 request.concurrencyToken(),
                 request.protectedValuesWithheld());
-    }
-
-    /**
-     * Answers the stored value when the submitted one is the stand-in composed from it, and the submitted
-     * one otherwise.
-     *
-     * <p>The stand-in is the withheld character repeated to the stored value's own width, so both the
-     * character test and the width test have to pass. A stored value that is absent leaves the submitted
-     * value untouched: there is nothing a stand-in could have been composed from, so whatever arrived was
-     * typed.
-     *
-     * @param submitted the value as transmitted, which may be {@code null}
-     * @param stored the value the record holds, which may be {@code null}
-     * @return the stored value when the submitted one is its stand-in, otherwise the submitted one
-     */
-    private static String restoredValue(final String submitted, final String stored) {
-        if (submitted == null || stored == null || submitted.length() != stored.length()) {
-            return submitted;
-        }
-        for (int index = 0; index < submitted.length(); index++) {
-            if (submitted.charAt(index) != WITHHELD_VALUE_CHARACTER) {
-                return submitted;
-            }
-        }
-        return stored;
     }
 
     /**
@@ -2163,6 +2161,20 @@ public final class AccountUpdateService {
      * <p>The value is never scaled here. Conversion is delegated to {@code ZonedDecimalCodec}, which is
      * the module's only holder of a rounding policy, and that policy truncates toward zero because no
      * arithmetic statement in the estate specifies rounding.
+     *
+     * <p><strong>Two arms and no third, which is a correction.</strong> This paragraph once carried a
+     * magnitude arm as well: a well-formed lexeme needing more than the ten integer digits the record field
+     * declares was refused with the not-valid message, on the reasoning that refusing is the fail-safe
+     * direction. The source has no such arm. Its receive paragraph converts the keyed field with
+     * {@code FUNCTION NUMVAL-C} straight into a {@code PIC S9(10)V99} redefinition of the twelve-character
+     * work field - {@code app/cbl/COACTUPC.cbl} lines 1078 to 1080 for the credit limit, and lines 1092,
+     * 1107, 1120 and 1135 for the other four - with no {@code ON SIZE ERROR} clause and no rejection
+     * anywhere, and this paragraph at lines 2180 to 2218 tests only for absence and for the currency
+     * grammar. A store into a narrower receiving field without a size-error clause keeps the low-order digit
+     * positions the field declares and discards the rest, so the source accepts the value and stores it
+     * wrapped. Refusing it instead is a rejection the screen cannot produce, so it is gone; the magnitude is
+     * now handled where the source handles it, in the store, by
+     * {@code ZonedDecimalCodec.storeIntoMonetary}.
      */
     private void editSigned9v2(final EditState state, final ScreenField field, final String value) {
         state.label = field.getLegacyLabel();
@@ -2172,15 +2184,6 @@ public final class AccountUpdateService {
             return;
         }
         if (!CobolStringUtils.isNumericLexeme(value)) {
-            state.fail(field, FieldFlag.NOT_OK, composeMessage(state, SUFFIX_IS_NOT_VALID));
-            editSigned9v2Exit();
-            return;
-        }
-        // Documented divergence. The screen field is wider than the ten integer digits the record field
-        // holds, so a well-formed lexeme can still be too large to store. The legacy move would truncate
-        // the high-order digits and store a silently wrong amount; this rejects the value with the same
-        // not-valid message instead, which is the fail-safe direction and cannot corrupt a balance.
-        if (!fitsRecordAmount(ZonedDecimalCodec.fromNumericLexeme(value))) {
             state.fail(field, FieldFlag.NOT_OK, composeMessage(state, SUFFIX_IS_NOT_VALID));
             editSigned9v2Exit();
             return;
@@ -4279,27 +4282,34 @@ public final class AccountUpdateService {
     }
 
     /**
-     * Converts a keyed monetary lexeme, or reports absence when it is unsupplied or malformed.
+     * Converts a keyed monetary lexeme as the receiving field would hold it, or reports absence when it is
+     * unsupplied or malformed.
      *
      * <p>A malformed lexeme has already earned its own field error, and the response contract admits only
-     * a correctly scaled amount, so absence is the honest projection rather than a substituted zero.
+     * a correctly scaled amount, so absence is the honest projection rather than a substituted zero. That
+     * is the source's arm too: a keyed field the currency test rejects reaches {@code CONTINUE} and no
+     * conversion is performed, so the numeric redefinition is never given a value.
+     *
+     * <p><strong>The magnitude is wrapped and never refused, because a COBOL store wraps.</strong> The five
+     * receiving fields are {@code PIC S9(10)V99} redefinitions of twelve-character work items, declared at
+     * {@code app/cbl/COACTUPC.cbl} lines 762 to 771, while the map items they are filled from are
+     * {@code PIC X(15)}. A {@code COMPUTE} into one of them carries no {@code ON SIZE ERROR} clause, so a
+     * converted value needing more than ten integer digits is stored in the digit positions the field has -
+     * the low-order ten, with the operational sign kept - and the surplus high-order digits are dropped
+     * silently. {@code ZonedDecimalCodec.storeIntoMonetary} is that store, and it is the module's single
+     * holder of both truncation directions, so no policy is expressed here.
+     *
+     * <p>Because the store cannot exceed the geometry it stores into, every amount this returns satisfies
+     * the ten-integer-digit bound the outcome and the response contract each check on themselves, and those
+     * checks stay as the contract self-checks they are rather than becoming this method's rejection arm.
      */
     private static BigDecimal lexemeAsMonetary(final String lexeme) {
         if (CobolStringUtils.isUnsuppliedNumericLexeme(lexeme)
                 || !CobolStringUtils.isNumericLexeme(lexeme)) {
             return null;
         }
-        final BigDecimal converted = ZonedDecimalCodec.fromNumericLexeme(lexeme);
-        return fitsRecordAmount(converted) ? converted : null;
-    }
-
-    /**
-     * Whether an amount fits the ten integer digits the record field declares, which is the same bound the
-     * response contract enforces on itself.
-     */
-    private static boolean fitsRecordAmount(final BigDecimal amount) {
-        return amount != null
-                && amount.precision() - amount.scale() <= AccountUpdateOutcome.MONEY_INTEGER_DIGITS;
+        return ZonedDecimalCodec.storeIntoMonetary(ZonedDecimalCodec.fromNumericLexeme(lexeme),
+                ZonedDecimalCodec.INTEGER_DIGITS_PIC_S9_10_V99, MONETARY_RECEIVING_FIELD);
     }
 
     /** The eight-character candidate the date cascade takes, assembled from its three keyed parts. */

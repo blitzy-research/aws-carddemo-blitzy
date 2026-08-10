@@ -303,9 +303,12 @@ spring:
   #      a deployment reading the production document. A profile document is selected BY the
   #      active-profile list and cannot see it, so the refusal has to live in code.
   #   2. It holds the seeded regulated identifiers to two invariants, through a callback registered for
-  #      this profile and `local` alone. V3__seed_reference_data.sql inserts customer.govt_issued_id as
-  #      an ENC1 envelope in every row - never as cleartext - and seeds customer.cust_ssn as NULL in all
-  #      fifty, so on a delivered database there is nothing to convert. The callback still SEALS any
+  #      this profile and `local` alone. V3__seed_reference_data.sql inserts BOTH protected customer
+  #      columns as ENC1 envelopes in every row - never as cleartext - fifty for govt_issued_id and
+  #      fifty for cust_ssn, so on a delivered database there is nothing to convert. The national
+  #      identifier was once seeded as NULL; the cleartext of those nine bytes is already committed in
+  #      app/data/ASCII/custdata.txt and in this module's own input fixture, so the omission protected
+  #      nothing and left the reveal path with no seeded row to exercise. The callback still SEALS any
   #      unsealed value it finds, guarding a future edit to the seed, and it OPENS every stored value
   #      under the key this process holds, guarding what the seal check cannot see: an envelope sealed
   #      under some OTHER key looks exactly like an envelope, so recognising its shape proves nothing
@@ -313,9 +316,11 @@ spring:
   #      whichever assertion first decrypted a seeded row. It runs on the after-migrate event, which
   #      Flyway raises AFTER the migration's own transaction has committed, in a transaction of the
   #      callback's own. CONSEQUENCE FOR A TEST: a seeded customer row read through this profile carries
-  #      an ENC1 envelope in that column and NOT the fixture's twenty digits, which is the same value
-  #      the entity's own accessors would have demanded. A test that wants the cleartext reveals it
-  #      through the encryption service.
+  #      an ENC1 envelope in BOTH protected columns and NOT the fixture's twenty characters or its nine
+  #      digits, which is the same value the entity's own accessors would have demanded. A test that
+  #      wants the cleartext reveals it through the encryption service, or reads it from the fixture
+  #      record - which is what the seeded reveal tests do, so that the expectation is independent of
+  #      the adapter under test.
   #
   # WHAT STOPS A DATABASE THIS OVERLAY SEEDED FROM ENDANGERING A LATER PRODUCTION RUN. Seeding writes
   # V3 and V4 rows into this database's migration history, and fifty synthetic customer rows and ten

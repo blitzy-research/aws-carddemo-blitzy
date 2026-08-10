@@ -368,8 +368,6 @@ class GrafanaDashboardMetricsContractTest {
         Counter.builder("carddemo.http.request.refused").register(registry).increment();
         Counter.builder("carddemo.tracing.export").register(registry).increment();
         Counter.builder("carddemo.management.authentication").register(registry).increment();
-        Counter.builder("carddemo.online.reportrequest.retrytoken.refused")
-                .register(registry).increment();
     }
 
     /**
@@ -524,7 +522,6 @@ class GrafanaDashboardMetricsContractTest {
                 "carddemo_batch_joblaunch_request_seconds",
                 "carddemo_batch_jobstatus_request_seconds",
                 "carddemo_online_reportrequest_turn_seconds",
-                "carddemo_online_reportrequest_retrytoken_refused_total",
                 "carddemo_batch_job_observed_active_seconds",
                 "carddemo_http_request_refused_total",
                 "carddemo_management_authentication_total",
@@ -578,7 +575,6 @@ class GrafanaDashboardMetricsContractTest {
                     Map.entry("carddemo_batch_joblaunch_request_seconds", "outcome"),
                     Map.entry("carddemo_batch_jobstatus_request_seconds", "outcome"),
                     Map.entry("carddemo_online_reportrequest_turn_seconds", "outcome"),
-                    Map.entry("carddemo_online_reportrequest_retrytoken_refused_total", "reason"),
                     Map.entry("carddemo_batch_job_observed_active_seconds", "spring_batch_job_status"),
                     Map.entry("carddemo_http_request_refused_total", "reason"),
                     Map.entry("carddemo_management_authentication_total", "outcome"),

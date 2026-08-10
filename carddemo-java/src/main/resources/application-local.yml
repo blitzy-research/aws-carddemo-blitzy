@@ -238,9 +238,12 @@ spring:
   #      location to a deployment reading the production document. A profile document is selected BY
   #      the active-profile list and cannot see it, so the refusal has to live in code.
   #   2. It holds the seeded regulated identifiers to two invariants, through a callback registered
-  #      for this profile and `test` alone. V3__seed_reference_data.sql inserts customer.govt_issued_id
-  #      as an ENC1 envelope in every row - never as cleartext - and seeds customer.cust_ssn as NULL in
-  #      all fifty, so on a delivered database there is nothing to convert. The callback nonetheless
+  #      for this profile and `test` alone. V3__seed_reference_data.sql inserts BOTH protected customer
+  #      columns as ENC1 envelopes in every row - never as cleartext - fifty for govt_issued_id and
+  #      fifty for cust_ssn, so on a delivered database there is nothing to convert. The national
+  #      identifier was once seeded as NULL; the cleartext of those nine bytes is already committed in
+  #      app/data/ASCII/custdata.txt and in this module's own input fixture, so the omission protected
+  #      nothing while leaving the reveal path with no seeded row to exercise. The callback nonetheless
   #      SEALS any unsealed value it finds, which guards a future edit to the seed, and it OPENS every
   #      stored value under the key this process actually holds, which guards the case the seal check
   #      cannot see: an envelope sealed under some OTHER key still looks exactly like an envelope, so

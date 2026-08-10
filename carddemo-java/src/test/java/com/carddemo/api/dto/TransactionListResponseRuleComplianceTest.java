@@ -149,7 +149,7 @@ class TransactionListResponseRuleComplianceTest {
         return new TransactionListResponse(
                 rows, pageMetadata, navigationContext, "/api/menu/user", transactionIdFilter,
                 displayedPageNumber, message, error, List.of(), null, false, focusScreenFieldId, "CardDemo",
-                "List Transactions", "07/19/22", "10:30:00", "CT00", "COTRN00C");
+                "List Transactions", "07/19/22", "10:30:00", "CT00", "COTRN00C", null);
     }
 
     /**
@@ -163,7 +163,7 @@ class TransactionListResponseRuleComplianceTest {
         return new TransactionListResponse(
                 rows, null, null, null, null,
                 null, null, false, List.of(), null, false, null, null,
-                null, null, null, null, null);
+                null, null, null, null, null, null);
     }
 
     /**
@@ -680,7 +680,7 @@ class TransactionListResponseRuleComplianceTest {
         @Test
         @DisplayName("the response declares nineteen components, the row block, the routing block, "
                 + "the filter and page number, the message trio, the selection handoff, the page "
-                + "instruction and the screen furniture")
+                + "instruction, the screen furniture and the sealed snapshot of the page it sent")
         void theResponseDeclaresNineteenComponents() {
             final List<String> declared = Arrays.stream(
                     TransactionListResponse.class.getRecordComponents())
@@ -691,8 +691,8 @@ class TransactionListResponseRuleComplianceTest {
                     "displayedPageNumber", "message", "error", "fieldErrors",
                     "selectedTransactionId", "preserveDisplayedPage", "focusScreenFieldId",
                     "title01", "title02", "currentDate", "currentTime", "transactionName",
-                    "programName");
-            assertThat(declared).hasSize(18);
+                    "programName", "rowSnapshotToken");
+            assertThat(declared).hasSize(19);
         }
 
         @Test
@@ -803,27 +803,27 @@ class TransactionListResponseRuleComplianceTest {
                 final String value) {
             return switch (componentName) {
                 case "transactionIdFilter" -> new TransactionListResponse(null, null, null, null,
-                        value, null, null, false, List.of(), null, false, null, null, null, null, null, null, null);
+                        value, null, null, false, List.of(), null, false, null, null, null, null, null, null, null, null);
                 case "displayedPageNumber" -> new TransactionListResponse(null, null, null, null,
                         null,
-                        value, null, false, List.of(), null, false, null, null, null, null, null, null, null);
+                        value, null, false, List.of(), null, false, null, null, null, null, null, null, null, null);
                 case "message" -> new TransactionListResponse(null, null, null, null, null, null,
-                        value, false, List.of(), null, false, null, null, null, null, null, null, null);
+                        value, false, List.of(), null, false, null, null, null, null, null, null, null, null);
                 case "focusScreenFieldId" -> new TransactionListResponse(null, null, null, null,
                         null,
-                        null, null, false, List.of(), null, false, value, null, null, null, null, null, null);
+                        null, null, false, List.of(), null, false, value, null, null, null, null, null, null, null);
                 case "title01" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, List.of(), null, false, null, value, null, null, null, null, null);
+                        null, null, false, List.of(), null, false, null, value, null, null, null, null, null, null);
                 case "title02" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, List.of(), null, false, null, null, value, null, null, null, null);
+                        null, null, false, List.of(), null, false, null, null, value, null, null, null, null, null);
                 case "currentDate" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, List.of(), null, false, null, null, null, value, null, null, null);
+                        null, null, false, List.of(), null, false, null, null, null, value, null, null, null, null);
                 case "currentTime" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, List.of(), null, false, null, null, null, null, value, null, null);
+                        null, null, false, List.of(), null, false, null, null, null, null, value, null, null, null);
                 case "transactionName" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, List.of(), null, false, null, null, null, null, null, value, null);
+                        null, null, false, List.of(), null, false, null, null, null, null, null, value, null, null);
                 case "programName" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, List.of(), null, false, null, null, null, null, null, null, value);
+                        null, null, false, List.of(), null, false, null, null, null, null, null, null, value, null);
                 default -> throw new IllegalArgumentException(
                         "no bounded component named " + componentName);
             };

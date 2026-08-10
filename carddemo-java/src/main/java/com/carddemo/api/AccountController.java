@@ -447,12 +447,17 @@ public class AccountController {
             description = "One turn of legacy transaction CAUP. Answers 200 for every outcome the "
                     + "legacy screen could compose - a fetch, a rejected edit, a confirmation prompt, a "
                     + "committed change, a detected conflict or an exit - because each of those is a "
-                    + "screen the transaction completed. Rejected fields are reported per field as "
+                    + "screen the transaction completed. A lost version race is one of those outcomes "
+                    + "rather than a status: it is reported as the legacy's own screen message with 200, "
+                    + "so this operation never answers 409. Rejected fields are reported per field as "
                     + "MISSING or INVALID, and only on a re-submitted turn. The three national-identifier "
                     + "positions, the three date-of-birth positions, the government-issued identifier and "
                     + "the electronic-funds account identifier are masked at the widths their revealed "
-                    + "forms occupy unless the caller carries the administrative authority; a caller that "
-                    + "receives masks cannot change those fields.")
+                    + "forms occupy unless the caller carries the administrative authority. A caller that "
+                    + "receives masks cannot change any of those eight positions: whatever it submits in "
+                    + "them is replaced by the stored value before the edits run, so the turn is not "
+                    + "refused and the record keeps what it held. Only a caller the values are revealed "
+                    + "to can edit them.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The turn completed. Carries the screen values, the informational and "
@@ -464,10 +469,7 @@ public class AccountController {
         @ApiResponse(responseCode = "401",
                 description = "No session was presented, or the one presented did not verify."),
         @ApiResponse(responseCode = "403",
-                description = "The authenticated principal is not an approved online-data operator."),
-        @ApiResponse(responseCode = "409",
-                description = "The fetched record was changed by another actor before this turn could "
-                        + "save it.")})
+                description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<AccountUpdateResponse> updateAccount(
             @Valid @RequestBody final AccountUpdateRequest request,
             @RequestParam(name = ATTENTION_KEY_PARAM, required = false)

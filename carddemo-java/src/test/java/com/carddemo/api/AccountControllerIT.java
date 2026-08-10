@@ -1281,10 +1281,10 @@ class AccountControllerIT extends AbstractPostgresIT {
                     .as("and the government-issued identifier at its twenty-character width")
                     .isEqualTo(maskOfWidth(GOVERNMENT_ID_WIDTH));
             assertThat(textOf(screen, "ssn"))
-                    .as("the national identifier is the schema's only nullable column and is absent in "
-                            + "every delivered row, so there is nothing to withhold and the component "
-                            + "is omitted rather than masked")
-                    .isNull();
+                    .as("the national identifier is withheld in its two leading groups and discloses "
+                            + "its retained four digits, which is the one position of it this screen "
+                            + "shows a caller that may not read the value")
+                    .matches("\\*{3}-\\*{2}-\\d{4}");
             assertThat(rawBodyOf(viewTurn(SEEDED_ACCOUNT_ID, RE_ENTRY, administrativeSession())))
                     .as("and no sealed column is ever published as its envelope")
                     .doesNotContain(ENVELOPE_PREFIX);

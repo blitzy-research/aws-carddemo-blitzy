@@ -399,11 +399,14 @@ public final class TransactionController {
      * layout's sake and takes part in no decision; the figure a turn actually uses is the retained one
      * inside the echoed paging state, which is what the communication-area field corresponds to.
      *
-     * <p><strong>No displayed-row identifier crosses this boundary.</strong> The legacy resolves a row
-     * selection by pairing the selector with the identifier the map echoed beside it; over HTTP that
-     * would let a submission name any identifier as the one supposedly displayed on the row it marked.
-     * The service re-establishes the identifier from the browse cursor instead, so there is nothing
-     * here to accept, to bound or to forward - see the request contract and decision log entry DL-299.
+     * <p><strong>No displayed-row identifier crosses this boundary in the clear.</strong> The legacy
+     * resolves a row selection by pairing the selector with the identifier the map echoed beside it; over
+     * HTTP that would let a submission name any identifier as the one supposedly displayed on the row it
+     * marked. What crosses instead is the sealed page snapshot this endpoint published on the previous
+     * turn, echoed back unchanged: the ten identifiers travel encrypted and authenticated, so the marked
+     * row still resolves to the identifier that stood in it on the page the operator marked, and a caller
+     * can neither read the snapshot nor mint one. It is threaded through this method and interpreted
+     * nowhere in it - see the request contract for the full argument.
      *
      * <p>Nothing in the submission is interpreted here. The selectors are not scanned, the cursors are
      * not followed, the counter is not incremented and the indicator is not recomputed; all of that is
@@ -421,16 +424,18 @@ public final class TransactionController {
     @Operation(summary = "List or search transactions",
             description = "One turn of legacy transaction CT00. The screen presents ten rows; paging "
                     + "is cursor-based in both directions and a backward page arrives in the order "
-                    + "the legacy screen displayed it. The identifier a row selection resolves to is "
-                    + "re-read server-side from the browse cursor, so no displayed identifier is "
-                    + "accepted from the submission. Answers 200 for every outcome the legacy screen "
+                    + "the legacy screen displayed it. A response carries an opaque rowSnapshotToken "
+                    + "sealing the ten identifiers it displayed; echo it unchanged to mark a row, "
+                    + "because no displayed identifier is accepted from the submission and a marking "
+                    + "turn without it selects nothing. Answers 200 for every outcome the legacy screen "
                     + "could compose, including a rejected filter, an unaccepted row selector and "
                     + "either end-of-browse report: the outcome is read from the body.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The turn completed. The body carries the page, the paging metadata, "
-                        + "the screen message, the field the cursor returns to and the route the "
-                        + "client should call next."),
+                        + "the screen message, the field the cursor returns to, the sealed "
+                        + "rowSnapshotToken of the page it displayed and the route the client should "
+                        + "call next."),
         @ApiResponse(responseCode = "400",
                 description = "The submission exceeded a width the transaction-list map declares, "
                         + "carried more selectors than the screen has rows, or carried a page "
@@ -455,7 +460,8 @@ public final class TransactionController {
                                     request.rowSelectors(),
                                     this.screenStateAdapter.toCursorRequest(request.pageMetadata()),
                                     retainedNextPageFlag(request.pageMetadata()),
-                                    retainedPageNumber(request.pageMetadata())));
+                                    retainedPageNumber(request.pageMetadata()),
+                                    request.rowSnapshotToken()));
 
             final String nextRoute =
                     (result.route() == null) ? null : result.route().getRouteValue();
@@ -769,7 +775,8 @@ public final class TransactionController {
                 result.currentDate(),
                 result.currentTime(),
                 result.transactionName(),
-                result.programName());
+                result.programName(),
+                result.rowSnapshotToken());
     }
 
     /**

@@ -1441,7 +1441,7 @@ class CardControllerTest {
                 false,
                 false,
                 0,
-                lastPageAlreadyShown);
+                lastPageAlreadyShown, null);
     }
 
     /**

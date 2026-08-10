@@ -36,6 +36,7 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.PfKeyTranslator;
 
 /**
@@ -547,6 +548,16 @@ public final class CardListService {
     private final AbendService abendService;
 
     /**
+     * Seals the seven displayed row identities and resolves a marked row against that snapshot.
+     *
+     * <p>It stands in for the private row table the source carries across the pseudo-conversation in its
+     * own communication area at lines 250 to 260, returned with the shared area at lines 604 to 619. That
+     * table is what lets the two selection transfers move the marked row's account number and card number
+     * into the shared fields at lines 531 to 534 and 559 to 562 without reading the file again.
+     */
+    private final CardListPageTokenService pageTokenService;
+
+    /**
      * Stands in for {@code FUNCTION CURRENT-DATE} at lines 645 and 652.
      *
      * <p>Injected rather than read from the system default so the header this screen stamps is
@@ -565,6 +576,9 @@ public final class CardListService {
      * @param navigationService     the route resolver, sole owner of the destination table; must not
      *                              be {@code null}
      * @param abendService          the diagnostic and abend gateway; must not be {@code null}
+     * @param pageTokenService      seals the identities displayed in the seven screen rows and resolves a
+     *                              marked row against that snapshot, standing in for the private row
+     *                              table of lines 250 to 260; must not be {@code null}
      * @param clock                 the clock the screen header reads; must not be {@code null}
      * @throws NullPointerException if any collaborator is {@code null}
      */
@@ -572,6 +586,7 @@ public final class CardListService {
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
             final AbendService abendService,
+            final CardListPageTokenService pageTokenService,
             final Clock clock) {
         this.cardRepository = Objects.requireNonNull(cardRepository, "cardRepository must not be null");
         this.messageCatalogService =
@@ -579,6 +594,8 @@ public final class CardListService {
         this.navigationService =
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
         this.abendService = Objects.requireNonNull(abendService, "abendService must not be null");
+        this.pageTokenService =
+                Objects.requireNonNull(pageTokenService, "pageTokenService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -834,6 +851,12 @@ public final class CardListService {
      *     from a repeated request past it
      * @param nextPageIndicated {@code WS-CA-NEXT-PAGE-IND}, lines 242 to 244, echoed because the
      *     forward-paging arm at line 486 tests it <em>before</em> the browse recomputes it
+     * @param rowSnapshotToken the authenticated snapshot of the identities displayed in the seven screen
+     *     rows, echoed from the previous response. It stands in for the private row table of lines 250 to
+     *     260, which the source carries across the pseudo-conversation and the two selection transfers read
+     *     at lines 531 to 534 and 559 to 562. Required whenever a row is marked, and read for nothing
+     *     else: paging, filtering and the exit key never consult it. {@code null} on a first entry and on
+     *     any turn that marks no row
      * @param navigationContext the navigation state echoed by the client. An absent state is the
      *     zero-length communication area of line 315, which this screen answers by initialising
      *     itself rather than by routing away
@@ -845,6 +868,7 @@ public final class CardListService {
                                       int currentPageNumber,
                                       boolean lastPageAlreadyShown,
                                       boolean nextPageIndicated,
+                                      String rowSnapshotToken,
                                       ScreenNavigationState navigationContext) {
 
         /**
@@ -907,8 +931,10 @@ public final class CardListService {
          *
          * <p>The work area carries an account identifier and a card number, and each boundary cursor
          * <em>is</em> a card number, so a generated rendering would put cardholder data into any log
-         * line, exception message or test-failure report that touched an instance. Only the paging
-         * state and the raw key identifier are rendered, neither of which names a record.
+         * line, exception message or test-failure report that touched an instance. The row snapshot is
+         * withheld for the same reason at one remove: it seals up to seven account-and-card pairs, and an
+         * opaque value is still a value a diagnostic has no use for. Only the paging state and the raw key
+         * identifier are rendered, neither of which names a record.
          *
          * @return a diagnostic rendering carrying no cardholder data
          */
@@ -921,6 +947,7 @@ public final class CardListService {
                     + ", currentPageNumber=" + this.currentPageNumber
                     + ", lastPageAlreadyShown=" + this.lastPageAlreadyShown
                     + ", nextPageIndicated=" + this.nextPageIndicated
+                    + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                     + ", navigationContext=" + this.navigationContext
                     + "]";
         }
@@ -1092,6 +1119,11 @@ public final class CardListService {
      *     state cannot express: the page indicator is its displayed page number and whether a further
      *     page exists is its more-pages flag, but whether the operator has <em>already been told</em>
      *     they are at the end is a memory of a previous turn and is derivable from nothing in this one
+     * @param rowSnapshotToken the authenticated snapshot of the identities this turn displayed, to be
+     *     echoed with the next submission so that a marked row resolves to the record that stood in it.
+     *     It is this screen's substitute for the private row table the source returns behind the shared
+     *     area at lines 604 to 619, and it carries no legible identifier: the pairs inside it are sealed.
+     *     {@code null} when this turn displayed no row, because there is then nothing to mark
      */
     public record CardListResult(NavigationService.Route route,
                                  ScreenNavigationState navigationContext,
@@ -1107,7 +1139,8 @@ public final class CardListService {
                                  boolean errorFlag,
                                  boolean reEntry,
                                  int selectedRowIndex,
-                                 boolean lastPageAlreadyShown) {
+                                 boolean lastPageAlreadyShown,
+                                 String rowSnapshotToken) {
 
         /**
          * Replaces the three lists with unmodifiable copies and leaves every other component exactly
@@ -1248,6 +1281,17 @@ public final class CardListService {
          * half are commented out.
          */
         private String ridCardNumber = NO_MESSAGE;
+
+        /**
+         * The sealed row table of lines 250 to 260, as this turn received it.
+         *
+         * <p>The source holds the seven displayed rows in its own communication area and gets them back
+         * from CICS at the top of the next turn; this holds the sealed equivalent the client echoed. Like
+         * the retained browse keys beside it, it is private state of a continuing conversation, so it is
+         * staged only on a returning turn and is forgotten when the turn arrives from another program.
+         * {@code null} means the turn presented none.
+         */
+        private String rowSnapshotToken;
 
         /** {@code WS-SCRN-COUNTER}, line 145: the slot the browse is filling. */
         private int screenCounter;
@@ -1453,12 +1497,13 @@ public final class CardListService {
         final TurnState state = new TurnState();
         mainPara(state, input);
 
+        final List<CardListRow> rows = assembleRows(state);
         return new CardListResult(
                 state.route,
                 state.navigationContext,
                 LIT_THISTRANID,
                 assembleScreenHeader(state),
-                assembleRows(state),
+                rows,
                 assembleBrowseWindow(state),
                 state.infoMessage,
                 state.errorMessage,
@@ -1468,7 +1513,45 @@ public final class CardListService {
                 state.inputError,
                 state.reEntry,
                 state.selectedIndex,
-                state.caLastPageShown);
+                state.caLastPageShown,
+                mintRowSnapshot(rows));
+    }
+
+    /**
+     * Seals the identities of the rows this turn displayed, so the next turn can resolve a marked row
+     * against them.
+     *
+     * <p>This is the outbound half of the private row table of lines 250 to 260: the source hands the table
+     * back with the shared area at lines 604 to 619, and this hands back a sealed equivalent. It is minted
+     * from the rows the response actually carries and from nothing else, so what a marker can resolve to is
+     * exactly what the operator was shown.
+     *
+     * <p>A row whose stored identifiers are not the persisted key widths cannot be sealed, and rather than
+     * refuse the whole screen the snapshot is omitted: the page still renders, and a marker submitted
+     * against it takes the same refusal an absent snapshot takes. Refusing the page instead would replace a
+     * readable screen with an error over data the source displayed without complaint.
+     *
+     * @param  rows the rows this turn displayed, in screen order
+     * @return the sealed snapshot, or {@code null} when there is no row to mark
+     */
+    private String mintRowSnapshot(final List<CardListRow> rows) {
+        if (rows.isEmpty()) {
+            return null;
+        }
+        final List<CardListPageTokenService.DisplayedCard> displayed = new ArrayList<>(rows.size());
+        try {
+            for (final CardListRow row : rows) {
+                displayed.add(new CardListPageTokenService.DisplayedCard(
+                        row.accountId(), row.cardNumber()));
+            }
+            return this.pageTokenService.mint(displayed);
+        } catch (NullPointerException | IllegalArgumentException unsealable) {
+            LOG.warn("Card list could not seal its displayed rows: program={} transaction={} rows={}"
+                            + " failureChain={}",
+                    LIT_THISPGM, LIT_THISTRANID, rows.size(),
+                    FailureDiagnostics.failureChainOf(unsealable));
+            return null;
+        }
     }
 
     // ==============================================================================================
@@ -1516,15 +1599,19 @@ public final class CardListService {
             state.caNextPageExists = input.nextPageIndicated();
             state.caFirstCardNumber = previousCursorOf(input);
             state.caLastCardNumber = nextCursorOf(input);
+            state.rowSnapshotToken = input.rowSnapshotToken();
         }
         state.reEntry = state.navigationContext.reEntry();
         state.fromThisProgram = namesThisProgram(state.navigationContext.fromProgram());
 
-        // Lines 336 to 343: arriving from another program forgets the retained paging state.
+        // Lines 336 to 343: arriving from another program forgets the retained paging state. The sealed
+        // row table is forgotten with it, for the same reason and by the same rule: it describes rows a
+        // previous conversation displayed, and this turn is not continuing that conversation.
         if (state.navigationContext.firstEntry() && !state.fromThisProgram) {
             state.caFirstCardNumber = NO_MESSAGE;
             state.caLastCardNumber = NO_MESSAGE;
             state.caNextPageExists = false;
+            state.rowSnapshotToken = null;
             state.navigationContext = state.navigationContext.withFirstEntry();
             state.reEntry = false;
             state.caScreenNumber = 1;
@@ -3397,17 +3484,100 @@ public final class CardListService {
      * update screen and hand it the selected row's account identifier and card number, at lines 531 to 534
      * and 559 to 562.
      *
+     * <p><strong>Where the identifiers come from.</strong> The source reads them out of its own private row
+     * table - {@code WS-ROW-ACCTNO(I-SELECTED)} and {@code WS-ROW-CARD-NUM(I-SELECTED)} - which CICS handed
+     * back at the top of this turn because {@code COMMON-RETURN} concatenated it behind the shared area at
+     * lines 604 to 619. This turn's own row table is empty, and necessarily so: no browse runs on the
+     * selection path, because the source transfers control <em>before</em> it reads anything. The
+     * identifiers therefore come from the sealed snapshot the previous response published, resolved by
+     * screen position, which is the same lookup the source performs against the same content.
+     *
+     * <p>Two alternatives were rejected. Re-reading the page from the retained browse key would resolve the
+     * marker against rows this turn read rather than rows the operator marked, so an insert or delete at or
+     * before the page anchor would hand the following screen a different card - and the following screen is
+     * the card <em>update</em> screen on one of these two arms. Having the client echo the row identifiers
+     * would put a primary account number on the request side of the contract and let a caller nominate a
+     * card that was never displayed to it.
+     *
+     * <p>A marker that cannot be resolved is refused rather than followed with a blank identity: see
+     * {@link #refuseUnresolvedSelection}.
+     *
      * @param state the turn's working storage
      * @param nominatedProgram the legacy program name control is handed to
      */
     private void dispatchToSelectedCard(final TurnState state, final String nominatedProgram) {
-        final CardListRow selectedRow = state.screenRows[state.selectedIndex - 1];
-        dispatchToProgram(state, nominatedProgram);
-        if (selectedRow != null) {
-            state.navigationContext =
-                    withCardNumber(withAccountIdentifier(state.navigationContext,
-                            selectedRow.accountId()), selectedRow.cardNumber());
+        final Optional<CardListPageTokenService.DisplayedCard> selectedRow = resolveMarkedRow(state);
+        if (selectedRow.isEmpty()) {
+            refuseUnresolvedSelection(state);
+            return;
         }
+        dispatchToProgram(state, nominatedProgram);
+        state.navigationContext = withCardNumber(
+                withAccountIdentifier(state.navigationContext, selectedRow.get().accountId()),
+                selectedRow.get().cardNumber());
+    }
+
+    /**
+     * Resolves the marked screen position against the sealed row table this turn received.
+     *
+     * <p>Nothing is read from the store here, and that absence is the point: the marker names a position on
+     * a page that has already been sent, so the only correct answer is the one the sent page carried. A
+     * store read would answer a different question - what stands in that position now - and the two answers
+     * differ by exactly one row for every insert or delete at or before the page's anchor.
+     *
+     * @param  state the turn's working storage
+     * @return the identity that stood in the marked row, or empty when the snapshot is absent, unopenable
+     *         or shorter than the marked position
+     */
+    private Optional<CardListPageTokenService.DisplayedCard> resolveMarkedRow(final TurnState state) {
+        if (state.rowSnapshotToken == null || state.rowSnapshotToken.isBlank()) {
+            LOG.warn("Card list selection was refused for want of a row snapshot: program={} "
+                            + "transaction={} rule={} markedSlot={}",
+                    LIT_THISPGM, LIT_THISTRANID, "snapshot-required", state.selectedIndex);
+            return Optional.empty();
+        }
+        try {
+            return this.pageTokenService.resolve(state.rowSnapshotToken, state.selectedIndex);
+        } catch (final IllegalArgumentException rejected) {
+            LOG.warn("Card list row snapshot was refused: program={} transaction={} markedSlot={} "
+                            + "failureChain={}",
+                    LIT_THISPGM, LIT_THISTRANID, state.selectedIndex,
+                    FailureDiagnostics.failureChainOf(rejected));
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Refuses a marked row whose identity this turn cannot establish, and re-presents the page.
+     *
+     * <p>The source has no arm for this, because it cannot reach the condition: its row table travels with
+     * the conversation, so a returning turn always holds the rows it displayed. Here the condition is
+     * reachable in exactly one way - a client that did not echo the snapshot the previous response handed
+     * it, or echoed one this server did not mint - and the two available responses are not equally
+     * defensible. Following the transfer with a blank identity hands the card detail or card
+     * <strong>update</strong> screen no record to act on, which is the defect this refusal exists to close.
+     * Refusing instead re-presents the same page from its retained first key, so the operator sees rows
+     * this server has just published and can mark again.
+     *
+     * <p>No new message text is introduced. The refusal reports {@code WS-INVALID-ACTION-CODE}, the wording
+     * the source itself uses at lines 125 to 126 for a marked action it cannot act upon, and it marks the
+     * offending slot in the positional bitmap exactly as the trailing arm at line 1108 does. Introducing a
+     * message the legacy screen never displayed would change an external contract to report an internal
+     * one.
+     *
+     * @param state the turn's working storage
+     */
+    private void refuseUnresolvedSelection(final TurnState state) {
+        state.inputError = true;
+        state.selectionErrorFlags[state.selectedIndex - 1] = true;
+        if (state.errorMessageOff()) {
+            state.errorMessage = MSG_INVALID_ACTION_CODE;
+        }
+        state.navigationContext = screenIdentityContext(state.navigationContext, LIT_THISPGM);
+        state.ridCardNumber = state.caFirstCardNumber;
+        readForward(state);
+        sendMap(state);
+        terminalReturn(state);
     }
 
     /**

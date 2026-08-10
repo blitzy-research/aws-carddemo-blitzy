@@ -56,7 +56,7 @@ vulnerability threshold.
 | Date, in UTC | 2026-08-10, build finished 06:32:58Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
 | Result | `BUILD SUCCESS`, total time 11:32 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 549 source counts, the same single `[WARNING]` block and it the scanner's rather than the compiler's, the same 26,906 and 1,640 test cases with no failure, the same 23,094 of 24,044 lines and 7,698 of 8,600 branches across the same 491 analysed classes, the same five byte-equal Gate 1 comparisons, and the same 168 dependencies with one below-threshold finding and one written determination. Only the timings differed, which is the distinction this table exists to draw |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 549 source counts, the same single `[WARNING]` block and it the scanner's rather than the compiler's, the same 26,896 and 1,643 test cases with no failure, the same 23,131 of 24,082 lines and 7,694 of 8,594 branches across the same 492 analysed classes, the same five byte-equal Gate 1 comparisons, and the same 168 dependencies with one below-threshold finding and one written determination. Only the timings differed, which is the distinction this table exists to draw |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -431,7 +431,7 @@ The lines that matter, quoted from the recorded run rather than paraphrased. Eve
 [INFO] Compiling 549 source files with javac [debug parameters release 25] to target/test-classes
 ...
 [INFO] --- jacoco:0.8.15:check (jacoco-check-line-coverage) @ carddemo-java ---
-[INFO] Analyzed bundle 'carddemo-java' with 491 classes
+[INFO] Analyzed bundle 'carddemo-java' with 492 classes
 [INFO] All coverage checks have been met.
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
@@ -694,11 +694,11 @@ program acts on. These paths remain per-key by design and are not covered by the
 - The interest run's per-group account and cross-reference reads, and its per-category rate probe.
 - The batch read loops built on the shared step template, which read forward one record at a time because
   the legacy `READ NEXT` loops did.
-- The three paginated browse screens, which read one bounded page per turn rather than a whole cluster. The
-  transaction-list browse issues **one additional bounded read of at most ten rows on a turn that marks a
-  row**, and none on a turn that only pages — that read re-establishes the marked row's identifier from the
-  store instead of accepting one a caller submitted, and it is recorded in
-  [decision-log.md](decision-log.md) entry DL-299.
+- The three paginated browse screens, which read one bounded page per turn rather than a whole cluster.
+  Neither the transaction-list nor the card-list browse issues **any** additional read on a turn that marks
+  a row: the marked slot resolves against the sealed snapshot of the page that was sent, published by the
+  response and echoed by the submission, so the identifier a transfer carries is the one that stood in that
+  slot when the operator marked it rather than whatever a second read would find there now.
 
 **B-tree indexes replace alternate-index path traversal.** All three alternate indexes have a B-tree
 equivalent in `V2`, and each is demonstrably reached by an index scan. Which call paths reach them is a
@@ -979,7 +979,7 @@ design because the module exposes no browser interface.
 | Casts to a parameterised type, checked or not | ≤ 5 | **5** | The wider measure, published beside the narrower one so the two cannot be confused. All five are enumerated below; all five are checked. |
 | Suppressed warnings | ≤ 3 | **0** | Same mechanism. Where an unchecked generic interaction with a framework API arose, the type was carried through a typed helper rather than suppressed. **This is the one row measured over both trees rather than over production alone** — 0 in `src/main/java`, 0 in `src/test/java`, 0 whole-source — because a suppression in a test source hides a warning just as effectively. Two were found in the test tree while this figure was production-scoped, and both were removed; see [Gate 2](#gate-2--zero-warning-build). |
 | Wildcard imports | 0 | **0** | Every import is explicit, so this audit can be performed by inspection rather than by resolution. |
-| `javax.*` imports | 0 | **0** | Every persistence, validation, servlet and transaction annotation imports from `jakarta.*`. **Thirteen** fully-qualified uses of the JDK's own `javax.crypto` exist across **two** classes — `SensitiveFieldCodec` and `ReportRetryTokens` — and are not imports; that package was never part of the Jakarta rename and has no `jakarta` counterpart. Both classes state the reasoning at their use sites. An earlier revision said ten uses in one class, which was true before the retry-token hash arrived. |
+| `javax.*` imports | 0 | **0** | Every persistence, validation, servlet and transaction annotation imports from `jakarta.*`. **Ten** fully-qualified uses of the JDK's own `javax.crypto` exist across **one** class — `SensitiveFieldCodec` — and are not imports; that package was never part of the Jakarta rename and has no `jakarta` counterpart. That class states the reasoning at its use sites. The figure has moved twice, which is the argument for measuring it rather than transcribing it: ten uses in one class, then thirteen across two once a retry-token hash arrived in `util`, and ten in one again now that the retry-token protocol has been withdrawn and that class deleted. |
 
 Every figure in the table above is now **measured against `src/main/java` on each build** by
 `config/DocumentedSourceCountsTest` rather than transcribed here. That change was prompted by the one
@@ -1327,14 +1327,14 @@ The recorded run's figures, read from the merged report:
 
 | Metric | Covered | Total | Percentage | Gated |
 | --- | ---: | ---: | ---: | :---: |
-| **Line** | 23,094 | 24,044 | **96.05%** | **yes, floor 80%** |
-| Branch | 7,698 | 8,600 | 89.51% | no |
+| **Line** | 23,131 | 24,082 | **96.05%** | **yes, floor 80%** |
+| Branch | 7,694 | 8,594 | 89.53% | no |
 | Instruction | 100,151 | 104,011 | 96.29% | no |
 | Method | 4,411 | 4,464 | 98.81% | no |
 
-The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 491 classes` followed by
-`All coverage checks have been met.` **Every repeat run measured these figures to the line** — 23,094 covered of
-24,044 in each — which is what a coverage figure should do when the code has not changed, and is the reason
+The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 492 classes` followed by
+`All coverage checks have been met.` **Every repeat run measured these figures to the line** — 23,131 covered of
+24,082 in each — which is what a coverage figure should do when the code has not changed, and is the reason
 it is recorded here as a property of the code rather than in the dated table under Gate 3.
 
 Per tier, which is why the merged report and not either component is the gated artefact:
@@ -1388,8 +1388,8 @@ point of this subsection: an earlier revision published 26,235 unit and 1,601 in
 time it was read the tree had moved underneath it — the numbers were a transcription of a run nobody could
 still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
 
-The suite behind those figures is the whole estate rather than a sample: the unit tier runs 26,906 test
-executions across 449 classes and the integration and end-to-end tier runs 1,640 across 80 classes,
+The suite behind those figures is the whole estate rather than a sample: the unit tier runs 26,896 test
+executions across 449 classes and the integration and end-to-end tier runs 1,643 across 80 classes,
 under the two inclusion rules stated above. Those class counts are the asserted half of the sentence —
 `config/DocumentedSourceCountsTest` measures both against this tree and fails the build on a
 disagreement — and the execution counts beside them are the dated half, read out of the runners' own
@@ -1397,9 +1397,9 @@ XML on the recorded run.
 
 | Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Unit | `target/surefire-reports/` | 449 | 26,906 | 0 | 0 | 0 |
-| Integration and end-to-end | `target/failsafe-reports/` | 76 | 1,640 | 0 | 0 | 0 |
-| **Whole suite** | both directories | **525** | **28,546** | **0** | **0** | **0** |
+| Unit | `target/surefire-reports/` | 449 | 26,896 | 0 | 0 | 0 |
+| Integration and end-to-end | `target/failsafe-reports/` | 76 | 1,643 | 0 | 0 | 0 |
+| **Whole suite** | both directories | **525** | **28,539** | **0** | **0** | **0** |
 
 Derive them for yourself from any completed unscoped run. One report file per top-level class, with nested
 classes rolled into their outer class's file, so the file count is the count of classes that **ran**:

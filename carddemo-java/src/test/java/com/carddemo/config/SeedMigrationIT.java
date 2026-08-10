@@ -337,18 +337,32 @@ final class SeedMigrationIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("every national identifier is left unset, so no regulated value is transcribed "
-                + "into a migration and none is sealed under a committed key")
-        void everyNationalIdentifierIsLeftUnset() throws SQLException {
+        @DisplayName("every national identifier is seeded as a sealed envelope, never as the cleartext "
+                + "the fixture record holds")
+        void everyNationalIdentifierIsSeededSealed() throws SQLException {
             assertThat(count(HEAD_SCHEMA, "customer"))
-                    .as("the exemption below is only meaningful if the rows exist")
+                    .as("the assertions below are only meaningful if the rows exist")
                     .isEqualTo(50L);
 
+            // THIS ASSERTED THE OPPOSITE, on the ground that sealing would require committing key
+            // material. It does not: the seed-bearing profiles already commit the one non-production
+            // fixture key as a bare literal, this file adds none, and the cleartext of these nine
+            // bytes is already committed twice over - at app/data/ASCII/custdata.txt, the read-only
+            // parity baseline, and at src/test/resources/fixtures/input/custdata.txt. What the
+            // omission actually cost was the only proof that mattered: no delivered row exercised a
+            // stored national identifier, so the reveal path was verified against absence.
             assertThat(scalar("SELECT count(*) FROM " + HEAD_SCHEMA
-                    + ".customer WHERE cust_ssn IS NOT NULL"))
-                    .as("static forward-only SQL cannot produce the authenticated envelope this column "
-                            + "holds without committing key material, and transcribing cleartext "
-                            + "identifiers instead is not acceptable, so none is seeded")
+                    + ".customer WHERE cust_ssn IS NULL"))
+                    .as("no delivered row may leave the column empty")
+                    .isZero();
+            assertThat(scalar("SELECT count(*) FROM " + HEAD_SCHEMA
+                    + ".customer WHERE cust_ssn LIKE 'ENC1:%' AND length(cust_ssn) = 81"))
+                    .as("every row must hold an envelope of the width a column-bound nine-digit "
+                            + "payload produces; a shorter one would mean an unbound or altered literal")
+                    .isEqualTo(50L);
+            assertThat(scalar("SELECT count(*) FROM " + HEAD_SCHEMA
+                    + ".customer WHERE cust_ssn ~ '^[0-9]{1,9}$'"))
+                    .as("and no row may hold the cleartext the envelope exists to replace")
                     .isZero();
         }
 

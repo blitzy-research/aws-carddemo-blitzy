@@ -48,6 +48,7 @@ import org.springframework.jdbc.core.RowMapper;
 import com.carddemo.domain.Customer;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.util.SensitiveFieldCodec;
 
 /**
  * Verifies the relational contract of the widest record in the estate against a real PostgreSQL 16
@@ -321,9 +322,9 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
      * is what makes that lossless. Nothing in the module trims on the way in or pads on the way out;
      * placing a stored value back through the record mapper reproduces the identical bytes.
      *
-     * <p>Neither regulated identifier appears here. The national identifier is absent on all fifty rows
-     * and the government-issued one is a sealed envelope, so both are asserted by shape and nullity
-     * elsewhere rather than by value.
+     * <p>Neither regulated identifier appears here. Both are sealed envelopes on all fifty rows, so
+     * both are asserted elsewhere by shape, by envelope width and by opening under the column's own
+     * binding, rather than by value.
      */
     private static final List<String> SEEDED_FIRST_DISPLAY_FIELDS = List.of(
             "Immanuel",
@@ -943,10 +944,11 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
                     .hasSize(APPLICATION_TABLE_COUNT);
             assertThat(database.queryForList(NULLABLE_APPLICATION_COLUMNS, String.class))
                     .as("one column in the entire schema admits a null, and this is it. It admits one "
-                            + "because no static artefact can produce ciphertext without committing "
-                            + "key material, so absence is the only honest thing a seed can store - "
-                            + "and requiring a value would not conjure a protected one, it would only "
-                            + "invite an unprotected one")
+                            + "because the legacy record permits a customer with no national "
+                            + "identifier on file, and a column that refused absence would refuse a "
+                            + "customer the legacy system stored. The delivered seed nonetheless "
+                            + "fills all fifty rows: nullable is what the schema allows, not what the "
+                            + "seed does")
                     .containsExactly(TABLE + "." + NATIONAL_IDENTIFIER_COLUMN);
             assertThat(declaredColumn(NATIONAL_IDENTIFIER_COLUMN).nullable())
                     .as("read from the other side, the same column reports itself nullable")
@@ -954,22 +956,31 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("is absent on every one of the fifty delivered rows")
-        void isAbsentOnEveryDeliveredRow() {
+        @DisplayName("is present, and sealed, on every one of the fifty delivered rows")
+        void isSealedOnEveryDeliveredRow() {
+            // THIS ASSERTED ABSENCE, on the ground that a static artefact cannot produce ciphertext
+            // without committing key material. The seed-bearing profiles already commit the one
+            // non-production fixture key as a bare literal, and the cleartext of these nine bytes is
+            // already committed twice - at app/data/ASCII/custdata.txt and at
+            // src/test/resources/fixtures/input/custdata.txt - so absence protected nothing while
+            // costing the only proof that mattered: no delivered row exercised a stored value here.
             assertThat(database.queryForObject(DELIVERED_CUSTOMER_ROW_COUNT, Integer.class,
                     SEEDED_FIRST_ID, SEEDED_LAST_ID))
                     .as("the delivered key range holds the fifty reference customers")
                     .isEqualTo(TestDataFactory.SEEDED_FIFTY_ROW_COUNT);
             assertThat(database.queryForObject(DELIVERED_CUSTOMERS_WITH_A_NATIONAL_IDENTIFIER,
                     Integer.class, SEEDED_FIRST_ID, SEEDED_LAST_ID))
-                    .as("not one delivered row carries a value here. The encryption path supplies "
-                            + "these at run time; the seed leaves them absent")
-                    .isZero();
+                    .as("every delivered row carries a value here, taken from the authoritative "
+                            + "fixture record and sealed by the same service the application uses")
+                    .isEqualTo(TestDataFactory.SEEDED_FIFTY_ROW_COUNT);
             assertThat(repository.findAllById(List.of(SEEDED_FIRST_ID, SEEDED_LAST_ID,
                     SEEDED_LOWEST_SCORE_ID)))
-                    .as("and the repository reports the same absence through the entity")
+                    .as("and the repository reports the stored envelope through the entity, never a "
+                            + "run of digits: the entity is the layer every reader goes through")
                     .isNotEmpty()
-                    .allSatisfy(customer -> assertThat(customer.getCustSsn()).isNull());
+                    .allSatisfy(customer -> assertThat(customer.getCustSsn())
+                            .startsWith(SensitiveFieldCodec.ENVELOPE_PREFIX)
+                            .doesNotMatch("^[0-9]{1,9}$"));
         }
 
         @Test
@@ -1420,8 +1431,9 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
                     reservedCustomer(COMPARE_AND_SET_ID).build());
 
             assertThat(before.getCustSsn())
-                    .as("the fixture leaves the national identifier absent, as the delivered seed "
-                            + "does, so this run exercises the null-aware half of the comparison")
+                    .as("the fixture leaves the national identifier absent - which the delivered "
+                            + "seed no longer does - so this run exercises the null-aware half of "
+                            + "the comparison that the seeded rows no longer reach")
                     .isNull();
             assertThat(repository.compareAndSet(before,
                     copyOnto(before, COMPARE_AND_SET_ID, OPERATOR_FIRST_NAME)))
@@ -1549,7 +1561,11 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
 
     /**
      * Builds a customer fixture on a reserved key, with every field defaulted to the first delivered
-     * record and the national identifier absent, exactly as the delivered seed leaves it.
+     * record and the national identifier absent.
+     *
+     * <p>Absence here is deliberate and is no longer what the delivered seed stores: the seed seals a
+     * value into all fifty rows, so the reserved-key fixtures are what keep the null-aware write, read
+     * and compare-and-set paths exercised at all.
      *
      * @param custId the reserved key to build on
      * @return a fixture builder, ready to be adjusted and built

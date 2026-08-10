@@ -1205,12 +1205,20 @@ This matters most for the interest program's default-group fallback: collapsing 
 forms would make the fallback appear to resolve keys that it does not, which changes which accounts
 accrue interest at which rate.
 
-### DL-036 — The one nullable protected column is nullable for a reason
+### DL-036 — The one nullable protected column is nullable for a reason — SEED BEHAVIOUR CORRECTED BY DL-333
 
-The national-identifier column is the single intentional nullable field in the initial schema. The
-reference-data seed leaves it null in static SQL rather than embedding raw national identifiers, or
-a hardcoded encryption key, in a migration file. Both alternatives were worse than a nullable
-column.
+**Correction.** The column is still the single intentional nullable field in the schema, and still for the
+reason this entry gives: the legacy record permits a customer with no identifier on file. What is no longer
+true is the second sentence. `DL-333` reverses it — the reference-data seed now carries all fifty
+authoritative values as sealed, column-bound envelopes. It embeds neither raw identifiers nor a key: the
+key it seals under is the one the seed-bearing profiles already bind, and the cleartext of those nine bytes
+is already committed twice in this repository, so the omission was protecting nothing while removing the
+only proof that a stored national identifier could be revealed and masked.
+
+**Original entry, retained for the record:** "The reference-data seed leaves it null in static SQL rather
+than embedding raw national identifiers, or a hardcoded encryption key, in a migration file. Both
+alternatives were worse than a nullable column." (Superseded by the correction above — the third
+alternative, sealing under the key already bound, was not considered.)
 
 *Cited by:* `db/migration/V1__create_schema.sql`.
 
@@ -2340,14 +2348,14 @@ resolves to exactly one entry.
 | `config/ObservabilityConfig.java` | DL-217 |
 | `batch/BatchLaunchCoordinator.java` | DL-218 |
 | `batch/BackupTransactionJobConfig.java` | DL-210, DL-292 |
-| `service/BillPaymentService.java` | DL-277, DL-291 |
+| `service/BillPaymentService.java` | DL-277, DL-291, DL-323 |
 | `service/StatementOutputSink.java` | DL-293 |
 | `util/DailyTransactionRecordMapper.java` | DL-295 |
 | `batch/step/RejectRecordWriter.java` | DL-295 |
 | `repository/TransactionRepository.java` | DL-294 (superseding DL-276 in part), DL-296 |
 | `service/TransactionReportService.java` | DL-175, DL-294 |
 | `repository/CardRepository.java` | DL-296 |
-| `service/AccountUpdateService.java` | DL-297 |
+| `service/AccountUpdateService.java` | DL-135, DL-297, DL-327 |
 | `api/AccountController.java` | DL-297 |
 | `domain/DailyTransaction.java` | DL-295, DL-297 |
 | `domain/DisclosureGroup.java` | DL-297 |
@@ -2378,11 +2386,12 @@ resolves to exactly one entry.
 | `resources/db/migration/schema/V2__create_indexes.sql` | DL-298 |
 | `resources/db/migration/seed/V3__seed_reference_data.sql` | DL-298 |
 | `resources/db/migration/seed/V4__seed_user_security.sql` | DL-298 |
-| `api/dto/TransactionListRequest.java` | DL-299 |
-| `api/dto/TransactionListResponse.java` | DL-299 |
-| `api/TransactionController.java` | DL-299 |
-| `service/TransactionListService.java` | DL-299 |
-| `service/TransactionListServiceTest.java` | DL-299 |
+| `api/dto/TransactionListRequest.java` | DL-021, DL-024, DL-025, DL-035, DL-051, DL-073 |
+| `service/TransactionListPageTokenService.java` | DL-326 |
+| `service/CardListPageTokenService.java` | DL-325 |
+| `service/PostingStageTransactionBoundary.java` | DL-324 |
+| `api/SignOnContractAdapter.java` | DL-330 |
+| `api/ReportController.java` | DL-322 |
 | `service/InterestCalculationService.java` | DL-300 (alongside DL-207) |
 | `config/BatchConfig.java` | DL-211 |
 | `service/InterestCalculationService.java` | DL-207 |
@@ -3120,12 +3129,22 @@ invented - a twenty-digit fixture identifier with no subject behind it. And the 
 self-describing throwaway that seals nothing outside a database rebuilt from these migrations. No key
 material is added to the repository by the change; what is embedded is ciphertext.
 
-**Why the national identifier is still `NULL`.** `cust_ssn` remains unseeded, and the reason is now
-stated correctly. The nine bytes the legacy record holds at offset 279 are shaped like real national
-identifiers, and sealing them would not protect them: anything sealed under a committed fixture key is
-recoverable by anyone holding the repository. The right handling of a value like that in a checked-in
-artefact is not to carry it in any form. `cust_ssn` is consequently the one nullable column in `V1`, and
-a test that needs a stored national identifier persists one through the application under its own key.
+**Why the national identifier IS seeded — corrected; see `DL-333`.** `cust_ssn` now carries a sealed
+envelope in every one of the fifty rows. The paragraph this replaces argued that anything sealed under a
+committed fixture key is recoverable by anyone holding the repository, and therefore that the right
+handling of such a value is not to carry it in any form. The first clause is true; the second does not
+follow from it, because those exact nine bytes are **already** committed in cleartext twice over — at
+`app/data/ASCII/custdata.txt`, the read-only parity baseline, and at
+`carddemo-java/src/test/resources/fixtures/input/custdata.txt`, committed by this module itself. The
+omission therefore protected nothing, while leaving the reveal-and-mask path of the account view proven
+against an absent column rather than against the fifty authoritative values. `cust_ssn` remains the one
+nullable column in `V1`, for the schema reason `DL-036` gives rather than for a seeding reason, and the
+test that persists a value through the application under its own key still runs — it is simply no longer
+the only evidence.
+
+**Original reading, retained for the record:** "`cust_ssn` remains unseeded ... sealing them would not
+protect them ... The right handling of a value like that in a checked-in artefact is not to carry it in any
+form." (Superseded by `DL-333`.)
 
 **Why the three non-production profiles now share one key.** An AES-GCM envelope opens under exactly one
 key. The local profile and the two copies of the test profile previously bound three values of which two
@@ -6155,7 +6174,13 @@ audit - because a new source of identifiers is a concurrency decision, not a for
 
 ---
 
-### DL-232 - A submission identity is minted per request and reused only on an explicit retry, and each card carries a reassembly envelope, because a date-derived identity silently discarded a legitimate second submission — CORRECTED
+### DL-232 - A submission identity is minted per request and reused only on an explicit retry, and each card carries a reassembly envelope, because a date-derived identity silently discarded a legitimate second submission — CORRECTED — **RETRY CLAUSE SUPERSEDED BY DL-322**
+
+> **The retry clause of this heading no longer applies.** `DL-322` removes the retry protocol entirely, so
+> a submission identity is minted per request and is *never* reused: there is no explicit retry to reuse it
+> on. The nonce-backed per-request identity and the per-card reassembly envelope — the substance of this
+> entry — are unaffected and are what make the removal safe, because each submission already published its
+> own stream. Read "reused only on an explicit retry" as the superseded half.
 
 > **Formerly recorded under `DL-150`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-150` is the one the module's own source cites. See entry DL-245.
 
@@ -8057,6 +8082,13 @@ build, the coverage floor and the supply chain scan, and locale hardening sits b
 being a gate of its own. The banners are renumbered "of 6", the container gate has one, and the summary names
 the same six in the same order. A contract test reads all three places and requires them to agree.
 
+**The inventory is now seven, and this entry is extended rather than contradicted.** `DL-331` adds a
+repository whitespace gate as the workflow's first step. The property this entry establishes is that the
+count agrees in all three places — the header prose and its enumeration, the step banners, and the summary
+— and that property is what made adding a gate a bounded edit: the header, seven banners renumbered
+descending so no number collided mid-edit, and seven summary lines. The same contract test still reads all
+three places and still requires them to agree, and it additionally refuses a stale total by name.
+
 *Cited by:* `.github/workflows/carddemo-java-ci.yml`,
 `src/test/java/com/carddemo/config/BuildAndCiContractTest.java`.
 
@@ -9704,6 +9736,13 @@ bring-up section now separates what needs no exports from what does).
 
 ### DL-264 - The report submission identity names the authenticated operator, because a deduplication namespace shared between callers is one caller able to suppress another's submission
 
+> **The defect this entry closes is now closed by construction instead — see `DL-322`.** The caller-supplied
+> token this entry names the operator alongside no longer exists. The submission identity is the two date
+> slots plus a UUID nonce minted per request (`DL-314`), so two callers cannot arrive at the same identity
+> whether or not either names itself, and the shared-namespace suppression this entry was written to prevent
+> is unreachable rather than guarded against. The reasoning below remains the record of why a
+> caller-influenced deduplication namespace was unsafe, which is part of why the protocol was withdrawn.
+
 **Context.** The report-request turn publishes a seventeen-card job image to a first-in-first-out queue,
 and that queue deduplicates: the bridge composes each card's deduplication identifier from a submission
 identity plus the card's one-based ordinal (DL-148, DL-232). A caller may supply the logical-request token
@@ -10226,6 +10265,13 @@ the token provider, the sign-on state reader and the refusal renderer are the sh
 identity is established by verifying a credential the shipped provider minted from a seeded record. Nothing
 of the card contract is re-asserted; that would produce two places to change when one contract changes. This
 specification counts cards and compares namespaces.
+
+> **Two of the five properties below described the retry protocol, which `DL-322` removed.** Properties
+> four and five are stated in terms of a caller-supplied token: two operators presenting the same one, and
+> one operator repeating it. There is no such token now, so those two properties no longer exist to be
+> established and the specification no longer asserts them. The three that carry the security weight — an
+> absent credential publishes nothing, an unverifiable one publishes nothing, and a verified one publishes
+> exactly one complete stream — are unchanged, and they are the reason this entry exists.
 
 **The five properties it establishes, each of which needs the chain to run.**
 
@@ -10864,7 +10910,7 @@ the 133-byte report.
 `src/test/java/com/carddemo/batch/TransactionReportJobConfigIT.java`.
 *Supersedes on location, not reasoning:* DL-199, DL-122.
 
-### DL-277 — The confirmed bill payment holds the account row exclusively, and the transaction insert is durable on its own
+### DL-277 — The confirmed bill payment holds the account row exclusively, and the transaction insert is durable on its own — **ORDER CORRECTED BY DL-323**
 
 > **Formerly recorded under `DL-268`.** That identifier is carried by the sign-on refusal-message and attempt-bound entry earlier in
 > this log, and an identifier a reader cannot resolve is worse than an absent one, so this decision was
@@ -10881,6 +10927,13 @@ the 133-byte report.
 > recorded here — the exclusive hold, the re-evaluated balance test, the insert surviving a rolled-back
 > rewrite, the removed version comparison, the transaction-mandatory allocation lock — is unchanged and is
 > still obtained the way this entry describes.
+>
+> **The order of the two units is corrected by `DL-323`.** This entry, and `DL-291` after it, describe the
+> transaction insert as the *second* of the two durable units. The source has it first:
+> `app/cbl/COBIL00C.cbl` performs `WRITE-TRANSACT-FILE` at line 233, and only then computes the new
+> balance at line 234 and performs `UPDATE-ACCTDAT-FILE` at line 235. The delivered sequence is
+> store-then-settle. Nothing else here changes — the exclusive hold and the insert's independent
+> durability are exactly what let the two units be reordered without weakening either.
 
 **Context.** Two properties of the legacy bill-payment span are stated by the file definitions rather than by
 the program text, and both were lost in the first relational translation.
@@ -11857,7 +11910,17 @@ generation. Reverting the production change fails exactly the first two and no o
 
 ---
 
-### DL-291 — A confirmed bill payment holds one connection at a time, so the two stores are sequential units in settle-then-store order
+### DL-291 — A confirmed bill payment holds one connection at a time, so the two stores are sequential units in settle-then-store order — **ORDER CORRECTED BY DL-323**
+
+> **The order stated in this entry is backwards relative to the source, and is corrected by `DL-323`.**
+> The one-connection-at-a-time property this entry delivers is the substantive decision and it is
+> untouched — it is what makes the corrected order implementable at all. What is wrong is the sequence:
+> `app/cbl/COBIL00C.cbl` performs `WRITE-TRANSACT-FILE` at line 233 *before* computing the new balance at
+> line 234 and performing `UPDATE-ACCTDAT-FILE` at line 235, so the delivered order is store-then-settle.
+> Every occurrence of "settle-then-store" below should be read as the superseded sequence. The reason the
+> order is observable rather than cosmetic is developed in `DL-323`: the two clusters are
+> `RECOVERY(NONE)` with no syncpoint between them, so an interruption leaves a state, and which state it
+> leaves is decided entirely by which write went first.
 
 **Context.** `DL-277` reproduced two legacy properties of the confirmed bill-payment span: the account row is
 held exclusively from the confirmed read to the rewrite, and the transaction insert is durable independently
@@ -12666,7 +12729,18 @@ a correct apply order while every seed sits above every schema script.
 
 ---
 
-### DL-299 — The identifier of a marked row is re-read from the store, because a request body is not the trusted terminal echo the legacy relied on
+### DL-299 — The identifier of a marked row is re-read from the store, because a request body is not the trusted terminal echo the legacy relied on — **MECHANISM SUPERSEDED BY DL-326**
+
+> **Superseded in mechanism, upheld in reasoning.** `DL-326` withdraws the re-read this entry delivers.
+> Everything below about *why the legacy shape could not be copied* — that a REST request body is composed
+> by the caller, so carrying the ten displayed identifiers inbound would let any authenticated caller name
+> a row it was never shown — still stands and is the reason `DL-326` exists. What is withdrawn is the
+> substitute: establishing the identifier by re-reading the store made row identity a function of what the
+> table holds *now* rather than of what the page displayed, and the direction-aware read narrowed that gap
+> without removing it. The selection path now issues **no read at all**, so the cost this entry states —
+> "one bounded read of at most ten rows" on a marking turn — is retired with it. The paging behaviour,
+> the frozen component set and the refusal of a full identifier typed into a one-byte selector are
+> unchanged.
 
 **This entry supersedes the list-continuation portion of DL-237.** That entry's identity decision and
 its entered-versus-persisted amount decision are unaffected and still stand; indeed the identity
@@ -13703,7 +13777,16 @@ over the predicate in `src/main/java/com/carddemo/util/SecureStagedFiles.java`.
 *Asserted by:* `src/test/java/com/carddemo/batch/DailyTransactionReadJobConfigTest.java` (nest *Six
 resources are bound, each at its own verified width*).
 
-### DL-310 — An interface promises exactly what its mechanism delivers: the report retry token is dated and its window enforced, and the launch surface stops claiming an idempotence it never had
+### DL-310 — An interface promises exactly what its mechanism delivers: the report retry token is dated and its window enforced, and the launch surface stops claiming an idempotence it never had — **RETRY-TOKEN HALF SUPERSEDED BY DL-322**
+
+> **The principle holds; the mechanism it was applied to is gone.** `DL-322` withdraws the retry protocol
+> this entry documents — the caller-supplied `Idempotency-Key` header, the digest of it, the dated token
+> and the five-minute acceptance window — because the queue the submission feeds is defined
+> `DISPOSITION(MOD)`, append, with no dedup key, no token and no window anywhere in `CORPT00C`, so the
+> protocol was feature expansion rather than translation. Read the retry-token material below as the
+> superseded mechanism. The entry's other half — that an interface must promise exactly what its
+> mechanism delivers — is not merely intact, it is precisely what `DL-322` applies: the honest promise
+> turned out to be *no* idempotence at all.
 
 **Context.** Two surfaces of this module told callers something stronger than the code behind them did, and in
 both cases the gap was invisible from inside: the code was right, the contract was wrong, and the tests had
@@ -14944,6 +15027,556 @@ recording: `git diff` and `git diff --check` then read `mvnw.cmd` as text rather
 return on every line as trailing whitespace, so no `whitespace=` override is needed for it.
 
 *Embodied in:* `carddemo-java/.gitattributes`, `.github/workflows/carddemo-java-ci.yml`.
+
+---
+
+### DL-321 — Regulated identifiers in client-echoed conversation state: the page-identity half is closed, the screen-field half is a retained gap *(documented gap)*
+
+**What was raised.** That regulated values — a primary account number, an account key, a customer
+key —
+travel in state the client echoes back, and that a caller therefore participates in state the server
+later acts on. The finding is factually correct about the mechanism. It resolves into two halves
+that
+have different answers, and separating them is the whole of this entry.
+
+**The half that is closed.** *Page identity* — which row of a displayed list the next turn acts on —
+is
+no longer taken from anything a caller supplies. `DL-325` and `DL-326` replace both list surfaces
+with a
+server-minted, AES-GCM-sealed, column-bound snapshot: the seven card rows of `COCRDLIC` and the ten
+transaction slots of `COTRN00C`. A caller echoes an opaque envelope it cannot read, cannot compose
+and
+cannot alter without the seal failing, and the identity of the marked row is established from the
+snapshot the server itself issued. Before this, the card list resolved a marked row to a blank
+identity
+and the transaction list re-read the store, which is the exposure the finding names. It is gone.
+
+**The half that is retained, and why.** `NavigationContext` carries `accountId`, `cardNumber` and
+`customerId` in cleartext, and continues to. Four reasons, each a specific instruction rather than a
+preference:
+
+- **The AAP mandates this artifact for this purpose.** §0.1.2 maps the `CARDDEMO-COMMAREA` carried
+  across pseudo-conversation turns onto "Stateless JWT claims plus an explicit `NavigationContext`
+DTO
+  echoed by the client". `COCOM01Y` declares `CDEMO-ACCT-ID`, `CDEMO-CARD-NUM` and `CDEMO-CUST-ID`;
+  `NavigationContext` declares their three counterparts at the same widths. Removing them would not
+  harden the mandated replacement, it would stop being the mandated replacement.
+- **The legacy screens display these values unmasked, and §0.7.4 with `DL-010` records that as a
+  deliberate documented gap.** The primary account number and the verification code have no
+field-level
+  protection anywhere in the legacy design, and no requirement in scope asks for one. Masking the
+PAN in
+  the conversation state while every card screen still renders it would close nothing and would
+diverge
+  from the screen contract §0.3.4 freezes.
+- **§0.2.2 places changing any external interface contract out of scope**, and the echoed component
+  set
+  is that contract.
+- **§0.8.1 forbids feature expansion**, which is what inventing a tokenised account reference would
+  be.
+
+**The residual, stated exactly.** An authenticated caller can name any account, card or customer by
+echoing it, and the server will act on it. That is not an escalation, and the reason is measurable
+rather than argued: legacy `CT00`, `CAVW` and `CCLI` scope no browse and no keyed read to a user —
+every
+signed-on operator may type any account number into the screen and read it — so the echoed value is
+the
+exact equivalent of an operator keystroke the legacy accepts. What a caller cannot do is present
+another
+caller's *identity*: `ScreenStateAdapter` reconciles the two identity members against the
+authenticated
+principal in both directions, inbound and outbound, so a service physically cannot read a
+client-chosen
+user id or role. Authorisation is therefore never a function of echoed state.
+
+**What would change this.** A requirement to protect the primary account number at rest or in
+transit,
+which would reopen `DL-010` and this entry together. Absent that, the gap is recorded, not closed.
+
+*Embodied in:* `api/dto/NavigationContext.java`, `api/ScreenStateAdapter.java`,
+`service/CardListPageTokenService.java`, `service/TransactionListPageTokenService.java`.
+
+---
+
+### DL-322 — The report launch surface has no retry, idempotency or deadline protocol at all, because the queue it feeds is append-only *(supersedes the retry-token half of DL-310)*
+
+**This supersedes the retry-token portion of `DL-310`.** That entry's other half — that an interface
+must
+promise exactly what its mechanism delivers — is not merely intact, it is the principle applied
+here. The
+mechanism `DL-310` documented was a caller-supplied `Idempotency-Key` header, a digest of it, and a
+five-minute acceptance window. All three are withdrawn, along with the claim that the surface
+offered an
+idempotence, because the legacy submission path offers none and inventing one is feature expansion.
+
+**The legacy behaviour, read rather than assumed.** `app/cbl/CORPT00C.cbl` writes the seventeen-card
+job
+image to a transient data queue one card at a time. `app/csd/CARDDEMO.CSD` defines `TDQUEUE(JOBS)`
+with
+`DISPOSITION(MOD)` — append — and `ERROROPTION(IGNORE)`. There is no dedup key, no token, no window,
+and
+no state kept between submissions: a second identical submission appends a second identical job
+stream
+and the reader runs the job twice. The one guard the program does have is a *confirmation gate* at
+lines
+462-510, and that is preserved as an explicit confirm flag rather than replaced by a token.
+
+**What is delivered.** `ReportController` no longer declares the header, its length bound, its
+visible-ASCII rule, its rejection constant or its canonicalisation, and the operation's `400` arm
+now
+names only the map-width refusal. `ReportRequestService` loses the collaborator, the mint-or-accept
+resolution, the digest, the four-argument identity, the two token-carrying `TurnState` members and
+the
+result component; the canonical result record is sixteen components. The FIFO message-group identity
+now
+comes from `JobSubmissionService.newSubmissionIdentity(startDate, endDate)` — the two dates plus a
+UUID
+nonce, per `DL-314` — so each confirmed submission publishes its own stream, which is exactly what
+an
+appending queue with `DISPOSITION(MOD)` does.
+
+**One consequence worth naming, so it is not discovered as a surprise.** Two confirmed submissions
+of the
+same period now produce two job streams. That is the legacy behaviour and it is intended. A caller
+that
+wants at-most-once submission must not confirm twice, which is the same obligation the 3270 operator
+had.
+
+*Embodied in:* `api/ReportController.java`, `service/ReportRequestService.java`,
+`service/JobSubmissionService.java`.
+
+---
+
+### DL-323 — A confirmed bill payment stores the transaction first and settles the account second, in the source's own order *(corrects DL-291 and the ordering half of DL-277)*
+
+**Correction.** `DL-291` recorded the two durable units in *settle-then-store* order, and `DL-277`
+described the transaction insert as the second of the two. Both had the order backwards relative to
+the
+source, and the ordering claim in each is corrected here; everything else in both entries — the
+exclusive
+row hold, the one-connection-at-a-time property, the independent durability of the insert — stands
+unchanged and is what makes this reordering safe to perform.
+
+**The source order.** `app/cbl/COBIL00C.cbl` performs `WRITE-TRANSACT-FILE` at line 233. Only then
+does
+line 234 compute `ACCT-CURR-BAL - TRAN-AMT`, and line 235 performs `UPDATE-ACCTDAT-FILE`. The
+transaction
+record is durable before the balance is touched.
+
+**Why the order is observable rather than cosmetic.** The two files are separate VSAM clusters, both
+defined `RECOVERY(NONE)` and `JOURNAL(NO)`, with no syncpoint between the two writes. An
+interruption
+between them therefore leaves a state, and *which* state depends entirely on the order. In source
+order
+the surviving state is a stored transaction against an unsettled account. In the reversed order it
+was a
+settled account with no transaction recording why — a balance that moved with no audit row, which is
+the
+strictly worse of the two and the one a reconciliation cannot explain.
+
+**What is delivered.** `performConfirmedWrites` runs unit one — hold the account row `FOR UPDATE`,
+mint
+the identifier as highest-existing-key plus one per `DL-018`, assemble and insert the transaction —
+and
+then unit two — re-read the row `FOR UPDATE`, compute, rewrite. One connection is held at a time,
+and
+every response arm the source has is preserved and still applied insert-first then rewrite.
+
+**The residual is accepted, not closed.** The window between the two units remains: an instance that
+dies
+after unit one leaves a stored transaction and an unsettled account. That is precisely what the
+legacy
+left, and closing it by wrapping both in one transaction would give the target a durability property
+the
+source does not have — a divergence in the *stronger* direction, which this log still records rather
+than
+takes silently, and which `DL-012` shows is not automatically welcome when it changes what a restart
+sees.
+
+*Embodied in:* `service/BillPaymentService.java`.
+
+---
+
+### DL-324 — Posting a daily transaction is three independent durable units, in the source's order, with no rollback site
+
+**The source shape.** `app/cbl/CBTRN02C.cbl` lines 440-442 perform `2700-UPDATE-TCATBAL`,
+`2800-UPDATE-ACCOUNT-REC` and `2900-WRITE-TRANSACTION-FILE`. Three writes, to three clusters, each
+defined `RECOVERY(NONE)` and `JOURNAL(NO)`, with no syncpoint and — decisively — **no rollback site
+anywhere in the program**. Each write is durable when it completes and nothing undoes an earlier one
+when
+a later one fails.
+
+**What was delivered before, and why it was wrong.** Validation and all three writes ran inside one
+`Propagation.REQUIRED` boundary invoked once per record, and because the step is chunk-oriented a
+chunk
+transaction was already open, so `REQUIRED` joined it. A failure in the third write therefore erased
+the
+first two. That is an atomicity the source does not have, and it changes what a failed run leaves
+behind.
+
+**What is delivered now.** The boundary is per stage, `Propagation.REQUIRES_NEW`, invoked three
+times
+from `postTransaction` in lines 440-442 order. Each stage already ends in a flush, so merge
+semantics
+hold. The two keyed reads take units of their own so that no managed entity image escapes a boundary
+and
+is later written by a different one. The class is named for the stage boundary it now is rather than
+for
+the record boundary it was.
+
+**Three behaviours are unchanged and are named so the change is not read as wider than it is.** The
+inert reject-109 arm still does nothing durable. The version-race arm still raises
+`OptimisticLockConflictException`, a retained `DL-170` strengthening — its rollback scope is now one
+stage rather than the record. And no stage invents a compensating write.
+
+**The restart consequence, stated plainly.** A re-run re-posts records whose stage stores committed.
+That is what re-running the legacy job did: `CBTRN02C` has no checkpoint, no restart logic and no
+posted-marker, so an operator re-running it after a mid-stream failure re-posted everything the
+previous
+run had already written. This supersedes the rationale `RecordWriter` previously carried, which
+described
+double-posting on restart as a defect to be avoided rather than as the source's own behaviour.
+
+*Embodied in:* `service/PostingStageTransactionBoundary.java`,
+`service/TransactionPostingService.java`, `batch/PostTransactionJobConfig.java`,
+`repository/RecordWriter.java`.
+
+---
+
+### DL-325 — The card list's seven displayed rows are carried across the turn as a sealed snapshot, because the legacy carried them too
+
+**The legacy fact that decides this, and it is not the one the earlier reading assumed.**
+`app/cbl/COCRDLIC.cbl` declares `WS-SCREEN-DATA` as seven twenty-eight-byte rows — `WS-ROW-ACCTNO
+PIC X(11)`, `WS-ROW-CARD-NUM PIC X(16)`, `WS-ROW-CARD-STATUS PIC X(1)` — *inside*
+`01 WS-THIS-PROGCOMMAREA`. `COMMON-RETURN` at lines 604-620 appends the whole of
+`WS-THIS-PROGCOMMAREA` to the returned `CARDDEMO-COMMAREA`. The seven displayed rows therefore
+**do**
+travel across the pseudo-conversation, and the ENTER arms at lines 531-534 and 559-562 move
+`WS-ROW-ACCTNO(I-SELECTED)` and `WS-ROW-CARD-NUM(I-SELECTED)` out of that carried table into
+`CDEMO-ACCT-ID` and `CDEMO-CARD-NUM`. Row identity comes from the program's own remembered page, not
+from
+anything the terminal composed.
+
+**The defect.** The translation carried only the cursor, so `dispatchToSelectedCard` had no row
+table to
+read and resolved a marked row to a blank account and card. The next screen was handed nothing.
+
+**What is delivered.** `CardListPageTokenService` mints an authenticated snapshot of the seven rows
+under
+scheme `CCLIP1`, sealed through `SensitiveFieldEncryptionService` bound to its own field name,
+published
+on the response and echoed on the request. The marked slot is resolved from the verified snapshot.
+
+**The refusal is the source's own.** A marked row that arrives with no snapshot, or with one that
+will
+not open or does not carry this scheme, is refused with `INVALID ACTION CODE` — a message the
+program
+already emits for an unsupported row action — rather than followed with a blank identity. **No new
+message text is introduced**, which matters because the message set is part of the frozen screen
+contract
+under §0.3.4.
+
+**Two alternatives were rejected, and both are argued at the call site.** Re-reading the page would
+make
+row identity a function of the store's current contents rather than of what was displayed. Echoing
+the
+seven identifiers as cleartext components would let a caller name a row it was never shown, and
+would
+also widen the frozen request component set. The `dispatchToSelectedCard` documentation states both.
+
+*Embodied in:* `service/CardListPageTokenService.java`, `service/CardListService.java`,
+`api/dto/CardListRequest.java`, `api/dto/CardListResponse.java`, `api/CardController.java`.
+
+---
+
+### DL-326 — The transaction list resolves a marked slot from a sealed slot map and issues no read at all *(supersedes the re-read mechanism of DL-299)*
+
+**This supersedes the mechanism `DL-299` delivered, and keeps its reasoning about why the legacy
+shape
+could not be copied.** `DL-299` was right that a REST request body is composed by the caller and
+that
+carrying the ten displayed identifiers inbound as cleartext would let any authenticated caller name
+a row
+it was never shown. It was right to withdraw that shape. What it chose instead — establishing the
+identifier by re-reading the store from the echoed cursor — is now withdrawn in turn, because it
+made row
+identity a function of what the table holds *now* rather than of what the page showed, which is a
+time-of-check to time-of-use gap that the direction-aware read narrowed but could not remove.
+
+**The legacy fact.** `app/cbl/COTRN00C.cbl` lines 150-181 pair each of the ten selector positions
+with
+the transaction identifier displayed beside it, reading that identifier back out of the map's input
+group; the catch-all at lines 180-181 blanks both. The identifier is the program's own displayed
+value
+returning to it.
+
+**What is delivered.** `TransactionListPageTokenService` seals a ten-slot map under scheme `CT00P1`
+through the same field-bound encryption path, published and echoed alongside the cursor. **All ten
+slots
+are described, empty ones included**, and that is required rather than tidy: the two paging
+paragraphs
+fill in opposite directions — forward fills upward from slot one, and the reverse fill at line 349
+seeds
+its index with ten and decrements — so a short backward page occupies the *high* slots and a map
+that
+omitted empties could not distinguish "slot three was blank" from "slot three was not recorded".
+
+**No store read is issued on the selection path at all.** This is the substantive change against
+`DL-299`, and it also retires that entry's cost claim: it described "one bounded read of at most ten
+rows" on a marking turn, and there is now no such read. A marked slot resolves from the snapshot or
+it
+resolves to nothing.
+
+**A slot that resolves to nothing takes the legacy outcome.** A mark with no snapshot, with a
+snapshot
+sealed for another field or scheme, with a tampered envelope, or on a slot the fill never reached,
+all
+blank the selection — which is exactly the catch-all at lines 180-181 — so no new message text is
+introduced. Both rejected alternatives are argued at `identifierDisplayedInSlot`.
+
+*Embodied in:* `service/TransactionListPageTokenService.java`, `service/TransactionListService.java`,
+`api/dto/TransactionListRequest.java`, `api/dto/TransactionListResponse.java`,
+`api/TransactionController.java`.
+
+---
+
+### DL-327 — A caller that may not read the regulated account fields may not write them either: all eight positions are restored from the locked stored image *(extends DL-135 to the write side)*
+
+**This extends `DL-135` rather than replacing it.** That entry records the *read* side: the regulated
+components of the two account screens are masked by default and revealed only under a named purpose and
+an authorization. It did not state what happens when a caller who received masks submits the form back,
+and the delivered code got that wrong in a way the code's own prose admitted while the published
+interface description denied it.
+
+**The defect.** The restore step replaced a submitted value only when it was an exact run of the mask
+character at the stored value's own width. Any other value — including a real one a withheld caller
+typed over the mask — survived into comparison, edit and write. The published operation description said
+such a caller could not change these fields. It could.
+
+**A false citation is part of what is recorded here.** The code claimed the divergence was "recorded in
+`docs/decision-log.md`", and **no entry recorded it**. That is the failure mode this log's own reading
+note names: a comment may cite an entry, it may not approve a divergence on its own authority. This entry
+exists so the citation resolves to something.
+
+**What is delivered.** For a caller whose submission is marked as having received withheld values, all
+eight regulated positions are restored unconditionally from the image read under lock inside the edit
+driver — the three national-identifier components, the three birth-date components, the
+government-issued identifier and the electronic-funds account identifier — before comparison, edits,
+write and redisplay, so no stage sees either a stand-in or a typed-over value.
+
+**Why the disclosed component is restored too.** The last national-identifier component is the one place
+a withheld caller does see real digits, because the mask discloses it. It is still restored, because the
+identifier is one regulated value rather than three: leaving its final component writable would let a
+withheld caller rewrite part of a value it cannot read whole.
+
+**Why refusal was rejected.** Refusing the submission would have been the other candidate, and it would
+require inventing a message. The legacy screen withheld nothing, so no operator could ever be in this
+position and `CSMSG01Y` has no text for it. Under §0.3.4 the message set is frozen, so the observable
+outcome for a withheld caller who types over a mask is the source's own no-change message — the same
+answer the screen gives when nothing was altered, which is now literally true of the submission.
+
+**The residual, which is a deliberate narrowing.** A withheld caller can no longer edit these eight
+fields at all, not even to a legitimate new value. That is narrower than the legacy screen, which let
+every operator edit everything. It is licensed on exactly the same footing as the mask itself: if the
+authority to read the value is a precondition for the mask, it is a precondition for replacing it.
+
+*Embodied in:* `service/AccountUpdateService.java`, `api/AccountUpdateContractAdapter.java`,
+`api/AccountController.java`.
+
+---
+
+### DL-328 — The invented magnitude rejection on the account-update monetary fields is withdrawn; the receiving field truncates as the source's does
+
+**What was withdrawn, and it had no entry licensing it.** The signed-decimal edit refused a well-formed
+numeric lexeme whose integer part exceeded ten digits, and the monetary conversion returned nothing for
+the same input. The code described this as a "documented divergence" — but no entry in this log documented
+it, and searching for the reasoning it invoked finds it nowhere. It was self-licensed at the call site,
+which this log's reading note does not permit, and it rejected input the legacy system accepts.
+
+**The source.** `app/cbl/COACTUPC.cbl` lines 1073-1112 compute each received monetary value with
+`FUNCTION NUMVAL-C` into the `PIC S9(10)V99` redefinitions declared at lines 762-771. There is **no
+`ON SIZE ERROR` phrase** on any of those statements and the edit paragraph has exactly two arms — blank
+and not-numeric. An over-long magnitude is therefore not an error condition in the source at all: the
+store into the receiving field simply keeps the low-order ten integer digits, which is standard COBOL
+receiving-field behaviour without `ON SIZE ERROR`.
+
+**What is delivered.** The rejection arm is deleted. Magnitude is handled where every other monetary
+store in the module handles it, `ZonedDecimalCodec.storeIntoMonetary` — low-order ten integer digits,
+scale two, truncating toward zero per `DL-013`. The two source arms remain the only two.
+
+**Why this direction rather than the safer-looking one.** Rejecting is the more defensive behaviour and
+that is exactly why it needed a licence it did not have. Refusing a value the legacy accepts is a
+behavioural regression under §0.8.1 no less than accepting one it refuses; the tie-break rule at the head
+of this log resolves it toward the source.
+
+*Embodied in:* `service/AccountUpdateService.java`, `util/ZonedDecimalCodec.java`.
+
+---
+
+### DL-329 — The account-update operation publishes no conflict status, because every conflict arm on that screen is a two-hundred screen message
+
+**The inaccuracy.** The published contract advertised a `409` on the account-update operation and the
+route-contract test asserted advertised statuses equal reachable ones — so the test agreed with the
+document rather than with the code. No path in the account-update service returns that status: the
+optimistic-lock arm is caught and rendered as a screen message on a `200`, because that is what the
+source does. `app/cbl/COACTUPC.cbl` detects a changed record by comparing before and after images and
+answers with text on the same screen; its single `SYNCPOINT ROLLBACK` at line 4100 precedes that message
+rather than a transport failure.
+
+**What is delivered.** The operation is described by the secured-screen status set — `400`, `401`, `403`,
+`500` — and its `409` annotation is removed. Bill payment and card update keep theirs, and that
+asymmetry is correct rather than an oversight: both genuinely propagate the conflict to the transport,
+and their tests reach it.
+
+**Why an over-advertised status is a defect and not harmless generosity.** A client generated from the
+contract writes a handler for a status the server cannot send, and the handler is never exercised. Under
+§0.9.5 the interface contract must be verified by a test that exercises the real contract; an
+unreachable arm cannot be.
+
+*Embodied in:* `api/AccountController.java`, `config/OpenApiRouteContractTest.java`.
+
+---
+
+### DL-330 — The two region identifiers the sign-on screen displays are configuration, and one of the two defaults is this module's own value rather than a recovered one
+
+**The source.** `app/cbl/COSGN00C.cbl` lines 198-204 issue `EXEC CICS ASSIGN` for `APPLID` and `SYSID`
+and move both into `APPLIDO` and `SYSIDO`, which `app/cpy-bms/COSGN00.CPY` declares as `PIC X(8)`. Both
+appear on the delivered screen. `SignOnResponse` declares both at width eight and the adapter passed
+`null` for each, so two fields the screen fills were always empty.
+
+**What is delivered.** Two settings, `carddemo.region.application-id` and `carddemo.region.system-id`,
+each bounded to eight characters, each defaulted so no deployment is obliged to supply them, and each
+publishing absence when configured blank. Neither is a secret, so neither joins the production
+no-fallback set.
+
+**The provenance of the two defaults is deliberately unequal, and saying so is the point of this entry.**
+`CARDDEMO` is the estate's own value: it is the `GROUP` every resource in `app/csd/CARDDEMO.CSD` is
+defined into, and the middle qualifier of every dataset name in the `AWS.M2.CARDDEMO` series.
+`AWSMFRAM` is **not** recovered from anywhere — the estate names no CICS region at all. There is no
+system initialisation table, no operator command and no job that states one, because `ASSIGN` reads the
+value from the running region rather than from source. It is openly this module's own default, chosen to
+fill the field at the declared width, and a deployment that cares about the value must set it.
+
+*Embodied in:* `api/SignOnContractAdapter.java`, `resources/application.yml`.
+
+---
+
+### DL-331 — Trailing whitespace is gated on the committed tree of the trees this module authors, and the legacy estate is outside the gate by design
+
+**Why a gate rather than a fix.** One trailing space had reached a test source. Removing it closes that
+instance; it does not stop the next one, and the reason the first one survived review is that nothing was
+asking. This is a mechanical property, so it is checked mechanically.
+
+**Three spellings were tried and rejected, each for a measured reason.**
+
+- **`git diff --check` with no arguments** reads the *working tree against the index*. On a CI checkout
+  those are identical, so it reports nothing and passes unconditionally. It is vacuous, and it passes
+  loudest when there is nothing to compare.
+- **A base-relative diff** — comparing against the pull request's base commit — needs history the default
+  fetch does not retrieve, and reads only the lines a change touched, so a defect already committed stays
+  invisible for as long as nobody edits that line.
+- **An unscoped whole-tree diff** reports **32,898** trailing-whitespace lines, essentially all of them in
+  the legacy estate: 13,056 in `app/cbl`, 1,444 in `app/jcl`, 476 in `app/cpy`, 450 in `app/data`, 297 in
+  `samples/proc`, 237 in `app/bms`, 221 in `app/cpy-bms`, 139 in `samples/jcl`, 100 in `app/proc`, 30 in
+  the estate `README.md` and 1 in `app/ctl`. Those bytes are the parity baseline and must not change, so a
+  gate that reports them can never pass.
+
+**What is delivered.** The gate diffs the **empty tree against `HEAD`** — which reads every committed
+line rather than only changed ones — with a pathspec of `carddemo-java`, `docs` and `.github`. It is the
+workflow's first step, so a whitespace defect fails before anything expensive runs.
+
+**The residual is the pathspec.** The legacy estate and the estate `README.md` are outside the gate
+deliberately and permanently, because their trailing whitespace is content. Fixed-width test fixtures are
+inside the pathspec but exempt through `carddemo-java/.gitattributes`, which declares
+`src/test/resources/fixtures/** -text -whitespace`, because there the trailing spaces are record padding
+that byte-parity assertions depend on.
+
+*Embodied in:* `.github/workflows/carddemo-java-ci.yml`, `carddemo-java/.gitattributes`.
+
+---
+
+### DL-332 — A schema-constraint assertion states the exact definitions it permits, rather than forbidding a few spellings it can imagine
+
+**The defect.** The check that the daily-transaction landing table carries no *content* rule tested for
+three forbidden spellings — a regular-expression operator, an `IN (` list, and a quoted literal. A rule
+can restrict content without using any of them, so the assertion could pass over the defect it existed to
+catch.
+
+**The counterexample is real and was run.** A check constraint `dalytran_amt >= 0` renders in
+PostgreSQL 16 as `CHECK ((dalytran_amt >= (0)::numeric))`. It contains no regular-expression operator, no
+`IN (` and no quoted literal, so the former assertion admitted it — while at `INSERT` time it would
+refuse the negative amounts the 430-byte reject dataset exists to report.
+
+**What is delivered.** The five permitted definitions are stated exactly, as normalised
+`pg_get_constraintdef` text, and compared with `containsExactly`, so any sixth constraint fails whatever
+it says. Two of the five are derived rather than transcribed: the width checks from the column and the
+width, and the single-byte-text conjunction by walking the record layout in field order and skipping the
+one numeric column — so a column added to the layout but omitted from the constraint fails too.
+
+**Why the whitelist is safe to pin.** These strings are the database's own rendering, not the migration's
+text, so they would drift if the server's formatting changed. That is acceptable because the assertion
+runs against a container-provisioned server of the declared version, and a formatting change is exactly
+the kind of thing a reader of this assertion should be told about.
+
+*Embodied in:* `repository/DailyTransactionRepositoryIT.java`.
+
+---
+
+### DL-333 — The reference seed carries all fifty authoritative national identifiers, sealed; the earlier decision to omit them is reversed because its premise did not survive checking
+
+**This reverses a decision this log and the seed both argued for.** The reference seed left `cust_ssn`
+null in all fifty rows and its own verification block *required* fifty nulls. The reasoning was that a
+value of that kind should not be carried in a checked-in artifact in any form, because every envelope in
+the seed is sealed under the one non-production fixture key and that key is itself committed as a profile
+default — so anything sealed under it is recoverable by anyone holding the repository.
+
+**The premise is true. The conclusion does not follow.** Those exact nine bytes are already committed in
+this repository in cleartext, twice: at `app/data/ASCII/custdata.txt`, the read-only parity baseline that
+must stay byte-identical, and at `carddemo-java/src/test/resources/fixtures/input/custdata.txt`, which
+this module committed itself. Anyone holding the repository already holds all fifty values without a key
+at all. Omitting them from the seed therefore protected nothing.
+
+**What the omission did cost is the only thing it could.** No delivered row exercised a stored national
+identifier, so the account view's reveal-and-mask path was proven against an *absent* column. Absence was
+being verified as though it were parity — and the seed's own check, by demanding fifty nulls, had turned a
+deliberate omission into an asserted contract that prevented the fix rather than a defect.
+
+**What is delivered.** Fifty envelopes over the fixture's nine bytes at offset 279, produced by the same
+service, bound to this column, under the same key as the government-issued identifier. Each measures 81
+characters against the sibling's 101; the difference is only the sealed payload length, this column's name
+being shorter and its value nine characters rather than twenty. The fifty-null check is replaced by the
+same four the sibling column gets — sealed, width, distinctness, and no cleartext — and the reveal tests
+now compare against the fixture record rather than against the column under test, because opening the
+stored envelope to build the expectation would compare the adapter with itself.
+
+**The column stays nullable.** The legacy record permits a customer with no identifier on file, and the
+reveal path must carry that absence through as absence. What changes is that the *reserved-key* fixtures
+are now what exercise the null-aware write, read and compare-and-set paths, since the seeded rows no
+longer reach them.
+
+**The dynamic proof is unchanged and is no longer the only proof.** `CustomerSsnEncryptionIT` still
+persists a value through the application encryption path under its own key and on its own disjoint key
+range, so nothing that test established is lost; it simply is no longer the sole evidence that a stored
+national identifier can be written and read.
+
+**This deviates from the literal remedy that was proposed, and the reason is recorded rather than
+skipped.** The proposal was to load the values under a test-only, non-committed key or by dynamic setup.
+Three things make that the weaker answer here. Main code cannot read `src/test/resources`, so a fixture
+key living there is unavailable to the migration that needs it. A test-tier-only load would leave the
+*delivered* local database with the column still absent, which is the surface the finding actually names.
+And a second key for one column would break the seed's single-key invariant and the after-migrate
+callback's check that every stored value opens under the configured key — the check that `DL-103` exists
+to hold.
+
+**One incidental consequence, named so it is not mistaken for a regression.** The after-migrate callback
+verifies both protected columns per row and fails on the first value that will not open, checking the
+national identifier first. With that column null the check was a no-op, so a wrong-key refusal used to
+name the government-issued column; it now names the national one. The behaviour is identical and only the
+named column moved.
+
+*Embodied in:* `resources/db/migration/seed/V3__seed_reference_data.sql`,
+`service/SeededIdentifierSealingCallback.java`, `resources/application-local.yml`,
+`resources/application-test.yml`.
 
 ---
 

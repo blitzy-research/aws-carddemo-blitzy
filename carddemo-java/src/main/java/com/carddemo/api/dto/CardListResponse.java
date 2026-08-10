@@ -258,6 +258,14 @@ import java.util.List;
  *     May be {@code null}.
  * @param navigationContext the echoed navigation state - request state travelling back to the
  *     client, not a server-side session. May be {@code null}.
+ * @param rowSnapshotToken the authenticated snapshot of the identities displayed in this page's rows,
+ *     published so the client can echo it with a marked selection. It is this contract's substitute for
+ *     the private 196-character row table of {@code app/cbl/COCRDLIC.cbl} lines 250 to 260, which the
+ *     legacy program returns behind the shared area at lines 604 to 619 and reads the marked row out of
+ *     at lines 531 to 534 and 559 to 562. The value is <strong>opaque</strong>: it is sealed under the
+ *     module's field protection and discloses neither an account number nor a card number, so publishing
+ *     it adds no disclosure to a response that already renders both in its rows. {@code null} when the
+ *     page carries no row, because there is then nothing to mark.
  */
 public record CardListResponse(
         @Size(max = CardListResponse.TRANSACTION_NAME_LENGTH) String transactionName,
@@ -279,7 +287,8 @@ public record CardListResponse(
         List<ErrorResponse.FieldError> fieldErrors,
         @Size(max = CardListResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
-        NavigationContext navigationContext) {
+        NavigationContext navigationContext,
+        String rowSnapshotToken) {
 
     /**
      * Canonical constructor. Replaces each list with an immutable copy and leaves every other
@@ -549,6 +558,9 @@ public record CardListResponse(
      * an account identifier. A single stringified response would therefore have emitted up to seven
      * card numbers, seven account identifiers, both filters and both browse keys at once.</p>
      *
+     * <p>The row snapshot is withheld as well, even though it is already opaque: a diagnostic has no use
+     * for the ciphertext, and printing it would put a replayable value in a log.</p>
+     *
      * <p>The row list and the paging component are each withheld <em>whole</em> rather than rendered
      * through their own representations. For the paging component that is necessary, because its own
      * rendering does not withhold its browse keys and this type must not become the path by which they
@@ -602,6 +614,7 @@ public record CardListResponse(
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext
+                + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 }

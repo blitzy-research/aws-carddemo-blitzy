@@ -45,7 +45,7 @@ import com.carddemo.service.DailyTransactionReadService;
 import com.carddemo.service.DateValidationService;
 import com.carddemo.service.InterestCalculationService;
 import com.carddemo.service.InterestGroupTransactionBoundary;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.StatementDataAccessService;
 import com.carddemo.service.StatementGenerationService;
@@ -3312,7 +3312,7 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
             BatchLaunchCoordinator.class,
             BatchStagingArea.class, StagedGenerationStore.class,
             AdvisoryGenerationPublicationLock.class, FixedWidthFlatFileReaderFactory.class,
-            TransactionPostingService.class, PostingRecordTransactionBoundary.class,
+            TransactionPostingService.class, PostingStageTransactionBoundary.class,
             InterestCalculationService.class, InterestGroupTransactionBoundary.class,
             TransactionReportService.class, StatementGenerationService.class,
             StatementDataAccessService.class, DailyTransactionReadService.class,

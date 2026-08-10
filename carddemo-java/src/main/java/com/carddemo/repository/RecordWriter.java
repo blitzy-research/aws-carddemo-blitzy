@@ -69,10 +69,14 @@ import org.springframework.transaction.annotation.Transactional;
  * <h2>The two propagations, and why the choice is not stylistic</h2>
  *
  * <p>{@link #insert(Object)}, {@link #insertAll(Collection)} and {@link #flush()} require the caller's
- * unit of work and join it. That is right for the batch tier: a legacy batch program abends on a failed
- * write and the step is re-run from its last commit point, so a record's writes must succeed or fail
- * together with the record's own boundary. Committing a posted transaction independently of the chunk that
- * produced it would post it twice on the next restart.
+ * unit of work and join it, and refuse to run without one. That is right for the batch tier, where the
+ * caller is the translated program and the unit is the one it opened for the store it is performing: the
+ * write and the status test that reads its outcome then belong to the same boundary, which is what the
+ * legacy verb and its {@code INVALID KEY} arm did. Requiring rather than opening is the load-bearing half -
+ * a store that quietly ran outside a boundary would have no observable status at all - and it deliberately
+ * leaves the <em>scope</em> of the boundary to the program, because the scope is a parity decision the
+ * program's own source settles and this class cannot see. The posting member settles it as one unit per
+ * store, because its three files are unrecoverable and unjournalled and it holds no rollback site.
  *
  * <p>{@link #insertIndependently(Object)} opens its own unit of work. That is right for the online tier,
  * and for a reason the resource definitions state rather than a convenience: every application file in

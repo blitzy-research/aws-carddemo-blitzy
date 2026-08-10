@@ -141,6 +141,12 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
     /** Width of the government-issued identifier within the record. */
     private static final int IDENTIFIER_WIDTH = 20;
 
+    /** Zero-based offset of the national identifier within the record. */
+    private static final int NATIONAL_IDENTIFIER_OFFSET = 279;
+
+    /** Width of the national identifier within the record. */
+    private static final int NATIONAL_IDENTIFIER_WIDTH = 9;
+
     /**
      * The binding name every value in this column is sealed under, and the one this test opens with.
      *
@@ -158,6 +164,20 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
      */
     private static final int BOUND_PAYLOAD_WIDTH =
             IDENTIFIER_FIELD.length() + 1 + IDENTIFIER_WIDTH;
+
+    /**
+     * The binding name the national identifier column is sealed under.
+     *
+     * <p>A separate binding from its sibling's, and that is the point: an envelope written for one
+     * protected column must not open as the other's, which is what makes the two columns independent
+     * rather than interchangeable.
+     */
+    private static final String NATIONAL_IDENTIFIER_FIELD =
+            SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD;
+
+    /** Width of the payload a column-bound seal of one national identifier produces. */
+    private static final int NATIONAL_BOUND_PAYLOAD_WIDTH =
+            NATIONAL_IDENTIFIER_FIELD.length() + 1 + NATIONAL_IDENTIFIER_WIDTH;
 
     /** Number of customer rows {@code V3__seed_reference_data.sql} loads. */
     private static final int SEEDED_CUSTOMERS = 50;
@@ -219,8 +239,8 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
      *
      * @param ordinal the one-based position, taken from the numeric primary key so it indexes the
      *                fixture directly
-     * @param columns the eighteen mapped column values, in schema order; {@code cust_ssn} is
-     *                {@code null} by design
+     * @param columns the eighteen mapped column values, in schema order; both protected columns
+     *                hold an {@code ENC1} envelope rather than cleartext
      */
     private record SeededCustomer(int ordinal, List<String> columns) {
 
@@ -250,6 +270,15 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
          */
         String storedIdentifier() {
             return column(IDENTIFIER_COLUMN);
+        }
+
+        /**
+         * Returns the sealed national identifier as the database holds it.
+         *
+         * @return the {@code ENC1} envelope, or {@code null} if a row carries none
+         */
+        String storedNationalIdentifier() {
+            return column(SSN_COLUMN);
         }
 
         /**
@@ -354,6 +383,16 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
      */
     private static String fixtureIdentifier(final SeededCustomer row) {
         return FIXTURE.field(row.ordinal(), IDENTIFIER_OFFSET, IDENTIFIER_WIDTH);
+    }
+
+    /**
+     * Returns the national identifier the legacy record holds for one seeded row.
+     *
+     * @param row the seeded row
+     * @return the nine characters at the national-identifier offset of that record
+     */
+    private static String fixtureNationalIdentifier(final SeededCustomer row) {
+        return FIXTURE.field(row.ordinal(), NATIONAL_IDENTIFIER_OFFSET, NATIONAL_IDENTIFIER_WIDTH);
     }
 
     @Nested
@@ -467,13 +506,47 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("leaves the national identifier deliberately absent")
-        void theNationalIdentifierIsStillNotSeeded() throws SQLException {
+        @DisplayName("seals the national identifier too, in every row, at the length its own bound "
+                + "payload predicts")
+        void theNationalIdentifierIsSeededSealedAndDistinct() throws SQLException {
+            // THIS TEST ASSERTED THE OPPOSITE, and the reasoning it carried was that sealing the
+            // value "under a committed fixture key would make it recoverable from the repository".
+            // The premise is true; the conclusion never followed. The same nine bytes are already
+            // committed in cleartext at app/data/ASCII/custdata.txt - the read-only parity baseline -
+            // and again at src/test/resources/fixtures/input/custdata.txt, which this module committed
+            // itself and which THIS TEST READS to build its expectation. Anyone holding the repository
+            // holds the values without a key, so absence protected nothing; what it did cost is that
+            // no seeded row exercised a stored national identifier at all.
             assertThat(countSeededWhere("cust_ssn IS NULL"))
-                    .describedAs("V1 makes cust_ssn the one nullable column precisely so the seed can"
-                            + " decline to carry it; sealing it under a committed fixture key would"
-                            + " make it recoverable from the repository")
+                    .describedAs("no seeded row may leave the column empty now that the seed carries a"
+                            + " value for every one of them")
+                    .isZero();
+            assertThat(countSeededWhere("cust_ssn LIKE 'ENC1:%'"))
+                    .describedAs("every row must hold an envelope, never the cleartext the fixture"
+                            + " record holds at offset %d", NATIONAL_IDENTIFIER_OFFSET)
                     .isEqualTo(SEEDED_CUSTOMERS);
+            assertThat(countSeededWhere("cust_ssn ~ '^[0-9]{1,9}$'"))
+                    .describedAs("a bare run of digits in this column is the defect the envelope exists"
+                            + " to prevent")
+                    .isZero();
+
+            final int predicted = SensitiveFieldCodec.envelopeLengthFor(NATIONAL_BOUND_PAYLOAD_WIDTH);
+            final List<String> sealed = new ArrayList<>(SEEDED_CUSTOMERS);
+            for (final SeededCustomer row : SEEDED) {
+                // The LENGTH is asserted, never the envelope, for the reason the sibling test states.
+                assertThat(row.storedNationalIdentifier().length())
+                        .describedAs("customer %s: a different length means the literal was altered,"
+                                + " truncated by a wrapped line, or sealed over the wrong payload."
+                                + " Stored %s", row.custId(),
+                                SensitiveValues.describe(row.storedNationalIdentifier()))
+                        .isEqualTo(predicted);
+                sealed.add(row.storedNationalIdentifier());
+            }
+            assertThat(SensitiveValues.fingerprints(sealed))
+                    .describedAs("a repeated envelope would give two customers the same national"
+                            + " identifier")
+                    .hasSize(SEEDED_CUSTOMERS)
+                    .doesNotHaveDuplicates();
         }
     }
 
@@ -498,6 +571,38 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
                                 SensitiveValues.describe(expected))
                         .isEqualTo(SensitiveValues.fingerprint(expected));
             }
+        }
+
+        @Test
+        @DisplayName("returns, for every row, the nine characters the fixture record holds as the "
+                + "national identifier")
+        void everyStoredNationalIdentifierOpensToItsFixtureValue() {
+            for (final SeededCustomer row : SEEDED) {
+                final String expected = fixtureNationalIdentifier(row);
+                final String revealed =
+                        SERVICE.reveal(NATIONAL_IDENTIFIER_FIELD, row.storedNationalIdentifier());
+                // Fingerprints, for the reason the sibling test states: a failing isEqualTo on the
+                // cleartext would print the recovered national identifier and the fixture value both.
+                assertThat(SensitiveValues.fingerprint(revealed))
+                        .describedAs("customer %s must open to %s[%d] offset %d width %d; opened to %s,"
+                                + " fixture holds %s", row.custId(), FIXTURE_FILE, row.ordinal(),
+                                NATIONAL_IDENTIFIER_OFFSET, NATIONAL_IDENTIFIER_WIDTH,
+                                SensitiveValues.describe(revealed),
+                                SensitiveValues.describe(expected))
+                        .isEqualTo(SensitiveValues.fingerprint(expected));
+            }
+        }
+
+        @Test
+        @DisplayName("refuses to open a national identifier under the sibling column's binding")
+        void openingTheNationalIdentifierUnderTheSiblingBindingIsRefused() {
+            final String stored = SEEDED.getFirst().storedNationalIdentifier();
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("the two protected columns are independent, and an envelope written for one"
+                            + " must not read as the other's")
+                    .isThrownBy(() -> SERVICE.reveal(IDENTIFIER_FIELD, stored))
+                    .withMessageContaining("field binding");
         }
 
         @Test

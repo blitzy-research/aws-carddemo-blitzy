@@ -3817,22 +3817,9 @@
           "legendFormat": "turn {{outcome}} / {{period}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "carddemo-prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (reason) (rate(carddemo_online_reportrequest_retrytoken_refused_total{job=\"$job\"}[5m]))",
-          "format": "time_series",
-          "instant": false,
-          "legendFormat": "refused token {{reason}}",
-          "range": true,
-          "refId": "B"
         }
       ],
-      "title": "Report-request turns by outcome and period, and refused retry tokens",
+      "title": "Report-request turns by outcome and period",
       "type": "timeseries"
     },
     {

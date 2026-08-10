@@ -160,21 +160,26 @@ import java.util.List;
  * card-list screen's indicator is a differently named item of width 3, and the two are deliberately
  * not unified.</p>
  *
- * <p><strong>The ten identifiers the previous page displayed are not a component of this contract,
- * and no component may be added to carry them.</strong> The legacy program does read them back, from
- * the ten row-value items of the map it had just sent, and pairs each with the selector beside it to
- * learn which transaction the operator marked. Reproducing that literally over HTTP would make the
- * identity of the selected transaction a value the submitter states rather than one the server
- * established: a submission could mark row three and name any sixteen-character identifier as the
- * one supposedly displayed there, and the hand-off to the transaction-view screen would carry it.
- * A 3270 map echo travels back from a device the region itself painted; a request body does not.
- * The identifier is therefore re-established server-side from the browse cursor this contract does
- * carry - the page the cursor names is re-read and the marked slot's identifier is taken from that
- * read - which is behaviourally identical for a submission that echoes honestly and is the only
- * behaviour available to one that does not. The re-read belongs to {@code TransactionListService}, so
- * this record holds no identifier list, no slot-to-identifier pairing and no continuation state of
- * any kind; decision log entry DL-299 records the divergence and why it is a labelled improvement on
- * the legacy posture rather than a change of behaviour.</p>
+ * <p><strong>The ten identifiers the previous page displayed travel sealed, and no component may
+ * carry them in the clear.</strong> The legacy program does read them back, from the ten row-value
+ * items of the map it had just sent, and pairs each with the selector beside it to learn which
+ * transaction the operator marked. Reproducing that literally over HTTP would make the identity of
+ * the selected transaction a value the submitter states rather than one the server established: a
+ * submission could mark row three and name any sixteen-character identifier as the one supposedly
+ * displayed there, and the hand-off to the transaction-view screen would carry it. A 3270 map echo
+ * travels back from a device the region itself painted; a request body does not.
+ *
+ * <p>So the identifiers travel as {@link #rowSnapshotToken()}: one authenticated, encrypted token
+ * that the response published over the slot-to-identifier map of the page it sent, echoed back
+ * unchanged. A caller can neither read what is inside it nor mint one, so the identity of the marked
+ * row is still established by the server - while remaining, as in the legacy, the identity that was
+ * <em>on the page the operator marked</em> rather than whatever occupies that position by the time the
+ * submission arrives. An earlier arrangement re-derived the page from the browse cursor and took the
+ * marked slot from that second read; it trusted the caller no more than this does, but it answered the
+ * other question, and between the two turns an insert, a delete or a posted transaction moves every
+ * later row by one. The token is write-only on this contract - a client echoes what it was given and
+ * never composes one - and this record still holds no identifier list and no slot-to-identifier
+ * pairing in the clear.</p>
  *
  * <p><strong>Backward paging inverts the fill order, and this record does not participate.</strong>
  * The backward paragraph begins at line 333, seeds the row index to the last row at line 349, and
@@ -307,6 +312,15 @@ import java.util.List;
  *     row-count value is declared in this record either, and page availability is something the browse
  *     discovers rather than something a client asserts. Validated transitively for the same reason as
  *     the navigation state.
+ * @param rowSnapshotToken the sealed slot-to-identifier map of the page the previous response sent,
+ *     echoed unchanged, or {@code null} on a submission that continues no page. It is what the ten
+ *     selection clauses read out of the screen map at {@code app/cbl/COTRN00C.cbl} lines 150 to 178,
+ *     carried in a form a caller can neither read nor forge, and it is consulted only on a turn that
+ *     marks a row. Write-only: it is bound inbound and never serialised back on this contract, because
+ *     the response publishes its own. No length bound is declared, because the value is a ciphertext
+ *     envelope whose size is the encryption's business rather than a screen item width; a token this
+ *     server did not mint fails to open and the marked row then selects nothing, which is the outcome a
+ *     blank echoed identifier reaches at lines 180 to 181.
  */
 public record TransactionListRequest(
         @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH) String transactionIdFilter,
@@ -316,7 +330,8 @@ public record TransactionListRequest(
                 List<@Size(max = TransactionListRequest.ROW_SELECTOR_LENGTH) String> rowSelectors,
         KeyAction keyAction,
         @Valid NavigationContext navigationContext,
-        @Valid PageMetadata.PageCursorRequest pageMetadata) {
+        @Valid PageMetadata.PageCursorRequest pageMetadata,
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String rowSnapshotToken) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -481,8 +496,8 @@ public record TransactionListRequest(
      * value; {@code equals} and {@code hashCode} are left exactly as the record contract generates
      * them, comparing every component by value, because an in-memory comparison emits nothing.
      *
-     * @return the request layout with the filter and the paging component replaced by a fixed
-     *     placeholder
+     * @return the request layout with the filter, the paging component and the sealed page snapshot
+     *     replaced by a fixed placeholder
      */
     @Override
     public String toString() {
@@ -493,6 +508,7 @@ public record TransactionListRequest(
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + navigationContext
                 + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 }

@@ -33,6 +33,7 @@ import org.springframework.core.io.ClassPathResource;
 import com.carddemo.domain.Customer;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SeededRecordFixture;
 import com.carddemo.util.SensitiveFieldCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -114,6 +115,29 @@ final class SeededAccountViewRevealIT extends AbstractPostgresIT {
     /** Width of the birth date in the legacy record, which the screen splits into three positions. */
     private static final int BIRTH_DATE_WIDTH = 10;
 
+    /** The legacy dataset the seeded national identifiers were taken from. */
+    private static final String FIXTURE_FILE = "custdata.txt";
+
+    /** Width of one legacy customer record. */
+    private static final int RECORD_WIDTH = 500;
+
+    /** Zero-based offset of the national identifier within the legacy record. */
+    private static final int NATIONAL_IDENTIFIER_OFFSET = 279;
+
+    /** Width of the national identifier within the legacy record. */
+    private static final int NATIONAL_IDENTIFIER_WIDTH = 9;
+
+    /**
+     * The legacy records the seeded national identifiers must publish back as.
+     *
+     * <p>Read from the fixture rather than from the column this test is checking. Opening the stored
+     * envelope to build the expectation would compare the adapter with itself and pass whatever it
+     * did; the fixture is the authority the seed was built from, so it is the only expectation that
+     * can fail when the adapter is wrong.
+     */
+    private static final SeededRecordFixture FIXTURE =
+            SeededRecordFixture.load(FIXTURE_FILE, RECORD_WIDTH);
+
     /** Every column the entity maps, in the order its constructor takes them. */
     private static final String SELECT_CUSTOMERS = """
             SELECT cust_id, first_name, middle_name, last_name, addr_line_1, addr_line_2,
@@ -184,9 +208,10 @@ final class SeededAccountViewRevealIT extends AbstractPostgresIT {
                     .containsOnlyDigits()
                     .doesNotStartWith(SensitiveFieldCodec.ENVELOPE_PREFIX);
             assertThat(published.ssn())
-                    .as("customer %s carries no seeded national identifier, and an absent value must "
-                            + "traverse the gate as absent rather than as a failure", row.getFirst())
-                    .isNull();
+                    .as("customer %s must publish the national identifier the fixture record holds, "
+                            + "formatted as COACTVWC L495-L503 formats it - three digits, a hyphen, "
+                            + "two digits, a hyphen, four digits", row.getFirst())
+                    .isEqualTo(ADAPTER.composedSsn(fixtureNationalIdentifier(row.getFirst())));
             assertThat(published.dateOfBirth())
                     .as("customer %s must publish its birth date unchanged", row.getFirst())
                     .isEqualTo(row.get(BIRTH_DATE_COLUMN))
@@ -216,9 +241,24 @@ final class SeededAccountViewRevealIT extends AbstractPostgresIT {
                     .isEqualTo(AccountProtectedDataAdapter.MASK_CHARACTER
                             .repeat(BIRTH_DATE_WIDTH));
             assertThat(withheld.ssn())
-                    .as("customer %s carries none, so there is nothing to mask", row.getFirst())
-                    .isNull();
+                    .as("customer %s must have the two leading groups withheld and the retained four "
+                            + "digits disclosed, which is the one position of this identifier the "
+                            + "screen shows a caller that may not read it", row.getFirst())
+                    .isEqualTo("***-**-" + fixtureNationalIdentifier(row.getFirst())
+                            .substring(AccountProtectedDataAdapter.SSN_PART_1_WIDTH
+                                    + AccountProtectedDataAdapter.SSN_PART_2_WIDTH));
         }
+    }
+
+    /**
+     * Returns the national identifier the legacy record holds for one seeded customer.
+     *
+     * @param custId the nine-character customer key, whose numeric value indexes the fixture directly
+     * @return the nine characters at the national-identifier offset of that record
+     */
+    private static String fixtureNationalIdentifier(final String custId) {
+        return FIXTURE.field(Integer.parseInt(custId), NATIONAL_IDENTIFIER_OFFSET,
+                NATIONAL_IDENTIFIER_WIDTH);
     }
 
     /**
@@ -237,8 +277,10 @@ final class SeededAccountViewRevealIT extends AbstractPostgresIT {
                 for (int index = 1; index <= MAPPED_COLUMNS; index++) {
                     columns.add(result.getString(index));
                 }
-                // Collections.unmodifiableList rather than List.copyOf: cust_ssn is null in every
-                // seeded row by design, and the copy factory refuses a null element.
+                // Collections.unmodifiableList rather than List.copyOf: the national identifier is
+                // the schema's one nullable column, so this reader has to carry whatever the database
+                // holds, and the copy factory refuses a null element. The delivered seed now fills
+                // that column in all fifty rows, but the reader must not depend on it doing so.
                 rows.add(Collections.unmodifiableList(columns));
             }
         }

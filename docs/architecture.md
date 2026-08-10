@@ -232,7 +232,7 @@ packages that were never in scope for the rename, so neither is a migration leak
 
 | Where | What | Why it is not a `jakarta.*` violation |
 | --- | --- | --- |
-| production, `util/SensitiveFieldCodec` | **nine** fully-qualified uses of `javax.crypto` — no import line, so the grep above stays silent | `javax.crypto` is the JDK's own cryptography API. It has no `jakarta` counterpart and never will |
+| production, `util/SensitiveFieldCodec` | **ten** fully-qualified uses of `javax.crypto` — no import line, so the grep above stays silent | `javax.crypto` is the JDK's own cryptography API. It has no `jakarta` counterpart and never will |
 | test tree | `javax.sql.DataSource` (7 imports) and four `javax.xml` imports — `XMLConstants`, `DocumentBuilder`, `DocumentBuilderFactory`, `ParserConfigurationException` | Both are JDK packages. The XML ones parse the build file and the suppression file in the contract tests; the datasource one is the JDK interface every pool implements |
 
 Every import is explicit, with **no wildcard imports at all** in either tree, so an auditor can establish
@@ -268,21 +268,22 @@ are of the source files actually present in the module.
 | `domain.id` | 3 | The three composite primary keys | the three multi-field cluster keys |
 | `domain.enums` | 9 | Typed state: account and card status, user type, transaction source, key action, file status, reject reason, date format, report period | the 508 level-88 condition names |
 | `repository` | 18 | 11 entity-facing Spring Data interfaces, plus 4 batch scan projections and the insert and write seams | the 10 VSAM base clusters plus the daily-transaction sequential input |
-| `service` | 64 | 37 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 11 focused support services — and 27 further files holding their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
+| `service` | 65 | 38 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 12 focused support services — and 27 further files holding their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
 | `batch` | 13 | 9 job configurations, the shared parameter contract, the launch coordinator, staging and completion notification | the 9 application job steps |
 | `batch.step` | 11 | The step template, the item processors, the reject writer, the reader factory and the publication locks | the batch programs' read-process-write skeletons |
-| `util` | 37 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters | the record layouts, the string verbs, the function-key copybook |
+| `util` | 36 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters | the record layouts, the string verbs, the function-key copybook |
 | `exception` | 6 | Abend, file status, record-not-found, validation, optimistic-lock conflict, job submission | the abend paths and the file-status error branches |
 
 The `service` row is the one whose two figures are easiest to confuse, so both are stated and both are
 countable. The **26** translation-bearing services are the ones a paragraph maps to, and every row of
 [`traceability-matrix.md`](traceability-matrix.md) that names a service names one of them. The other
-**11** carry no COBOL paragraph and exist because a translated service needed a collaborator it should
+**12** carry no COBOL paragraph and exist because a translated service needed a collaborator it should
 not itself be: `AccountConcurrencyTokenService` and `CardConcurrencyTokenService`,
-`FieldErrorTranslationService`,
-`SignOnStateService`, `UserListPageTokenService`, `ReportRetryTokenService`, `CredentialDigestService`,
-`SensitiveFieldEncryptionService`, `BatchJobLaunchService`, `BatchStagingService` and
-`JobCompletionNotificationService`. The first two are described under
+`FieldErrorTranslationService`, `SignOnStateService`, `UserListPageTokenService`,
+`CardListPageTokenService`, `TransactionListPageTokenService`, `CredentialDigestService`,
+`SensitiveFieldEncryptionService`,
+`BatchJobLaunchService`, `BatchStagingService` and `JobCompletionNotificationService`.
+The first two are described under
 [Optimistic locking](#optimistic-locking-in-two-mechanisms-because-the-legacy-check-spans-two-windows).
 `BatchStagingService` is named here because the file is present, and one thing about it has to be said
 plainly rather than left for a reader to discover: **no configuration reaches it**. The durable staging
@@ -290,13 +291,13 @@ contract moved to `batch.BatchStagingArea` and `batch.step.StagedGenerationStore
 job configurations inject, and the correction notes on decision-log entries DL-146 and DL-147 record that
 move and the observation gap it left behind. The class is retained rather than removed because removing it
 would also decide DL-147's traced-boundary question, which belongs to a human.
-26 + 11 = 37, which is every concrete `*Service.java` in the
+26 + 12 = 38, which is every concrete `*Service.java` in the
 package; the balance of the 64 files are the service-owned records, enums and interfaces those classes
 exchange, and they are not services. Counted directly:
 
 ```bash
-ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 37
-ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 64
+ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 38
+ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 65
 ```
 
 Every figure in the table above and in this paragraph is now **asserted against the directory it describes**

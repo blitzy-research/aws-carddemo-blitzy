@@ -273,6 +273,17 @@ import java.util.List;
  *        half of the passed area sliced at lines 327 to 331. Validated transitively, so the widths it
  *        declares are actually evaluated. {@code null} on a first entry. It redacts its own
  *        identifying values when stringified.
+ * @param rowSnapshotToken the authenticated, server-minted snapshot of the identities displayed in the
+ *        seven screen rows, echoed exactly as the previous card-list response returned it. It stands in
+ *        for the private row table the legacy program carries across the pseudo-conversation - the
+ *        196-character seven-row table of {@code app/cbl/COCRDLIC.cbl} lines 250 to 260, returned behind
+ *        the shared area at lines 604 to 619 - which is what lets the two selection transfers at lines
+ *        531 to 534 and 559 to 562 hand the next screen the marked row's account number and card number
+ *        without reading the file again. <strong>Echo it whenever a selection is marked.</strong> A
+ *        marked row cannot be resolved without it and the turn then reports 'INVALID ACTION CODE' and
+ *        re-presents the page. It is read for nothing else: paging, filtering and the exit key never
+ *        consult it. The value is opaque - it discloses no account number and no card number - and it is
+ *        write-only on this contract, so it is never echoed back inside a request rendering.
  */
 @Schema(description = "Card-list request for legacy transaction CCLI. THE TWO FILTERS ARE READ ONLY ON "
         + "A RETURNING TURN. The legacy screen receives no map on a fresh entry and therefore reads none "
@@ -323,7 +334,17 @@ public record CardListRequest(
                 + "response to have a filter applied. Absent or naming another screen, this turn is a "
                 + "fresh entry, any filter supplied is carried back without being applied or "
                 + "validated, and the first page is answered unfiltered.")
-        @Valid NavigationContext navigationContext) {
+        @Valid NavigationContext navigationContext,
+        @Schema(description = "Opaque server-minted snapshot of the identities displayed in the seven "
+                + "screen rows, echoed from the previous card-list response. REQUIRED WHENEVER A "
+                + "SELECTION IS MARKED: the legacy program keeps its seven displayed rows in its own "
+                + "communication area and reads the marked row out of it, so a marked row that arrives "
+                + "without this snapshot cannot be resolved and the turn answers 'INVALID ACTION CODE' "
+                + "and re-presents the page. Read for nothing else - paging, filtering and the exit key "
+                + "never consult it. Carries no account number and no card number in legible form.",
+                accessMode = Schema.AccessMode.WRITE_ONLY)
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        String rowSnapshotToken) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -440,7 +461,9 @@ public record CardListRequest(
      * codes and the attention key are screen-interaction state that identifies nobody: they are the
      * part of a card-list submission worth seeing in a diagnostic, and withholding them would remove
      * the only useful content without protecting anything. The navigation context is printed by
-     * delegation because it withholds its own identifying values.
+     * delegation because it withholds its own identifying values. The row snapshot is withheld even
+     * though it is already opaque: it seals up to seven account-and-card pairs, a diagnostic has no use
+     * for the ciphertext, and printing it would put a replayable credential-shaped value in a log.
      *
      * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its
      * component exactly as supplied; no value is masked, truncated or transformed anywhere in this
@@ -469,6 +492,7 @@ public record CardListRequest(
                 + ", lastPageAlreadyShown=" + lastPageAlreadyShown
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + navigationContext
+                + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 }

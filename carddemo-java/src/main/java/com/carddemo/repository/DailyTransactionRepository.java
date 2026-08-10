@@ -26,10 +26,18 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * raw, deliberately unvalidated daily input the posting pipeline consumes, mapped from the 350-byte
  * record of {@code app/cpy/CVTRA06Y.cpy}.
  *
- * <p>Nothing is declared here: the batch reader walks the table through the inherited sorted and
- * paged operations and the keyed read is inherited too. Validation, the five reject reason codes
- * and the 430-byte reject record all belong to the batch tier, so this interface neither filters
- * nor judges a row - a record the legacy job would have rejected must still load unchanged.
+ * <p><strong>One declared finder, and the inherited page is not the one that is used.</strong> The
+ * keyed read and the rewrite are inherited, but the sequential walk is not: both readers of this
+ * table - {@code TransactionPostingService} and {@code DailyTransactionReadService} - advance through
+ * the keyset cursor declared below, passing the last key they saw as an exclusive lower bound, and
+ * neither takes an offset page. That is the difference between a cursor and a page rather than a
+ * preference: an offset page recomputes its starting position on every chunk, so a row inserted or
+ * removed ahead of the cursor between chunks shifts every later row and can present one twice or not
+ * at all, whereas a key bound names where to resume and cannot drift.
+ *
+ * <p>Validation, the five reject reason codes and the 430-byte reject record all belong to the batch
+ * tier, so this interface neither filters nor judges a row - a record the legacy job would have
+ * rejected must still load unchanged.
  *
  * @see DailyTransaction
  */

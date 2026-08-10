@@ -441,6 +441,38 @@ final class BuildAndCiContractTest {
     }
 
     @Test
+    @DisplayName("the whitespace gate reads the whole committed tree of the paths this migration authors")
+    void theWhitespaceGateReadsTheCommittedTreeRatherThanAnEmptyDiff() throws IOException {
+        // A trailing space was committed inside an assertion in this very file's neighbour and reached a
+        // reviewer, who found it with `git diff --check` against an explicit base. This asserts the
+        // MECHANICS of the gate that now catches it, not merely that some step mentions the command,
+        // because the obvious spelling of that command is the one spelling that cannot work here:
+        //
+        //   bare `git diff --check`  compares the working tree with the index. A CI checkout has no
+        //                           difference between the two, so it passes unconditionally.
+        //   against a branch point  needs history this checkout does not fetch, and reads only the
+        //                           lines one change touched - the defect was already committed, so a
+        //                           change-scoped check would have reported this tree clean.
+        //
+        // Diffing the empty tree against HEAD is what makes every line in scope an added line, so the
+        // diagnostic reads the whole committed tree. The empty-tree object is obtained by hashing an
+        // empty tree rather than by pasting its well-known hash, so the command carries no magic
+        // constant a reader has to take on trust.
+        final String executable = executableLinesOf(read(WORKFLOW_PATH));
+
+        assertThat(executable)
+                .as("the gate must diff the empty tree against HEAD over the authored paths")
+                .contains("git diff --check \"$(git hash-object -t tree /dev/null)\" HEAD --")
+                .as("and it must be scoped to those paths, never to the read-only legacy estate")
+                .contains("carddemo-java docs .github");
+        assertThat(executable)
+                .as("app/ and samples/ are the parity baseline and must stay byte-identical, so no "
+                        + "whitespace pathspec may name them")
+                .doesNotContain("git diff --check \"$(git hash-object -t tree /dev/null)\" HEAD -- app")
+                .doesNotContain("HEAD -- . ");
+    }
+
+    @Test
     @DisplayName("the documented package count is derived from the production source tree")
     void readmePackageCountMatchesTheSourceTree() throws IOException {
         final long subpackageCount;
@@ -1027,13 +1059,17 @@ final class BuildAndCiContractTest {
     }
 
     @Test
-    @DisplayName("one gate inventory: the header, the six banners and the summary all agree")
+    @DisplayName("one gate inventory: the header, the seven banners and the summary all agree")
     void theGateInventoryIsStatedOnceAndAgreesEverywhere() throws IOException {
         // The file carried three disagreeing counts - a header saying five, two banners saying "of 4",
         // three saying "of 5", and a summary listing six - so a reviewer signing the gates off could not
-        // tell which was authoritative. Six is the count. The undercount existed because the last gate
-        // was the only step with no banner at all, so anyone counting banners counted one short.
-        // Decision log DL-186.
+        // tell which was authoritative. The undercount existed because the last gate was the only step
+        // with no banner at all, so anyone counting banners counted one short. Decision log DL-186.
+        //
+        // Seven is the count now: the whitespace gate was added after that reconciliation, and this test
+        // is what forces it to be added to all three places at once rather than to whichever one the
+        // author happened to be editing. The total is asserted rather than derived on purpose - deriving
+        // it from the banners would let a missing banner redefine the expected count and pass.
         final String workflow = read(WORKFLOW_PATH);
         final List<String> banners = new ArrayList<>();
         for (final String line : workflow.split("\n")) {
@@ -1043,24 +1079,26 @@ final class BuildAndCiContractTest {
         }
 
         assertThat(banners)
-                .as("every gate step announces itself, and there are six of them")
-                .hasSize(6);
-        for (int gate = 1; gate <= 6; gate++) {
-            final String expected = "gate " + gate + " of 6";
+                .as("every gate step announces itself, and there are seven of them")
+                .hasSize(7);
+        for (int gate = 1; gate <= 7; gate++) {
+            final String expected = "gate " + gate + " of 7";
             assertThat(banners)
-                    .as("banner %s must be present and must state the total as six", expected)
+                    .as("banner %s must be present and must state the total as seven", expected)
                     .anySatisfy(banner -> assertThat(banner).contains(expected));
         }
         assertThat(workflow)
                 .as("no banner may still state a stale total")
                 .doesNotContain(" of 4:")
                 .doesNotContain(" of 5:")
+                .doesNotContain(" of 6:")
                 .as("the header must state the same count as the banners")
-                .contains("SIX linear gates");
+                .contains("SEVEN linear gates");
 
         // The summary is the third place the inventory is named, and every name in it must be a name a
         // banner uses, so the two lists cannot describe different sets of gates.
         final List<String> summaryNames = List.of(
+                "repository whitespace hygiene",
                 "build, test, coverage and supply chain",
                 "locale-hostile re-execution",
                 "bootstrap contract",
@@ -1071,7 +1109,7 @@ final class BuildAndCiContractTest {
             final String name = summaryNames.get(gate - 1);
             assertThat(workflow)
                     .as("the summary must report gate %s under the name the banner uses", gate)
-                    .contains("echo 'gate " + gate + " of 6  " + name);
+                    .contains("echo 'gate " + gate + " of 7  " + name);
             assertThat(banners.get(gate - 1))
                     .as("and banner %s must carry that same name", gate)
                     .contains(name.equals("container, Compose and monitoring deployability")

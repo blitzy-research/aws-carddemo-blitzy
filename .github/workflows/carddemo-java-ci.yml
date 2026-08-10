@@ -20,27 +20,37 @@
 # itself back into the module with defaults.run.working-directory.
 #
 # WHAT THIS RUN PROVES
-# SIX linear gates, every one of which ends the run where it is not satisfied - directly, by failing
+# SEVEN linear gates, every one of which ends the run where it is not satisfied - directly, by failing
 # its own step, with nothing recording a failure and carrying on.
 #
-# There is one inventory of those six and it is the list below. It is written out because this file
+# There is one inventory of those gates and it is the list below. It is written out because this file
 # previously carried three disagreeing counts - a header that said five, two step banners that said
 # "of 4", three that said "of 5", and a summary that listed six - and a reviewer signing the gates off
-# could not tell which was authoritative. Six is the count, the summary was the accurate one, and the
-# reason the header undercounted is that the last gate was the only one with no banner at all.
+# could not tell which was authoritative. The summary was the accurate one then, and the reason the
+# header undercounted is that the last gate was the only one with no banner at all.
+#
+# Seven is the count now. Six was the count when that disagreement was reconciled; the whitespace gate
+# below was added afterwards, and it was added to this list, to its own banner and to the summary in
+# one change, because adding it to fewer than all three is the defect DL-186 exists to prevent.
 #
 # Three properties are carried by ONE gate, the Maven build gate, because they are bound to its verify
 # phase rather than invoked separately. Each remaining property is a gate of its own:
 #
-#   gate 1  zero-warning build, coverage floor and supply chain (all three bound to verify)
-#   gate 2  locale hardening
-#   gate 3  bootstrap contract
-#   gate 4  reproducibility
-#   gate 5  jar deployability
-#   gate 6  container, Compose and monitoring deployability
+#   gate 1  repository whitespace hygiene
+#   gate 2  zero-warning build, coverage floor and supply chain (all three bound to verify)
+#   gate 3  locale hardening
+#   gate 4  bootstrap contract
+#   gate 5  reproducibility
+#   gate 6  jar deployability
+#   gate 7  container, Compose and monitoring deployability
 #
 # Decision log DL-186 records why this list is written out rather than left implied.
 #
+#   whitespace hygiene : the whole committed tree of the paths this migration authors is read by
+#                        git's own whitespace diagnostic, so a trailing space cannot reach a
+#                        reviewer again. Nothing in the Maven build can see such a defect: javac
+#                        does not read trailing whitespace and the suite asserts behaviour, not
+#                        layout, which is why this is a gate rather than a lint preference.
 #   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
 #                        25, so any warning ends the run instead of accumulating in a report.
 #   coverage floor     : the coverage plugin applies a check rule over the merged unit plus
@@ -253,6 +263,44 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # ---- gate 1 of 7: repository whitespace hygiene -----------------------------------------
+      # WHY THIS GATE EXISTS. A trailing space was committed inside a test assertion and reached a
+      # reviewer, who found it by running `git diff --check` against an explicit base. Nothing in
+      # the build could have found it first: javac does not read trailing whitespace, and the suite
+      # asserts behaviour rather than layout. This is the check that would have, so it runs first -
+      # it needs only the checkout, and failing here costs seconds instead of the container work.
+      #
+      # WHY THE EMPTY TREE IS THE BASE. `git diff --check` with no revision compares the working
+      # tree with the index, and on a fresh checkout that difference is empty by construction, so
+      # the bare command would pass unconditionally and prove nothing. Diffing against a branch
+      # point instead would need history this checkout does not fetch, and would read only the
+      # lines one change touched - the defect above was already committed, so a change-scoped
+      # check would have called this tree clean. Diffing the empty tree against HEAD presents
+      # every line in the scoped paths as an added line, so the diagnostic reads the whole
+      # committed tree, deterministically, with no dependence on fetch depth or on which commit
+      # the base happens to be.
+      #
+      # WHY THE PATHS ARE SCOPED. The legacy estate under app/ and samples/ carries roughly 32,900
+      # such lines and must stay byte-identical: it is the parity baseline this migration is
+      # verified against, and reformatting it would invalidate the traceability matrix. The estate
+      # README is upstream CRLF text with trailing spaces of its own. This gate therefore reads
+      # exactly the trees this migration authors and no others. Inside them, .gitattributes
+      # already exempts the fixed-width fixtures, whose records are space-padded to a declared
+      # width - that padding is content, and reporting it would bury real defects under thousands
+      # of false ones.
+      #
+      # WHY IT OVERRIDES THE DEFAULT DIRECTORY. Every other run: step is scoped into the module.
+      # This one is the exception because the pathspec it passes is repository-relative and the
+      # repository, not the module, is what it reads.
+      #
+      # --check exits non-zero when it reports anything, so no comparison is needed here: a finding
+      # fails this step, and this step masks nothing.
+      - name: Repository whitespace gate
+        working-directory: ${{ github.workspace }}
+        run: |
+          git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- \
+            carddemo-java docs .github
+
       - name: Set up Eclipse Temurin JDK 25.0.3+9
         uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
         with:
@@ -366,7 +414,7 @@ jobs:
               "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
           } >> "${GITHUB_ENV}"
 
-      # ---- gate 1 of 6: build, test, coverage and supply chain --------------------------------
+      # ---- gate 2 of 7: build, test, coverage and supply chain --------------------------------
       # The command reaches verify with no gate-disabling property. The two identity properties do
       # not change what runs: they make the generated build-info and archive timestamps derive from
       # the checked-out commit rather than the wall clock. Coverage and full-scope dependency-check
@@ -389,7 +437,7 @@ jobs:
             -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
             clean verify
 
-      # ---- gate 2 of 6: locale-hostile re-execution -----------------------------------------
+      # ---- gate 3 of 7: locale-hostile re-execution -----------------------------------------
       # The module pins -Duser.language=en -Duser.country=US in test.jvm.args so that a test's
       # result never depends on the machine running it. That pinning is correct, and it has one
       # cost: it makes the suite structurally unable to observe a locale defect. The module emits
@@ -466,7 +514,7 @@ jobs:
       # Nothing about the gate's strictness is decided in this file: the score that fails the build
       # and the report formats are all declared in the module build.
 
-      # ---- gate 3 of 6: bootstrap contract --------------------------------------------------
+      # ---- gate 4 of 7: bootstrap contract --------------------------------------------------
       # The module's local AWS surface is provisioned by a single emulator initializer,
       # localstack/init/01-create-aws-resources.sh. Nothing in the Maven build reads that file, so
       # every other gate here can pass while it is broken - and it is the one file the
@@ -965,7 +1013,7 @@ jobs:
           fi
           exit "${status}"
 
-      # ---- gate 4 of 6: reproducibility ------------------------------------------------------
+      # ---- gate 5 of 7: reproducibility ------------------------------------------------------
       # Save the verified jar, rebuild from a clean target with the same revision and source epoch,
       # and compare bytes. The reports from the verified run have already been uploaded above, so the
       # clean cannot erase evidence - and that sentence is only true because the gate-evidence bundle
@@ -994,7 +1042,7 @@ jobs:
           sha256sum "${rebuilt_jar}"
           echo 'The clean rebuild is byte-identical to the verified artifact.'
 
-      # ---- gate 5 of 6: jar deployability ---------------------------------------------------
+      # ---- gate 6 of 7: jar deployability ---------------------------------------------------
       # A repackaged jar names a start class in its manifest, and nothing earlier in this workflow
       # proves that the class is present in the artifact or that the context it starts can reach a
       # started state. Both are proven here, before the upload, so that the only artifact this
@@ -1154,7 +1202,7 @@ jobs:
           test "${started}" -eq 1
           echo "The artifact starts and reports live on the group the container image probes."
 
-      # ---- gate 6 of 6: container, Compose and monitoring deployability ----------------------
+      # ---- gate 7 of 7: container, Compose and monitoring deployability ----------------------
       # This banner is not decoration. Its absence is the reason the header of this file said five
       # gates while the summary at the bottom listed six: every other gate announced itself and this
       # one did not, so a reader counting banners counted one short of the steps that can fail.
@@ -1425,16 +1473,17 @@ jobs:
       # a failed gate stops the job before it.
       #
       # A gate added above needs no change here.
-      # The six lines below are the same six gates, in the same order and under the same names, as the
-      # inventory in this file's header and the "gate N of 6" banner on each step. Three places name
-      # them and all three must agree; they did not, and that is what this list is now checked against
-      # by BuildAndCiContractTest.
+      # The seven lines below are the same seven gates, in the same order and under the same names, as
+      # the inventory in this file's header and the "gate N of 7" banner on each step. Three places
+      # name them and all three must agree; they did not, and that is what this list is now checked
+      # against by BuildAndCiContractTest.
       - name: Gate summary
         run: |
-          echo 'gate 1 of 6  build, test, coverage and supply chain          : passed'
-          echo 'gate 2 of 6  locale-hostile re-execution                     : passed'
-          echo 'gate 3 of 6  bootstrap contract                              : passed'
-          echo 'gate 4 of 6  reproducibility                                 : passed'
-          echo 'gate 5 of 6  jar deployability                               : passed'
-          echo 'gate 6 of 6  container, Compose and monitoring deployability : passed'
+          echo 'gate 1 of 7  repository whitespace hygiene                   : passed'
+          echo 'gate 2 of 7  build, test, coverage and supply chain          : passed'
+          echo 'gate 3 of 7  locale-hostile re-execution                     : passed'
+          echo 'gate 4 of 7  bootstrap contract                              : passed'
+          echo 'gate 5 of 7  reproducibility                                 : passed'
+          echo 'gate 6 of 7  jar deployability                               : passed'
+          echo 'gate 7 of 7  container, Compose and monitoring deployability : passed'
           echo 'Every gate passed.'

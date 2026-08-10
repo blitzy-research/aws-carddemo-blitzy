@@ -24,6 +24,7 @@ import java.time.ZoneOffset;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -348,6 +349,23 @@ final class CardListServiceTest {
     /** {@code CCDA-TITLE02} at its full {@code PIC X(40)} width. */
     private static final String ORACLE_TITLE02 = " ".repeat(14) + "CardDemo" + " ".repeat(18);
 
+    /**
+     * The genuine row-snapshot service, over a key that exists only inside this class.
+     *
+     * <p>A stub would be the wrong choice twice over. The snapshot's whole contribution is that a marked
+     * position resolves to the identity that stood in it, so a stub that answered anything would be
+     * asserting the test's own arrangement rather than the service's behaviour; and the refusal arm exists
+     * precisely for a token this server did not mint, which only a real seal can produce.
+     *
+     * <p>The key material is a plain sentence about what it is, so it cannot be mistaken for a credential
+     * and matches no provider's key format. No deployed key, and no default a deployment could inherit,
+     * appears here: the production profile resolves its key from the environment with no fallback.
+     */
+    private static final CardListPageTokenService PAGE_TOKEN_SERVICE =
+            new CardListPageTokenService(new SensitiveFieldEncryptionService(
+                    Base64.getEncoder().encodeToString(
+                            "carddemo-card-page-token-key-001".getBytes(StandardCharsets.UTF_8))));
+
     // ==============================================================================================
     // The composed file-error message, assembled here from this test's own fragments and widths so
     // that it is an independent oracle rather than an echo of the class under test. The eight declared
@@ -514,7 +532,8 @@ final class CardListServiceTest {
                 .thenAnswer(CardListServiceTest::routeForNomination);
 
         this.service = new CardListService(this.cardRepository, this.messageCatalogService,
-                this.navigationService, this.abendService, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
+                this.navigationService, this.abendService, PAGE_TOKEN_SERVICE,
+                Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
 
         this.serviceLogger = (Logger) LoggerFactory.getLogger(CardListService.class);
         this.originalLevel = this.serviceLogger.getLevel();
@@ -758,7 +777,7 @@ final class CardListServiceTest {
      */
     private static CardListService.CardListScreenInput firstEntry(final String rawKey) {
         return new CardListService.CardListScreenInput(rawKey, workArea(null, null), null, null, 1,
-                false, false, null);
+                false, false, null, null);
     }
 
     /**
@@ -771,7 +790,39 @@ final class CardListServiceTest {
     private static CardListService.CardListScreenInput reSubmit(final String rawKey,
             final List<String> selections) {
         return new CardListService.CardListScreenInput(rawKey, workArea(null, null), selections, null, 1,
-                false, false, reSubmission());
+                false, false, null, reSubmission());
+    }
+
+    /**
+     * A re-submission of this screen carrying selections and the sealed row snapshot a previous turn
+     * published.
+     *
+     * @param  rawKey           the raw attention-key identifier
+     * @param  selections       the transmitted selection fields
+     * @param  rowSnapshotToken the sealed snapshot to echo, or {@code null} to echo none
+     * @return the turn
+     */
+    private static CardListService.CardListScreenInput reSubmitMarking(final String rawKey,
+            final List<String> selections, final String rowSnapshotToken) {
+        return new CardListService.CardListScreenInput(rawKey, workArea(null, null), selections, null, 1,
+                false, false, rowSnapshotToken, reSubmission());
+    }
+
+    /**
+     * A sealed snapshot over the identities a page of {@link #clusterOf(int)} displays.
+     *
+     * <p>Minted through the genuine service, so it is a token this server would have published rather than
+     * a value the test asserts about itself.
+     *
+     * @param  rowCount how many rows the previous page displayed
+     * @return the sealed snapshot
+     */
+    private static String snapshotOfCluster(final int rowCount) {
+        final List<CardListPageTokenService.DisplayedCard> displayed = new ArrayList<>(rowCount);
+        for (int ordinal = 1; ordinal <= rowCount; ordinal++) {
+            displayed.add(new CardListPageTokenService.DisplayedCard(ACCOUNT_A, cardNumber(ordinal)));
+        }
+        return PAGE_TOKEN_SERVICE.mint(displayed);
     }
 
     /**
@@ -785,7 +836,7 @@ final class CardListServiceTest {
     private static CardListService.CardListScreenInput reSubmitFiltered(final String rawKey,
             final String accountFilter, final String cardFilter) {
         return new CardListService.CardListScreenInput(rawKey, workArea(accountFilter, cardFilter), null,
-                null, 1, false, false, reSubmission());
+                null, 1, false, false, null, reSubmission());
     }
 
     /**
@@ -801,7 +852,7 @@ final class CardListServiceTest {
         return new CardListService.CardListScreenInput(rawKey, workArea(null, null), null,
                 new BrowseWindow.CursorRequest(resumeAtKey, resumeAtKey,
                         BrowseWindow.PagingDirection.BACKWARD),
-                pageNumber, false, false, reSubmission());
+                pageNumber, false, false, null, reSubmission());
     }
 
     /**
@@ -949,21 +1000,29 @@ final class CardListServiceTest {
         }
 
         @Test
-        @DisplayName("every one of the five collaborators is mandatory, so a missing one fails at wiring "
+        @DisplayName("every one of the six collaborators is mandatory, so a missing one fails at wiring "
                 + "time rather than on the first turn")
         void everyCollaboratorIsMandatory() {
             final Clock headerClock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new CardListService(
-                    null, messageCatalogService, navigationService, abendService, headerClock));
+                    null, messageCatalogService, navigationService, abendService, PAGE_TOKEN_SERVICE,
+                    headerClock));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new CardListService(
-                    cardRepository, null, navigationService, abendService, headerClock));
+                    cardRepository, null, navigationService, abendService, PAGE_TOKEN_SERVICE,
+                    headerClock));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new CardListService(
-                    cardRepository, messageCatalogService, null, abendService, headerClock));
+                    cardRepository, messageCatalogService, null, abendService, PAGE_TOKEN_SERVICE,
+                    headerClock));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new CardListService(
-                    cardRepository, messageCatalogService, navigationService, null, headerClock));
+                    cardRepository, messageCatalogService, navigationService, null, PAGE_TOKEN_SERVICE,
+                    headerClock));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new CardListService(
-                    cardRepository, messageCatalogService, navigationService, abendService, null));
+                    cardRepository, messageCatalogService, navigationService, abendService, null,
+                    headerClock));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new CardListService(
+                    cardRepository, messageCatalogService, navigationService, abendService,
+                    PAGE_TOKEN_SERVICE, null));
         }
 
         @Test
@@ -1511,7 +1570,7 @@ final class CardListServiceTest {
         void aFilterErrorSuppressesTheSlotEdit() {
             final CardListService.CardListScreenInput input =
                     new CardListService.CardListScreenInput("DFHENTER", workArea("4111", null),
-                            selectionsAt(SELECT_VIEW, 2, 6), null, 1, false, false, reSubmission());
+                            selectionsAt(SELECT_VIEW, 2, 6), null, 1, false, false, null, reSubmission());
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -1535,7 +1594,7 @@ final class CardListServiceTest {
 
             final CardListService.CardListScreenInput input =
                     new CardListService.CardListScreenInput("DFHENTER", workArea("4111", null), null,
-                            null, 1, false, false, null);
+                            null, 1, false, false, null, null);
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -1681,31 +1740,154 @@ final class CardListServiceTest {
         }
 
         @Test
-        @DisplayName("ONE view selection is accepted and hands control to the card detail screen, and no "
-                + "row is read on the way because the transfer happens before the browse")
+        @DisplayName("ONE view selection is accepted, hands control to the card detail screen AND HANDS "
+                + "IT THE MARKED ROW'S ACCOUNT AND CARD, and no row is read on the way because the "
+                + "transfer happens before the browse")
         void oneViewSelectionIsAcceptedAndTransfers() {
             final CardListService.CardListResult result = service.processCardList(
-                    reSubmit("DFHENTER", selectionAt(2, SELECT_VIEW)));
+                    reSubmitMarking("DFHENTER", selectionAt(2, SELECT_VIEW),
+                            snapshotOfCluster(PAGE_SIZE)));
 
             assertThat(result.errorFlag()).isFalse();
             assertThat(result.errorMessage()).isNotEqualTo(ORACLE_MORE_THAN_ONE_ACTION);
             assertThat(result.selectedRowIndex()).isEqualTo(2);
             assertThat(result.navigationContext().toProgram()).isEqualTo(CARD_DETAIL_PROGRAM);
             assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_DETAIL);
+            assertThat(result.navigationContext().accountId())
+                    .as("lines 531 to 532 move the marked row's account number into the shared area, so "
+                            + "the destination screen has a record to open")
+                    .isEqualTo(ACCOUNT_A);
+            assertThat(result.navigationContext().cardNumber())
+                    .as("lines 533 to 534 move the marked row's card number with it")
+                    .isEqualTo(cardNumber(2));
             verifyNoInteractionsWithTheCluster();
         }
 
         @Test
         @DisplayName("ONE update selection hands control to the card update screen instead, which is the "
-                + "second of the two transfer arms")
+                + "second of the two transfer arms, and it carries the same two identifiers")
         void oneUpdateSelectionTransfersToTheUpdateScreen() {
             final CardListService.CardListResult result = service.processCardList(
-                    reSubmit("DFHENTER", selectionAt(3, SELECT_UPDATE)));
+                    reSubmitMarking("DFHENTER", selectionAt(3, SELECT_UPDATE),
+                            snapshotOfCluster(PAGE_SIZE)));
 
             assertThat(result.errorFlag()).isFalse();
             assertThat(result.selectedRowIndex()).isEqualTo(3);
             assertThat(result.navigationContext().toProgram()).isEqualTo(CARD_UPDATE_PROGRAM);
             assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_UPDATE);
+            assertThat(result.navigationContext().accountId()).isEqualTo(ACCOUNT_A);
+            assertThat(result.navigationContext().cardNumber())
+                    .as("the UPDATE screen is the one that matters most here: it opens the record this "
+                            + "identifier names")
+                    .isEqualTo(cardNumber(3));
+        }
+
+        @Test
+        @DisplayName("THE MARKED ROW RESOLVES FROM THE SNAPSHOT AND NOT FROM THE STORE: a snapshot whose "
+                + "second row holds a card the cluster no longer has still hands that card on, which is "
+                + "what makes the marker name the row the operator saw")
+        void theMarkedRowResolvesFromTheSnapshotRatherThanTheStore() {
+            final String displacedCard = "4111111111119999";
+            final String snapshot = PAGE_TOKEN_SERVICE.mint(List.of(
+                    new CardListPageTokenService.DisplayedCard(ACCOUNT_A, cardNumber(1)),
+                    new CardListPageTokenService.DisplayedCard(ACCOUNT_A, displacedCard),
+                    new CardListPageTokenService.DisplayedCard(ACCOUNT_A, cardNumber(3))));
+
+            final CardListService.CardListResult result = service.processCardList(
+                    reSubmitMarking("DFHENTER", selectionAt(2, SELECT_VIEW), snapshot));
+
+            assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_DETAIL);
+            assertThat(result.navigationContext().cardNumber())
+                    .as("a re-read of the page would have answered %s, which is the row standing in "
+                            + "position two now rather than the row that stood there when the operator "
+                            + "marked it", cardNumber(2))
+                    .isEqualTo(displacedCard);
+            verifyNoInteractionsWithTheCluster();
+        }
+
+        @Test
+        @DisplayName("A MARKED ROW WITH NO SNAPSHOT IS REFUSED rather than followed with a blank "
+                + "identity: the page is re-presented, the slot is flagged and control stays here")
+        void aMarkedRowWithNoSnapshotIsRefused() {
+            final List<Card> cluster = clusterOf(PAGE_SIZE);
+            stubPositioningRead(cluster);
+            stubAscendingChunks(cluster);
+
+            final CardListService.CardListResult result = service.processCardList(
+                    reSubmitMarking("DFHENTER", selectionAt(2, SELECT_VIEW), null));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.errorMessage())
+                    .as("the source's own wording for a marked action it cannot act upon; no message the "
+                            + "legacy screen never displayed is introduced")
+                    .isEqualTo(ORACLE_INVALID_ACTION_CODE);
+            assertThat(result.selectionErrorAt(2)).isTrue();
+            assertThat(result.route())
+                    .as("control stays on this screen, so the operator can mark again against rows this "
+                            + "server has just published")
+                    .isEqualTo(NavigationService.Route.CARD_LIST);
+            assertThat(result.navigationContext().toProgram()).isEqualTo(THIS_PROGRAM);
+            assertThat(result.navigationContext().cardNumber())
+                    .as("nothing is handed on, because nothing was resolved")
+                    .isNullOrEmpty();
+        }
+
+        @Test
+        @DisplayName("a snapshot this server did not mint is refused on the same arm, so a forged or "
+                + "replayed value cannot nominate a row")
+        void aForeignSnapshotIsRefused() {
+            final List<Card> cluster = clusterOf(PAGE_SIZE);
+            stubPositioningRead(cluster);
+            stubAscendingChunks(cluster);
+
+            final CardListService.CardListResult result = service.processCardList(
+                    reSubmitMarking("DFHENTER", selectionAt(2, SELECT_VIEW), "not-a-sealed-snapshot"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.errorMessage()).isEqualTo(ORACLE_INVALID_ACTION_CODE);
+            assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_LIST);
+            assertThat(result.navigationContext().cardNumber()).isNullOrEmpty();
+        }
+
+        @Test
+        @DisplayName("a slot marked beyond the rows the snapshot describes is refused too, which is the "
+                + "short-page case: a marker on an empty screen row names no record")
+        void aSlotBeyondTheSnapshotIsRefused() {
+            final List<Card> cluster = clusterOf(PAGE_SIZE);
+            stubPositioningRead(cluster);
+            stubAscendingChunks(cluster);
+
+            final CardListService.CardListResult result = service.processCardList(
+                    reSubmitMarking("DFHENTER", selectionAt(5, SELECT_VIEW), snapshotOfCluster(3)));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.errorMessage()).isEqualTo(ORACLE_INVALID_ACTION_CODE);
+            assertThat(result.selectionErrorAt(5)).isTrue();
+            assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_LIST);
+        }
+
+        @Test
+        @DisplayName("every page that displays a row publishes a snapshot resolving to exactly the "
+                + "identities it displayed, and an empty page publishes none")
+        void aDisplayedPagePublishesASnapshotOfWhatItDisplayed() {
+            final List<Card> cluster = clusterOf(PAGE_SIZE);
+            stubPositioningRead(cluster);
+            stubAscendingChunks(cluster);
+
+            final CardListService.CardListResult page = service.processCardList(firstEntry("DFHENTER"));
+
+            assertThat(page.rows()).hasSize(PAGE_SIZE);
+            assertThat(page.rowSnapshotToken()).isNotBlank();
+            for (final CardListService.CardListRow row : page.rows()) {
+                assertThat(PAGE_TOKEN_SERVICE.resolve(page.rowSnapshotToken(), row.screenSlot()))
+                        .as("screen slot %d", row.screenSlot())
+                        .contains(new CardListPageTokenService.DisplayedCard(
+                                row.accountId(), row.cardNumber()));
+            }
+            assertThat(page.rowSnapshotToken())
+                    .as("the snapshot is sealed, so neither identifier is legible in it")
+                    .doesNotContain(ACCOUNT_A)
+                    .doesNotContain(cardNumber(1));
         }
 
         @Test
@@ -1776,7 +1958,8 @@ final class CardListServiceTest {
             final CardListService.CardListResult firstTurn = service.processCardList(
                     reSubmit("DFHENTER", selectionsAt(SELECT_VIEW, 1, 5)));
             final CardListService.CardListResult secondTurn = service.processCardList(
-                    reSubmit("DFHENTER", selectionAt(3, SELECT_VIEW)));
+                    reSubmitMarking("DFHENTER", selectionAt(3, SELECT_VIEW),
+                            snapshotOfCluster(PAGE_SIZE)));
             final CardListService.CardListResult thirdTurn = service.processCardList(
                     reSubmit("DFHENTER", selectionsAt(SELECT_UPDATE, 4, 7)));
 
@@ -1975,7 +2158,7 @@ final class CardListServiceTest {
                     new CardListService.CardListScreenInput("DFHPF8", workArea(null, null), null,
                             new BrowseWindow.CursorRequest(cardNumber(1), cardNumber(PAGE_SIZE),
                                     BrowseWindow.PagingDirection.FORWARD),
-                            1, true, false, reSubmission());
+                            1, true, false, null, reSubmission());
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -2004,7 +2187,7 @@ final class CardListServiceTest {
                     new CardListService.CardListScreenInput("DFHPF8", workArea(null, null), null,
                             new BrowseWindow.CursorRequest(cardNumber(1), cardNumber(PAGE_SIZE + 1),
                                     BrowseWindow.PagingDirection.FORWARD),
-                            1, false, true, reSubmission());
+                            1, false, true, null, reSubmission());
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -2412,7 +2595,7 @@ final class CardListServiceTest {
                     new CardListService.CardListScreenInput("DFHPF8", workArea(null, null), null,
                             new BrowseWindow.CursorRequest(cardNumber(1), cardNumber(PAGE_SIZE),
                                     BrowseWindow.PagingDirection.FORWARD),
-                            1, false, false, reSubmission());
+                            1, false, false, null, reSubmission());
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -2820,7 +3003,7 @@ final class CardListServiceTest {
 
             final CardListService.CardListScreenInput input =
                     new CardListService.CardListScreenInput("DFHENTER", null, null, null, 1, false,
-                            false, reSubmission());
+                            false, null, reSubmission());
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -2871,7 +3054,7 @@ final class CardListServiceTest {
 
             final CardListService.CardListScreenInput input =
                     new CardListService.CardListScreenInput("DFHENTER", workArea(null, null), null, null,
-                            0, false, false, reSubmission());
+                            0, false, false, null, reSubmission());
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -2889,7 +3072,7 @@ final class CardListServiceTest {
 
             final CardListService.CardListScreenInput input =
                     new CardListService.CardListScreenInput("DFHENTER", workArea(null, null), null, null,
-                            -1, false, false, reSubmission());
+                            -1, false, false, null, reSubmission());
 
             final CardListService.CardListResult result = service.processCardList(input);
 
@@ -2929,7 +3112,7 @@ final class CardListServiceTest {
             withNulls.set(2, SELECT_VIEW);
             final CardListService.CardListScreenInput input =
                     new CardListService.CardListScreenInput("DFHPF8", workArea(null, null), withNulls,
-                            null, 1, false, false, reSubmission());
+                            null, 1, false, false, null, reSubmission());
 
             assertThat(input.selections()).doesNotContainNull();
             assertThat(input.selectionAt(1)).isEqualTo(SELECT_NONE);

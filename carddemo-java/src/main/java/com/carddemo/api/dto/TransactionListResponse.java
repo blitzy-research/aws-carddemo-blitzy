@@ -44,15 +44,16 @@ import java.util.List;
  * <p>Paging is cursor-based and this type performs no paging arithmetic: {@link PageMetadata} carries
  * the cursors and direction the legacy browse carried.
  *
- * <p><strong>The browse state is published exactly once, and the displayed identifiers are not
- * published as continuation state at all.</strong> {@link PageMetadata} already carries both boundary
- * cursors, the direction, the two availability flags and the page indicator, so a second carrier
- * repeating them would give a client two spellings of one state and no rule for which of the two the
- * next submission is answered from. Nor does anything here publish the ten identifiers the page
- * displayed as a value for the next submission to echo back: the identifier a row selection resolves
- * to is re-established server-side from the cursor, so echoing the list would create an inbound
- * channel the service does not read. Each identifier is of course present on the row that carries it,
- * which is what a client renders; decision log entry DL-299 records the distinction.
+ * <p><strong>The browse state is published exactly once, and the displayed identifiers are published
+ * only sealed.</strong> {@link PageMetadata} already carries both boundary cursors, the direction, the
+ * two availability flags and the page indicator, so a second carrier repeating them would give a client
+ * two spellings of one state and no rule for which of the two the next submission is answered from.
+ * {@link #rowSnapshotToken()} carries something different in kind: the slot-to-identifier map of this
+ * page, encrypted and authenticated, for the next submission to echo back so that a marked row resolves
+ * to the identifier that stood in it <em>on this page</em>. It is opaque to the holder, it names no row
+ * a client can read, and it is the only continuation value here a client is asked to return. Each
+ * identifier is of course also present in the clear on the row that carries it, which is what a client
+ * renders.
  */
 public record TransactionListResponse(
         List<TransactionRow> rows,
@@ -88,7 +89,14 @@ public record TransactionListResponse(
         @Size(max = TransactionListResponse.CURRENT_DATE_LENGTH) String currentDate,
         @Size(max = TransactionListResponse.CURRENT_TIME_LENGTH) String currentTime,
         @Size(max = TransactionListResponse.TRANSACTION_NAME_LENGTH) String transactionName,
-        @Size(max = TransactionListResponse.PROGRAM_NAME_LENGTH) String programName) {
+        @Size(max = TransactionListResponse.PROGRAM_NAME_LENGTH) String programName,
+
+        /* The sealed slot-to-identifier map of the page above, to be echoed unchanged by the next
+         * submission. It stands in for the ten row-value items a 3270 map transmits back, which is where
+         * COTRN00C lines 150 to 178 read a marked row's identifier from. Null on a turn that displayed no
+         * row, because a page with no slots has nothing to mark. No width is declared: it is a ciphertext
+         * envelope rather than a screen item. */
+        String rowSnapshotToken) {
     public static final int SELECTION_LENGTH = 1;
 
     public static final int TRANSACTION_ID_LENGTH = 16;
@@ -276,6 +284,7 @@ public record TransactionListResponse(
                 + ", currentTime=" + currentTime
                 + ", transactionName=" + transactionName
                 + ", programName=" + programName
+                + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 }

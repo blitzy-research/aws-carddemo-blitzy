@@ -575,6 +575,17 @@ class AccountUpdateServiceTest {
     private static final String STORED_NATIONAL_IDENTIFIER_ENVELOPE =
             "ENC1:" + java.util.Base64.getEncoder().encodeToString(new byte[28]);
 
+    /** The nine digits {@link #STORED_NATIONAL_IDENTIFIER_ENVELOPE} is stubbed to reveal as. */
+    private static final String STORED_NATIONAL_IDENTIFIER = "123456789";
+
+    /**
+     * A well-formed identifier that is not the stored one, for the specifications about writing.
+     *
+     * <p>Its first part is deliberately outside the excluded ranges the first-part edit refuses, so a
+     * specification that expects it to be written cannot pass because the value was rejected instead.
+     */
+    private static final String ALTERNATIVE_NATIONAL_IDENTIFIER = "234654321";
+
     /**
      * The same row with a national identifier actually stored, sealed as the column holds it.
      *
@@ -1414,13 +1425,13 @@ class AccountUpdateServiceTest {
 
         @Test
         @DisplayName("and the absence is not a way to blank an identifier that exists: with a value "
-                + "stored, an unsupplied submission is refused exactly as before")
-        void anAbsentSubmissionOverAStoredIdentifierIsStillRefused() {
+                + "stored, an unsupplied submission leaves the stored identifier standing")
+        void anAbsentSubmissionOverAStoredIdentifierDoesNotBlankIt() {
             stubSeededReads(seededCustomerHoldingANationalIdentifier());
             stubAllEditsAccepting();
             when(AccountUpdateServiceTest.this.fieldEncryption.revealNullable(
                     SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
-                    STORED_NATIONAL_IDENTIFIER_ENVELOPE)).thenReturn("123456789");
+                    STORED_NATIONAL_IDENTIFIER_ENVELOPE)).thenReturn(STORED_NATIONAL_IDENTIFIER);
 
             final AccountUpdateOutcome outcome = service.handle(new Turn()
                     .protectedValuesWithheld()
@@ -1428,11 +1439,20 @@ class AccountUpdateServiceTest {
                     .creditLimit("2500.00")
                     .build());
 
-            assertThat(outcome.error())
-                    .as("the record holds an identifier, so blanking it is a change and the mandatory "
-                            + "edit judges it")
-                    .isTrue();
-            assertThat(outcome.fieldErrors()).isNotEmpty();
+            // The protection used to be a rejection: absence was not a stand-in, so it survived, read as a
+            // change to blank, and three mandatory edits refused the turn. The protection is now direct -
+            // the submission's regulated positions are replaced by what the record holds before any edit
+            // sees them - so the identifier cannot be blanked and the operator is not told they got
+            // something wrong. The credit limit they did change goes through.
+            assertAll(
+                    () -> assertThat(outcome.ssnPart1()).isEqualTo("123"),
+                    () -> assertThat(outcome.ssnPart2()).isEqualTo("45"),
+                    () -> assertThat(outcome.ssnPart3()).isEqualTo("6789"),
+                    () -> assertThat(outcome.error())
+                            .as("nothing the operator sent was wrong, so nothing is refused")
+                            .isFalse(),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CONFIRMATION));
         }
 
         @Test
@@ -1449,6 +1469,153 @@ class AccountUpdateServiceTest {
                     () -> assertThat(outcome.error()).isFalse(),
                     () -> assertThat(outcome.infoMessage())
                             .isEqualTo(INFO_PROMPT_FOR_CONFIRMATION));
+        }
+    }
+
+    /* ==========================================================================================
+     * A caller the regulated values were withheld from cannot write them either.
+     * ========================================================================================== */
+
+    @Nested
+    @DisplayName("a caller the regulated values were withheld from cannot write them: what it submits in "
+            + "those eight positions is replaced by what the record holds, and only a caller they are "
+            + "revealed to can change them")
+    class WithheldValuesAreNotWritable {
+
+        /**
+         * The turn a caller without the reveal authority sends when it tries to change what it cannot see.
+         *
+         * <p>Every regulated position carries a well-formed alternative rather than the stand-in it was
+         * served, which is the shape the earlier narrow restoration let through: a mask restored, but any
+         * other value was taken as typed and written.
+         */
+        private Turn withheldTurnTypingAlternatives() {
+            return new Turn()
+                    .protectedValuesWithheld()
+                    .nationalIdentifier("234", "65", "4321")
+                    .dateOfBirth("1999", "12", "31")
+                    .governmentIssuedId("FORGED-ID-0001")
+                    .eftAccountId("9999999999");
+        }
+
+        @Test
+        @DisplayName("an alternative national identifier does not reach the record: the value offered to "
+                + "the cipher is the stored one, and the screen echoes the stored parts back")
+        void anAlternativeNationalIdentifierDoesNotReachTheRecord() {
+            stubSeededReads(seededCustomerHoldingANationalIdentifier());
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
+            when(AccountUpdateServiceTest.this.fieldEncryption.revealNullable(
+                    SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
+                    STORED_NATIONAL_IDENTIFIER_ENVELOPE)).thenReturn(STORED_NATIONAL_IDENTIFIER);
+            final ArgumentCaptor<String> sealed = ArgumentCaptor.forClass(String.class);
+
+            final AccountUpdateOutcome outcome = service.handle(withheldTurnTypingAlternatives()
+                    .creditLimit("2500.00")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(AccountUpdateServiceTest.this.fieldEncryption).protectNullable(
+                    eq(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD), sealed.capture());
+            assertAll(
+                    () -> assertThat(sealed.getValue())
+                            .as("THE POINT: the write seals the identifier the record already held, not "
+                                    + "the one the caller typed over a mask")
+                            .isEqualTo(STORED_NATIONAL_IDENTIFIER)
+                            .isNotEqualTo(ALTERNATIVE_NATIONAL_IDENTIFIER),
+                    () -> assertThat(outcome.ssnPart1()).isEqualTo("123"),
+                    () -> assertThat(outcome.ssnPart2()).isEqualTo("45"),
+                    () -> assertThat(outcome.ssnPart3())
+                            .as("the retained digits are restored too, because the identifier is one "
+                                    + "regulated value and not three")
+                            .isEqualTo("6789"),
+                    () -> assertThat(outcome.error()).isFalse());
+        }
+
+        @Test
+        @DisplayName("the birth date, the government-issued identifier and the transfer account do not "
+                + "reach the record either, which is the whole of the withheld group")
+        void theRemainingWithheldValuesDoNotReachTheRecord() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Customer> written = ArgumentCaptor.forClass(Customer.class);
+            final ArgumentCaptor<String> sealedGovernmentId = ArgumentCaptor.forClass(String.class);
+
+            service.handle(withheldTurnTypingAlternatives()
+                    .creditLimit("2500.00")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(customerRepository).compareAndSet(any(), written.capture());
+            verify(AccountUpdateServiceTest.this.fieldEncryption).protectNullable(
+                    eq(SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD),
+                    sealedGovernmentId.capture());
+            assertAll(
+                    () -> assertThat(written.getValue().getCustDob())
+                            .as("the stored birth date, not the typed one")
+                            .isEqualTo(SEEDED_DATE_OF_BIRTH),
+                    () -> assertThat(written.getValue().getEftAccountId())
+                            .as("the stored transfer account, not the typed one")
+                            .isEqualTo(SEEDED_EFT_ACCOUNT),
+                    () -> assertThat(sealedGovernmentId.getValue())
+                            .as("the row holds none, so none is sealed - and never the typed value, "
+                                    + "which is the case the earlier form wrote straight through")
+                            .isNull());
+        }
+
+        @Test
+        @DisplayName("a turn that touched nothing but the withheld group reports that no change was "
+                + "detected, which is the source's own outcome for a submission carrying what is on file")
+        void aTurnTouchingOnlyTheWithheldGroupReportsNoChange() {
+            // No edit seam is stubbed, and none is needed: the comparison finds nothing changed and the
+            // driver leaves before the cascade runs. That the turn reaches its outcome with the seams
+            // unstubbed is itself the evidence that no edit judged the restored group.
+            stubSeededReads();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(withheldTurnTypingAlternatives().build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .as("no arm of this screen refuses a value the operator was not entitled to "
+                                    + "send, so inventing one would be inventing an outcome")
+                            .isEqualTo(MSG_NO_CHANGES_DETECTED),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty());
+        }
+
+        @Test
+        @DisplayName("a caller the values are revealed to still writes all eight, so the restriction is "
+                + "exactly the authorization and not a freeze on the fields")
+        void aRevealAuthorizedCallerStillWritesThem() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Customer> written = ArgumentCaptor.forClass(Customer.class);
+            final ArgumentCaptor<String> sealed = ArgumentCaptor.forClass(String.class);
+
+            // The same body, with the withholding statement absent - which the adapter derives from the
+            // credential and never from the body, so this is the administrator's turn and no other.
+            service.handle(new Turn()
+                    .nationalIdentifier("234", "65", "4321")
+                    .dateOfBirth("1999", "12", "31")
+                    .eftAccountId("9999999999")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(customerRepository).compareAndSet(any(), written.capture());
+            verify(AccountUpdateServiceTest.this.fieldEncryption).protectNullable(
+                    eq(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD), sealed.capture());
+            assertAll(
+                    () -> assertThat(sealed.getValue()).isEqualTo(ALTERNATIVE_NATIONAL_IDENTIFIER),
+                    () -> assertThat(written.getValue().getCustDob()).isEqualTo("1999-12-31"),
+                    () -> assertThat(written.getValue().getEftAccountId()).isEqualTo("9999999999"));
         }
     }
 
@@ -3641,19 +3808,51 @@ class AccountUpdateServiceTest {
         }
 
         @Test
-        @DisplayName("an amount whose magnitude exceeds the record's ten integer digits is refused "
-                + "rather than silently truncated at the high order, which is the fail-safe direction")
-        void anOversizedAmountIsRefused() {
+        @DisplayName("an amount whose magnitude exceeds the record's ten integer digits is stored in the "
+                + "digit positions the field has, because a COBOL store without ON SIZE ERROR wraps and "
+                + "this screen has no arm that refuses one")
+        void anOversizedAmountIsStoredAsTheReceivingFieldWouldHoldIt() {
             stubSeededReads();
             stubAllEditsAccepting();
 
+            // Eleven integer digits into PIC S9(10)V99. The source converts the keyed field with NUMVAL-C
+            // straight into that redefinition (app/cbl/COACTUPC.cbl lines 1078 to 1080) with no size-error
+            // clause, and its edit paragraph at lines 2180 to 2218 tests only absence and the currency
+            // grammar - so the leading 9 is dropped and the remaining ten positions are what is held.
             final AccountUpdateOutcome outcome = service.handle(
                     cleanChangedTurn().creditLimit("99999999999.99").build());
 
             assertAll(
-                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACRDLIM"),
-                    () -> assertThat(outcome.errorMessage()).endsWith(SUFFIX_IS_NOT_VALID),
-                    () -> assertThat(AccountUpdateOutcome.MONEY_INTEGER_DIGITS).isEqualTo(10));
+                    () -> assertThat(outcome.fieldErrors())
+                            .as("the screen has no magnitude arm, so no field is marked")
+                            .isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse(),
+                    () -> assertThat(outcome.creditLimit())
+                            .as("the low-order ten integer digits and the scale the field declares")
+                            .isEqualByComparingTo(new BigDecimal("9999999999.99")),
+                    () -> assertThat(outcome.creditLimit().precision()
+                            - outcome.creditLimit().scale())
+                            .as("what a store leaves can never exceed the geometry it stored into")
+                            .isLessThanOrEqualTo(AccountUpdateOutcome.MONEY_INTEGER_DIGITS),
+                    () -> assertThat(outcome.infoMessage())
+                            .as("an accepted change reaches the confirmation prompt")
+                            .isEqualTo(INFO_PROMPT_FOR_CONFIRMATION));
+        }
+
+        @Test
+        @DisplayName("the wrap keeps the operational sign, so an oversized negative amount stays negative "
+                + "rather than changing side as it loses its high-order digits")
+        void anOversizedNegativeAmountKeepsItsSign() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().currentBalance("-99999999999.99").build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.currentBalance())
+                            .isEqualByComparingTo(new BigDecimal("-9999999999.99")));
         }
 
         @Test

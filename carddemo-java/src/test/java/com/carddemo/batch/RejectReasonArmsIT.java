@@ -39,7 +39,7 @@ import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.LegacyRejectReasons;
@@ -745,7 +745,7 @@ class RejectReasonArmsIT extends AbstractPostgresIT {
     @Import({PostTransactionJobConfig.class, BatchConfig.class, BatchStagingArea.class,
             StagedGenerationStore.class, AdvisoryGenerationPublicationLock.class,
             FixedWidthFlatFileReaderFactory.class, TransactionPostingService.class,
-            PostingRecordTransactionBoundary.class, RecordWriter.class, AbendService.class})
+            PostingStageTransactionBoundary.class, RecordWriter.class, AbendService.class})
     @EnableConfigurationProperties(AwsProperties.class)
     @EnableJpaRepositories(basePackageClasses = AccountRepository.class)
     @EntityScan(basePackageClasses = Account.class)

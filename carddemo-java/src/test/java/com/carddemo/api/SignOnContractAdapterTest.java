@@ -35,6 +35,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 /**
  * Unit test for {@link SignOnContractAdapter}, the one place a sign-on decision becomes wire text.
@@ -389,14 +390,78 @@ class SignOnContractAdapterTest {
         }
 
         @Test
-        @DisplayName("the region identifiers are absent, because nothing outside a mainframe region "
-                + "supplies them and inventing a value would be a fabricated echo")
-        void theRegionIdentifiersAreAbsent() {
-            final SignOnResponse response =
+        @DisplayName("the region identifiers are carried on every screen the transaction presents, "
+                + "because the program assigns both on every send")
+        void theRegionIdentifiersAreCarried() {
+            final SignOnResponse admittedScreen =
                     subject.toResponse(admitted(UserType.USER, NavigationService.Route.USER_MENU));
+            final SignOnResponse refusedScreen = subject.toResponse(refused(
+                    AuthenticationService.Decision.WRONG_PASSWORD, false, "PASSWD"));
 
-            assertThat(response.applicationId()).isNull();
-            assertThat(response.systemId()).isNull();
+            assertAll(
+                    () -> assertThat(admittedScreen.applicationId())
+                            .isEqualTo(SignOnContractAdapter.DEFAULT_APPLICATION_ID),
+                    () -> assertThat(admittedScreen.systemId())
+                            .isEqualTo(SignOnContractAdapter.DEFAULT_SYSTEM_ID),
+                    () -> assertThat(refusedScreen.applicationId())
+                            .as("a rejected turn is a send too - lines 199 and 203 run before the "
+                                    + "credential is even read")
+                            .isEqualTo(SignOnContractAdapter.DEFAULT_APPLICATION_ID),
+                    () -> assertThat(refusedScreen.systemId())
+                            .isEqualTo(SignOnContractAdapter.DEFAULT_SYSTEM_ID));
+        }
+
+        @Test
+        @DisplayName("a deployment that names its own application and system publishes those, so the "
+                + "shipped pair is a default and not a constant")
+        void aConfiguredDeploymentPublishesItsOwnIdentifiers() {
+            final SignOnContractAdapter configured = new SignOnContractAdapter(
+                    messageCatalogService, "REGION01", "SYSA");
+
+            final SignOnResponse response = configured
+                    .toResponse(admitted(UserType.USER, NavigationService.Route.USER_MENU));
+
+            assertAll(
+                    () -> assertThat(response.applicationId()).isEqualTo("REGION01"),
+                    () -> assertThat(response.systemId())
+                            .as("a four-character system identifier is carried as it stands; the map "
+                                    + "item is eight wide because the map declares eight, and nothing "
+                                    + "here pads it")
+                            .isEqualTo("SYSA"));
+        }
+
+        @Test
+        @DisplayName("a configured value longer than the map item is cut to its width rather than "
+                + "refused, which is what the move into PIC X(8) did")
+        void anOverLongConfiguredIdentifierIsCutToTheItemWidth() {
+            final SignOnContractAdapter configured = new SignOnContractAdapter(
+                    messageCatalogService, "APPLICATION-IDENTIFIER", "SYSTEM-IDENTIFIER");
+
+            final SignOnResponse response = configured
+                    .toResponse(admitted(UserType.USER, NavigationService.Route.USER_MENU));
+
+            assertAll(
+                    () -> assertThat(response.applicationId())
+                            .isEqualTo("APPLICAT")
+                            .hasSize(SignOnResponse.APPLICATION_ID_LENGTH),
+                    () -> assertThat(response.systemId())
+                            .isEqualTo("SYSTEM-I")
+                            .hasSize(SignOnResponse.SYSTEM_ID_LENGTH));
+        }
+
+        @Test
+        @DisplayName("a deployment that empties either setting publishes absence rather than an empty "
+                + "string, because a named-nothing screen item is not a value")
+        void anEmptiedSettingPublishesAbsence() {
+            final SignOnContractAdapter unnamed =
+                    new SignOnContractAdapter(messageCatalogService, "", "   ");
+
+            final SignOnResponse response = unnamed
+                    .toResponse(admitted(UserType.USER, NavigationService.Route.USER_MENU));
+
+            assertAll(
+                    () -> assertThat(response.applicationId()).isNull(),
+                    () -> assertThat(response.systemId()).isNull());
         }
 
         @Test

@@ -434,6 +434,18 @@ logging:
 # and publishes nowhere. The shared local staging root is the short-lived filesystem side of the S3
 # boundary; completed artifacts are published under execution-scoped object keys.
 carddemo:
+  # The two identifiers the sign-on screen has always carried. The legacy program assigns them from the
+  # CICS region on every send (app/cbl/COSGN00C.cbl lines 199 and 203) into two eight-character map items,
+  # so an operator could always see which application and which system had served the screen. There is no
+  # region to ask here, so they are configuration; com.carddemo.api SignOnContractAdapter reads both once
+  # at construction, bounds each to the eight characters the map item declares, and publishes absence for
+  # an emptied value. The application identifier is the estate's own name - the CICS resource group of
+  # app/csd/CARDDEMO.CSD and the middle qualifier of every dataset name. The system identifier has no
+  # legacy value at all, because the estate names no region anywhere, so the shipped one is this module's
+  # own and a deployment that wants its system named should set it.
+  region:
+    application-id: CARDDEMO
+    system-id: AWSMFRAM
   web:
     cors:
       allowed-origins: ""

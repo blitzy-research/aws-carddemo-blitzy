@@ -143,7 +143,7 @@ class TransactionListRequestRuleComplianceTest {
             final NavigationContext navigationContext,
             final PageMetadata.PageCursorRequest pageMetadata) {
         return new TransactionListRequest(transactionIdFilter, displayedPageNumber, rowSelectors,
-                keyAction, navigationContext, pageMetadata);
+                keyAction, navigationContext, pageMetadata, null);
     }
 
     /**
@@ -461,16 +461,18 @@ class TransactionListRequestRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the request declares six components, the identifier filter, page label, "
-                + "selector list, attention key, conversation state and paging state")
-        void theRequestDeclaresSixComponents() {
+        @DisplayName("the request declares seven components, the identifier filter, page label, "
+                + "selector list, attention key, conversation state, paging state and the sealed "
+                + "snapshot of the page being continued")
+        void theRequestDeclaresSevenComponents() {
             final List<String> declared = Arrays.stream(
                     TransactionListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("transactionIdFilter", "displayedPageNumber",
-                    "rowSelectors", "keyAction", "navigationContext", "pageMetadata");
-            assertThat(declared).hasSize(6);
+                    "rowSelectors", "keyAction", "navigationContext", "pageMetadata",
+                    "rowSnapshotToken");
+            assertThat(declared).hasSize(7);
         }
 
         @Test

@@ -148,13 +148,28 @@ import com.carddemo.util.ZonedDecimalCodec;
  * leak across records, which is precisely what the per-record reset at lines 208 to 209 exists to
  * prevent. One container-managed instance is therefore safely shared.
  *
- * <p>The per-record unit of work belongs to {@link PostingRecordTransactionBoundary} rather than to a
- * transactional method on this class. That is not a style preference: this class reproduces the mainline
- * loop in {@link #postAll(Iterable, Consumer)}, and a loop calling a transactional method on its own
- * instance reaches the target directly, so no proxy is consulted and the annotation applies to none of
- * the records the loop drives. Delegating to a separate bean removes the possibility of that split -
- * {@link #post(DailyTransaction)} and the loop take the same path, and it is the transactional one.
- * The class remains non-{@code final} because the framework still proxies it for other reasons.
+ * <p><strong>The durable unit is one posting STAGE, not one record.</strong> Lines 440 to 442 perform three
+ * stores in one order, over three files defined {@code RECOVERY(NONE)} with {@code JOURNAL(NO)}, and the
+ * member contains no rollback site: a store that completed stayed completed whatever the store after it did,
+ * so a refused transaction-file write left the category balance and the account rewrite in place and abended
+ * on top of them. {@link PostingStageTransactionBoundary} therefore opens one unit per stage, and the
+ * posting cascade calls it three times per posted record in the source's order. One unit around all three
+ * would invent an all-or-none property the source does not have and would discard two stores no legacy
+ * mechanism discards.
+ *
+ * <p>The member's other two I/O acts - the cross-reference read and the account read of validation - take a
+ * unit each through the same boundary, so nothing this class hands back is managed by a caller's unit of
+ * work. That matters for one specific reason: the account rewrite carries its computed balances onto the
+ * image validation read, as lines 547 to 552 do before line 554, and an image still managed by a caller
+ * would be stored a second time at that caller's commit under a version the rewrite had already advanced.
+ * Detached images make those values a report rather than a store.
+ *
+ * <p>The boundary is a separate bean rather than a transactional method on this class. That is not a style
+ * preference: this class reproduces the mainline loop in {@link #postAll(Iterable, Consumer)} and the
+ * cascade in its own methods, and a call to a transactional method on the same instance reaches the target
+ * directly, so no proxy is consulted and the annotation would apply to nothing the cascade drives.
+ * Delegating to a separate bean removes the possibility of that split. The class remains non-{@code final}
+ * because the framework still proxies it for other reasons.
  */
 @Service
 public class TransactionPostingService {
@@ -342,7 +357,7 @@ public class TransactionPostingService {
 
     private final AbendService abendService;
 
-    private final PostingRecordTransactionBoundary postingRecordTransactionBoundary;
+    private final PostingStageTransactionBoundary postingStageTransactionBoundary;
 
     private final Clock clock;
 
@@ -363,8 +378,8 @@ public class TransactionPostingService {
      * @param recordWriter                         explicit create-only write boundary
      * @param abendService                         the estate's single abend path, reached from
      *                                             {@code 9999-ABEND-PROGRAM} at lines 707 to 711
-     * @param postingRecordTransactionBoundary     the per-record unit of work of lines 440 to 442, held
-     *                                             on its own bean so the mainline loop cannot bypass it
+     * @param postingStageTransactionBoundary      the per-stage unit of work of lines 440 to 442, held
+     *                                             on its own bean so the cascade cannot bypass it
      * @param clock                                the time source the processing timestamp is built
      *                                             from at lines 692 to 705
      * @throws NullPointerException if any collaborator is {@code null}
@@ -377,7 +392,7 @@ public class TransactionPostingService {
             final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
             final RecordWriter recordWriter,
             final AbendService abendService,
-            final PostingRecordTransactionBoundary postingRecordTransactionBoundary,
+            final PostingStageTransactionBoundary postingStageTransactionBoundary,
             final Clock clock) {
         this.dailyTransactionRepository = Objects.requireNonNull(dailyTransactionRepository,
                 "dailyTransactionRepository must not be null");
@@ -392,9 +407,9 @@ public class TransactionPostingService {
                 "transactionCategoryBalanceRepository must not be null");
         this.recordWriter = Objects.requireNonNull(recordWriter, "recordWriter must not be null");
         this.abendService = Objects.requireNonNull(abendService, "abendService must not be null");
-        this.postingRecordTransactionBoundary = Objects.requireNonNull(
-                postingRecordTransactionBoundary,
-                "postingRecordTransactionBoundary must not be null");
+        this.postingStageTransactionBoundary = Objects.requireNonNull(
+                postingStageTransactionBoundary,
+                "postingStageTransactionBoundary must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -642,28 +657,27 @@ public class TransactionPostingService {
     }
 
     /**
-     * Processes one record: reset, validate, then post or reject. This is the per-record commit
-     * boundary, so the three posting stages of lines 440 to 442 either all take effect or none does.
+     * Processes one record: reset, validate, then post or reject.
      *
      * <p>The reset of lines 208 to 209 is the first thing that happens, as locals rather than as
      * state. Nothing in this class holds a reason code, a description, a counter or a create flag
      * between calls; a field would let one record's verdict decide the next one's.
      *
-     * <p>No legacy rollback arm is translated here, because the legacy member has none - the estate's
-     * only explicit rollback belongs to the online account-update program. A reject is therefore an
-     * ordinary return carrying a verdict, not a rollback: the record's three posting stages never ran,
-     * so there is nothing to undo and the transaction commits. What still rolls back is a failure: the
-     * work runs inside {@link PostingRecordTransactionBoundary}, so any unchecked exception that escapes
-     * it - an abend, a file-status failure, or an optimistic-lock conflict on the account's version
-     * attribute - marks that record's transaction for rollback under the framework's own rule, and the
-     * record's stages are discarded together. That is the framework's rollback, not a legacy one, and
-     * none of those three is translated into a handled arm because the legacy member handles none of
-     * them.
+     * <p><strong>This method opens no unit of work, and no unit spans the record.</strong> The three
+     * stores of lines 440 to 442 are three independent durable operations in the source - three
+     * unrecoverable files, no journal, no rollback site anywhere in the member - so each of them is opened
+     * and committed on its own by {@link PostingStageTransactionBoundary} from inside the posting cascade.
+     * A failure in a later stage therefore leaves the earlier stages committed, which is exactly the state
+     * the legacy member left behind when its transaction-file write was refused: the category balance and
+     * the account rewrite had already happened, and the abend followed them.
      *
-     * <p>The boundary is a separate bean and the call below is the only per-record path, so the mainline
-     * loop of {@link #postAll(Iterable, Consumer)} obtains the same transaction this entry point does.
-     * A transactional annotation on this method could not have achieved that: the loop's call would have
-     * been a self-invocation, which reaches the target without consulting a proxy.
+     * <p>No legacy rollback arm is translated here, because the legacy member has none - the estate's
+     * only explicit rollback belongs to the online account-update program. A reject is an ordinary return
+     * carrying a verdict, not a rollback: the record's three posting stages never ran, so there is nothing
+     * to undo. What still rolls back is a failure, and it rolls back <em>one stage</em>: an abend, a
+     * file-status failure, or an optimistic-lock conflict on the account's version attribute unwinds that
+     * stage's own unit and leaves the stages before it committed. None of those three is translated into a
+     * handled arm, because the legacy member handles none of them.
      *
      * @param  record the daily-transaction record to post
      * @return the verdict together with every artefact it produced
@@ -672,11 +686,12 @@ public class TransactionPostingService {
      */
     public PostingResult post(final DailyTransaction record) {
         Objects.requireNonNull(record, "record must not be null");
-        return this.postingRecordTransactionBoundary.execute(() -> postOneRecord(record));
+        return postOneRecord(record);
     }
 
     /**
-     * The body of one record's processing, run inside the per-record transaction the boundary opened.
+     * The body of one record's processing. Each of the three posting stages opens its own durable unit; the
+     * validation reads and the reject verdict belong to no unit of this class.
      *
      * @param  record the daily-transaction record to post, already checked for presence
      * @return the verdict together with every artefact it produced
@@ -957,12 +972,16 @@ public class TransactionPostingService {
      * rejection, not an I/O failure, and the daily-transaction table deliberately carries no foreign
      * key to the cross-reference so that this rejection stays reachable at all.
      *
+     * <p>The read takes a unit of work of its own through {@link PostingStageTransactionBoundary}, for
+     * the reason that collaborator states: a legacy {@code READ} was an I/O act rather than a unit, and
+     * an image read inside a caller's unit would still be managed there afterwards.
+     *
      * @param  record the record whose card number is being resolved
      * @return the resolved cross-reference, or reject code 100
      */
     private ValidationOutcome lookupCrossReference(final DailyTransaction record) {
-        final Optional<CardCrossReference> found =
-                this.cardCrossReferenceRepository.findById(record.getDalytranCardNum());
+        final Optional<CardCrossReference> found = this.postingStageTransactionBoundary.execute(
+                () -> this.cardCrossReferenceRepository.findById(record.getDalytranCardNum()));
 
         if (found.isEmpty()) {
             return new ValidationOutcome(RejectReason.INVALID_CARD_NUMBER, null, null);
@@ -994,14 +1013,20 @@ public class TransactionPostingService {
      * <p>There is no status check and no abend in this paragraph either, for the same reason as the
      * cross-reference lookup.
      *
+     * <p>This read takes a unit of work of its own as well, and here the reason has teeth: the account
+     * rewrite carries its computed balances onto the image this read returns, so an image left managed in
+     * a caller's unit would be written a second time at that caller's commit, carrying a version the
+     * rewrite had already advanced. The image handed back here is detached, so the values it carries are a
+     * report of what the rewrite attempted and never a second store.
+     *
      * @param  record         the record being validated
      * @param  crossReference the cross-reference naming the account
      * @return the reason that rejected the record, if any, with the account it resolved
      */
     private ValidationOutcome lookupAccount(final DailyTransaction record,
             final CardCrossReference crossReference) {
-        final Optional<Account> found =
-                this.accountRepository.findById(crossReference.getXrefAcctId());
+        final Optional<Account> found = this.postingStageTransactionBoundary.execute(
+                () -> this.accountRepository.findById(crossReference.getXrefAcctId()));
 
         if (found.isEmpty()) {
             return new ValidationOutcome(RejectReason.ACCOUNT_NOT_FOUND_ON_READ, crossReference,
@@ -1143,6 +1168,15 @@ public class TransactionPostingService {
      * first and updates its account last; the two orders are opposites and are deliberately not
      * unified.
      *
+     * <p><strong>Each of the three is a durable unit of its own,</strong> opened and committed by
+     * {@link PostingStageTransactionBoundary} in that order and never joined to one another. The source
+     * stores into three unrecoverable, unjournalled files and contains no rollback site, so a store that
+     * completed stayed completed whatever the store after it did: a refused transaction-file write left
+     * the category balance and the account rewrite in place and abended on top of them. Committing the
+     * three together would invent an all-or-none property the member does not have and would discard two
+     * stores that no legacy mechanism discards, so they are committed separately and the partial states
+     * the source could reach are reachable here too.
+     *
      * @param  record         the record being posted
      * @param  crossReference the cross-reference naming the account, reused from validation
      * @param  account        the account read during validation, which this posts onto
@@ -1171,10 +1205,15 @@ public class TransactionPostingService {
                 // Lines 437 to 438: the processing timestamp is regenerated, never copied.
                 getDb2FormatTimestamp());
 
-        final TransactionCategoryBalance categoryBalance =
-                updateCategoryBalance(record, crossReference);
-        final Optional<RejectReason> rewriteFailure = updateAccountRecord(record, account);
-        final Transaction storedTransaction = writeTransactionFile(transaction);
+        // Line 440, and a unit of its own.
+        final TransactionCategoryBalance categoryBalance = this.postingStageTransactionBoundary
+                .execute(() -> updateCategoryBalance(record, crossReference));
+        // Line 441, and a unit of its own. The category balance above is already durable.
+        final Optional<RejectReason> rewriteFailure = this.postingStageTransactionBoundary
+                .execute(() -> updateAccountRecord(record, account));
+        // Line 442, and a unit of its own. Both stores above are already durable.
+        final Transaction storedTransaction =
+                this.postingStageTransactionBoundary.execute(() -> writeTransactionFile(transaction));
 
         final RejectReason inertReason = rewriteFailure.orElse(null);
         return new PostingResult(reasonCodeOf(inertReason), reasonDescriptionOf(inertReason),
@@ -1230,6 +1269,10 @@ public class TransactionPostingService {
      * either one is an immediate save-and-flush, because the write status belongs to this paragraph and
      * must be observed before control reaches the account rewrite. The decision between create and update
      * is made here, in the service, from the emptiness of the read; it is not delegated to an upsert.
+     *
+     * <p>The read and the store share one unit of work - the one the cascade opened for this stage - so the
+     * row this decides about is the row it writes. The unit ends here: by the time the account rewrite
+     * begins, this store is committed and nothing that follows can withdraw it.
      *
      * @param  record         the record being posted
      * @param  crossReference the cross-reference naming the account
@@ -1381,10 +1424,12 @@ public class TransactionPostingService {
      * <em>after</em> the rewrite which of the two happened cannot be trusted, because a writer committing
      * between the rewrite and the question turns one answer into the other and this paragraph cannot tell
      * that it did. So the answer is obtained <em>first</em>, from a keyed read that holds the row for the
-     * rest of the record's unit of work: from that moment nothing else can delete the row or change its
-     * version, so an absence observed there is still an absence when the rewrite runs, and a presence
-     * observed there leaves a zero count with only one remaining explanation. Neither outcome can be
-     * wrong for a timing reason.
+     * rest of <em>this stage's</em> unit of work: the probe and the rewrite share that unit, so from the
+     * moment of the probe nothing else can delete the row or change its version, an absence observed there
+     * is still an absence when the rewrite runs, and a presence observed there leaves a zero count with
+     * only one remaining explanation. Neither outcome can be wrong for a timing reason. The hold does not
+     * outlive the stage, and it never needed to: the transaction-file write that follows addresses a
+     * different table and asks this row nothing.
      *
      * <p>The hold is a strengthening of the legacy baseline and is recorded as one in
      * {@code docs/decision-log.md} entry DL-170 rather than presented as parity. The legacy cluster is defined {@code READINTEG(UNCOMMITTED)},
@@ -1439,8 +1484,12 @@ public class TransactionPostingService {
         final int rewritten = this.accountRepository.rewritePostingBalances(account.getAcctId(),
                 account.getVersion(), currentBalance, currentCycleCredit, currentCycleDebit);
 
-        // The bulk update cleared the persistence context. Keep the detached result image aligned with
-        // the values the paragraph attempted to rewrite, including on the inert invalid-key path.
+        // Lines 547 to 552 moved these values onto the account record before the rewrite addressed it, so
+        // the image carries them whatever the rewrite reported - including on the inert invalid-key path.
+        // Carrying them is safe precisely because the image is detached: the read that produced it took a
+        // unit of its own and that unit has closed, so nothing tracks it and no second store can follow
+        // from these three assignments. The bulk update above additionally clears this stage's own context,
+        // so the row it rewrote is not tracked either.
         account.setAcctCurrBal(currentBalance);
         account.setAcctCurrCycCredit(currentCycleCredit);
         account.setAcctCurrCycDebit(currentCycleDebit);
@@ -1452,9 +1501,12 @@ public class TransactionPostingService {
             // another writer committed between this record's read and this rewrite. The legacy file had
             // no way to observe that - it read uncommitted with no recovery - so there is no legacy arm
             // to reproduce; the correct answer is to refuse the record rather than to report an absent
-            // account that is not absent, and to let the record's transaction roll back so the
-            // transaction-file write and the category-balance update do not harden against a balance that
-            // was never rewritten.
+            // account that is not absent. Refusing it raises, so this stage's unit unwinds - and it had
+            // nothing in it to unwind, because the rewrite affected no row. What the raise does reach is
+            // the transaction-file write, which never runs, so no transaction is stored against a balance
+            // that was never rewritten. The category-balance store that ran before this stage is already
+            // committed and stays committed: it is a separate durable unit, exactly as the source's
+            // separate store was, and the legacy left it behind on every failure that followed it.
             //
             // Which of the two it is was settled by the held read above, not by a second question asked
             // now. A row that was held is still present, so a zero count leaves the version as the only
@@ -1486,6 +1538,11 @@ public class TransactionPostingService {
      * not the account rewrite took its invalid-key arm - which is the mechanism by which reject code
      * 109 ends up inert. Its failure arm displays {@code ERROR WRITING TO TRANSACTION FILE} at line
      * 574, then the status, then abends, in that order.
+     *
+     * <p>The abend is where the record ends, and it ends with <strong>the category balance and the account
+     * rewrite already stored</strong>. Both preceded this write, both went to unrecoverable unjournalled
+     * files, and the member has no rollback site, so the legacy left them behind and so does this: the unit
+     * that fails here is this write's own and it is the only one that unwinds.
      *
      * @param  transaction the transaction to write
      * @return the transaction as persisted

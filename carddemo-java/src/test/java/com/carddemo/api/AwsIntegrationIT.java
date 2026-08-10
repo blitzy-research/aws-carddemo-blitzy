@@ -35,7 +35,6 @@ import com.carddemo.service.JobSubmissionService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ReportRequestService;
-import com.carddemo.service.ReportRetryTokenService;
 import com.carddemo.support.AbstractLocalStackIT;
 import com.carddemo.support.TestDataFactory;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -1405,8 +1404,7 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
         final JobSubmissionService bridge = new JobSubmissionService(operations, queueName,
                 EXPECTED_MESSAGE_GROUP, submission -> submission.get(), ObservationRegistry.NOOP);
         final ReportRequestService transaction = new ReportRequestService(new DateValidationService(),
-                bridge, new MessageCatalogService(), new NavigationService(), PINNED_CLOCK,
-                new ReportRetryTokenService(null, PINNED_CLOCK, new SimpleMeterRegistry()));
+                bridge, new MessageCatalogService(), new NavigationService(), PINNED_CLOCK);
         final ReportController boundary = new ReportController(transaction,
                 new ReportContractAdapter(new ConversationStateAdapter(new NavigationService())),
                 new SimpleMeterRegistry());
@@ -1516,7 +1514,6 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
             SqsAutoConfiguration.class})
     @Import({AwsConfig.class, ReportController.class, ReportContractAdapter.class,
             ConversationStateAdapter.class, GlobalExceptionHandler.class, ReportRequestService.class,
-            ReportRetryTokenService.class,
             JobSubmissionService.class, DateValidationService.class, MessageCatalogService.class,
             NavigationService.class})
     static class ReportBridgeContext {

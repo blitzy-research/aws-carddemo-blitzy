@@ -431,10 +431,16 @@ public final class PostTransactionJobConfig {
      * <p><strong>This is a legacy semantic and not a tuning figure.</strong> The migrated batch tier is
      * strictly sequential and record at a time, which is the granularity the legacy tier exhibited, and
      * a chunk-oriented step must state some granularity for the framework to commit on. Stating one
-     * record keeps the unit of work identical to the unit of processing, so a later row cannot roll back
-     * an earlier posting and its reject output. The value is deliberately written into the step rather
-     * than exposed as configuration: changing it would change the program's commit semantics, not tune
-     * throughput.
+     * record keeps the step's own boundary - the read, the reject output and the framework's metadata for
+     * that record - identical to the unit of processing, so a later row cannot roll back an earlier row's
+     * reject output. The value is deliberately written into the step rather than exposed as configuration:
+     * changing it would change the step's commit semantics, not tune throughput.
+     *
+     * <p>It is <strong>not</strong> the boundary the three posting stores commit on. Those are three
+     * independent durable units opened inside the translated program, because the legacy member stored
+     * into three unrecoverable, unjournalled files and held no rollback site: a store that completed
+     * stayed completed whatever the store after it did. This chunk therefore never spans them, and a
+     * refused third store leaves the first two in place exactly as the abending member left them.
      */
     static final int RECORD_AT_A_TIME = 1;
 
@@ -627,7 +633,10 @@ public final class PostTransactionJobConfig {
      * compared byte for byte, so arrival order is part of the result.
      *
      * <p>The commit granularity is the semantic constant {@link #RECORD_AT_A_TIME}. It is not configurable:
-     * each source record and its posting or reject result is one independent unit of work.
+     * each source record's read, reject output and framework metadata are one unit of work. The three
+     * posting stores are <strong>not</strong> in it - the translated program opens a durable unit per store,
+     * for the reason {@link com.carddemo.service.PostingStageTransactionBoundary} states - so this
+     * granularity must never be read as an all-or-none guarantee over a posted record.
      *
      * <p>The completion-code contribution is <strong>not</strong> registered here. The per-record stage
      * implements the step-execution listener interface, and the step builder registers a reader,

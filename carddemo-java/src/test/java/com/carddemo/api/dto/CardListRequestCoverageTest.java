@@ -108,11 +108,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DisplayName("CardListRequest :: card-list request contract of legacy transaction CCLI")
 class CardListRequestCoverageTest {
 
-    /** The fourteen components in declaration order. */
+    /** The fifteen components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "accountIdFilter", "cardNumberFilter", "displayedPageNumber",
             "selection1", "selection2", "selection3", "selection4", "selection5", "selection6",
-            "selection7", "pageMetadata", "lastPageAlreadyShown", "keyAction", "navigationContext");
+            "selection7", "pageMetadata", "lastPageAlreadyShown", "keyAction", "navigationContext",
+            "rowSnapshotToken");
 
     /** Number of card rows the screen presents, measured from the legacy row table. */
     private static final int EXPECTED_ROW_COUNT = 7;
@@ -169,7 +170,7 @@ class CardListRequestCoverageTest {
             String accountFilter, String cardFilter, String... rowCodes) {
         return new CardListRequest(accountFilter, cardFilter, null,
                 rowCodes[0], rowCodes[1], rowCodes[2], rowCodes[3],
-                rowCodes[4], rowCodes[5], rowCodes[6], null, false, null, null);
+                rowCodes[4], rowCodes[5], rowCodes[6], null, false, null, null, null);
     }
 
     /**
@@ -200,7 +201,7 @@ class CardListRequestCoverageTest {
                 "selection5".equals(component) ? value : null,
                 "selection6".equals(component) ? value : null,
                 "selection7".equals(component) ? value : null,
-                null, false, null, null);
+                null, false, null, null, null);
     }
 
     /**
@@ -391,7 +392,7 @@ class CardListRequestCoverageTest {
                     "S", "S", "S", "S", "S", "S", "S",
                     new PageMetadata.PageCursorRequest(null, null,
                             PageMetadata.PagingDirection.FORWARD, null, false), false,
-                    KeyAction.PFK08, NavigationContext.empty());
+                    KeyAction.PFK08, NavigationContext.empty(), null);
 
             assertThat(validator.validate(request)).isEmpty();
         }
@@ -457,19 +458,24 @@ class CardListRequestCoverageTest {
     class WireShape {
 
         @Test
-        @DisplayName("a fully populated request renders all fourteen members under their contract "
-                + "names, and the seven row codes appear as seven separate members")
+        @DisplayName("a fully populated request renders fourteen of its fifteen members under their "
+                + "contract names - the row snapshot is write-only - and the seven row codes appear as "
+                + "seven separate members")
         void aFullyPopulatedRequestRendersAllFourteenMembers() throws JsonProcessingException {
             CardListRequest request = new CardListRequest(
                     ACCOUNT_FILTER, CARD_FILTER, "002",
                     "S", "", " ", "U", "", "", "",
                     new PageMetadata.PageCursorRequest("prev", "next",
                             PageMetadata.PagingDirection.BACKWARD, null, false), false,
-                    KeyAction.PFK07, JsonContractSupport.populatedNavigation());
+                    KeyAction.PFK07, JsonContractSupport.populatedNavigation(), null);
 
             JsonNode payload = payloadOf(request);
 
-            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size());
+            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size() - 1);
+            assertThat(payload.has("rowSnapshotToken"))
+                    .as("the echoed row snapshot is write-only on the request: a client sends it and a "
+                            + "request rendering never sends it back")
+                    .isFalse();
             assertThat(payload.get("accountIdFilter").asText()).isEqualTo(ACCOUNT_FILTER);
             assertThat(payload.get("cardNumberFilter").asText()).isEqualTo(CARD_FILTER);
             assertThat(payload.get("displayedPageNumber").asText()).isEqualTo("002");
@@ -537,7 +543,7 @@ class CardListRequestCoverageTest {
                     "S", " ", "", "U", "s", "u", "X",
                     new PageMetadata.PageCursorRequest("p", "n",
                             PageMetadata.PagingDirection.FORWARD, null, false), false,
-                    KeyAction.PFK08, JsonContractSupport.populatedNavigation());
+                    KeyAction.PFK08, JsonContractSupport.populatedNavigation(), null);
 
             ObjectMapper mapper = JsonContractSupport.declaredSettingsMapper();
             CardListRequest returned = mapper.readValue(
@@ -555,7 +561,7 @@ class CardListRequestCoverageTest {
                             ACCOUNT_FILTER, CARD_FILTER, null,
                             "S", " ", "", "U", "s", "u", "X",
                             request.pageMetadata(), false, request.keyAction(),
-                            request.navigationContext()));
+                            request.navigationContext(), null));
             assertThat(returned.selectionsInRowOrder())
                     .containsExactly("S", " ", "", "U", "s", "u", "X");
         }
@@ -586,7 +592,7 @@ class CardListRequestCoverageTest {
                     "S", null, null, null, null, null, null,
                     new PageMetadata.PageCursorRequest(CARD_FILTER + ACCOUNT_FILTER,
                             CARD_FILTER + ACCOUNT_FILTER, PageMetadata.PagingDirection.FORWARD, null, false), false,
-                    KeyAction.PFK08, null);
+                    KeyAction.PFK08, null, null);
 
             String rendered = request.toString();
 
@@ -634,7 +640,7 @@ class CardListRequestCoverageTest {
         void theScreenInteractionStateIsRetained() {
             CardListRequest request = new CardListRequest(
                     ACCOUNT_FILTER, CARD_FILTER, "042",
-                    "S", "U", "s", "u", "X", "1", "?", null, false, KeyAction.PFK07, null);
+                    "S", "U", "s", "u", "X", "1", "?", null, false, KeyAction.PFK07, null, null);
 
             assertThat(request.toString())
                     .contains("displayedPageNumber=042")
@@ -654,7 +660,7 @@ class CardListRequestCoverageTest {
         void theNavigationStateIsPrintedByDelegation() {
             CardListRequest request = new CardListRequest(
                     null, null, null, null, null, null, null, null, null, null, null, false, null,
-                    JsonContractSupport.populatedNavigation());
+                    JsonContractSupport.populatedNavigation(), null);
 
             assertThat(request.toString())
                     .contains("navigationContext=NavigationContext[")
@@ -675,7 +681,7 @@ class CardListRequestCoverageTest {
                     null, null, null, null, null, null, null,
                     new PageMetadata.PageCursorRequest("p", "n",
                             PageMetadata.PagingDirection.FORWARD, null, false), false,
-                    null, null);
+                    null, null, null);
 
             assertThat(request.accountIdFilter())
                     .as("the browse compares a filter to a retrieved record character for "

@@ -164,7 +164,7 @@ class TransactionControllerTest {
         return new TransactionListService.TransactionListResult(route, ScreenNavigationState.empty(),
                 rows, pageMetadata, "MESSAGE TEXT", List.of(), "TRNIDIN", error, false, false,
                 "FILTER ECHO", TRANSACTION_ID, "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07",
-                "CT00", "COTRN00C");
+                "CT00", "COTRN00C", null);
     }
 
     /**
@@ -179,7 +179,7 @@ class TransactionControllerTest {
                 NavigationService.Route.TRANSACTION_LIST, ScreenNavigationState.empty(), List.of(),
                 browseWindow(), "MESSAGE TEXT", fieldErrors, "TRNIDIN", true, true, false,
                 "FILTER ECHO", null, "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00",
-                "COTRN00C");
+                "COTRN00C", null);
     }
 
     /**
@@ -199,7 +199,7 @@ class TransactionControllerTest {
         return new TransactionListService.TransactionListResult(route, ScreenNavigationState.empty(),
                 rows, browseWindow(), "MESSAGE TEXT", List.of(), "TRNIDIN", false, false,
                 eraseScreen, "FILTER ECHO", selectedTransactionId, "TITLE ONE", "TITLE TWO",
-                "07/19/22", "14:23:07", "CT00", "COTRN00C");
+                "07/19/22", "14:23:07", "CT00", "COTRN00C", null);
     }
 
     /**
@@ -239,7 +239,7 @@ class TransactionControllerTest {
                 NavigationContext.empty(),
                 new com.carddemo.api.dto.PageMetadata.PageCursorRequest(
                         "PREV", "NEXT",
-                        com.carddemo.api.dto.PageMetadata.PagingDirection.FORWARD, "2", true));
+                        com.carddemo.api.dto.PageMetadata.PagingDirection.FORWARD, "2", true), null);
     }
 
     /**
@@ -437,7 +437,7 @@ class TransactionControllerTest {
                             browseWindow()));
 
             controller.listTransactions(new TransactionListRequest(null, null, List.of(),
-                    KeyAction.ENTER, NavigationContext.empty(), null), IDENTITY);
+                    KeyAction.ENTER, NavigationContext.empty(), null, null), IDENTITY);
 
             ArgumentCaptor<TransactionListService.TransactionListCommand> captor =
                     ArgumentCaptor.forClass(TransactionListService.TransactionListCommand.class);

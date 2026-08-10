@@ -211,9 +211,9 @@ class ControllerTimerFailurePathTest {
         final ReportController controller = new ReportController(service,
                 new ReportContractAdapter(new ConversationStateAdapter(new NavigationService())), registry);
         final RuntimeException failure = failure();
-        when(service.processReportRequest(any(), nullable(String.class), nullable(String.class))).thenThrow(failure);
+        when(service.processReportRequest(any())).thenThrow(failure);
 
-        assertThatThrownBy(() -> controller.requestReport(mock(ReportRequest.class), null, null))
+        assertThatThrownBy(() -> controller.requestReport(mock(ReportRequest.class), null))
                 .isSameAs(failure);
 
         assertThat(timer(registry, "carddemo.online.reportrequest.turn",

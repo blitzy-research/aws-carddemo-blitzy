@@ -409,12 +409,17 @@ public class CardController {
                     + "filter and an optional sixteen-character card filter, and reports where a row "
                     + "selection sends the client next. Answers 200 for every outcome the legacy screen "
                     + "could compose, including a rejected filter or an invalid selection: the outcome "
-                    + "is read from the body.")
+                    + "is read from the body. TO MARK A ROW, echo rowSnapshotToken exactly as the "
+                    + "previous response returned it: the legacy program reads the marked row out of "
+                    + "the seven displayed rows it carries in its own communication area, and this "
+                    + "opaque snapshot is that area's equivalent. Without it a marked row cannot be "
+                    + "resolved and the turn answers 'INVALID ACTION CODE' and re-presents the page.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The turn completed. Carries the page of rows in presentation order, the "
-                        + "browse cursors, any screen message, the positional selection indicator and "
-                        + "the route the client calls next."),
+                        + "browse cursors, any screen message, the positional selection indicator, the "
+                        + "opaque row snapshot to echo with a marked selection, and the route the client "
+                        + "calls next."),
         @ApiResponse(responseCode = "400",
                 description = "The request carried a value that could not have occupied its legacy "
                         + "screen field."),
@@ -435,6 +440,7 @@ public class CardController {
                     retainedPageNumber(request.pageMetadata()),
                     request.lastPageAlreadyShown(),
                     retainedNextPageFlag(request.pageMetadata()),
+                    request.rowSnapshotToken(),
                     this.screenStateAdapter.toNavigationState(request.navigationContext(),
                             authentication));
 
@@ -830,7 +836,8 @@ public class CardController {
                 toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 routeValueOf(result.route()),
-                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication));
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication),
+                result.rowSnapshotToken());
     }
 
     /**

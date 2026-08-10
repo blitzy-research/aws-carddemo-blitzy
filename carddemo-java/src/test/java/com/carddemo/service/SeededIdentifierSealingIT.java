@@ -17,6 +17,7 @@
 package com.carddemo.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import java.io.IOException;
@@ -170,6 +171,14 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
      * distinguishes a literal the application can read from one it cannot.
      */
     private static final int SEEDED_ENVELOPE_WIDTH = 101;
+
+    /**
+     * Width of one seeded national-identifier envelope.
+     *
+     * <p>Shorter than its sibling's by the difference between the two sealed payloads alone: this
+     * column's binding name plus nine digits, against the other's binding name plus twenty.
+     */
+    private static final int SEEDED_NATIONAL_ENVELOPE_WIDTH = 81;
 
     /** Reads both protected columns of every seeded customer row, in key order. */
     private static final String SELECT_IDENTITIES =
@@ -362,13 +371,35 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("the national identifier is left as the seed left it, because an absent value needs "
-            + "no envelope and the seed transcribes no identifier")
+    @DisplayName("the national identifier is left as the seed left it - sealed, opening under its own "
+            + "column binding and under no other")
     void theNationalIdentifierIsLeftAsTheSeedLeftIt() throws SQLException {
-        assertThat(storedIdentities())
-                .allSatisfy(row -> assertThat(row.nationalIdentifier())
-                        .as("row %s carries no seeded national identifier", row.customerKey())
-                        .isNull());
+        // This asserted that every row carried NULL. The seed now carries a sealed value for all
+        // fifty, so what "left as the seed left it" means here is that this callback converted
+        // nothing - the values arrived sealed and stay byte-identical - which is the same thing the
+        // sibling column's tests assert, and it is now assertable for both columns instead of one.
+        for (final StoredIdentity row : storedIdentities()) {
+            assertThat(row.nationalIdentifier())
+                    .as("row %s must carry a sealed national identifier, never cleartext and never"
+                            + " null", row.customerKey())
+                    .isNotNull()
+                    .startsWith(SensitiveFieldCodec.ENVELOPE_PREFIX)
+                    .hasSize(SEEDED_NATIONAL_ENVELOPE_WIDTH);
+            assertThatCode(() -> ENCRYPTION.reveal(
+                    SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, row.nationalIdentifier()))
+                    .as("row %s must open under the binding every reader of this column uses; a value"
+                            + " that does not is fifty rows of regulated data nothing can read",
+                            row.customerKey())
+                    .doesNotThrowAnyException();
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("row %s must be refused under the OTHER protected column's binding, which is"
+                            + " what proves the binding is carried rather than absent",
+                            row.customerKey())
+                    .isThrownBy(() -> ENCRYPTION.reveal(
+                            SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                            row.nationalIdentifier()))
+                    .withMessageContaining("field binding");
+        }
     }
 
     @Test
@@ -410,7 +441,7 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
 
         assertThatExceptionOfType(FlywayException.class)
                 .as("THE F3 SCENARIO AGAINST A REAL DATABASE. Nothing is pending, so the migration "
-                        + "applies no script - and it must still be refused, because the fifty seeded "
+                        + "applies no script - and it must still be refused, because the hundred seeded "
                         + "envelopes are fixed literals that no key but the one they were sealed under "
                         + "can open. Every one of them still carries the ENC1 marker, so the seal pass "
                         + "is content; only opening them sees the problem")
@@ -421,7 +452,14 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
                                 new SensitiveFieldEncryptionService(FOREIGN_KEY)))
                         .load()
                         .migrate())
-                .withMessageContaining("govt_issued_id")
+                // The named column is the national identifier rather than the government-issued one,
+                // and that is a consequence of check order rather than a choice: the callback reads
+                // both columns of a row and verifies the national one first, and it fails on the FIRST
+                // value that will not open. This assertion named govt_issued_id while the seed left
+                // cust_ssn null in every row, which made the national check a no-op; now that the seed
+                // fills it, the first value examined is the first value refused.
+                .withMessageContaining(
+                        SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD)
                 .withMessageContaining(SensitiveFieldEncryptionService.FIELD_ENCRYPTION_KEY_PROPERTY);
 
         assertThat(storedIdentities())
@@ -443,7 +481,7 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
      * One row's key and its two stored protected values.
      *
      * @param customerKey          the row's key
-     * @param nationalIdentifier   the stored national identifier, or {@code null} when unseeded
+     * @param nationalIdentifier   the stored national identifier as an {@code ENC1} envelope
      * @param governmentIdentifier the stored government-issued identifier
      */
     private record StoredIdentity(String customerKey, String nationalIdentifier,

@@ -135,6 +135,13 @@ class OpenApiRouteContractTest {
      * <p>{@code 404} is deliberately absent. The screen routes answer an absent record with a message on
      * the screen and status {@code 200}, exactly as the legacy transactions did, so publishing an
      * absent-resource status against them would contradict the contract they exist to keep.
+     *
+     * <p>{@code 409} is absent for the same reason, and one route on this list rewrites records: the
+     * account-update turn holds both records, compares them against the image it issued, and converts every
+     * conflict arm of its write range - the lock it could not take, the image that moved, the rewrite that
+     * failed - into one of the legacy's four operator texts on a {@code 200} screen. A status a route cannot
+     * emit is worse than an undocumented one, because a generated client branches on it and the branch is
+     * dead.
      */
     private static final Set<String> SECURED_SCREEN_STATUSES = Set.of("400", "401", "403", "500");
 
@@ -483,14 +490,17 @@ class OpenApiRouteContractTest {
         reachable.put("GET " + BatchJobController.BATCH_JOBS_PATH + BatchJobController.EXECUTION_SUBPATH,
                 SECURED_PATH_STATUSES);
 
-        // Rewrites a record under an optimistic version, so a lost race is reachable.
-        reachable.put("POST " + AccountController.ACCOUNT_UPDATE_PATH, SECURED_WRITE_STATUSES);
+        // Rewrites a record under an optimistic version and lets the conflict out, so a lost race is
+        // reachable. The account-update turn also rewrites under a version, and is deliberately NOT here:
+        // it catches every conflict arm of its write range and reports the legacy's own screen text with
+        // 200, so 409 is a status that route cannot produce. See the screen-status list below.
         reachable.put("POST " + BillPaymentController.BILL_PAYMENT_PATH, SECURED_WRITE_STATUSES);
         reachable.put("POST " + CardController.CARDS_BASE_PATH + CardController.CARD_UPDATE_PATH,
                 SECURED_WRITE_STATUSES);
 
         // Every remaining route is a secured screen turn reading its record from the body.
         List.of("POST " + AccountController.ACCOUNT_VIEW_PATH,
+                        "POST " + AccountController.ACCOUNT_UPDATE_PATH,
                         "POST " + AdminUserController.USERS_PATH + AdminUserController.LIST_SUBPATH,
                         "POST " + AdminUserController.USERS_PATH + AdminUserController.ADD_SUBPATH,
                         "POST " + AdminUserController.USERS_PATH + AdminUserController.UPDATE_SUBPATH,

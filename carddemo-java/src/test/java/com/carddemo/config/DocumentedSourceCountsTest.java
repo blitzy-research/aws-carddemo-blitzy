@@ -598,11 +598,18 @@ final class DocumentedSourceCountsTest {
 
             final String page = read(GATE_EVIDENCE_PAGE);
 
+            // The noun agrees with the count. When the population fell to a single class the
+            // assertion still demanded the plural, so the only text that could satisfy it read
+            // "across **one** classes" - an assertion that can be met only by ungrammatical prose
+            // is an assertion about the wrong thing. The count and the class names are still
+            // matched exactly; only the noun's number follows the figure.
+            final int carrying = classes.size();
             assertThat(page)
                     .as("the qualified uses are the exception the zero-import row depends on, so "
                             + "the row states how many there are and where")
                     .contains("**" + capitalise(numberWord(uses)) + "** fully-qualified uses")
-                    .contains("across **" + numberWord(classes.size()) + "** classes");
+                    .contains("across **" + numberWord(carrying) + "** class"
+                            + (carrying == 1 ? "" : "es"));
             classes.forEach(name -> assertThat(page)
                     .as("the row must name %s, the class carrying qualified javax references", name)
                     .contains("`" + name + "`"));

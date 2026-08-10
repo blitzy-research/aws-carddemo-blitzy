@@ -32,6 +32,7 @@ import java.util.Set;
 import java.util.stream.IntStream;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -96,10 +97,10 @@ class TransactionListRequestSecurityTest {
      */
     private static final String A_FULL_WIDTH_IDENTIFIER = "0000000000000099";
 
-    /** The six components in declaration order. A change here is a change to the REST contract. */
+    /** The seven components in declaration order. A change here is a change to the REST contract. */
     private static final List<String> COMPONENTS_IN_ORDER = List.of(
             "transactionIdFilter", "displayedPageNumber", "rowSelectors", "keyAction",
-            "navigationContext", "pageMetadata");
+            "navigationContext", "pageMetadata", "rowSnapshotToken");
 
     /** The fixed stand-in the rendering must emit in place of a withheld value. */
     private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
@@ -163,7 +164,31 @@ class TransactionListRequestSecurityTest {
     private static TransactionListRequest populated() {
         return new TransactionListRequest(TRANSACTION_ID, DISPLAYED_PAGE_NUMBER, TEN_SELECTORS,
                 KeyAction.PFK08, NavigationContext.empty().withReEntry(),
-                populatedCursor());
+                populatedCursor(), null);
+    }
+
+    /**
+     * The Jackson access a component declares, read from the record's field.
+     *
+     * <p>Read from the field rather than from the record component because {@code JsonProperty} declares
+     * no {@code RECORD_COMPONENT} target: an annotation written on a component is propagated to the
+     * field, the accessor and the constructor parameter, and asking the component itself for it answers
+     * null however plainly it is written in the source.
+     *
+     * @param  component the component name
+     * @return the declared access
+     */
+    private static JsonProperty.Access declaredAccess(final String component) {
+        try {
+            final JsonProperty declared = TransactionListRequest.class.getDeclaredField(component)
+                    .getAnnotation(JsonProperty.class);
+            assertThat(declared)
+                    .as("component %s must declare its Jackson access", component)
+                    .isNotNull();
+            return declared.access();
+        } catch (final NoSuchFieldException absent) {
+            throw new AssertionError("component " + component + " is not declared", absent);
+        }
     }
 
     /**
@@ -195,13 +220,13 @@ class TransactionListRequestSecurityTest {
     class TheComponentSetIsTheBrowseMap {
 
         @Test
-        @DisplayName("six components are declared in order")
-        void sixComponentsAreDeclaredInOrder() {
+        @DisplayName("seven components are declared in order")
+        void sevenComponentsAreDeclaredInOrder() {
             List<String> declared = Arrays.stream(TransactionListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
-            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(6);
+            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(7);
         }
 
         @Test
@@ -221,9 +246,9 @@ class TransactionListRequestSecurityTest {
         }
 
         @Test
-        @DisplayName("no row payload is declared, because the browse reads its rows from the store "
-                + "rather than trusting a client to echo them back")
-        void noRowPayloadIsDeclared() {
+        @DisplayName("no row payload is declared in the clear: the only row-derived component is the "
+                + "sealed page snapshot, and it is a write-only opaque envelope")
+        void noRowPayloadIsDeclaredInTheClear() {
             List<String> lowerCased = Arrays.stream(TransactionListRequest.class.getRecordComponents())
                     .map(component -> component.getName().toLowerCase(Locale.ROOT))
                     .toList();
@@ -233,7 +258,45 @@ class TransactionListRequestSecurityTest {
                     .noneMatch(name -> name.contains("description"))
                     .noneMatch(name -> name.contains("account"))
                     .noneMatch(name -> name.contains("card"))
-                    .noneMatch(name -> name.contains("row") && !name.equals("rowselectors"));
+                    .noneMatch(name -> name.contains("row")
+                            && !name.equals("rowselectors")
+                            && !name.equals("rowsnapshottoken"));
+
+            // The one row-derived component is admitted deliberately and under conditions. It carries no
+            // identifier a caller can read: it is the ciphertext envelope the response published over the
+            // slot map of the page it sent, which is what the legacy screen map carried back and what
+            // stops a marked slot resolving against a table that has moved since. It is bound inbound
+            // only, so it can never be composed by a client from values of its own.
+            final RecordComponent snapshot = Arrays.stream(
+                            TransactionListRequest.class.getRecordComponents())
+                    .filter(component -> "rowSnapshotToken".equals(component.getName()))
+                    .findFirst()
+                    .orElseThrow();
+            assertThat(snapshot.getType()).isEqualTo(String.class);
+            assertThat(declaredAccess("rowSnapshotToken"))
+                    .as("the snapshot is echoed inbound and published by the response, never both on "
+                            + "this contract")
+                    .isEqualTo(JsonProperty.Access.WRITE_ONLY);
+        }
+
+        @Test
+        @DisplayName("the sealed page snapshot is bound from a submission and never written back out, "
+                + "measured over the mapper rather than over the annotation")
+        void theSealedPageSnapshotIsBoundInboundAndNeverWrittenBack() throws JsonProcessingException {
+            final ObjectMapper mapper = moduleEquivalentMapper();
+            final String submitted = "ENC1:sealed-page-snapshot-stand-in";
+
+            final TransactionListRequest bound = mapper.readValue(
+                    "{\"keyAction\":\"ENTER\",\"rowSnapshotToken\":\"" + submitted + "\"}",
+                    TransactionListRequest.class);
+
+            assertThat(bound.rowSnapshotToken())
+                    .as("a submission's echoed snapshot reaches the service, or a marked row could never"
+                            + " be resolved")
+                    .isEqualTo(submitted);
+            assertThat(mapper.readTree(mapper.writeValueAsString(bound)).has("rowSnapshotToken"))
+                    .as("and this contract never publishes one: the response publishes its own")
+                    .isFalse();
         }
 
         @Test
@@ -276,8 +339,8 @@ class TransactionListRequestSecurityTest {
     class TheRenderingDisclosesNothingWhileTheWireCarriesEverything {
 
         @Test
-        @DisplayName("the rendering is exactly the retained values plus two placeholders")
-        void theRenderingIsExactlyTheFourRetainedValuesPlusTwoPlaceholders() {
+        @DisplayName("the rendering is exactly the retained values plus three placeholders")
+        void theRenderingIsExactlyTheFourRetainedValuesPlusThreePlaceholders() {
             assertThat(populated()).hasToString("TransactionListRequest["
                     + "transactionIdFilter=" + REDACTION_PLACEHOLDER_TEXT
                     + ", displayedPageNumber=" + DISPLAYED_PAGE_NUMBER
@@ -285,6 +348,7 @@ class TransactionListRequestSecurityTest {
                     + ", keyAction=" + KeyAction.PFK08
                     + ", navigationContext=" + NavigationContext.empty().withReEntry()
                     + ", pageMetadata=" + REDACTION_PLACEHOLDER_TEXT
+                    + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER_TEXT
                     + "]");
         }
 
@@ -323,12 +387,12 @@ class TransactionListRequestSecurityTest {
                 + "placeholders are constants rather than transformations")
         void twoInstancesDifferingOnlyInTheWithheldValuesRenderIdentically() {
             TransactionListRequest first = new TransactionListRequest("1111111111111111",
-                    DISPLAYED_PAGE_NUMBER, TEN_SELECTORS, KeyAction.PFK08, null, populatedCursor());
+                    DISPLAYED_PAGE_NUMBER, TEN_SELECTORS, KeyAction.PFK08, null, populatedCursor(), null);
             TransactionListRequest second = new TransactionListRequest("9999999999999999",
                     DISPLAYED_PAGE_NUMBER, TEN_SELECTORS, KeyAction.PFK08, null,
                     new PageMetadata.PageCursorRequest(
                             "OTHER", "DIFFERENT", PageMetadata.PagingDirection.BACKWARD,
-                            DISPLAYED_PAGE_NUMBER, true));
+                            DISPLAYED_PAGE_NUMBER, true), null);
 
             assertThat(first).hasToString(second.toString());
         }
@@ -338,7 +402,7 @@ class TransactionListRequestSecurityTest {
                 + "are indistinguishable in a diagnostic")
         void anAbsentWithheldValueStillRendersAsThePlaceholder() {
             TransactionListRequest sparse =
-                    new TransactionListRequest(null, null, null, null, null, null);
+                    new TransactionListRequest(null, null, null, null, null, null, null);
 
             assertThat(sparse.toString())
                     .contains("transactionIdFilter=" + REDACTION_PLACEHOLDER_TEXT)
@@ -366,7 +430,7 @@ class TransactionListRequestSecurityTest {
                     "HOPPER", "00000000099", "Y", "4111111111111111", null, null);
             TransactionListRequest request =
                     new TransactionListRequest(TRANSACTION_ID, null, null, null, identifying,
-                            null);
+                            null, null);
 
             String rendered = request.toString();
 
@@ -381,7 +445,7 @@ class TransactionListRequestSecurityTest {
         @DisplayName("the rendering is safe when every component is absent")
         void theRenderingIsSafeWhenEveryComponentIsAbsent() {
             TransactionListRequest empty =
-                    new TransactionListRequest(null, null, null, null, null, null);
+                    new TransactionListRequest(null, null, null, null, null, null, null);
 
             assertThatCode(empty::toString).doesNotThrowAnyException();
         }
@@ -482,7 +546,7 @@ class TransactionListRequestSecurityTest {
             // sixteen-character value. The first is a selector position, which is one byte wide and
             // reports a violation the moment a wider value arrives.
             assertThat(violationsOf(new TransactionListRequest(null, null,
-                    List.of(A_FULL_WIDTH_IDENTIFIER), null, null, null)))
+                    List.of(A_FULL_WIDTH_IDENTIFIER), null, null, null, null)))
                     .as("a selector position is a mark, so an identifier typed into one is refused")
                     .hasSize(1);
             assertThat(TransactionListRequest.ROW_SELECTOR_LENGTH).isEqualTo(1);
@@ -529,7 +593,7 @@ class TransactionListRequestSecurityTest {
                 + "page")
         void aSequenceOfExactlyTenSelectorsDrawsNoViolation() {
             TransactionListRequest fullPage =
-                    new TransactionListRequest(null, null, TEN_SELECTORS, null, null, null);
+                    new TransactionListRequest(null, null, TEN_SELECTORS, null, null, null, null);
 
             assertThat(violationsOf(fullPage)).isEmpty();
             assertThat(fullPage.rowSelectors()).hasSize(10);
@@ -548,7 +612,7 @@ class TransactionListRequestSecurityTest {
             // published contract states the same limit the constructor enforces.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() ->
-                            new TransactionListRequest(null, null, eleven, null, null, null))
+                            new TransactionListRequest(null, null, eleven, null, null, null, null))
                     .withMessageContaining("at most " + TransactionListRequest.ROW_COUNT)
                     .withMessageContaining("11");
         }
@@ -561,7 +625,7 @@ class TransactionListRequestSecurityTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() ->
-                            new TransactionListRequest(null, null, farTooMany, null, null, null))
+                            new TransactionListRequest(null, null, farTooMany, null, null, null, null))
                     .withMessageContaining("4096");
         }
 
@@ -582,7 +646,7 @@ class TransactionListRequestSecurityTest {
                 + "bounds are independent")
         void anOverLongSelectorElementIsStillReported() {
             TransactionListRequest badElement =
-                    new TransactionListRequest(null, null, List.of("SS"), null, null, null);
+                    new TransactionListRequest(null, null, List.of("SS"), null, null, null, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(badElement);
 
@@ -595,9 +659,9 @@ class TransactionListRequestSecurityTest {
         @DisplayName("an empty sequence and an absent one are both accepted")
         void anEmptyAndAnAbsentSequenceAreBothAccepted() {
             TransactionListRequest absent =
-                    new TransactionListRequest(null, null, null, null, null, null);
+                    new TransactionListRequest(null, null, null, null, null, null, null);
             TransactionListRequest empty =
-                    new TransactionListRequest(null, null, List.of(), null, null, null);
+                    new TransactionListRequest(null, null, List.of(), null, null, null, null);
 
             assertThat(violationsOf(absent)).isEmpty();
             assertThat(violationsOf(empty)).isEmpty();
@@ -611,7 +675,7 @@ class TransactionListRequestSecurityTest {
                 + "browse from the beginning rather than an invalid submission")
         void aBlankFilterIsTransportedRatherThanRejected(String blank) {
             TransactionListRequest request =
-                    new TransactionListRequest(blank, null, List.of(blank), null, null, null);
+                    new TransactionListRequest(blank, null, List.of(blank), null, null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.transactionIdFilter()).isEqualTo(blank);
@@ -624,7 +688,7 @@ class TransactionListRequestSecurityTest {
             TransactionListRequest spaceFilled = new TransactionListRequest(" ".repeat(16),
                     " ".repeat(8), TEN_SELECTORS, null, null,
                     new PageMetadata.PageCursorRequest(
-                            null, null, null, " ".repeat(8), false));
+                            null, null, null, " ".repeat(8), false), null);
 
             assertThat(violationsOf(spaceFilled)).isEmpty();
             assertThat(spaceFilled.transactionIdFilter()).hasSize(16).isBlank();
@@ -634,7 +698,7 @@ class TransactionListRequestSecurityTest {
         @DisplayName("a filter one character over its width is reported and never trimmed")
         void aFilterOneCharacterOverItsWidthIsReported() {
             TransactionListRequest tooWide =
-                    new TransactionListRequest("1".repeat(17), null, null, null, null, null);
+                    new TransactionListRequest("1".repeat(17), null, null, null, null, null, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(tooWide);
 
@@ -673,7 +737,7 @@ class TransactionListRequestSecurityTest {
                     null, NavigationContext.ProgramContext.REENTER, null, null, null, null, null,
                     null, null, null, null);
             TransactionListRequest request = new TransactionListRequest(null, null, null, null,
-                    overWidth, null);
+                    overWidth, null, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(request);
 
@@ -692,7 +756,7 @@ class TransactionListRequestSecurityTest {
                             "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1), null,
                             PageMetadata.PagingDirection.FORWARD, null, false);
             TransactionListRequest request =
-                    new TransactionListRequest(null, null, null, null, null, overWidth);
+                    new TransactionListRequest(null, null, null, null, null, overWidth, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(request);
 
@@ -710,7 +774,7 @@ class TransactionListRequestSecurityTest {
                             null, "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1),
                             PageMetadata.PagingDirection.BACKWARD, null, false);
             TransactionListRequest request =
-                    new TransactionListRequest(null, null, null, null, null, overWidth);
+                    new TransactionListRequest(null, null, null, null, null, overWidth, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(request);
 
@@ -741,7 +805,7 @@ class TransactionListRequestSecurityTest {
                 + "neither")
         void bothAbsentNestedComponentsAreNotViolations() {
             TransactionListRequest request =
-                    new TransactionListRequest(TRANSACTION_ID, null, null, null, null, null);
+                    new TransactionListRequest(TRANSACTION_ID, null, null, null, null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.navigationContext()).isNull();
@@ -766,7 +830,7 @@ class TransactionListRequestSecurityTest {
             List<String> withGaps = Arrays.asList(" ", "U", " ", " ", "S", " ", " ", " ", " ", " ");
 
             TransactionListRequest request = new TransactionListRequest(null, null, withGaps, null,
-                    null, null);
+                    null, null, null);
 
             assertThat(request.rowSelectors()).containsExactlyElementsOf(withGaps).hasSize(10);
             assertThat(request.rowSelectors().get(1)).isEqualTo("U");
@@ -778,7 +842,7 @@ class TransactionListRequestSecurityTest {
         void theStoredSequenceIsDetachedAndImmutable() {
             List<String> mutable = new ArrayList<>(TEN_SELECTORS);
             TransactionListRequest request = new TransactionListRequest(null, null, mutable, null,
-                    null, null);
+                    null, null, null);
 
             mutable.set(0, "X");
 
@@ -791,7 +855,7 @@ class TransactionListRequestSecurityTest {
                 + "fixed-width character fields")
         void leadingZerosSurvive() {
             TransactionListRequest request = new TransactionListRequest("0000000000000001",
-                    "00000001", null, null, null, null);
+                    "00000001", null, null, null, null, null);
 
             assertThat(request.transactionIdFilter()).isEqualTo("0000000000000001");
             assertThat(request.displayedPageNumber()).isEqualTo("00000001");
@@ -802,7 +866,7 @@ class TransactionListRequestSecurityTest {
                 + "rather than having the boundary refuse the submission")
         void aNonNumericFilterRoundTrips() {
             TransactionListRequest request = new TransactionListRequest("ABCDEF", null, null, null,
-                    null, null);
+                    null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.transactionIdFilter()).isEqualTo("ABCDEF");
@@ -816,7 +880,7 @@ class TransactionListRequestSecurityTest {
             TransactionListRequest same = populated();
             TransactionListRequest differentFilter = new TransactionListRequest("0000000000000099",
                     DISPLAYED_PAGE_NUMBER, TEN_SELECTORS, KeyAction.PFK08,
-                    NavigationContext.empty().withReEntry(), populatedCursor());
+                    NavigationContext.empty().withReEntry(), populatedCursor(), null);
 
             assertThat(first).isEqualTo(same).hasSameHashCodeAs(same);
             assertThat(first).isNotEqualTo(differentFilter);

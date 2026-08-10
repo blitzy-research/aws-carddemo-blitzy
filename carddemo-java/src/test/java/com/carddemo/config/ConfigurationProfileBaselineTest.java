@@ -1582,8 +1582,9 @@ final class ConfigurationProfileBaselineTest {
 
             assertThat(fromPackagedTest)
                     .as("an AES-GCM envelope opens under exactly ONE key, and"
-                            + " V3__seed_reference_data.sql seeds fifty customer.govt_issued_id values"
-                            + " as fixed envelope literals that every non-production profile applies."
+                            + " V3__seed_reference_data.sql seeds one hundred customer identifier"
+                            + " values - fifty govt_issued_id and fifty cust_ssn - as fixed envelope"
+                            + " literals that every non-production profile applies."
                             + " Two divergent development keys - which these documents carried"
                             + " before - make the same seeded row readable under one profile and"
                             + " unreadable under the other, and the failure appears only at the moment"
@@ -1592,7 +1593,7 @@ final class ConfigurationProfileBaselineTest {
             assertThat(fromSuiteOverlay)
                     .as("the overlay is the copy in force during a suite run, so it must agree as"
                             + " well; SeededProtectedIdentifierIT reads its key from here and opens all"
-                            + " fifty seeded values with it")
+                            + " one hundred seeded values with it")
                     .isEqualTo(fromLocal);
         }
 

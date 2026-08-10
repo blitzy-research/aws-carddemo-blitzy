@@ -21,6 +21,8 @@ import com.carddemo.api.dto.SignOnResponse;
 import com.carddemo.service.AuthenticationService;
 import com.carddemo.service.MessageCatalogService;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
@@ -46,6 +48,22 @@ import org.springframework.stereotype.Component;
  * the originating transaction and program. Nothing in it comes from the request. That is the whole point:
  * this is the one turn that establishes identity, so identity here is derived and never accepted.
  *
+ * <p><strong>The two region identifiers are configured, because the screen always carried them.</strong>
+ * The program assigns them on every send - {@code EXEC CICS ASSIGN APPLID} at line 199 and
+ * {@code ASSIGN SYSID} at line 203, each straight into the map's own output item - so an operator saw
+ * which application and which system had served the screen on every one of the six screens this
+ * transaction can present. They are not diagnostics and not optional: they are two of the fifteen
+ * components of a frozen contract, and publishing them permanently absent left a client unable to tell
+ * one deployment's screen from another's. The values cannot be assigned here, because there is no region
+ * to ask; they are therefore configuration, read once at construction from
+ * {@link #APPLICATION_ID_PROPERTY} and {@link #SYSTEM_ID_PROPERTY}, and a deployment that names neither
+ * gets the shipped pair. Each is bounded to the eight characters the map item declares, which is what the
+ * legacy move into {@code PIC X(8)} did with a longer value, and an explicitly emptied setting publishes
+ * absence rather than an empty string.
+ *
+ * <p>The two region identifiers are configuration, and the provenance of each default is recorded as
+ * decision {@code DL-330} in {@code docs/decision-log.md}.
+ *
  * <p>Provenance: {@code app/cbl/COSGN00C.cbl}, whose first-entry screen at lines 80 to 83 and screen
  * writes at lines 88, 93, 121, 126, 244, 250 and 255 are the outcomes mapped below, read as read-only
  * reference at commit SHA
@@ -57,17 +75,93 @@ import org.springframework.stereotype.Component;
 @Component
 public final class SignOnContractAdapter {
 
+    /** Setting that names the application this deployment serves the screen as. */
+    public static final String APPLICATION_ID_PROPERTY = "carddemo.region.application-id";
+
+    /** Setting that names the system this deployment serves the screen from. */
+    public static final String SYSTEM_ID_PROPERTY = "carddemo.region.system-id";
+
+    /**
+     * The application identifier a deployment that names none publishes.
+     *
+     * <p>The estate's own application name, which its CICS resource definitions carry as the group every
+     * transaction, program, map and file belongs to in {@code app/csd/CARDDEMO.CSD}, and which every
+     * dataset name carries as its middle qualifier. Exactly the eight characters the map item declares.
+     */
+    public static final String DEFAULT_APPLICATION_ID = "CARDDEMO";
+
+    /**
+     * The system identifier a deployment that names none publishes.
+     *
+     * <p>The estate names no region anywhere - there is no system initialisation table, no operator
+     * command and no job that states one - so there is no legacy literal to carry across and this is
+     * openly this module's own default rather than a recovered value. It names the platform the estate's
+     * datasets are qualified for, at the same eight characters, and a deployment that wants its own
+     * system named sets {@link #SYSTEM_ID_PROPERTY}.
+     */
+    public static final String DEFAULT_SYSTEM_ID = "AWSMFRAM";
+
+    /** Width of both region items, from {@code app/cpy-bms/COSGN00.CPY} lines 128 and 134. */
+    private static final int REGION_IDENTIFIER_WIDTH = SignOnResponse.APPLICATION_ID_LENGTH;
+
     /** Supplies the two literals the sign-on screen shares with every other screen. */
     private final MessageCatalogService messageCatalogService;
 
+    /** The configured application identifier, already bounded to the map item's width. */
+    private final String applicationId;
+
+    /** The configured system identifier, already bounded to the map item's width. */
+    private final String systemId;
+
     /**
-     * Creates the adapter over the shared message catalog.
+     * Creates the adapter over the shared message catalog and the shipped region identifiers.
      *
      * @param messageCatalogService the shared catalog
      */
     public SignOnContractAdapter(final MessageCatalogService messageCatalogService) {
+        this(messageCatalogService, DEFAULT_APPLICATION_ID, DEFAULT_SYSTEM_ID);
+    }
+
+    /**
+     * Creates the adapter over the shared message catalog and the configured region identifiers.
+     *
+     * @param messageCatalogService the shared catalog
+     * @param configuredApplicationId the application identifier this deployment publishes, bounded here
+     *                                to the map item's eight characters
+     * @param configuredSystemId the system identifier this deployment publishes, bounded the same way
+     */
+    @Autowired
+    public SignOnContractAdapter(final MessageCatalogService messageCatalogService,
+            @Value("${" + APPLICATION_ID_PROPERTY + ":" + DEFAULT_APPLICATION_ID + "}")
+            final String configuredApplicationId,
+            @Value("${" + SYSTEM_ID_PROPERTY + ":" + DEFAULT_SYSTEM_ID + "}")
+            final String configuredSystemId) {
         this.messageCatalogService = Objects.requireNonNull(messageCatalogService,
                 "messageCatalogService must not be null");
+        this.applicationId = withinScreenItem(configuredApplicationId);
+        this.systemId = withinScreenItem(configuredSystemId);
+    }
+
+    /**
+     * Bounds a configured region identifier to the screen item that carries it.
+     *
+     * <p>A longer value is cut rather than refused, which is what the move into {@code PIC X(8)} did with
+     * a longer source: the item has eight positions and keeps the first eight. A value that is absent or
+     * blank publishes absence, because a screen item full of spaces and a component carrying an empty
+     * string are the same statement - that this deployment named none - and absence says it without a
+     * client having to trim.
+     *
+     * @param  configured the setting as supplied, which may be {@code null}
+     * @return the value the response carries, or {@code null} when none was named
+     */
+    private static String withinScreenItem(final String configured) {
+        if (configured == null || configured.isBlank()) {
+            return null;
+        }
+        final String named = configured.strip();
+        return named.length() <= REGION_IDENTIFIER_WIDTH
+                ? named
+                : named.substring(0, REGION_IDENTIFIER_WIDTH);
     }
 
     /**
@@ -97,8 +191,10 @@ public final class SignOnContractAdapter {
                 screen.title02(),
                 screen.currentDate(),
                 screen.currentTime(),
-                null,
-                null);
+                // The two ASSIGN results of lines 199 and 203. Configuration rather than an assignment,
+                // because this deployment is the region; see the class note.
+                this.applicationId,
+                this.systemId);
     }
 
     /**

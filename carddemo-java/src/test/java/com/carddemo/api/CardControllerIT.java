@@ -38,6 +38,7 @@ import com.carddemo.repository.RecordWriter;
 import com.carddemo.service.AbendService;
 import com.carddemo.service.CardConcurrencyTokenService;
 import com.carddemo.service.CardDetailService;
+import com.carddemo.service.CardListPageTokenService;
 import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
 import com.carddemo.service.MessageCatalogService;
@@ -57,6 +58,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -360,6 +362,12 @@ public class CardControllerIT extends AbstractPostgresIT {
      * literals, so a reader is not left wondering which side is which.
      */
     private static final String RESPONSE_ACCOUNT_FILTER = "accountFilter";
+
+    /**
+     * The sealed copy of the seven rows a list turn displayed, published by the response and echoed by
+     * the next request under the same name.
+     */
+    private static final String PROPERTY_ROW_SNAPSHOT = "rowSnapshotToken";
 
     /** Request property naming the account identifier on the update screen. */
     private static final String PROPERTY_ACCOUNT_ID = "accountId";
@@ -742,6 +750,15 @@ public class CardControllerIT extends AbstractPostgresIT {
             body.put("pageMetadata", cursor);
         }
         body.put("lastPageAlreadyShown", flagOf(previous, "lastPageAlreadyShown"));
+        final String displayedRows = textOf(previous, PROPERTY_ROW_SNAPSHOT);
+        if (displayedRows != null && !displayedRows.isEmpty()) {
+            // COCRDLIC lines 250 to 260 keep the seven rows it displayed in its own private table, and
+            // the selection arm reads the marked slot out of that table rather than out of the file. A
+            // client of this boundary holds no such table, so the turn that displays a page hands back a
+            // sealed copy of it and the turn that marks a row echoes the copy. Echoing it here is what
+            // makes these payloads the same conversation rather than two unrelated requests.
+            body.put(PROPERTY_ROW_SNAPSHOT, displayedRows);
+        }
     }
 
     /**
@@ -1480,6 +1497,62 @@ public class CardControllerIT extends AbstractPostgresIT {
         }
 
         @Test
+        @DisplayName("the transfer carries the marked row's own account and card, taken from the page "
+                + "that displayed it rather than from whatever the store holds now")
+        void theTransferCarriesTheMarkedRowsOwnIdentity() throws Exception {
+            // COCRDLIC lines 531 to 534 and 559 to 562 transfer control with the marked row's account and
+            // card already moved into the shared area, and lines 604 to 619 take both out of the private
+            // seven-row table the displaying turn filled. No browse runs on that path, so the identity the
+            // next screen receives is the identity the operator saw - not a re-read.
+            final JsonNode pageOne = listTurn(turnWith(KeyAction.ENTER));
+            final JsonNode thirdRow = pageOne.get("rows").get(2);
+
+            final Map<String, Object> submission = turnWith(KeyAction.ENTER);
+            echoListState(submission, pageOne);
+            select(submission, 3, "S");
+            final JsonNode screen = listTurn(submission);
+
+            assertThat(textOf(screen, "nextRoute")).isEqualTo(ROUTE_CARD_DETAIL);
+            final JsonNode handedOn = screen.get("navigationContext");
+            assertThat(textOf(handedOn, PROPERTY_ACCOUNT_ID))
+                    .as("the third row's own account reaches the next screen")
+                    .isEqualTo(textOf(thirdRow, "accountNumber"));
+            assertThat(textOf(handedOn, PROPERTY_CARD_NUMBER))
+                    .as("and the third row's own card, at its full sixteen characters")
+                    .isEqualTo(textOf(thirdRow, "cardNumber"));
+        }
+
+        @Test
+        @DisplayName("a marked row that arrives without the displayed page is refused with the source's "
+                + "own invalid-action message rather than followed with a blank identity")
+        void aMarkedRowWithoutTheDisplayedPageIsRefused() throws Exception {
+            // The private table is what the selection arm reads. A submission that marks a slot without
+            // presenting the page that filled it names a row this server never displayed, and COCRDLIC has
+            // exactly one answer for a selection it cannot resolve - the invalid-action refusal of lines
+            // 125 to 126. Transferring with an empty account and card would send the next screen a key it
+            // was never given.
+            final JsonNode pageOne = listTurn(turnWith(KeyAction.ENTER));
+
+            final Map<String, Object> submission = turnWith(KeyAction.ENTER);
+            echoListState(submission, pageOne);
+            submission.remove(PROPERTY_ROW_SNAPSHOT);
+            select(submission, 3, "S");
+            final JsonNode screen = listTurn(submission);
+
+            assertThat(textOf(screen, "errorMessage")).isEqualTo(INVALID_ACTION_CODE);
+            assertThat(textOf(screen, "nextRoute"))
+                    .as("a refused selection goes nowhere: it re-presents this screen")
+                    .isEqualTo(ROUTE_CARD_LIST);
+            assertThat(selectionErrorFlagsOf(screen))
+                    .as("the refusal is positional, naming the slot the operator typed into")
+                    .containsExactly(false, false, true, false, false, false, false);
+            assertThat(textOf(screen, PROPERTY_ROW_SNAPSHOT))
+                    .as("and the re-presented page hands back a sealed copy of what it just displayed, so "
+                            + "the operator's next attempt can succeed")
+                    .isNotBlank();
+        }
+
+        @Test
         @DisplayName("the instructional text names the two action codes the selection column accepts")
         void theInstructionalTextNamesTheTwoActionCodes() throws Exception {
             final JsonNode screen = listTurn(turnWith(KeyAction.ENTER));
@@ -1576,7 +1649,7 @@ public class CardControllerIT extends AbstractPostgresIT {
             final String body = submit(listRoute(), turnWith(KeyAction.ENTER), userSession())
                     .getResponse().getContentAsString(StandardCharsets.UTF_8);
 
-            assertThat(body)
+            assertThat(applicationTextOf(body))
                     .as("no attribute byte, colour, highlight, coordinate, terminal area or generated "
                             + "control item may reach a client")
                     .doesNotContain("DFH")
@@ -2287,7 +2360,7 @@ public class CardControllerIT extends AbstractPostgresIT {
             assertThat(okBody(result).get("errorMessage").asText())
                     .as("a read that found nothing is reported in the screen's own words")
                     .isEqualTo(NO_CARDS_FOR_SEARCH);
-            assertThat(body)
+            assertThat(applicationTextOf(body))
                     .as("neither the prefix nor a bare interface status reaches the caller")
                     .doesNotContain(FILE_ERROR_PREFIX)
                     .doesNotContain("\"23\"")
@@ -2693,7 +2766,7 @@ public class CardControllerIT extends AbstractPostgresIT {
             bodies.add(bodyOf(submit(updateRoute(), null, userSession())));
 
             for (final String body : bodies) {
-                assertThat(body)
+                assertThat(applicationTextOf(body))
                         .doesNotContain("Exception")
                         .doesNotContain("com.carddemo")
                         .doesNotContain("org.springframework")
@@ -2760,6 +2833,7 @@ public class CardControllerIT extends AbstractPostgresIT {
     @Import({CardController.class, GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class,
             ModuleErrorController.class, ScreenStateAdapter.class, CardListService.class,
             CardDetailService.class, CardUpdateService.class, CardConcurrencyTokenService.class,
+            CardListPageTokenService.class,
             SensitiveFieldEncryptionService.class, NavigationService.class, MessageCatalogService.class,
             AbendService.class, OnlineTransactionBoundary.class, RecordWriter.class,
             SignOnStateService.class, SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class})
@@ -2783,4 +2857,38 @@ public class CardControllerIT extends AbstractPostgresIT {
             return FIXED_CLOCK;
         }
     }
+
+    /**
+     * Matches one sealed envelope literal, marker and Base64 body together, including its quotes.
+     *
+     * <p>The character class is the standard Base64 alphabet plus its padding, which is the whole of what
+     * the codec emits, so the match ends at the closing quote of the value and reaches no further.
+     */
+    private static final Pattern SEALED_VALUE = Pattern.compile("\"ENC1:[A-Za-z0-9+/=]*\"");
+
+    /**
+     * Returns one response body with every sealed opaque value replaced by a fixed placeholder.
+     *
+     * <p><strong>Why a scan of a raw body needs this.</strong> Several assertions in this class read the
+     * whole body as text and require that a short literal does not appear anywhere in it - a
+     * transaction-manager prefix, a terminal colour name, an exponent marker. That is the right question
+     * to ask of text the application composed. It is the wrong question to ask of a page token, whose
+     * value is Base64 over a fresh initialisation vector and an authentication tag, so its characters are
+     * drawn from {@code A-Za-z0-9+/=} at random on every call. A two-character literal made of those
+     * characters therefore appears inside a token roughly two and a half times in a hundred, and a
+     * three-character one about once in two thousand five hundred: not never, and not reproducibly.
+     *
+     * <p>Scanning the raw body was sound while no body carried ciphertext, and it produced exactly the
+     * failure this predicts once one did - {@code "E+"} matched inside {@code ...aUCzE+Kjh...}. Eliding
+     * the sealed value asks the intended question of the intended subject and removes the dependence on
+     * random bytes altogether, rather than weakening any assertion: every literal each caller forbids is
+     * still forbidden everywhere the application's own text appears.
+     *
+     * @param  body the response body as transmitted
+     * @return the same text with each sealed value replaced by a placeholder carrying none of its bytes
+     */
+    private static String applicationTextOf(final String body) {
+        return SEALED_VALUE.matcher(body).replaceAll("\"<sealed>\"");
+    }
+
 }

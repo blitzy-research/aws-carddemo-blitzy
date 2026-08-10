@@ -124,45 +124,42 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <p><strong>The source's statement order is transaction, then balance, then account - the reverse of
  * the batch posting order.</strong> Both orderings are contractual for their own tier and the two are
- * deliberately not aligned. The <em>reported</em> order is the source's and is preserved exactly: the
- * insert's arm is applied first and the rewrite's arm second. The order the two stores are
- * <em>executed</em> in is deliberately inverted, for the connection-budget reason recorded below.
- * Because the amount paid <em>is</em> the full current balance, the resulting balance is exactly zero.
+ * deliberately not aligned. That order is the order the two stores are <strong>executed</strong> in here as
+ * well as the order their arms are reported in: the payment is stored first, the account is settled second,
+ * and the insert's arm is applied before the rewrite's. Because the amount paid <em>is</em> the full current
+ * balance, the resulting balance is exactly zero.
  *
- * <p><strong>The account row is held exclusively from the confirmed read to the rewrite, and the
- * exclusion is what makes two operators behave as the legacy's two tasks did.</strong> The legacy read at
- * line 343 takes {@code UPDATE} against a file the region defines with {@code UPDATEMODEL(LOCKING)}
- * ({@code app/csd/CARDDEMO.CSD}), so the record is held from that read until the rewrite at line 235
- * releases it. Two operators confirming the same account could not interleave: the second waited at its
- * own read, then saw the settled balance and took the nothing-to-pay arm at lines 197 to 206, so the
- * legacy posted exactly <em>one</em> transaction however many times the payment was submitted. The
- * translated turn reproduces that literally. The confirmed sequence opens one
- * {@link OnlineTransactionBoundary} unit whose first statement re-reads the account row {@code FOR
- * UPDATE}; the balance test of lines 198 and 199 is re-evaluated on what the lock granted; the settlement
- * of lines 234 and 235 is performed inside that same unit; and a second operator waits there, then reads
- * the settled balance and reaches the nothing-to-pay arm. One transaction is posted because the second one
- * is never minted - not because a second one is rolled back.
+ * <p><strong>Two sequential units of work, in the source's durable order.</strong> Unit one re-reads the
+ * account row {@code FOR UPDATE}, re-evaluates the balance test of lines 198 and 199 on what the lock
+ * granted, takes the amount from that held balance and performs the allocate-and-write span of lines 212 to
+ * 233. Unit two re-reads the row {@code FOR UPDATE}, performs the computation of line 234 and the rewrite of
+ * line 235. Neither is nested inside the other, so a thread holds exactly one connection at a time: N
+ * simultaneous turns need N connections rather than 2N, and a pool sized to the number of turns cannot
+ * deadlock against itself. Nothing about the pool is tuned to obtain that.
  *
- * <p><strong>The transaction insert is durable on its own, and a refused rewrite does not undo it.</strong>
- * Both files are defined {@code RECOVERY(NONE)} with {@code JOURNAL(NO)}, so a legacy record write is
- * durable the moment it completes; and the source performs lines 234 and 235 whether or not the write at
- * line 233 succeeded, testing no flag between them. A {@code REWRITE} that fails after a {@code WRITE}
- * that succeeded therefore leaves the transaction stored and the account unsettled, and the operator is
- * told the account could not be updated. That independence is obtained by running the allocation and the
- * insert in a <strong>second unit of work that follows the settlement unit rather than nesting inside
- * it</strong>: the record survives a rewrite that rolled back, because the rewrite's unit ended before this
- * one began, and a refused insert leaves the settled account settled. Sharing one unit between the two
- * stores reproduced neither - it discarded a stored transaction, which no legacy mechanism does.
+ * <p><strong>Why the payment has to be the store that becomes durable first.</strong> Both files are defined
+ * {@code RECOVERY(NONE)} with {@code JOURNAL(NO)}, so a legacy record write is durable the moment it
+ * completes, and the source performs lines 234 and 235 whether or not the write at line 233 succeeded,
+ * testing no flag between them. The partial states the legacy could reach are therefore a stored payment
+ * against an unsettled account - a {@code REWRITE} that failed after a {@code WRITE} that succeeded, which
+ * tells the operator the account could not be updated - and a settled account with no payment, only when the
+ * {@code WRITE} itself was refused and its own arm said so. A turn interrupted between the two units here
+ * reaches the first of those and never the second, which is why the units run in this order and not the
+ * other. Making the two stores one atomic unit would reproduce neither: it would discard a stored payment on
+ * a rewrite failure, which no legacy mechanism does.
  *
- * <p><strong>&#9733; A turn holds ONE connection at a time, and the choreography is what guarantees
- * it.</strong> The two units are sequential and never nested. Nesting them made a thread hold the
- * account row's connection while asking the pool for a second one, so at a pool sized to the number of
- * simultaneous turns every thread waited for a connection every other thread was holding and no turn
- * could finish. Nothing about the pool is tuned to hide that: the second unit simply begins after the
- * first has committed. The execution order of the two stores is the reverse of the source's, and the
- * <em>reported</em> order is unchanged - both arms are applied after both units, the insert's first -
- * because every arm the source can reach is preserved by the ordering above. Recorded as {@code DL-291} in
- * {@code docs/decision-log.md}, which supersedes the nesting recorded in {@code DL-277}.
+ * <p><strong>What the row lock buys, and what it no longer buys.</strong> The legacy read at line 343 takes
+ * {@code UPDATE} against a file the region defines with {@code UPDATEMODEL(LOCKING)}
+ * ({@code app/csd/CARDDEMO.CSD}), so the record was held from that read until the rewrite at line 235
+ * released it, and two operators confirming the same account could not interleave: the second waited at its
+ * own read, then saw the settled balance and took the nothing-to-pay arm at lines 197 to 206. A relational
+ * lock cannot span two units of work, so each unit takes it for itself. Within an instance the exclusion is
+ * still complete, because a turn is admitted to the confirmed sequence one at a time and the operator
+ * admitted second finds the settled balance and never mints; across instances a window opens between the two
+ * units in which a second operator could mint a second payment. That residual is recorded in
+ * {@code docs/decision-log.md} rather than closed, because closing it would mean making the two stores one
+ * unit and losing the source's durable order. One transaction is posted because a second one is never
+ * minted - never because a second one is rolled back.
  *
  * <p><strong>Every arm is applied after its unit has completed.</strong> A refused store marks its unit for
  * rollback, so an arm applied from inside it would not be the turn's outcome. The insert's arm and the
@@ -1064,37 +1061,39 @@ public final class BillPaymentService {
      * not interleave.</strong> Its account read at line 343 takes {@code UPDATE} against a file defined
      * {@code UPDATEMODEL(LOCKING)}, so the second task confirming the same account waited at its own
      * read, then observed the settled balance and took the nothing-to-pay arm at lines 197 to 206: one
-     * transaction, however many submissions. This schema holds no record lock - it carries a version on
-     * the account and checks it on write - so the equivalent exclusion has to come from the unit of work.
-     The row lock the settlement unit takes is what
-     * excludes a second operator: it waits at that lock and then reads the settled balance, so it reaches
-     * the nothing-to-pay arm and never mints at all - one transaction, however many submissions.
+     * transaction, however many submissions. A relational lock cannot span two units of work, and the two
+     * stores are two units here because the source's durable order requires it, so each unit takes the row
+     * {@code FOR UPDATE} as its own first statement and the turn as a whole is admitted one at a time.
+     * Within an instance that is the same exclusion: the operator admitted second reads the settled balance
+     * and reaches the nothing-to-pay arm without minting. The residual cross-instance window between the two
+     * units is recorded in {@code docs/decision-log.md} rather than closed, because closing it would mean
+     * making the two stores one unit and abandoning the source's order.
      *
      * <p><strong>A handled write failure must not be able to poison the rest of the turn.</strong> The
      * insert paragraph translates a refused write into an operator message and the sequence continues,
      * and the source performs the balance computation and the rewrite unconditionally, testing no flag
      * between them. Both files are defined {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}, so the legacy
      * backs neither out. A refused insert marks its own unit for rollback and nothing else: the settlement
-     * committed in an earlier unit, so the rewrite the source performs regardless has already happened and
-     * the refusal reaches only the insert's own arm.
+     * unit runs afterwards regardless, exactly as lines 234 and 235 do, and the refusal reaches only the
+     * insert's own arm. A refused rewrite likewise reaches only its own arm, and the payment the earlier
+     * unit committed stays stored.
      *
      * <p><strong>The identifier rule still holds, because the allocation lock is taken as the store
      * unit's first statement.</strong> Under the {@code READ COMMITTED} isolation this module runs at, a
      * row another transaction has inserted but not yet committed is invisible, so a unit of work does not
      * by itself stop two concurrent payments from observing the same maximum. The unit therefore takes
      * {@link TransactionRepository#lockIdentifierAllocation(long)} before the maximum is read; the lock is
-     * transaction-scoped, so it is held across the increment, the insert, its flush and now the account
-     * rewrite as well, and is released when the unit ends. Holding it over the rewrite is a deliberate
-     * consequence of sharing the unit: it extends the serialised section by one keyed read and one update,
-     * and in exchange the conflict between two concurrent payments is detected deterministically rather
-     * than raced for.
+     * transaction-scoped, so it is held across the increment, the insert and its flush, and is released
+     * when that unit ends. The settlement unit that follows takes no allocation lock, because it allocates
+     * nothing - which keeps the serialised section to exactly the statements that mint an identifier.
      *
      * <p>The turns that touch no data at all - a transfer, a cleared screen, an unmapped key - open no
      * unit of work whatsoever, which is what makes an unconfirmed submission cost one keyed read and
      * nothing else.
      *
      * <p>The persistence boundary this section describes is recorded in {@code docs/decision-log.md}
-     * DL-277.
+     * DL-277, and the order the two units run in - the source's own store-then-settle - is recorded as
+     * DL-323, which corrects the order DL-277 and DL-291 state.
      *
      * <h2>What this method throws</h2>
      *
@@ -1461,27 +1460,27 @@ public final class BillPaymentService {
      * first rollback after an identifier is consumed guarantees a gap - after which a sequence would
      * diverge from the legacy numbering for the remaining life of the table.
      *
-     * <h2>Two sequential units of work, and why they are not one and are not nested</h2>
+     * <h2>Two sequential units of work, in the source's durable order, and why they are not one</h2>
      *
-     * <p><strong>Unit one</strong> re-reads the account row {@code FOR UPDATE}, re-evaluates the balance
-     * test of lines 198 and 199 on what the lock granted, and performs the computation of line 234 and the
-     * rewrite of line 235. That is what reproduces the legacy's exclusion: its account read at line 343
-     * takes {@code UPDATE} against a file defined {@code UPDATEMODEL(LOCKING)}, so the record was held from
-     * the read to the rewrite and a second operator confirming the same account waited, then read the
-     * settled balance and took the nothing-to-pay arm - one transaction, however many submissions. Here the
-     * second operator waits at the same row lock and then reads the settled balance, so it never mints.
+     * <p><strong>Unit one</strong> re-reads the account row {@code FOR UPDATE}, re-evaluates the balance test
+     * of lines 198 and 199 on what the lock granted, takes the amount from that held balance, and performs
+     * the allocate-and-write span of lines 212 to 233. The row lock is what keeps the balance the amount is
+     * derived from from moving underneath the record being assembled, and what makes a second operator
+     * confirming the same account wait rather than read a stale balance.
      *
-     * <p><strong>Unit two</strong> takes the allocation lock, reads the maximum, increments, assembles the
-     * record and inserts it. It begins only once unit one has ended, so a turn holds exactly ONE connection
-     * at a time; nesting it inside unit one made a thread hold one connection while asking the pool for
-     * another, which starves a pool sized to the number of simultaneous turns.
+     * <p><strong>Unit two</strong> re-reads the row {@code FOR UPDATE} and performs the computation of line
+     * 234 and the rewrite of line 235. It begins only once unit one has ended, so a turn holds exactly ONE
+     * connection at a time; nesting either unit inside the other made a thread hold one connection while
+     * asking the pool for another, which starves a pool sized to the number of simultaneous turns.
      *
-     * <p>Both files are defined {@code RECOVERY(NONE)} with {@code JOURNAL(NO)} and the source tests no
-     * flag between line 233 and lines 234 and 235, so the two stores are independent in <em>both</em>
-     * directions and the two separate units reproduce that exactly: a rewrite that rolled back leaves a
-     * transaction that unit two stores, and an insert that is refused leaves the account unit one settled.
-     * One shared unit would reproduce neither - it would discard a stored transaction on a rewrite failure,
-     * which no legacy mechanism does.
+     * <p><strong>The order is the source's, and it is the order the two stores become durable in.</strong>
+     * Both files are defined {@code RECOVERY(NONE)} with {@code JOURNAL(NO)} and the source tests no flag
+     * between line 233 and lines 234 and 235, so the two stores are independent in <em>both</em> directions:
+     * a rewrite that rolls back leaves the payment unit one stored, and a refused insert still leaves lines
+     * 234 and 235 to run. A turn interrupted between the units therefore leaves a stored payment against an
+     * unsettled account - the state a legacy {@code WRITE} followed by an interrupted {@code REWRITE} left -
+     * and never a settled balance with no payment record. One shared unit would reproduce neither, because it
+     * would discard a stored payment on a rewrite failure, which no legacy mechanism does.
      *
      * @param state the turn's working storage
      */
@@ -1489,9 +1488,9 @@ public final class BillPaymentService {
         // Line 211 runs READ-CXACAIX-FILE. A keyed read, outside any unit of work.
         readCxacaixFile(state);
 
-        // Lines 212 to 235: settle the held account, then allocate the identifier, assemble the record and
-        // insert it - as two SEQUENTIAL units of work, each holding one connection, whose failures are
-        // translated into the source's own response arms after the unit that failed has rolled back.
+        // Lines 212 to 235: hold the account row and store the payment, then settle the account - as two
+        // SEQUENTIAL units of work in that order, each holding one connection, whose failures are translated
+        // into the source's own response arms after the unit that failed has rolled back.
         performConfirmedWrites(state);
     }
 
@@ -1507,18 +1506,17 @@ public final class BillPaymentService {
      * makes the translated arm the actual outcome, which is the behaviour both legacy paragraphs have.
      *
      * <p><strong>&#9733; One connection at a time, and that is a correctness property rather than a
-     * tuning one.</strong> Unit one holds the account row and settles it; unit two allocates the identifier
-     * and stores the transaction; the second begins only after the first has ended. A thread therefore
-     * never holds one connection while asking the pool for another, so N simultaneous turns need N
-     * connections rather than 2N and a pool sized to the number of turns cannot deadlock against itself.
-     * No pool figure is stated, raised or tuned anywhere to obtain this.
+     * tuning one.</strong> Unit one holds the account row and stores the payment; unit two holds the row
+     * again and settles it; the second begins only after the first has ended. A thread therefore never holds
+     * one connection while asking the pool for another, so N simultaneous turns need N connections rather
+     * than 2N and a pool sized to the number of turns cannot deadlock against itself. No pool figure is
+     * stated, raised or tuned anywhere to obtain this.
      *
-     * <p><strong>The execution order of the two stores is the reverse of the source's, and every arm the
-     * source can reach is still reachable and still reported in the source's order.</strong> The settlement
-     * runs first because the exclusion that posts exactly one payment per account is the row lock it holds;
-     * the store runs second because it must survive a rewrite that rolled back. Both stores are
-     * unrecoverable in the legacy and the source tests no flag between them, so neither order is observable
-     * except through the arms, and the arms are applied insert-first below.
+     * <p><strong>The execution order of the two stores is the source's own - line 233 before lines 234 and
+     * 235 - and the arms are reported in that same order.</strong> The payment becomes durable first because
+     * that is the only partial state the legacy could reach when a store failed midway: a {@code WRITE} that
+     * completed and a {@code REWRITE} that did not. Settling first would produce the opposite partial state,
+     * which no legacy sequence can reach, and making the two one atomic unit would produce neither.
      *
      * <p><strong>Six outcomes, and each reaches its own arm or pair of arms.</strong>
      *
@@ -1528,15 +1526,17 @@ public final class BillPaymentService {
      *       performs both evaluations and in that order - which is also why a successful payment can carry
      *       the recoloured message of line 526 <em>and</em> a rewrite failure's text, exactly as the legacy
      *       leaves the colour set when a later arm writes a new message.</li>
-     *   <li>The insert was refused or failed after the account was settled. The insert's duplicate arm at
-     *       lines 533 and 534 or its catch-all at lines 540 to 546 is applied, then the rewrite's own arm -
-     *       because the source performs lines 234 and 235 whether or not the write at 233 succeeded, and
-     *       the settlement here has already committed in a unit the insert's rollback cannot reach.</li>
-     *   <li>The rewrite failed. <strong>The record is still stored.</strong> The settlement unit rolled back
-     *       and the store unit then ran anyway, so both arms are applied, the insert's first: the operator is
-     *       told the identifier that was stored and then that the account could not be updated, which is
-     *       exactly the state a legacy {@code REWRITE} failure leaves behind over files defined
+     *   <li>The insert was refused, or its unit failed to commit. The insert's duplicate arm at lines 533
+     *       and 534 or its catch-all at lines 540 to 546 is applied, and the settlement unit still runs and
+     *       still reports its own arm - because the source performs lines 234 and 235 whether or not the
+     *       write at 233 succeeded and tests no flag between them.</li>
+     *   <li>The rewrite failed. <strong>The payment is still stored.</strong> The settlement unit rolled back
+     *       after unit one had committed, so both arms are applied, the insert's first: the operator is told
+     *       the identifier that was stored and then that the account could not be updated, which is exactly
+     *       the state a legacy {@code REWRITE} failure leaves behind over files defined
      *       {@code RECOVERY(NONE)} with {@code JOURNAL(NO)}.</li>
+     *   <li>The row the rewrite addresses is gone. The rewrite paragraph's own invalid-key arm at lines 390
+     *       to 395 reports it, and the payment stays stored.</li>
      *   <li>The held read was refused. The source's own account-read arms report it - not found, or the
      *       read's catch-all - and nothing was written, because the turn never reached the allocation.</li>
      *   <li>The lock was granted over an account another operator had already settled. The balance test of
@@ -1544,25 +1544,25 @@ public final class BillPaymentService {
      *       206 - which is the arm the legacy's second task reached after waiting at its own
      *       {@code READ ... UPDATE}. Nothing was written and no identifier was minted, so one transaction is
      *       posted because a second one never was.</li>
-     *   <li>Something with no arm in the source failed - the held read's own machinery, the settlement
-     *       unit's commit, the advisory lock, or the existence probe. It propagates unchanged; the flag the
+     *   <li>Something with no arm in the source failed before the record was assembled - the held read's own
+     *       machinery, the advisory lock, or the existence probe. It propagates unchanged; the flag the
      *       record assembly sets immediately before the insert is what distinguishes those from a write's
-     *       own failure.</li>
+     *       own failure, and nothing has been stored or settled.</li>
      * </ul>
      *
-     * <p><strong>A concurrent modification is no longer one of them.</strong> The row is held exclusively
-     * from the settlement unit's first statement, so no other writer can move it between the read and the
-     * rewrite. The domain conflict is still translated, for a provider that reports one for some other
-     * reason, and it leaves this method rather than becoming a message - and in that case nothing has been
-     * minted or stored at all, because the store unit has not begun.
+     * <p><strong>A concurrent modification is not among them in practice.</strong> Each unit holds the row
+     * exclusively from its own first statement, so no other writer can move it between that read and that
+     * store. The domain conflict is still translated, for a provider that reports one for some other reason,
+     * and it leaves this method rather than becoming a message - from unit one with nothing stored and
+     * nothing settled, and from unit two with the payment stored and the account unsettled, which is the
+     * legacy's own refused-rewrite state.
      *
      * <p>A failure raised at commit rather than at flush is the failing unit's own and reaches that unit's
      * arm, which is only observable at all because each unit completes out here rather than at the end of
      * the turn.
      *
      * @param state the turn's working storage
-     * @throws OptimisticLockConflictException if the provider reports a conflict on the held row, in which
-     *                                         case the account is not settled and no transaction is stored
+     * @throws OptimisticLockConflictException if the provider reports a conflict on a held row
      */
     private void performConfirmedWrites(final TurnState state) {
         // Admitted BEFORE the unit opens, so a turn that has to wait waits holding no connection. See
@@ -1606,22 +1606,27 @@ public final class BillPaymentService {
      * The confirmed write itself, running with this instance's permit held.
      *
      * <p>Split from {@link #performConfirmedWrites(TurnState)} only so the permit's release is a single
-     * {@code finally} rather than one on each of six exits. Every arm below is unchanged by the split.
+     * {@code finally} rather than one on each of the exits below. Every arm below is unchanged by the split.
      *
      * @param state the turn's working storage
      * @throws OptimisticLockConflictException if the provider reports a conflict on the held row
      */
     private void performConfirmedWritesAdmitted(final TurnState state) {
         // ---------------------------------------------------------------------------------------------
-        // UNIT ONE: hold the account row, re-check the balance on what the lock granted, and settle it.
-        // One connection, and it is released at commit before the second unit asks for one.
+        // UNIT ONE: hold the account row, re-check the balance on what the lock granted, capture the
+        // amount the record will carry, then allocate the identifier, assemble the record and STORE it.
+        //
+        // This is line 233 - PERFORM WRITE-TRANSACT-FILE - and the source performs it BEFORE the
+        // computation of line 234 and the rewrite of line 235. The durable order is therefore
+        // transaction-then-account here as well: a turn that stops between the two units leaves a stored
+        // payment against an unsettled account, which is exactly the partial state a legacy WRITE
+        // followed by an interrupted REWRITE left behind over files defined RECOVERY(NONE) with
+        // JOURNAL(NO). The opposite partial state - a settled balance with no payment record - is one the
+        // legacy could not reach and this order does not produce.
         // ---------------------------------------------------------------------------------------------
-        boolean rewriteRefused = false;
+        final WriteResponse writeResponse;
         try {
-            this.transactionBoundary.execute(() -> {
-                holdAndSettleAccount(state);
-                return Boolean.TRUE;
-            });
+            writeResponse = holdAccountAndStoreTransaction(state);
         } catch (final HeldReadRefusedException heldReadRefused) {
             // The held read is the source's own account read, so it takes that paragraph's arms. Nothing
             // was written: the turn never reached the allocation or the record.
@@ -1636,93 +1641,175 @@ public final class BillPaymentService {
             state.createdTransaction = null;
             applyNothingToPayArm(state);
             return;
-        } catch (final RewriteRolledBackException rewriteRolledBack) {
-            // The rewrite's own catch-all arm was resolved inside the unit and the unit then rolled back,
-            // so the account is NOT settled. The transaction is still written below, because the source
-            // performs its write at line 233 before the rewrite at line 235 and tests no flag between
-            // them: a failed REWRITE over a file defined RECOVERY(NONE) leaves a WRITE that happened.
-            rewriteRefused = true;
         } catch (final OptimisticLockConflictException conflict) {
             // The turn's outcome rather than a message, and it is caught here only to be re-raised. It is
             // not reachable through a lost version race - the row is held exclusively from the first
             // statement of this unit - and remains translated for a provider that reports a conflict for
-            // some other reason. The account was not settled, so no rewrite arm may claim it was, and
-            // nothing has been minted or stored.
+            // some other reason. Nothing was stored and the account was not settled.
+            state.createdTransaction = null;
             throw conflict;
-        } catch (final RuntimeException unitFailure) {
-            // Not a response to a write: the held read or the unit's own commit failed, and neither has an
-            // arm in the source. Propagating is what this service does with a failure it has no message
-            // for. Nothing was minted and nothing was stored.
-            LOG.error("The bill-payment account settlement did not complete: failureChain={}",
-                    FailureDiagnostics.failureChainOf(unitFailure));
-            throw unitFailure;
         }
 
         // ---------------------------------------------------------------------------------------------
-        // UNIT TWO: allocate the identifier and store the transaction, in a unit of its own.
+        // UNIT TWO: settle the account - the computation of line 234 and the rewrite of line 235 - in a
+        // unit of its own.
         //
-        // SEQUENTIAL AND NOT NESTED, and that is the whole point of this shape. A thread holds exactly
-        // one connection at a time, so N simultaneous turns need N connections and never 2N; the earlier
-        // shape held the account row's connection while asking the pool for a second one, and at a pool
-        // sized to the number of turns every thread waited for a connection every other thread was
-        // holding. No pool figure is tuned anywhere to compensate - the choreography is what changed.
+        // SEQUENTIAL AND NOT NESTED. It begins only after unit one has ended, so a thread holds exactly
+        // one connection at a time: N simultaneous turns need N connections rather than 2N, and a pool
+        // sized to the number of turns cannot deadlock against itself. No pool figure is tuned anywhere
+        // to obtain that.
         //
-        // It runs whether or not the rewrite committed, because the source writes the transaction before
-        // the rewrite and tests no flag between them. Its own failure leaves the settled account settled,
-        // which is exactly the state the legacy reached when its WRITE was refused and lines 234 and 235
-        // ran regardless.
+        // It runs whether or not the transaction was stored, because the source performs lines 234 and 235
+        // after line 233 and tests no flag between them; and its own failure leaves the stored transaction
+        // stored, which is the state a refused legacy REWRITE left behind.
         // ---------------------------------------------------------------------------------------------
-        final WriteResponse response = mintAndStoreTransaction(state);
+        final FileResponse rewriteResponse = settleHeldAccount(state);
 
         // EVALUATE WS-RESP-CD at lines 522 to 547, applied now that both units have completed, and then
         // the rewrite's own evaluation at lines 387 to 403. Both are applied and in that order, because
-        // the source performs both evaluations and in that order - the execution order of the two stores
-        // is not the order their arms are reported in.
-        applyWriteResponse(state, response);
-        applyRewriteResponse(state,
-                rewriteRefused ? FileResponse.OTHER : state.rewriteResponse);
+        // the source performs both evaluations and in that order.
+        applyWriteResponse(state, writeResponse);
+        applyRewriteResponse(state, rewriteResponse);
     }
 
     /**
-     * The held read of line 343 and the settlement of lines 234 and 235, executed inside <strong>one</strong>
-     * unit of work that holds exactly one connection.
+     * <strong>Unit one.</strong> The held read of line 343 and the transaction store of line 233, executed
+     * inside one unit of work that holds exactly one connection.
      *
-     * <p>Takes the held read first, so the balance the settlement is computed from and the row it stores are
-     * both read under the row lock, and then performs the computation at line 234 and the store half of the
-     * account rewrite at line 235. The amount the transaction will carry is captured here from the same held
-     * balance, because the record is assembled and stored by the unit that follows this one.
+     * <p>Takes the held read first, so the balance the amount is taken from is read under the row lock, and
+     * then performs the allocate-and-write span of lines 212 to 233. The amount the record carries is
+     * captured here from that same held balance, which is what keeps the stored payment and the balance the
+     * next unit settles describing the same money.
      *
-     * <p><strong>What this unit deliberately does NOT do is mint or store the transaction.</strong> The
-     * transaction is stored by a second, sequential unit. Nesting the insert inside this unit made a thread
-     * hold this unit's connection while asking the pool for another, which starves a pool sized to the
-     * number of concurrent turns; running the two units one after the other bounds a turn to one connection
-     * at a time. The exclusion that makes exactly one payment post per account is unaffected: it comes from
-     * this unit's row lock plus the settled balance the next operator reads, not from spanning both stores.
+     * <p><strong>What this unit deliberately does NOT do is settle the account.</strong> The computation of
+     * line 234 and the rewrite of line 235 belong to a second, sequential unit, because the source performs
+     * them <em>after</em> the write at line 233 and tests no flag between them - so the transaction has to
+     * be the store that becomes durable first. Nesting the settlement inside this unit would make the two
+     * stores one atomic unit, which no legacy mechanism provides: both files are defined
+     * {@code RECOVERY(NONE)} with {@code JOURNAL(NO)}, so a refused rewrite left a stored transaction
+     * behind and nothing rolled it back.
      *
-     * <p>Nothing is reported to the operator from in here. A refused rewrite marks the unit for rollback, so
-     * an arm applied from inside it would not be the turn's outcome.
+     * <p><strong>What the row lock still buys.</strong> It is taken as this unit's first statement and held
+     * until the unit ends, so the balance the amount is derived from cannot move underneath the record being
+     * assembled, and a second operator confirming the same account waits here rather than reading a stale
+     * balance. Combined with the confirmed-write admission this method runs under, that is what keeps
+     * exactly one payment minted per account within an instance: the operator admitted second finds the
+     * settled balance and takes the nothing-to-pay arm without minting. See
+     * {@code docs/decision-log.md} for the residual cross-instance window this durable order reopens, which
+     * is recorded rather than closed because closing it would require making the two stores one unit.
+     *
+     * <p>Nothing is reported to the operator from in here. A refused write marks the unit for rollback, so
+     * an arm applied from inside it would not be the turn's outcome; the arm the write resolved to is
+     * returned and applied by the caller.
      *
      * @param state the turn's working storage
+     * @return the arm the write of line 233 resolved to, which the caller applies
      * @throws HeldReadRefusedException        if the held read did not resolve the account row
      * @throws SettledAccountException         if the held row's balance was already settled
      * @throws OptimisticLockConflictException if the provider reports a conflict on the held row
-     * @throws RewriteRolledBackException      if the rewrite failed for any other reason, which rolls back
-     *                                         this unit and leaves the account unsettled
      */
-    private void holdAndSettleAccount(final TurnState state) {
-        // PERFORM READ-ACCTDAT-FILE, line 343, re-performed as the HELD read: the row is locked for the
-        // rest of this unit, the balance is re-checked on what the lock granted, and the two arms that end
-        // the turn leave through their own markers.
-        holdAccountForConfirmedWrites(state);
+    private WriteResponse holdAccountAndStoreTransaction(final TurnState state) {
+        try {
+            return this.transactionBoundary.execute(() -> {
+                // PERFORM READ-ACCTDAT-FILE, line 343, re-performed as the HELD read: the row is locked for
+                // the rest of this unit, the balance is re-checked on what the lock granted, and the two
+                // arms that end the turn leave through their own markers.
+                holdAccountForConfirmedWrites(state);
 
-        // COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT at line 234 and PERFORM UPDATE-ACCTDAT-FILE at
-        // line 235. Because the amount is the whole current balance, the settled figure is exactly zero.
-        // The amount the transaction will carry is taken from the balance THIS lock granted, which is what
-        // keeps the stored transaction and the settled balance describing the same money even though the
-        // record is stored by the unit that follows.
-        state.settledAmount = currentBalanceOfRecord(state);
-        computePostPaymentBalance(state);
-        updateAcctdatFile(state);
+                // The amount line 230 moves into TRAN-AMT: the whole balance the lock granted. Captured
+                // before the record is assembled and read again by the settlement unit, so both stores
+                // describe the same money.
+                state.settledAmount = currentBalanceOfRecord(state);
+
+                // Lines 212 to 233.
+                return allocateAndInsert(state);
+            });
+        } catch (final HeldReadRefusedException | SettledAccountException
+                | OptimisticLockConflictException armOrOutcome) {
+            // Each of these is the caller's to apply or to re-raise, and none of them is a response to a
+            // write: the turn either never reached the record or has an outcome rather than a message.
+            throw armOrOutcome;
+        } catch (final RuntimeException unitFailure) {
+            if (!state.insertAttempted) {
+                // Not a response to a write: the allocation lock, the backward read or the existence probe
+                // failed, and the source has no arm for any of them. Propagating is what this service does
+                // with a failure it has no message for, and nothing has been stored or settled.
+                throw unitFailure;
+            }
+            // The unit failed at its own boundary rather than at a store call - a commit that could not
+            // complete - so nothing was stored. The insert's catch-all arm at lines 540 to 546 is what
+            // reports it, and the settlement unit still runs, because the source performs lines 234 and 235
+            // whether or not the write at 233 succeeded.
+            state.createdTransaction = null;
+            LOG.error("The bill-payment transaction unit of work did not complete: failureChain={}",
+                    FailureDiagnostics.failureChainOf(unitFailure));
+            state.writeResponse = WriteResponse.OTHER;
+            return WriteResponse.OTHER;
+        }
+    }
+
+    /**
+     * <strong>Unit two.</strong> The computation of line 234 and the account rewrite of line 235, executed
+     * inside a unit of work of its own that begins only once unit one has ended.
+     *
+     * <p>Re-reads the row {@code FOR UPDATE} as its first statement, because a relational read holds nothing
+     * once its unit has committed and the rewrite has to store against a row this unit holds. The
+     * computation then subtracts the amount unit one stored from the balance this lock granted, which is
+     * exactly what line 234 subtracts from the record its own {@code READ ... UPDATE} returned.
+     *
+     * <p><strong>Its failure leaves the stored transaction stored.</strong> That is the whole reason the two
+     * units are separate and in this order: the legacy files are unrecoverable, so a refused
+     * {@code REWRITE} left the {@code WRITE} of line 233 in place, and no mechanism in the region undid it.
+     * A refusal here is therefore reported through the rewrite paragraph's own arms and never by discarding
+     * the payment.
+     *
+     * <p>Three responses are produced, matching the paragraph's three arms: the normal response when the
+     * store completed; the not-found response when no row carries the key any longer, which is the
+     * paragraph's own invalid-key arm; and the catch-all response for every other failure, after this unit
+     * has rolled back.
+     *
+     * @param state the turn's working storage
+     * @return the arm the rewrite of line 235 resolved to, which the caller applies
+     * @throws OptimisticLockConflictException if the provider reports a conflict on the held row, in which
+     *                                         case the account is not settled while the payment is stored
+     */
+    private FileResponse settleHeldAccount(final TurnState state) {
+        try {
+            return this.transactionBoundary.execute(() -> {
+                final Optional<Account> held =
+                        this.accountRepository.findByIdForUpdate(state.acctIdKey);
+                if (held.isEmpty()) {
+                    // The rewrite paragraph's own invalid-key arm at lines 390 to 395. The key is not
+                    // logged: it is an identifier.
+                    LOG.warn("The account to be settled is no longer present: file=ACCTDAT");
+                    return FileResponse.NOT_FOUND;
+                }
+                state.account = held.get();
+
+                // COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT at line 234 and PERFORM
+                // UPDATE-ACCTDAT-FILE at line 235. Because the amount is the whole balance unit one read,
+                // the settled figure is exactly zero.
+                computePostPaymentBalance(state);
+                updateAcctdatFile(state);
+                return state.rewriteResponse;
+            });
+        } catch (final OptimisticLockConflictException conflict) {
+            // The turn's outcome rather than a message. Unreachable through a lost version race, because
+            // the row is held from this unit's first statement; kept translated for a provider that reports
+            // one for another reason. The payment stored by unit one stays stored, which is the legacy state
+            // a refused rewrite left behind.
+            throw conflict;
+        } catch (final RewriteRolledBackException rewriteRolledBack) {
+            // The rewrite's catch-all arm was resolved inside the unit and the unit then rolled back, so the
+            // account is NOT settled while the payment is.
+            return FileResponse.OTHER;
+        } catch (final RuntimeException unitFailure) {
+            // The held read's own machinery or this unit's commit failed. Neither is an absent row, so the
+            // paragraph's catch-all arm is the honest report; the payment stays stored.
+            LOG.error("The bill-payment account settlement did not complete: failureChain={}",
+                    FailureDiagnostics.failureChainOf(unitFailure));
+            return FileResponse.OTHER;
+        }
     }
 
     /**
@@ -1846,9 +1933,8 @@ public final class BillPaymentService {
     }
 
     /**
-     * The allocate-and-write span of lines 212 to 233, executed inside <strong>its own</strong> unit of
-     * work: position the browse, read the maximum backward, end the browse, increment, assemble the record
-     * and insert it.
+     * The allocate-and-write span of lines 212 to 233: position the browse, read the maximum backward, end
+     * the browse, increment, assemble the record and insert it.
      *
      * <p><strong>Why this span is a method of its own, when no paragraph corresponds to it.</strong> The
      * bounded re-allocation the repository's contract obliges this service to carry has to repeat exactly
@@ -1859,51 +1945,22 @@ public final class BillPaymentService {
      * the account rewrite at line 235 after it - so extracting the span is what keeps the repetition
      * honest. The paragraph map is unaffected: every paragraph this span performs keeps its own method.
      *
-     * <p>The advisory lock is taken here, as the span's first statement and therefore inside this unit of
-     * work, so it is held from before the maximum is read until this unit ends - which is the whole reason
-     * the maximum this span reads cannot be read by a second allocator until the row minted from it is
-     * committed and visible. Taking it once is enough: it is re-entrant within a session and one
-     * acquisition already covers every attempt this span makes, because all of them run inside this unit.
+     * <p>The advisory lock is taken here, as the span's first statement and therefore inside the unit of
+     * work its caller opened, so it is held from before the maximum is read until that unit ends - which is
+     * the whole reason the maximum this span reads cannot be read by a second allocator until the row minted
+     * from it is committed and visible. Taking it once is enough: it is re-entrant within a session and one
+     * acquisition already covers every attempt this span makes, because all of them run inside that unit.
      *
-     * <p><strong>This unit runs after the settlement unit has committed, never inside it.</strong> A thread
-     * therefore holds one connection at a time. The insert is consequently durable independently of the
+     * <p><strong>The unit this span runs in commits before the settlement unit opens, never inside it.</strong>
+     * A thread therefore holds one connection at a time, and the insert is durable independently of the
      * account rewrite in both directions: a rewrite that rolled back leaves a transaction this span stored,
-     * and a refusal here leaves the account the previous unit settled - which are precisely the two states
-     * the legacy unrecoverable files reached, because the source performs its write before the rewrite and
-     * tests no flag between them.
+     * and a refusal here leaves the account the settlement unit still goes on to settle - which are precisely
+     * the two states the legacy unrecoverable files reached, because the source performs its write before the
+     * rewrite and tests no flag between them.
      *
      * <p>No response arm is applied here. The span reports which arm the write resolved to and the caller
      * applies it once the unit has completed, so that a refused write cannot be reported from inside the
      * unit it refused.
-     *
-     * @param state the turn's working storage
-     * @return the arm the write resolved to, which the caller applies
-     */
-    private WriteResponse mintAndStoreTransaction(final TurnState state) {
-        try {
-            return this.transactionBoundary.execute(() -> allocateAndInsert(state));
-        } catch (final RuntimeException unitFailure) {
-            if (!state.insertAttempted) {
-                // Not a response to a write: the allocation lock, the backward read or the existence probe
-                // failed, and the source has no arm for any of them. Propagating is what this service does
-                // with a failure it has no message for. The account the previous unit settled stays
-                // settled, exactly as it does when the legacy WRITE is refused.
-                throw unitFailure;
-            }
-            // The unit failed at its own boundary rather than at a store call - a commit that could not
-            // complete - so nothing was stored. The insert's catch-all arm at lines 540 to 546 is what
-            // reports it.
-            state.createdTransaction = null;
-            LOG.error("The bill-payment transaction unit of work did not complete: failureChain={}",
-                    FailureDiagnostics.failureChainOf(unitFailure));
-            state.writeResponse = WriteResponse.OTHER;
-            return WriteResponse.OTHER;
-        }
-    }
-
-    /**
-     * The body of the allocate-and-write span, run inside the unit of work
-     * {@link #mintAndStoreTransaction(TurnState)} opens for it.
      *
      * @param state the turn's working storage
      * @return the arm the write resolved to, which the caller applies once the unit has completed

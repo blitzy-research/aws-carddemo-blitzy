@@ -71,9 +71,15 @@ class CardListResponseSecurityTest {
 
     private static final String NEXT_CURSOR = "NXT4532015112830366";
 
-    /** The four components the outer renderer withholds, in declaration order. */
+    /**
+     * The five components the outer renderer withholds, in declaration order.
+     *
+     * <p>The row snapshot is the fifth. It is already opaque - the identities inside it are sealed - so it
+     * is withheld not to prevent disclosure but because a diagnostic has no use for ciphertext and a log
+     * is the wrong place for a replayable value.
+     */
     private static final List<String> WITHHELD_OUTER_COMPONENTS =
-            List.of("accountFilter", "cardNumberFilter", "rows", "pageMetadata");
+            List.of("accountFilter", "cardNumberFilter", "rows", "pageMetadata", "rowSnapshotToken");
 
     /** The two components the row renderer withholds, in declaration order. */
     private static final List<String> WITHHELD_ROW_COMPONENTS =
@@ -114,13 +120,13 @@ class CardListResponseSecurityTest {
                 // One flag per row and never a flag more: the indicator is positional, so a third
                 // flag beside two rows would name a row that is not on the page.
                 List.of(row(), row()), List.of(false, true),
-                "INFORMATION LINE", "ERROR LINE", true, page(), false, List.of(), "CARDSID", "route/next", navigation);
+                "INFORMATION LINE", "ERROR LINE", true, page(), false, List.of(), "CARDSID", "route/next", navigation, null);
     }
 
     private static CardListResponse empty() {
         return new CardListResponse(
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
-                null, false, List.of(), null, null, null);
+                null, false, List.of(), null, null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -164,7 +170,7 @@ class CardListResponseSecurityTest {
         }
 
         @Test
-        @DisplayName("each of the four withheld components renders as the fixed stand-in, exactly once "
+        @DisplayName("each of the five withheld components renders as the fixed stand-in, exactly once "
                 + "each")
         void eachWithheldComponentRendersAsTheFixedStandIn() {
             String rendered = populated().toString();
@@ -218,7 +224,7 @@ class CardListResponseSecurityTest {
                     "CCLI", "TITLE ONE", "07/19/22", "COCRDLIC", "TITLE TWO", "14:23:07",
                     "001", "00000000099", "4111111111111111",
                     List.of(other, other), List.of(false, true),
-                    "INFORMATION LINE", "ERROR LINE", true, page(), false, List.of(), "CARDSID", "route/next", null);
+                    "INFORMATION LINE", "ERROR LINE", true, page(), false, List.of(), "CARDSID", "route/next", null, null);
 
             assertThat(differentCards.toString()).isEqualTo(populated().toString());
             assertThat(populated().toString()).contains("rowCount=2");

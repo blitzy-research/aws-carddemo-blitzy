@@ -146,7 +146,16 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("TransactionListResponse :: response contract of legacy transaction CT00")
 class TransactionListResponseCoverageTest {
 
-    /** The eighteen components, in the order the record declares them. */
+    /**
+     * A stand-in for the sealed page snapshot a response publishes.
+     *
+     * <p>Deliberately not a real envelope. What this contract publishes is an opaque string, so what a
+     * contract test needs is a value it can recognise on the wire and prove is withheld from a
+     * rendering; minting a real one here would test the encryption service instead.
+     */
+    private static final String SEALED_PAGE_SNAPSHOT = "ENC1:sealed-page-snapshot-stand-in";
+
+    /** The nineteen components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "rows",
             "pageMetadata",
@@ -165,7 +174,8 @@ class TransactionListResponseCoverageTest {
             "currentDate",
             "currentTime",
             "transactionName",
-            "programName");
+            "programName",
+            "rowSnapshotToken");
 
     /** The eleven components that carry a declared maximum length. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
@@ -181,10 +191,16 @@ class TransactionListResponseCoverageTest {
             "transactionName",
             "programName");
 
-    /** The seven components that carry no declared maximum length. */
+    /**
+     * The eight components that carry no declared maximum length.
+     *
+     * <p>The sealed page snapshot is one of them deliberately: it is a ciphertext envelope whose size
+     * is a property of the encryption rather than of any screen item, so a width bound taken from the
+     * map would be a bound on the wrong thing.
+     */
     private static final List<String> UNBOUNDED_COMPONENTS =
             List.of("rows", "pageMetadata", "navigationContext", "nextRoute",
-                    "error", "fieldErrors", "preserveDisplayedPage");
+                    "error", "fieldErrors", "preserveDisplayedPage", "rowSnapshotToken");
 
     /**
      * The three components written on every reply, however empty the turn was.
@@ -432,7 +448,7 @@ class TransactionListResponseCoverageTest {
                 "currentDate".equals(component) ? value : null,
                 "currentTime".equals(component) ? value : null,
                 "transactionName".equals(component) ? value : null,
-                "programName".equals(component) ? value : null);
+                "programName".equals(component) ? value : null, null);
     }
 
     /**
@@ -445,7 +461,7 @@ class TransactionListResponseCoverageTest {
             List<TransactionListResponse.TransactionRow> rows) {
         return new TransactionListResponse(
                 rows, null, null, null, null, null, null, false, List.of(), null, false,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -458,7 +474,7 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse reporting(String message, boolean error) {
         return new TransactionListResponse(
                 List.of(), null, null, null, null, null, message, error, List.of(), null, false,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -482,7 +498,7 @@ class TransactionListResponseCoverageTest {
                 CURRENT_DATE,
                 CURRENT_TIME,
                 TRANSACTION_NAME,
-                PROGRAM_NAME);
+                PROGRAM_NAME, SEALED_PAGE_SNAPSHOT);
     }
 
     /**
@@ -508,7 +524,7 @@ class TransactionListResponseCoverageTest {
                 CURRENT_DATE,
                 CURRENT_TIME,
                 TRANSACTION_NAME,
-                PROGRAM_NAME);
+                PROGRAM_NAME, null);
     }
 
     /**
@@ -561,9 +577,9 @@ class TransactionListResponseCoverageTest {
             return size.max();
         }
 
-        /** The sixteen components appear in the documented order. */
+        /** Every component appears in the documented order. */
         @Test
-        @DisplayName("declares fifteen components in the documented order")
+        @DisplayName("declares nineteen components in the documented order")
         void theComponentsAreDeclaredInTheDocumentedOrder() {
             List<String> declared =
                     Arrays.stream(TransactionListResponse.class.getRecordComponents())
@@ -1992,10 +2008,10 @@ class TransactionListResponseCoverageTest {
     @DisplayName("Diagnostic rendering")
     class DiagnosticRendering {
 
-        /** The four components this type replaces with a fixed placeholder in its rendering. */
+        /** The five components this type replaces with a fixed placeholder in its rendering. */
         private static final List<String> WITHHELD_BY_THIS_TYPE =
                 List.of("rows", "pageMetadata", "transactionIdFilter",
-                        "selectedTransactionId");
+                        "selectedTransactionId", "rowSnapshotToken");
 
         /** The three row components the nested row replaces with a fixed placeholder. */
         private static final List<String> WITHHELD_BY_THE_ROW =
@@ -2008,7 +2024,7 @@ class TransactionListResponseCoverageTest {
          * independently written list of rendered values, so that a change to either the order or a
          * value fails this test. Two things distinguish it from what a record would generate: a row
          * count is emitted ahead of the components, because how many rows a page carried is the useful
-         * non-identifying fact about it, and four components are replaced by a fixed placeholder.
+         * non-identifying fact about it, and five components are replaced by a fixed placeholder.
          * Everything else is emitted in declaration order exactly as the generated form would.</p>
          */
         @Test
@@ -2040,7 +2056,11 @@ class TransactionListResponseCoverageTest {
                             CURRENT_DATE,
                             CURRENT_TIME,
                             TRANSACTION_NAME,
-                            PROGRAM_NAME);
+                            PROGRAM_NAME,
+                            // The sealed page snapshot is withheld for the same reason as the
+                            // selected identifier: it is a continuation credential over sixteen
+                            // identifiers, and a log line is not a place to carry one.
+                            withheld);
 
             StringBuilder expected = new StringBuilder("TransactionListResponse[rowCount=1");
             for (int index = 0; index < EXPECTED_COMPONENTS.size(); index++) {
@@ -2080,6 +2100,11 @@ class TransactionListResponseCoverageTest {
         /**
          * Exactly five components of this type are withheld, and nothing outside those five is.
          *
+         * <p>The fifth is the sealed page snapshot. Its contents are the ten identifiers the page
+         * displayed, so it is the densest carrier of regulated content this record has; it is unreadable
+         * without the field key, and it is still withheld, because a rendering is not a place to carry a
+         * continuation credential.</p>
+         *
          * <p>The rows are withheld whole rather than row by row, as a second line of defence behind
          * each row's own rendering; the paging metadata and the browse cursor are withheld whole
          * because their own renderings disclose the operator's paging state and this type must not
@@ -2095,7 +2120,7 @@ class TransactionListResponseCoverageTest {
          */
         @Test
         @DisplayName("withholds exactly five components of its own")
-        void noComponentOfThisTypeIsWithheld() {
+        void exactlyFiveComponentsOfThisTypeAreWithheld() {
             String rendered = populatedPage().toString();
 
             for (String component : WITHHELD_BY_THIS_TYPE) {
@@ -2221,7 +2246,7 @@ class TransactionListResponseCoverageTest {
             TransactionListResponse response =
                     new TransactionListResponse(
                             List.of(), position, null, null, null, null, null, false, List.of(),
-                            null, false, null, null, null, null, null, null, null);
+                            null, false, null, null, null, null, null, null, null, null);
 
             String rendered = response.toString();
 

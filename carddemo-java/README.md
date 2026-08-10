@@ -1048,15 +1048,15 @@ The channel is permitted to lose notifications, so every notification it loses i
 Read against the delivery count published by `carddemo.job.completion.publish`, that answers the only
 question a shedding channel owes an operator: what fraction of what happened was announced.
 
-A retry of one report submission is idempotent for exactly as long as the queue service can make it so.
-The `Idempotency-Key` header carries a token this service mints, which is opaque to callers and carries
-the instant it was minted under an authentication code, and it is honoured for **five minutes** — the
-horizon over which the queue collapses a repeated deduplication identifier. Echo the returned token to
-complete an interrupted submission; a token this service did not issue, or one older than that window,
-is answered `400` with nothing published, and is counted on
-`carddemo.online.reportrequest.retrytoken.refused` tagged `reason` with `expired` or `not-issued-here`.
-Submitting without the header is a deliberate new request, which is what the legacy screen did
-unconditionally.
+**There is no retry, idempotency or deadline protocol on report submission**, because the queue it feeds
+has none. `app/csd/CARDDEMO.CSD` defines `TDQUEUE(JOBS)` with `DISPOSITION(MOD)` — append — and
+`ERROROPTION(IGNORE)`, and `CORPT00C` carries no token, no deduplication key and no window: a second
+confirmed submission of the same period appends a second job stream and the reader runs the job twice.
+Each confirmed submission therefore mints its own message-group identity from the two reporting dates
+plus a per-request nonce, so each publishes its own complete stream. The only guard the legacy screen
+has is its **confirmation gate**, and that is preserved as an explicit confirm flag. A caller that wants
+at-most-once submission must not confirm twice — the same obligation the 3270 operator had. Recorded as
+`DL-322` in [`../docs/decision-log.md`](../docs/decision-log.md).
 
 The queue is the one place where a CICS resource attribute is a genuine external contract. The estate
 contains **exactly one** transient-data-queue write across 19,254 lines of COBOL, and the queue it
@@ -2142,29 +2142,34 @@ permissions, and it:
 1. checks out the repository on the pinned `ubuntu-24.04` runner and sets up the exact
    **Eclipse Temurin JDK 25.0.3+9** build, with every action pinned to a commit SHA rather than a
    moving tag;
-2. derives `APP_VERSION`, `SOURCE_REVISION` and `SOURCE_DATE_EPOCH` once and passes that same identity
+2. reads the whole committed tree of `carddemo-java`, `docs` and `.github` with git's own
+   whitespace diagnostic and **fails the run on any trailing whitespace**, before the toolchain is
+   even installed. The legacy estate under `app/` and `samples/` is deliberately outside that
+   pathspec because it must stay byte-identical, and the fixed-width fixtures are exempted by
+   `.gitattributes` because their space padding is record content rather than a defect;
+3. derives `APP_VERSION`, `SOURCE_REVISION` and `SOURCE_DATE_EPOCH` once and passes that same identity
    through Maven, the packaged build information, the OCI labels and the Compose build;
-3. restores the Maven, dependency-check and Trivy data sets from cache;
-4. runs **`./mvnw -B clean verify`**: zero-warning compilation, both test tiers, **JaCoCo enforcement
+4. restores the Maven, dependency-check and Trivy data sets from cache;
+5. runs **`./mvnw -B clean verify`**: zero-warning compilation, both test tiers, **JaCoCo enforcement
    at 80% line coverage**, and an executed OWASP scan of production **and test** scope. Testcontainers'
    shaded zerodep transport is excluded in favour of the visible Apache HTTP client 5 transport, with
    `httpcore5` and `httpcore5-h2` pinned to the remediated release; the test-scope compatibility
    adapter preserves the class name Testcontainers 1.21.4 instantiates;
-5. re-executes the unit tier under the hostile `tr-TR` and `ar-EG` locales, so no assertion silently
+6. re-executes the unit tier under the hostile `tr-TR` and `ar-EG` locales, so no assertion silently
    depends on the default locale of the machine that ran it;
-6. lints the container-bootstrap scripts;
-7. uploads the coverage, vulnerability and test reports, so they survive even if a later gate fails;
-8. performs a second clean build with the same revision and epoch and requires the two jars to be
+7. lints the container-bootstrap scripts;
+8. uploads the coverage, vulnerability and test reports, so they survive even if a later gate fails;
+9. performs a second clean build with the same revision and epoch and requires the two jars to be
    byte-identical — **the reproducibility gate runs before the smoke test**, so that the jar the smoke
    test then starts is one already proved reproducible;
-9. smoke-tests that executable jar;
-10. checks and builds the Dockerfile, resolves and starts the hardened six-service Compose stack,
+10. smoke-tests that executable jar;
+11. checks and builds the Dockerfile, resolves and starts the hardened six-service Compose stack,
    waits for application health, verifies Grafana provisioning, executes a Prometheus query and
    checks the Jaeger API, with trap-based teardown of containers and volumes;
-11. runs digest-pinned Trivy scans. The application image and both Temurin base images are strict
+12. runs digest-pinned Trivy scans. The application image and both Temurin base images are strict
    HIGH/CRITICAL gates; the digest-pinned third-party Compose images are inventoried and their reports
    are retained because this repository cannot patch those upstream filesystems;
-12. uploads the container-scan reports and the executable jar, and writes the linear gate summary.
+13. uploads the container-scan reports and the executable jar, and writes the linear gate summary.
 
 ## Troubleshooting
 

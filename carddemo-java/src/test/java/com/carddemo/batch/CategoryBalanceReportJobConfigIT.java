@@ -90,7 +90,7 @@ import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.service.AbendService;
 import com.carddemo.service.FileMaintenanceService;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.IsolatedStagingRoot;
@@ -529,7 +529,7 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({CategoryBalanceReportJobConfig.class, PostTransactionJobConfig.class, BatchConfig.class,
             FileMaintenanceService.class, TransactionPostingService.class,
-            PostingRecordTransactionBoundary.class, AbendService.class, RecordWriter.class,
+            PostingStageTransactionBoundary.class, AbendService.class, RecordWriter.class,
             FixedWidthFlatFileReaderFactory.class, BatchStagingArea.class, StagedGenerationStore.class,
             AdvisoryGenerationPublicationLock.class})
     @EnableConfigurationProperties(AwsProperties.class)

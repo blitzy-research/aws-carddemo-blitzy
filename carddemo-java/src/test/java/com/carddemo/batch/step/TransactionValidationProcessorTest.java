@@ -35,7 +35,7 @@ import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.SeededRecordFixture;
 import com.carddemo.support.TestDataFactory;
@@ -475,7 +475,7 @@ class TransactionValidationProcessorTest {
         postingService = new TransactionPostingService(dailyTransactionRepository,
                 transactionRepository, accountRepository, cardCrossReferenceRepository,
                 categoryBalanceRepository, recordWriter, new AbendService(),
-                new PostingRecordTransactionBoundary(),
+                new PostingStageTransactionBoundary(),
                 Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC));
         meterRegistry = new SimpleMeterRegistry();
         processor = new TransactionValidationProcessor(postingService, meterRegistry);

@@ -53,8 +53,8 @@ import org.springframework.batch.item.ItemProcessor;
  * implementation of it. The cascade itself - the cross-reference and account lookups, the overlimit
  * and expiration tests, the three persistence stages, the reject-code precedence and the timestamp
  * regeneration - lives in {@link TransactionPostingService}, which is the module's translation of the
- * whole legacy member, holds the per-record commit boundary and documents every parity rule that
- * governs it. No lookup, no limit test, no balance arithmetic, no persistence and no ordering rule is
+ * whole legacy member, owns the durable boundary of each of its three stores and documents every parity
+ * rule that governs it. No lookup, no limit test, no balance arithmetic, no persistence and no ordering rule is
  * restated here: a business rule that exists twice is a business rule that is enforced once and
  * audited nowhere. The paragraph-level inventory for the member is in
  * {@code docs/traceability-matrix.md}.
@@ -305,7 +305,7 @@ public final class TransactionValidationProcessor
     /** Highest ASCII digit, used instead of a locale-sensitive digit test. */
     private static final char ASCII_NINE = '9';
 
-    /** The posting cascade, and the per-record commit boundary it holds. */
+    /** The posting cascade, which opens a durable unit per store rather than one per record. */
     private final TransactionPostingService postingService;
 
     /** The registry the per-record timer samples are stopped against. */

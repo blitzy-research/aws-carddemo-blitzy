@@ -40,7 +40,7 @@ import com.carddemo.service.AbendService;
 import com.carddemo.service.DateValidationService;
 import com.carddemo.service.InterestCalculationService;
 import com.carddemo.service.InterestGroupTransactionBoundary;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.StatementDataAccessService;
 import com.carddemo.service.StatementGenerationService;
@@ -2117,7 +2117,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
             AdvisoryGenerationPublicationLock.class, FixedWidthFlatFileReaderFactory.class,
             StatementGenerationService.class, StatementDataAccessService.class,
             SensitiveFieldEncryptionService.class, AbendService.class, DateValidationService.class,
-            TransactionPostingService.class, PostingRecordTransactionBoundary.class,
+            TransactionPostingService.class, PostingStageTransactionBoundary.class,
             InterestCalculationService.class, InterestGroupTransactionBoundary.class,
             RecordWriter.class})
     @EnableConfigurationProperties(AwsProperties.class)

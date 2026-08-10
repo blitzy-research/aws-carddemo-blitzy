@@ -16,14 +16,10 @@
  */
 package com.carddemo.service;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 
@@ -39,7 +35,6 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.util.CobolStringUtils;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.JclCardImageBuilder;
-import com.carddemo.util.ReportRetryTokens;
 
 /**
  * The transaction-report request screen: the online half of the estate's only online-to-batch bridge.
@@ -403,11 +398,8 @@ public final class ReportRequestService {
      *
      * The separator between the two date slots of a submission identity is absent here for the same
      * reason: the identity is minted by the bridge, which owns the queue's composition and length
-     * rules. See newSubmissionIdentity.
+     * rules. See writeJobSubmissionTdq.
      */
-
-    /** Digest used to turn an opaque retry token into a bounded printable identity component. */
-    private static final String SUBMISSION_TOKEN_DIGEST_ALGORITHM = "SHA-256";
 
     /** Accepted affirmative confirmation, upper case, compared at line 478. */
     private static final String CONFIRM_YES_UPPER = "Y";
@@ -427,30 +419,6 @@ public final class ReportRequestService {
 
     /** The space character, the fill of every alphanumeric screen field. */
     private static final char SPACE = ' ';
-
-    /** Separator between the two date slots and the stable logical-request digest. */
-    private static final String SUBMISSION_IDENTITY_SEPARATOR = "_";
-
-    /**
-     * Separator between the operator and the logical-request token inside the submission digest.
-     *
-     * <p>A unit separator, chosen because it cannot occur in either value: an operator identifier is the
-     * eight-character key of a user record, and a token is bounded to visible ASCII by
-     * {@code api.ReportController#canonicalRetryToken}, which refuses a control byte before this service
-     * is entered. A separator that could occur in either would let one pair of values be rearranged into
-     * a different pair with the same digest, which is exactly the collision the operator component
-     * exists to prevent. It never reaches the queue, because only the digest does.
-     */
-    private static final char SUBMISSION_DIGEST_FIELD_SEPARATOR = '\u001f';
-
-    /**
-     * Stands in for the operator when no identity was established, so the digest stays a total function.
-     *
-     * <p>Not reachable over the delivered boundary, which authenticates the report route; it exists for a
-     * turn driven without a security chain, and it is a fixed marker rather than a blank so that "no
-     * operator" is one namespace of its own rather than a value an operator could be mistaken for.
-     */
-    private static final String SUBMISSION_PRINCIPAL_ABSENT = "unauthenticated";
 
     /**
      * The low-value character. A 3270 field the terminal did not transmit arrives as low values
@@ -500,11 +468,6 @@ public final class ReportRequestService {
     private final Clock clock;
 
     /**
-     * Mints and checks the logical-request token, and owns the window over which one may be honoured.
-     */
-    private final ReportRetryTokenService retryTokens;
-
-    /**
      * Creates the service.
      *
      * @param dateValidationService the subprogram invoked for the operator-supplied range; mandatory
@@ -513,16 +476,13 @@ public final class ReportRequestService {
      * @param navigationService     the navigation rules; mandatory
      * @param clock                 the clock the derived periods and the screen header read;
      *                              mandatory
-     * @param retryTokens           mints and checks the logical-request token, and owns the window over
-     *                              which a presented one may still be honoured; mandatory
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public ReportRequestService(final DateValidationService dateValidationService,
             final JobSubmissionService jobSubmissionService,
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
-            final Clock clock,
-            final ReportRetryTokenService retryTokens) {
+            final Clock clock) {
         this.dateValidationService =
                 Objects.requireNonNull(dateValidationService, "dateValidationService must not be null");
         this.jobSubmissionService =
@@ -532,7 +492,6 @@ public final class ReportRequestService {
         this.navigationService =
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
-        this.retryTokens = Objects.requireNonNull(retryTokens, "retryTokens must not be null");
     }
 
     // ==========================================================================================
@@ -672,9 +631,6 @@ public final class ReportRequestService {
      *                                because the end-of-stream card is itself transmitted; fewer when
      *                                a publish failed; zero when the confirmation gate blocked the
      *                                submission or no submission was attempted
-     * @param submissionToken         the opaque logical-request token a caller repeats when retrying
-     *                                this submission. Minted when the caller supplied none and returned
-     *                                unchanged so a subsequent retry can reuse it
      * @param confirmationBlocked     {@code true} when the confirmation gate at lines 464 to 494
      *                                stopped the submission, whether because the field was blank,
      *                                because it declined, or because it held something else
@@ -708,7 +664,6 @@ public final class ReportRequestService {
                                       String startDate,
                                       String endDate,
                                       int cardsPublished,
-                                      String submissionToken,
                                       boolean confirmationBlocked,
                                       String message,
                                       boolean messageHighlightedGreen,
@@ -717,64 +672,6 @@ public final class ReportRequestService {
                                       List<ValidationException.FieldError> fieldErrors,
                                       ScreenHeader header,
                                       ScreenFields screen) {
-
-        /**
-         * Compatibility constructor for callers that describe a turn with no submission token.
-         *
-         * <p>Production turns use the canonical constructor and always carry a token. This overload keeps
-         * manually assembled non-submission results concise and makes the absence explicit rather than
-         * manufacturing a token outside the service. Every component is passed straight through and
-         * {@code submissionToken} is supplied as {@code null}; the canonical constructor's contract for
-         * each component is the authority and is not restated here.
-         *
-         * @param route                   the destination the turn leads to; never {@code null}
-         * @param navigationContext       the navigation state the turn hands back; never {@code null}
-         * @param reArmedTransactionId    the transaction identifier the turn re-armed, empty on a
-         *                                transfer path; never {@code null}
-         * @param reportPeriod            the period the ordered evaluation resolved, or {@code null}
-         *                                when no report type was marked
-         * @param reportName              the report name the acknowledgement is composed from; never
-         *                                {@code null}
-         * @param startDate               the resolved start date, or the empty field when none
-         *                                resolved; never {@code null}
-         * @param endDate                 the resolved end date, or the empty field when none resolved;
-         *                                never {@code null}
-         * @param cardsPublished          how many cards of the canonical image reached the queue, zero
-         *                                on a turn that submitted nothing
-         * @param confirmationBlocked     whether the turn stopped at the confirmation prompt
-         * @param message                 the summary message the screen carries; never {@code null}
-         * @param messageHighlightedGreen whether the message field is recoloured, which is the
-         *                                successful-submission path alone
-         * @param focusField              the screen field the cursor is positioned on; never
-         *                                {@code null}
-         * @param errorFlag               the state of the turn's error flag
-         * @param fieldErrors             one entry per faulted field, in the order the source checks
-         *                                them; never {@code null}
-         * @param header                  the screen header as the header paragraph populated it; never
-         *                                {@code null}
-         * @param screen                  the ten screen fields as the turn leaves them; never
-         *                                {@code null}
-         */
-        public ReportRequestResult(final NavigationService.Route route,
-                final ConversationState navigationContext,
-                final String reArmedTransactionId,
-                final ReportPeriod reportPeriod,
-                final String reportName,
-                final String startDate,
-                final String endDate,
-                final int cardsPublished,
-                final boolean confirmationBlocked,
-                final String message,
-                final boolean messageHighlightedGreen,
-                final String focusField,
-                final boolean errorFlag,
-                final List<ValidationException.FieldError> fieldErrors,
-                final ScreenHeader header,
-                final ScreenFields screen) {
-            this(route, navigationContext, reArmedTransactionId, reportPeriod, reportName, startDate,
-                    endDate, cardsPublished, null, confirmationBlocked, message,
-                    messageHighlightedGreen, focusField, errorFlag, fieldErrors, header, screen);
-        }
 
         /**
          * Reports whether the turn published a complete card stream.
@@ -809,76 +706,9 @@ public final class ReportRequestService {
      * @throws NullPointerException if {@code input} is {@code null}
      */
     public ReportRequestResult processReportRequest(final ReportScreenInput input) {
-        return processReportRequest(input, null);
-    }
-
-    /**
-     * Runs one turn under an optional logical-request token, with no operator named.
-     *
-     * <p>A caller repeats the same token when retrying an interrupted submission. Supplying no token means
-     * this is a deliberate new logical request, so a fresh opaque token is minted and returned in the
-     * result. The token is not itself sent to the queue; the date range and a deterministic digest of the
-     * token and the operator form the bounded submission identity from which each card's deduplication id
-     * is derived.
-     *
-     * <p><strong>This overload names no operator, and the delivered route does not use it.</strong> The
-     * submission identity is scoped to the authenticated operator so that one caller's token cannot reach
-     * another caller's submission, which means a turn that names none is identified as unauthenticated -
-     * one namespace of its own. It is kept for a driver that has no security context to offer; the shipped
-     * controller always names the authenticated operator.
-     *
-     * @param input the transmitted screen, decoded attention key and echoed navigation state
-     * @param retryToken the token an earlier attempt returned, or {@code null}/blank for a new
-     *                   submission; honoured for {@link ReportRetryTokens#VALIDITY} after that attempt
-     * @return the outcome of the turn, carrying the effective token
-     * @throws ValidationException when a presented token was not issued by this deployment or is older
-     *                             than the enforced window
-     */
-    public ReportRequestResult processReportRequest(final ReportScreenInput input,
-            final String retryToken) {
-        return processReportRequest(input, retryToken, null);
-    }
-
-    /**
-     * Runs one turn under an optional logical-request token, on behalf of a named operator.
-     *
-     * <p>The operator scopes the submission identity: a retry by the same operator with the same token and
-     * the same reporting period reissues exactly the deduplication identifiers of its first attempt, so the
-     * queue completes a half-published stream rather than doubling it, while the same token presented by a
-     * <em>different</em> operator is a different submission and publishes its own cards. Without that
-     * scoping, two operators who happened to choose the same token collapsed into one submission and the
-     * second was told its request had been submitted having published nothing.
-     *
-     * <p><strong>The retry is honoured for a bounded time, and the bound is enforced here.</strong> The
-     * collapse is performed by the queue service, which recognises a repeated deduplication identifier for
-     * {@link ReportRetryTokens#VALIDITY} and then forgets it, so beyond that horizon repeating a token
-     * reissues identifiers the broker treats as new and publishes the stream a second time. The token
-     * therefore carries the instant it was minted, under an authentication code this deployment holds the
-     * key to, and a presented token that this deployment did not mint or whose window has closed is refused
-     * before a card is published instead of being honoured as a retry it can no longer be. Submitting
-     * without a token remains a deliberate new request, which is what the legacy screen did unconditionally.
-     *
-     * <p>The operator must be the authenticated principal. Nothing echoed by the client is admissible here:
-     * the navigation state a caller sends back is a value it can write anything into, and using it would let
-     * a caller choose whose namespace to publish in - which is the defect this parameter closes, reopened
-     * from the other side.
-     *
-     * @param input the transmitted screen, decoded attention key and echoed navigation state
-     * @param retryToken the token an earlier attempt returned, or {@code null}/blank for a new
-     *                   submission; honoured for {@link ReportRetryTokens#VALIDITY} after that attempt
-     * @param submissionPrincipal the authenticated operator this turn runs as, or {@code null} when no
-     *                   identity was established; never a client-supplied value
-     * @return the outcome of the turn, carrying the effective token
-     * @throws ValidationException when a presented token was not issued by this deployment or is older
-     *                             than the enforced window
-     */
-    public ReportRequestResult processReportRequest(final ReportScreenInput input,
-            final String retryToken, final String submissionPrincipal) {
         Objects.requireNonNull(input, "input must not be null");
 
         final TurnState state = new TurnState();
-        state.submissionToken = resolveSubmissionToken(retryToken);
-        state.submissionPrincipal = submissionPrincipal;
         mainPara(state, input);
 
         // The unconditional return at lines 199 to 202, which re-arms this transaction. The main
@@ -1450,9 +1280,16 @@ public final class ReportRequestService {
         // substitution slots. No card, no column frame and no slot is assembled here.
         final List<String> cardImages =
                 JclCardImageBuilder.build(state.parmStartDate, state.parmEndDate);
-        final String submissionIdentity = newSubmissionIdentity(
-                state.parmStartDate, state.parmEndDate, state.submissionPrincipal,
-                state.submissionToken);
+        // The identity each card's deduplication identifier is composed from. It is minted by the
+        // bridge, which owns the queue's composition, whitespace and length rules, and it carries a
+        // nonce - so every confirmed submission is a submission of its own and publishes its own
+        // seventeen cards. That is the legacy queue's behaviour exactly: the transient data queue this
+        // replaces was defined with append disposition and had no notion of identity at all, so a second
+        // request for the same period appended a second stream and the job ran again. No operator
+        // deadline, retry token or idempotency protocol exists here, because the screen it reproduces
+        // defines none.
+        final String submissionIdentity = JobSubmissionService.newSubmissionIdentity(
+                state.parmStartDate, state.parmEndDate);
 
         // Lines 498 to 509, the emitting loop - published as ONE SUBMISSION rather than card by card.
         //
@@ -2043,140 +1880,6 @@ public final class ReportRequestService {
 
 
     /**
-     * Derives the identity of one submission from its date slots, its logical-request token and the
-     * operator the turn was authenticated as.
-     *
-     * <p>The bridge composes each card's deduplication identifier from this identity plus the card's
-     * one-based slot, and the bridge's own contract forbids a random value in the identity's place
-     * because a fresh identity on a retry defeats idempotency. The identity is therefore a pure function
-     * of the date range, the stable token and the operator: a caller that resubmits an interrupted request
-     * with the same token reissues exactly the identifiers the first pass used, so the queue collapses the
-     * cards that already landed and the stream is completed rather than doubled behind itself - for as long
-     * as the queue still remembers them, which is {@link ReportRetryTokens#VALIDITY} and is why the token is
-     * dated and its age enforced before this identity is composed at all.
-     *
-     * <p><strong>The operator is part of the identity, and it has to be.</strong> The token is a value a
-     * caller chooses, and a caller naturally chooses something meaningful to itself - a period name, a run
-     * label - so two operators can arrive at the same token without either knowing about the other. An
-     * identity composed from the dates and the token alone would make those two submissions the same
-     * submission: the queue would collapse the second operator's cards as a duplicate of the first's and
-     * the second operator would be told the request had been submitted, having published nothing. Naming
-     * the authenticated operator inside the identity keeps one caller's token from reaching another
-     * caller's submission, while a retry by the <em>same</em> operator still repeats its own identifiers
-     * exactly.
-     *
-     * <p><strong>The operator is the authenticated principal, never an echoed field.</strong> It arrives
-     * from the security context by way of the controller, not from the navigation state the client sends
-     * back, because the navigation state is a value a caller can write anything into. A turn driven with no
-     * security chain established carries none, and a fixed marker stands in for the absence so that the
-     * identity remains a total function; the delivered route requires an authenticated identity, so that
-     * marker is not reachable over the shipped boundary.
-     *
-     * <p>The legacy queue had no notion of identity at all: a second request for the same period was
-     * appended and the job ran again. That remains reachable: a genuinely new submission of the same
-     * period receives a different token, while a retry repeats the earlier token. The distinction is now
-     * explicit instead of being guessed from the dates, which are identical in those two cases. Beyond the
-     * enforced window the distinction can no longer be honoured, so it is not silently abandoned: the
-     * request is refused and the operator decides whether to submit a new one.
-     *
-     * <p>Whitespace is removed because the slots are fixed-width values that may be space-padded while
-     * the bridge requires an identity free of whitespace. Only the identity is condensed; no card is,
-     * because a card's padding is contractual. The two date slots have already been shaped and
-     * validated by the time they reach here, so the date part is printable single-byte text. The operator
-     * and the token are folded into <em>one</em> fixed hexadecimal digest rather than added as a further
-     * component, which keeps arbitrary caller text and the operator's identifier out of diagnostics, keeps
-     * the identity the same length it has always been, and keeps the composed identifier comfortably inside
-     * the queue service's bound.
-     *
-     * @param startDate the start-date slot the submission carries
-     * @param endDate   the end-date slot the submission carries
-     * @param submissionPrincipal the operator the turn was authenticated as, or {@code null} when no
-     *                  identity was established
-     * @param submissionToken the stable token of this logical submission
-     * @return a whitespace-free identity, identical only for the same dates, operator and token
-     */
-    private static String newSubmissionIdentity(final String startDate, final String endDate,
-            final String submissionPrincipal, final String submissionToken) {
-        return withoutWhitespace(startDate) + SUBMISSION_IDENTITY_SEPARATOR
-                + withoutWhitespace(endDate) + SUBMISSION_IDENTITY_SEPARATOR
-                + digestSubmissionToken(submissionPrincipal, submissionToken);
-    }
-
-    /**
-     * Uses the caller's stable retry token, or mints one for a deliberate new logical request.
-     *
-     * <p><strong>A presented token is checked, not merely carried.</strong> It used to be taken verbatim,
-     * whatever it was and however old, which made the published promise - repeat the token and an
-     * interrupted submission is completed rather than doubled - unbounded in time while the only mechanism
-     * behind it, the queue service's deduplication of repeated identifiers, expires after
-     * {@link ReportRetryTokens#VALIDITY}. A token presented after that reissued exactly the same
-     * identifiers to a broker that no longer recognised any of them, so the whole stream, or the prefix
-     * already accepted, was published again and the caller was told its request had been submitted. The
-     * token is now minted by this deployment, carries the instant it was minted, and is authenticated so
-     * that instant cannot be moved; one that this deployment did not mint, or whose window has closed, is
-     * refused before any card is published rather than being honoured as a retry it can no longer be. See
-     * {@code docs/decision-log.md} entry DL-310.
-     *
-     * @param retryToken caller-supplied token, possibly absent or blank
-     * @return the effective token, never blank
-     * @throws com.carddemo.exception.ValidationException when a presented token was not issued by this
-     *                                                   deployment or is older than the enforced window
-     */
-    private String resolveSubmissionToken(final String retryToken) {
-        return retryToken == null || retryToken.isBlank()
-                ? this.retryTokens.mint()
-                : this.retryTokens.accept(retryToken);
-    }
-
-    /**
-     * Produces the bounded printable component used inside the queue deduplication identity, over the
-     * operator and the logical-request token together.
-     *
-     * <p>The two values are separated by a byte that cannot occur in either of them, so no pair of an
-     * operator and a token can be rearranged into another pair with the same digest: an operator
-     * identifier is the eight-character key of a user record and a token is a bounded visible-ASCII value
-     * the HTTP boundary canonicalised, and neither can carry a control byte. Digesting the pair rather than concatenating it
-     * into the identity keeps the operator's identifier out of the queue, out of the bridge's diagnostics
-     * and out of the identity's length.
-     *
-     * @param submissionPrincipal the authenticated operator, or {@code null} when none was established
-     * @param submissionToken     the effective logical-request token
-     * @return a lower-case hexadecimal SHA-256 digest
-     */
-    private static String digestSubmissionToken(final String submissionPrincipal,
-            final String submissionToken) {
-        final String pair = (submissionPrincipal == null
-                ? SUBMISSION_PRINCIPAL_ABSENT : submissionPrincipal)
-                + SUBMISSION_DIGEST_FIELD_SEPARATOR + submissionToken;
-        try {
-            final MessageDigest digest =
-                    MessageDigest.getInstance(SUBMISSION_TOKEN_DIGEST_ALGORITHM);
-            return HexFormat.of().formatHex(digest.digest(pair.getBytes(StandardCharsets.UTF_8)));
-        } catch (final NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException(
-                    SUBMISSION_TOKEN_DIGEST_ALGORITHM + " must be available in every Java runtime",
-                    unavailable);
-        }
-    }
-
-    /**
-     * Returns a value with every whitespace character removed.
-     *
-     * @param value the value to condense
-     * @return {@code value} without whitespace
-     */
-    private static String withoutWhitespace(final String value) {
-        final StringBuilder condensed = new StringBuilder(value.length());
-        for (int index = 0; index < value.length(); index++) {
-            final char character = value.charAt(index);
-            if (!Character.isWhitespace(character)) {
-                condensed.append(character);
-            }
-        }
-        return condensed.toString();
-    }
-
-    /**
      * Returns a copy of the navigation state whose nominated-destination program is the one supplied,
      * reproducing how the member nominates its destination at lines 173, 188 and 543.
      *
@@ -2313,20 +2016,6 @@ public final class ReportRequestService {
         /** How many cards the queue accepted. */
         private int cardsPublished;
 
-        /** Stable token that identifies this logical request across retries. */
-        private String submissionToken;
-
-        /**
-         * The operator this turn was authenticated as, which scopes the submission identity.
-         *
-         * <p>Not a legacy field and not a screen field: the legacy region knew who was signed on and its
-         * queue had no notion of identity at all, so nothing in the source corresponds to this. It exists
-         * because the target's queue deduplicates, and a deduplication namespace shared between callers is
-         * one caller able to suppress another's submission. Absent when no security context was
-         * established, which the delivered route does not permit.
-         */
-        private String submissionPrincipal;
-
         /** The transaction identifier re-armed by a return, empty when control was transferred. */
         private String reArmedTransactionId = NO_MESSAGE;
 
@@ -2429,7 +2118,6 @@ public final class ReportRequestService {
                     this.startDate,
                     this.endDate,
                     this.cardsPublished,
-                    this.submissionToken,
                     this.confirmationBlocked,
                     this.message,
                     this.messageHighlightedGreen,

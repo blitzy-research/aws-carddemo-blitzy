@@ -1302,9 +1302,10 @@ class BillPaymentServiceTest {
             // Nothing about the write was reported, because nothing about the write happened.
             verify(transactionRepository, never()).findMaxId();
             verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
-            // The settlement committed in the unit that ran before the allocation was attempted, which is
-            // the state the legacy reached when its WRITE never happened and lines 234 and 235 ran anyway.
-            verify(accountRepository).saveAndFlush(any(Account.class));
+            // And the account was NOT settled: the lock is taken inside the unit that stores the payment,
+            // which the source performs at line 233 BEFORE the settlement of lines 234 and 235, so a
+            // failure with no arm in the source leaves both stores unmade rather than one of them made.
+            verify(accountRepository, never()).saveAndFlush(any(Account.class));
         }
 
         @Test
@@ -1782,9 +1783,10 @@ class BillPaymentServiceTest {
             // Only the two reading arms consulted the account master, which is what distinguishes the
             // clause order from a chain that happened to produce the same texts: two unlocked reads in all,
             // one for the affirmative arm and one for the blank arm, while the other two arms read nothing.
-            // The affirmative arm additionally takes the locking read inside its confirmed unit.
+            // The affirmative arm additionally takes ONE locking read per confirmed unit of work - one for
+            // the unit that stores the payment and one for the unit that settles the account.
             verify(accountRepository, times(2)).findById(ACCOUNT_ID);
-            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            verify(accountRepository, times(2)).findByIdForUpdate(ACCOUNT_ID);
         }
 
         @Test
@@ -2342,15 +2344,16 @@ class BillPaymentServiceTest {
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
             // The legacy read at line 343 takes UPDATE against a file the region defines with
-            // UPDATEMODEL(LOCKING), so the row is held from that read until the rewrite at line 235
-            // releases it. The locking finder standing first is what reproduces the hold; everything the
-            // span goes on to do happens while the row is exclusively held.
+            // UPDATEMODEL(LOCKING), so the row is held while the record the write at line 233 stores is
+            // assembled from its balance. The locking finder standing first is what reproduces the hold,
+            // and the rewrite of line 235 follows the write rather than preceding it.
             final InOrder order = inOrder(accountRepository, transactionRepository);
             order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
-            order.verify(accountRepository).saveAndFlush(any(Account.class));
             order.verify(transactionRepository).lockIdentifierAllocation(EXPECTED_ALLOCATION_LOCK_KEY);
             order.verify(transactionRepository).findMaxId();
             order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
+            order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            order.verify(accountRepository).saveAndFlush(any(Account.class));
         }
 
         @Test
@@ -2558,17 +2561,19 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("the held row is read ONCE inside the span and never re-read for comparison, because "
+        @DisplayName("the row is locked ONCE PER UNIT of work and never re-read for comparison, because "
                 + "the lock - not an image comparison - is what makes the rewrite safe")
-        void theHeldRowIsReadOnceAndNeverReReadForComparison() {
+        void theHeldRowIsReadOncePerUnitAndNeverReReadForComparison() {
             arrangeConfirmablePayment(payableAccount(), null);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            // Exactly one locking read, and exactly one unlocked read: the display read of the account-read
-            // paragraph. A second unlocked read would be the before-and-after image comparison this design
-            // deliberately replaced, and it would be reading a row the lock already guarantees.
-            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            // Exactly one locking read per confirmed unit of work - a relational lock cannot span two units,
+            // so the unit that stores the payment and the unit that settles the account each take it for
+            // itself - and exactly one unlocked read, the display read of the account-read paragraph. No
+            // unlocked re-read appears anywhere: that would be the before-and-after image comparison this
+            // design deliberately replaced, and it would be reading a row the lock already guarantees.
+            verify(accountRepository, times(2)).findByIdForUpdate(ACCOUNT_ID);
             verify(accountRepository).findById(ACCOUNT_ID);
         }
     }
@@ -2583,21 +2588,21 @@ class BillPaymentServiceTest {
     class WriteOrderingAndUnitsOfWork {
 
         @Test
-        @DisplayName("the held account is settled in the first unit and the transaction is stored in the "
+        @DisplayName("the transaction is stored in the first unit and the held account is settled in the "
                 + "second, and those are the only interactions the turn has with any repository")
-        void theHeldAccountIsSettledBeforeTheTransactionIsStored() {
+        void theTransactionIsStoredBeforeTheHeldAccountIsSettled() {
             arrangeConfirmablePayment(payableAccount(), HIGHEST_KEY_NINE);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            // The settlement runs first because the exclusion that posts exactly one payment per account is
-            // the row lock it holds; the store runs second because it must survive a rewrite that rolled
-            // back. Both stores are unrecoverable in the legacy and the source tests no flag between them,
-            // so the execution order is not observable - only the arms are, and they are still reported
-            // insert-first. Recorded as DL-288.
+            // THE SOURCE'S DURABLE ORDER: PERFORM WRITE-TRANSACT-FILE at line 233 precedes the computation
+            // at line 234 and PERFORM UPDATE-ACCTDAT-FILE at line 235, and no flag is tested between them.
+            // A turn interrupted between the two units therefore leaves a stored payment against an
+            // unsettled account, which is the partial state the legacy unrecoverable files reached; the
+            // opposite state - a settled balance with no payment record - is one the source cannot produce.
             final InOrder order = inOrder(accountRepository, transactionRepository);
-            order.verify(accountRepository).saveAndFlush(any(Account.class));
             order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
+            order.verify(accountRepository).saveAndFlush(any(Account.class));
 
             // Account for every remaining interaction, so a stray call cannot slip past unnoticed.
             verify(transactionRepository).lockIdentifierAllocation(EXPECTED_ALLOCATION_LOCK_KEY);
@@ -2606,7 +2611,7 @@ class BillPaymentServiceTest {
             verifyNoMoreInteractions(transactionRepository);
 
             verify(accountRepository).findById(ACCOUNT_ID);
-            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            verify(accountRepository, times(2)).findByIdForUpdate(ACCOUNT_ID);
             verifyNoMoreInteractions(accountRepository);
 
             verify(cardCrossReferenceRepository)
@@ -2744,14 +2749,40 @@ class BillPaymentServiceTest {
                     .isEqualTo(1);
             assertThat(depth[0]).as("every unit that was opened has ended").isZero();
 
-            // The row is held first and settled inside that same unit, so a second operator waits at the
-            // lock and then reads the settled balance - which is what the legacy READ ... UPDATE achieved.
+            // The row is held as the first statement of EACH unit, so the balance the payment is derived
+            // from and the row the rewrite stores are both read under the lock, and the two stores become
+            // durable in the source's own order - the payment first, the settled account second.
             final InOrder order = inOrder(transactionBoundary, accountRepository, transactionRepository);
             order.verify(transactionBoundary).execute(any());
             order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
-            order.verify(accountRepository).saveAndFlush(any(Account.class));
-            order.verify(transactionBoundary).execute(any());
             order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
+            order.verify(transactionBoundary).execute(any());
+            order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            order.verify(accountRepository).saveAndFlush(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("a REFUSED insert still settles the account, because the source performs lines 234 "
+                + "and 235 whether or not the write at line 233 succeeded and tests no flag between them")
+        void aRefusedInsertStillSettlesTheAccount() {
+            stubBothAccountReads(payableAccount());
+            stubAccountRewriteEchoesRow();
+            stubCrossReferenceRow(CARD_NUMBER);
+            stubHighestIdentifier(HIGHEST_KEY_NINE);
+            stubBoundaryRunsUnit();
+            when(transactionRepository.insertAndFlush(any(Transaction.class)))
+                    .thenThrow(new EntityExistsException("the key is already stored"));
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            // The independence runs in BOTH directions, and this is the direction the swapped durable order
+            // makes reachable: the payment was refused in the unit that runs first, and the settlement unit
+            // that follows still performs the computation of line 234 and the rewrite of line 235, exactly
+            // as the legacy did after a WRITE it had already reported as refused.
+            assertThat(result.message()).isEqualTo(MSG_TRAN_ID_ALREADY_EXISTS);
+            assertThat(result.transaction()).isNull();
+            verify(accountRepository).saveAndFlush(any(Account.class));
         }
 
         @Test
@@ -2880,7 +2911,7 @@ class BillPaymentServiceTest {
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
             verify(accountRepository).findById(ACCOUNT_ID);
-            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            verify(accountRepository, times(2)).findByIdForUpdate(ACCOUNT_ID);
             verify(cardCrossReferenceRepository)
                     .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
         }

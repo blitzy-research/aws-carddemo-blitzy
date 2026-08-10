@@ -401,13 +401,13 @@ class TransactionPostingServiceTest {
     private AbendService abendService;
 
     /**
-     * The genuine per-record transaction boundary. A mock would be the wrong choice: the boundary's
-     * whole contribution is that it runs the callback, every assertion here depends on the callback
-     * having run, and the object carries no collaborator of its own to isolate. Where the number of
-     * boundaries opened is itself the property under test, the tests below wrap this same genuine
-     * object in a spy rather than replacing it.
+     * The genuine per-act transaction boundary. A mock would be the wrong choice: the boundary's whole
+     * contribution is that it runs the callback, every assertion here depends on the callback having run,
+     * and the object carries no collaborator of its own to isolate. Where the number of units opened is
+     * itself the property under test, the tests below wrap this same genuine object in a spy rather than
+     * replacing it.
      */
-    private PostingRecordTransactionBoundary transactionBoundary;
+    private PostingStageTransactionBoundary transactionBoundary;
 
     private TransactionPostingService service;
 
@@ -433,7 +433,7 @@ class TransactionPostingServiceTest {
         this.categoryBalanceRepository = mock(TransactionCategoryBalanceRepository.class);
         this.recordWriter = mock(RecordWriter.class);
         this.abendService = mock(AbendService.class);
-        this.transactionBoundary = new PostingRecordTransactionBoundary();
+        this.transactionBoundary = new PostingStageTransactionBoundary();
         this.service = serviceWith(this.transactionBoundary);
 
         this.serviceLogger = (Logger) LoggerFactory.getLogger(TransactionPostingService.class);
@@ -452,7 +452,7 @@ class TransactionPostingServiceTest {
     }
 
     /** Builds the service over the shared doubles, the pinned clock and the supplied boundary. */
-    private TransactionPostingService serviceWith(final PostingRecordTransactionBoundary boundary) {
+    private TransactionPostingService serviceWith(final PostingStageTransactionBoundary boundary) {
         return new TransactionPostingService(this.dailyTransactionRepository,
                 this.transactionRepository, this.accountRepository, this.cardCrossReferenceRepository,
                 this.categoryBalanceRepository, this.recordWriter, this.abendService, boundary,
@@ -2734,32 +2734,61 @@ class TransactionPostingServiceTest {
     }
 
     // =================================================================================================
-    // The per-record unit of work - one per record, never one per run
+    // Lines 440 to 442 - one unit of work per I/O act, never one per record and never one per run
     // =================================================================================================
 
     @Nested
-    @DisplayName("Every record obtains its own unit of work, which the mainline loop cannot bypass")
-    class ThePerRecordUnitOfWork {
+    @DisplayName("Every I/O act obtains its own unit of work, so a late failure cannot undo an early "
+            + "store")
+    class ThePerActUnitsOfWork {
+
+        /**
+         * The five acts of a posted record: the cross-reference read and the account read of validation,
+         * then the three stores of lines 440 to 442. Each takes a unit of its own, which is what makes a
+         * completed store survive the failure of a store after it.
+         */
+        private static final int ACTS_PER_POSTED_RECORD = 5;
+
+        /** The two keyed reads a rejected record still performs before its verdict. */
+        private static final int ACTS_PER_REJECTED_RECORD = 2;
 
         @Test
-        @DisplayName("a single post runs inside the injected boundary rather than inside the service")
-        void aSinglePostRunsInsideTheBoundary() {
-            final PostingRecordTransactionBoundary observed =
-                    Mockito.spy(new PostingRecordTransactionBoundary());
+        @DisplayName("a posted record opens one unit per act - the two keyed reads and the three stores - "
+                + "rather than one unit around the record")
+        void aPostedRecordOpensOneUnitPerAct() {
+            final PostingStageTransactionBoundary observed =
+                    Mockito.spy(new PostingStageTransactionBoundary());
             final TransactionPostingService observedService = serviceWith(observed);
             arrangePosting(postableAccount());
 
             assertThat(observedService.post(record("T1", "10.00")).posted()).isTrue();
 
-            verify(observed).execute(any());
+            verify(observed, times(ACTS_PER_POSTED_RECORD)).execute(any());
+            verifyNoMoreInteractions(observed);
         }
 
         @Test
-        @DisplayName("the mainline loop opens one boundary per record - the property a transactional "
-                + "method on the service itself could not have had, because its own call bypasses a proxy")
-        void theMainlineLoopOpensOneBoundaryPerRecord() {
-            final PostingRecordTransactionBoundary observed =
-                    Mockito.spy(new PostingRecordTransactionBoundary());
+        @DisplayName("a record rejected by validation opens only the units its reads needed, because no "
+                + "store ran")
+        void aRejectedRecordOpensOnlyItsReadUnits() {
+            final PostingStageTransactionBoundary observed =
+                    Mockito.spy(new PostingStageTransactionBoundary());
+            final TransactionPostingService observedService = serviceWith(observed);
+            arrangeValidation(accountWith("0.00", "10.00", "0.00", "0.00", LATE_EXPIRY));
+
+            assertThat(observedService.post(record("T1", "500.00")).rejected()).isTrue();
+
+            verify(observed, times(ACTS_PER_REJECTED_RECORD)).execute(any());
+            verifyNoMoreInteractions(observed);
+        }
+
+        @Test
+        @DisplayName("the mainline loop opens units per record and never one for the run - the property a "
+                + "transactional method on the service itself could not have had, because its own call "
+                + "bypasses a proxy")
+        void theMainlineLoopOpensUnitsPerRecordAndNoneForTheRun() {
+            final PostingStageTransactionBoundary observed =
+                    Mockito.spy(new PostingStageTransactionBoundary());
             final TransactionPostingService observedService = serviceWith(observed);
             arrangePosting(postableAccount());
 
@@ -2770,8 +2799,33 @@ class TransactionPostingServiceTest {
                     });
 
             assertThat(summary.transactionsProcessed()).isEqualTo(3L);
-            verify(observed, times(3)).execute(any());
+            verify(observed, times(3 * ACTS_PER_POSTED_RECORD)).execute(any());
             verifyNoMoreInteractions(observed);
+        }
+
+        @Test
+        @DisplayName("the LAST store of lines 440 to 442 runs in a unit of its own, so the two stores "
+                + "before it have already happened when it fails and nothing compensates them")
+        void aFailingLastStoreLeavesTheTwoEarlierStoresDone() {
+            final PostingStageTransactionBoundary observed =
+                    Mockito.spy(new PostingStageTransactionBoundary());
+            final TransactionPostingService observedService = serviceWith(observed);
+            arrangeThroughAccount(postableAccount());
+            when(transactionRepository.insertAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataAccessResourceFailureException("transaction file refused"));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> observedService.post(record("T1", "10.00")));
+
+            assertAll(
+                    () -> verify(categoryBalanceRepository, times(1))
+                            .saveAndFlush(any(TransactionCategoryBalance.class)),
+                    () -> verify(accountRepository, times(1)).rewritePostingBalances(eq(ACCOUNT_ID),
+                            ArgumentMatchers.anyLong(), any(BigDecimal.class), any(BigDecimal.class),
+                            any(BigDecimal.class)),
+                    () -> verify(categoryBalanceRepository, never())
+                            .delete(any(TransactionCategoryBalance.class)),
+                    () -> verify(observed, times(ACTS_PER_POSTED_RECORD)).execute(any()));
         }
     }
 
@@ -2939,8 +2993,8 @@ class TransactionPostingServiceTest {
     class TheConstructionGuards {
 
         @Test
-        @DisplayName("each of the nine constructor arguments is mandatory, the per-record boundary "
-                + "included, because without it there would be no per-record unit of work at all")
+        @DisplayName("each of the nine constructor arguments is mandatory, the per-act boundary "
+                + "included, because without it no I/O act of the cascade would have a unit at all")
         void eachOfTheNineArgumentsIsMandatory() {
             final Clock clock = pinnedClock();
 

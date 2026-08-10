@@ -35,7 +35,7 @@ import com.carddemo.service.AbendService;
 import com.carddemo.service.DateValidationService;
 import com.carddemo.service.InterestCalculationService;
 import com.carddemo.service.InterestGroupTransactionBoundary;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.IsolatedStagingRoot;
@@ -1568,7 +1568,7 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
             InterestCalculationService.class,
             InterestGroupTransactionBoundary.class,
             TransactionPostingService.class,
-            PostingRecordTransactionBoundary.class,
+            PostingStageTransactionBoundary.class,
             RecordWriter.class,
             AbendService.class})
     @EnableConfigurationProperties(AwsProperties.class)

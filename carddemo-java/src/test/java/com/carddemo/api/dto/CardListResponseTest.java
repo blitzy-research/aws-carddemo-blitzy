@@ -234,7 +234,7 @@ class CardListResponseTest {
                 "CardDemo", "14:30:00", PAGE_INDICATOR, ACCOUNT_FILTER, CARD_FILTER, rows,
                 selectionErrorFlags, CardListResponse.MSG_ROW_ACTION_PROMPT,
                 CardListResponse.MSG_NO_MORE_RECORDS, true, paging(), false, List.of(), "CRDSID", "/api/cards",
-                navigation());
+                navigation(), null);
     }
 
     /** A full complement of rows with no positional indicator, which is the ordinary case. */
@@ -245,7 +245,7 @@ class CardListResponseTest {
     /** A response with every nullable component absent and no rows. */
     private static CardListResponse allAbsent() {
         return new CardListResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, false, null, false, List.of(), null, null, null);
+                null, null, null, false, null, false, List.of(), null, null, null, null);
     }
 
     /**
@@ -257,7 +257,7 @@ class CardListResponseTest {
      */
     private static CardListResponse carrying(String message) {
         return new CardListResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, message, true, null, false, List.of(), null, null, null);
+                null, null, message, true, null, false, List.of(), null, null, null, null);
     }
 
     /**
@@ -919,7 +919,7 @@ class CardListResponseTest {
         @DisplayName("a page indicator at this screen's three characters survives untrimmed")
         void aThreeCharacterPageIndicatorSurvivesUntrimmed() throws JsonProcessingException {
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
-                    "1  ", null, null, null, null, null, null, false, null, false, List.of(), null, null, null);
+                    "1  ", null, null, null, null, null, null, false, null, false, List.of(), null, null, null, null);
 
             assertThat(subject.displayedPageNumber())
                     .as("three characters here, never widened to the eight the transaction-list"
@@ -934,7 +934,7 @@ class CardListResponseTest {
         void anOverLongValueIsReportedAndNeverShortened() {
             String tooWide = "X".repeat(CardListResponse.DISPLAYED_PAGE_NUMBER_LENGTH + 1);
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
-                    tooWide, null, null, null, null, null, null, false, null, false, List.of(), null, null, null);
+                    tooWide, null, null, null, null, null, null, false, null, false, List.of(), null, null, null, null);
 
             assertThat(subject.displayedPageNumber())
                     .as("a bound measures and reports; it does not alter, clamp or truncate")
@@ -957,7 +957,7 @@ class CardListResponseTest {
 
             CardListResponse subject = new CardListResponse(transaction, title, date, program,
                     title, time, null, null, null, null, null, null, null, false, null, false, List.of(), "CRDSID",
-                    null, null);
+                    null, null, null);
 
             assertThat(subject.transactionName()).isEqualTo(transaction).hasSize(4);
             assertThat(subject.title01()).isEqualTo(title).hasSize(40);
@@ -1013,7 +1013,7 @@ class CardListResponseTest {
         void bothEchoedFiltersKeepTheirLeadingZeros() throws JsonProcessingException {
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
                     null, "00000000011", "0000000000000009", null, null, null, null, false, null, false, List.of(),
-                    null, null, null);
+                    null, null, null, null);
             JsonNode payload = payloadOf(subject);
 
             assertThat(subject.accountFilter()).isEqualTo("00000000011");
@@ -1226,7 +1226,7 @@ class CardListResponseTest {
 
             CardListResponse subject = new CardListResponse("CCLI", null, null, null, null, null,
                     "002", null, null, asPresented, null, null, null, false, backward, false, List.of(), null, null,
-                    null);
+                    null, null);
 
             assertThat(subject.rows()).containsExactly(row(5), row(6), row(7));
             assertThat(subject.pageMetadata().direction())
@@ -1300,7 +1300,7 @@ class CardListResponseTest {
         void theWhollyEmptyStateIsCarried() throws JsonProcessingException {
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
                     null, null, null, null, null, null, null, false, null, false, List.of(), null, null,
-                    NavigationContext.empty());
+                    NavigationContext.empty(), null);
 
             assertThat(subject.navigationContext()).isEqualTo(NavigationContext.empty());
             assertThat(subject.navigationContext().firstEntry()).isTrue();
@@ -1349,7 +1349,7 @@ class CardListResponseTest {
 
         private CardListResponse carryingRoute(String route) {
             return new CardListResponse(null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, false, null, false, List.of(), null, route, null);
+                    null, null, null, false, null, false, List.of(), null, route, null, null);
         }
     }
 
@@ -1615,7 +1615,7 @@ class CardListResponseTest {
                     PAGE_INDICATOR, "00000000099", CARD_FILTER,
                     rows(PageMetadata.CARD_LIST_PAGE_SIZE), List.of(),
                     CardListResponse.MSG_ROW_ACTION_PROMPT, CardListResponse.MSG_NO_MORE_RECORDS,
-                    true, paging(), false, List.of(), "CRDSID", "/api/cards", navigation());
+                    true, paging(), false, List.of(), "CRDSID", "/api/cards", navigation(), null);
 
             assertThat(one.toString()).isEqualTo(differsOnlyInAWithheldValue.toString());
             assertThat(one)

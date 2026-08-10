@@ -41,7 +41,7 @@ import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
-import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.PostingStageTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.LegacyRejectReasons;
@@ -1335,10 +1335,11 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
                 .orElseThrow(() -> new AssertionError(TransactionPostingService.TRANFILE_DD
                         + ": the return record posts as well as the purchase"));
 
-        // The three stages share one per-record unit of work and run in that fixed order, so a posted row
-        // can exist only if the category balance and the account rewrite that precede it both completed.
-        // Observing the row is therefore observing the whole ordered cascade, which is the strongest
-        // statement available without reaching inside the unit of work.
+        // The three stages run in that fixed order, each in a durable unit of its own, so a posted row can
+        // exist only if the category balance and the account rewrite that precede it both completed and
+        // committed. Observing the row is therefore observing the whole ordered cascade. What it does NOT
+        // imply is the converse - the two earlier stores can exist without the posted row, which is the
+        // property the refused-final-store specification below measures directly.
         assertThat(this.categoryBalanceRepository.findById(returnCategoryBalanceKey()))
                 .as("the category balance exists whenever the posted row does, which is the observable"
                         + " form of the ordering")
@@ -1622,6 +1623,68 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
 
     @Test
     @Order(7)
+    @DisplayName("the three stores of lines 440 to 442 are three DURABLE units: a refused "
+            + "transaction-file store leaves the category balance and the account rewrite that preceded "
+            + "it in place, exactly as the abending member left them")
+    void aRefusedFinalStoreLeavesTheTwoEarlierStoresInPlace() throws Exception {
+        prepareDeliveredSeededState();
+
+        // The same delivered record twice. The first copy posts all three stores. The second reaches the
+        // same three, and its LAST one is refused by the store itself - the transaction identifier is the
+        // primary key and the first copy already wrote it - so the refusal needs no seam of any kind: no
+        // spy, no stub, no injected fault. That is the strongest form this evidence can take, because a
+        // seam could be accused of arranging the very independence it then observes.
+        final String image = deliveredLandingRecord(POSTING_PURCHASE_ORDINAL);
+        stageInput(List.of(image, image));
+
+        final String recordId = landingField(image, "DALYTRAN-ID");
+        final BigDecimal balanceBefore = accountNow(PURCHASE_ACCOUNT).getAcctCurrBal();
+        final BigDecimal cycleCreditBefore = accountNow(PURCHASE_ACCOUNT).getAcctCurrCycCredit();
+        final BigDecimal categoryBalanceBefore =
+                this.categoryBalanceRepository.findById(purchaseCategoryBalanceKey())
+                        .map(TransactionCategoryBalance::getTranCatBal)
+                        .orElseThrow(() -> new IllegalStateException(
+                                TransactionPostingService.TCATBALF_DD + ": the reference seed must"
+                                        + " carry the category balance both copies update"));
+
+        final JobExecution execution = launch();
+
+        assertThat(execution.getStatus())
+                .as("%s: the member's write arm displays its literal and abends, so the run fails -"
+                        + " reported failures: %s", TransactionPostingService.TRANFILE_DD,
+                        execution.getAllFailureExceptions())
+                .isEqualTo(BatchStatus.FAILED);
+
+        // ---- THE POSTED ROW EXISTS ONCE. The second store was genuinely refused. ----
+        assertThat(this.transactionRepository.findById(recordId))
+                .as("%s: the first copy's store stands and the second copy's store was refused, so the"
+                        + " key carries exactly one row", TransactionPostingService.TRANFILE_DD)
+                .isPresent();
+
+        // ---- AND BOTH EARLIER STORES OF THE REFUSED RECORD SURVIVED IT. ----
+        // Twice the amount, not once. Once would mean the second record's category-balance update and
+        // account rewrite had been withdrawn when its transaction-file store failed - an all-or-none
+        // property the member does not have. Three unrecoverable, unjournalled files and no rollback site
+        // anywhere in it: a store that completed stayed completed, whatever the store after it did.
+        final BigDecimal twiceTheAmount = PURCHASE_AMOUNT.add(PURCHASE_AMOUNT);
+        assertThat(this.categoryBalanceRepository.findById(purchaseCategoryBalanceKey())
+                .orElseThrow().getTranCatBal())
+                .as("%s: the FIRST store of the refused record is durable on its own and is not undone"
+                        + " by the third one failing", TransactionPostingService.TCATBALF_DD)
+                .isEqualByComparingTo(categoryBalanceBefore.add(twiceTheAmount));
+
+        final Account after = accountNow(PURCHASE_ACCOUNT);
+        assertThat(after.getAcctCurrBal())
+                .as("%s: the SECOND store of the refused record is durable on its own as well",
+                        TransactionPostingService.ACCTFILE_DD)
+                .isEqualByComparingTo(balanceBefore.add(twiceTheAmount));
+        assertThat(after.getAcctCurrCycCredit())
+                .as("and the cycle credit moved with it, both times")
+                .isEqualByComparingTo(cycleCreditBefore.add(twiceTheAmount));
+    }
+
+    @Test
+    @Order(8)
     @DisplayName("all five reject reasons carry a four-digit code and a description padded to 76, the "
             + "two account-not-found reasons stay distinct, and the six data definitions are realised "
             + "by the named Java collaborators")
@@ -1810,7 +1873,7 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
     @Import({PostTransactionJobConfig.class, BatchConfig.class, BatchStagingArea.class,
             StagedGenerationStore.class, AdvisoryGenerationPublicationLock.class,
             FixedWidthFlatFileReaderFactory.class, TransactionPostingService.class,
-            PostingRecordTransactionBoundary.class, RecordWriter.class, AbendService.class})
+            PostingStageTransactionBoundary.class, RecordWriter.class, AbendService.class})
     @EnableConfigurationProperties(AwsProperties.class)
     @EnableJpaRepositories(basePackageClasses = AccountRepository.class)
     @EntityScan(basePackageClasses = Account.class)

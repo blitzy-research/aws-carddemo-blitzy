@@ -68,16 +68,21 @@ class TransactionListResponseSecurityTest {
     private static final String NEXT_CURSOR = "NXT8461372935172994";
 
     /**
-     * The four components the outer renderer withholds, in declaration order.
+     * The five components the outer renderer withholds, in declaration order.
      *
      * <p>The selected identifier joins the echoed search key here because the two are the same kind of
      * value - a sixteen-digit transaction key - differing only in whether the operator typed it or
      * picked it off a row. Withholding one and disclosing the other would leave the regulated value
      * reachable through whichever of the two paths was left open.</p>
+     *
+     * <p>The sealed page snapshot joins them for a related but distinct reason. Its contents are the ten
+     * identifiers the page displayed, so it is the densest carrier of that same kind of value on this
+     * record; it is unreadable without the field key, but a rendering is not the place to carry a
+     * continuation credential either.</p>
      */
     private static final List<String> WITHHELD_OUTER_COMPONENTS =
             List.of("rows", "pageMetadata", "transactionIdFilter",
-                    "selectedTransactionId");
+                    "selectedTransactionId", "rowSnapshotToken");
 
     /** The three components the row renderer withholds, in declaration order. */
     private static final List<String> WITHHELD_ROW_COMPONENTS =
@@ -116,13 +121,13 @@ class TransactionListResponseSecurityTest {
         return new TransactionListResponse(
                 List.of(row(), row()), page(), navigation, "route/next",
                 TRANSACTION_ID_FILTER, "00000001", "MESSAGE LINE", true, List.of(), null, false, "TRNIDIN",
-                "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C");
+                "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C", null);
     }
 
     private static TransactionListResponse empty() {
         return new TransactionListResponse(
                 null, null, null, null, null, null, null, false, List.of(), null, false, null, null,
-                null, null, null, null, null);
+                null, null, null, null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -166,7 +171,7 @@ class TransactionListResponseSecurityTest {
         }
 
         @Test
-        @DisplayName("each of the three withheld components renders as the fixed stand-in, exactly once "
+        @DisplayName("each of the five withheld components renders as the fixed stand-in, exactly once "
                 + "each")
         void eachWithheldComponentRendersAsTheFixedStandIn() {
             String rendered = populated().toString();
@@ -184,7 +189,7 @@ class TransactionListResponseSecurityTest {
                     List.of(), page(), null, "route/next",
                     "'; DROP TABLE transaction; --", "00000001",
                     TransactionListResponse.MESSAGE_TRAN_ID_NOT_NUMERIC, true, List.of(), null, false, "TRNIDIN",
-                    "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C");
+                    "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C", null);
             String rendered = rejected.toString();
             assertThat(rendered)
                     .doesNotContain("DROP TABLE")
@@ -225,7 +230,7 @@ class TransactionListResponseSecurityTest {
             TransactionListResponse differentMovements = new TransactionListResponse(
                     List.of(other, other), page(), null, "route/next",
                     "9999888877776666", "00000001", "MESSAGE LINE", true, List.of(), null, false, "TRNIDIN",
-                    "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C");
+                    "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00", "COTRN00C", null);
 
             assertThat(differentMovements.toString()).isEqualTo(populated().toString());
             assertThat(populated().toString()).contains("rowCount=2");

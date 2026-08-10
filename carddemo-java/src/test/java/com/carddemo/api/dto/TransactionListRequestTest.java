@@ -184,13 +184,13 @@ class TransactionListRequestTest {
     }
 
     private static TransactionListRequest withSelectors(List<String> selectors) {
-        return new TransactionListRequest(null, null, selectors, KeyAction.ENTER, null, null);
+        return new TransactionListRequest(null, null, selectors, KeyAction.ENTER, null, null, null);
     }
 
     private static TransactionListRequest populated() {
         return new TransactionListRequest(FILTER_AT_FULL_WIDTH, INDICATOR_AT_FULL_WIDTH,
                 rowsMarkedAt(6), KeyAction.PFK08, navigation(),
-                cursor(PageMetadata.PagingDirection.FORWARD, INDICATOR_AT_FULL_WIDTH, false));
+                cursor(PageMetadata.PagingDirection.FORWARD, INDICATOR_AT_FULL_WIDTH, false), null);
     }
 
     @Nested
@@ -481,7 +481,7 @@ class TransactionListRequestTest {
         }
 
         private TransactionListRequest filteredBy(String filter) {
-            return new TransactionListRequest(filter, null, null, KeyAction.ENTER, null, null);
+            return new TransactionListRequest(filter, null, null, KeyAction.ENTER, null, null, null);
         }
     }
 
@@ -548,7 +548,7 @@ class TransactionListRequestTest {
         }
 
         private TransactionListRequest indicatedBy(String indicator) {
-            return new TransactionListRequest(null, indicator, null, KeyAction.ENTER, null, null);
+            return new TransactionListRequest(null, indicator, null, KeyAction.ENTER, null, null, null);
         }
     }
 
@@ -641,7 +641,7 @@ class TransactionListRequestTest {
         void aBackwardSubmissionIsRepresentable() {
             List<String> asReadBackward = List.of("j", "i", "h", "g", "f", "e", "d", "c", "b", "a");
             TransactionListRequest request = new TransactionListRequest(null, null, asReadBackward,
-                    KeyAction.PFK07, navigation(), cursor(PageMetadata.PagingDirection.BACKWARD));
+                    KeyAction.PFK07, navigation(), cursor(PageMetadata.PagingDirection.BACKWARD), null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.pageMetadata().direction())
@@ -692,7 +692,7 @@ class TransactionListRequestTest {
         }
 
         private TransactionListRequest withCursor(PageMetadata.PageCursorRequest paging) {
-            return new TransactionListRequest(null, null, null, KeyAction.ENTER, null, paging);
+            return new TransactionListRequest(null, null, null, KeyAction.ENTER, null, paging, null);
         }
     }
 
@@ -773,7 +773,7 @@ class TransactionListRequestTest {
         }
 
         private TransactionListRequest withNavigation(NavigationContext context) {
-            return new TransactionListRequest(null, null, null, KeyAction.ENTER, context, null);
+            return new TransactionListRequest(null, null, null, KeyAction.ENTER, context, null, null);
         }
     }
 
@@ -864,7 +864,7 @@ class TransactionListRequestTest {
         @DisplayName("an absent action is carried as absent and omitted from the wire form")
         void anAbsentActionIsCarriedAsAbsent() throws JsonProcessingException {
             TransactionListRequest request = new TransactionListRequest(
-                    FILTER_AT_FULL_WIDTH, null, null, null, null, null);
+                    FILTER_AT_FULL_WIDTH, null, null, null, null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.keyAction()).isNull();
@@ -887,7 +887,7 @@ class TransactionListRequestTest {
         @Test
         @DisplayName("a wholly absent submission reports nothing, so no presence rule is declared")
         void aWhollyAbsentSubmissionReportsNothing() {
-            assertThat(violationsOf(new TransactionListRequest(null, null, null, null, null, null)))
+            assertThat(violationsOf(new TransactionListRequest(null, null, null, null, null, null, null)))
                     .as("a presence rule would reject the legitimate first arrival at the screen")
                     .isEmpty();
         }
@@ -901,7 +901,7 @@ class TransactionListRequestTest {
                     new NavigationContext(UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED,
                             null, UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED,
                             UNMARKED, UNMARKED, UNMARKED),
-                    new PageMetadata.PageCursorRequest(UNMARKED, UNMARKED, null, null, false));
+                    new PageMetadata.PageCursorRequest(UNMARKED, UNMARKED, null, null, false), null);
 
             assertThat(violationsOf(allBlank))
                     .as("a fixed-width screen submits blanks for every field the operator left alone")
@@ -913,7 +913,7 @@ class TransactionListRequestTest {
                 + "because both rules are ordered service checks carrying their own texts")
         void theTwoMessageBearingRulesAreNotDeclaredHere() {
             TransactionListRequest request = new TransactionListRequest("NOT-NUMERIC", null,
-                    List.of(UNACCEPTED), KeyAction.ENTER, null, null);
+                    List.of(UNACCEPTED), KeyAction.ENTER, null, null, null);
 
             assertThat(violationsOf(request))
                     .as("declarative validation reports in no defined order and reports several at"
@@ -932,15 +932,15 @@ class TransactionListRequestTest {
 
             assertThat(violationsOf(new TransactionListRequest("0".repeat(filterWidth),
                     "9".repeat(indicatorWidth), List.of(MARKED.repeat(selectorWidth)),
-                    KeyAction.ENTER, null, null)))
+                    KeyAction.ENTER, null, null, null)))
                     .as("every value exactly at its map width is a value the screen can transmit")
                     .isEmpty();
 
             assertThat(soleViolationPathOf(new TransactionListRequest("0".repeat(filterWidth + 1),
-                    null, null, KeyAction.ENTER, null, null)))
+                    null, null, KeyAction.ENTER, null, null, null)))
                     .isEqualTo("transactionIdFilter");
             assertThat(soleViolationPathOf(new TransactionListRequest(null,
-                    "9".repeat(indicatorWidth + 1), null, KeyAction.ENTER, null, null)))
+                    "9".repeat(indicatorWidth + 1), null, KeyAction.ENTER, null, null, null)))
                     .isEqualTo("displayedPageNumber");
             assertThat(soleViolationPathOf(withSelectors(
                     List.of(MARKED.repeat(selectorWidth + 1)))))
@@ -956,7 +956,7 @@ class TransactionListRequestTest {
                     "COTRN01C", "ADMINUSR", "A", NavigationContext.ProgramContext.ENTER, CUSTOMER_ID,
                     "MARY", "ANN", "SMITH", ACCOUNT_ID, "Y", CARD_NUMBER, "COTRN0A", "COTRN00");
             TransactionListRequest request = new TransactionListRequest("NOT-NUMERIC", null,
-                    List.of(UNACCEPTED), KeyAction.ENTER, oneTooWide, null);
+                    List.of(UNACCEPTED), KeyAction.ENTER, oneTooWide, null, null);
 
             assertThat(soleViolationPathOf(request)).isEqualTo("navigationContext.fromProgram");
         }
@@ -1018,7 +1018,7 @@ class TransactionListRequestTest {
         @DisplayName("every component tolerates absence, and the sequence is the only one normalised")
         void everyComponentToleratesAbsence() {
             TransactionListRequest absent =
-                    new TransactionListRequest(null, null, null, null, null, null);
+                    new TransactionListRequest(null, null, null, null, null, null, null);
 
             assertThat(absent.transactionIdFilter()).isNull();
             assertThat(absent.displayedPageNumber()).isNull();
@@ -1035,7 +1035,7 @@ class TransactionListRequestTest {
         @DisplayName("absent components are omitted from the wire form altogether")
         void absentComponentsAreOmittedFromTheWireForm() throws JsonProcessingException {
             String json = moduleEquivalentMapper().writeValueAsString(
-                    new TransactionListRequest(null, null, null, null, null, null));
+                    new TransactionListRequest(null, null, null, null, null, null, null));
 
             assertThat(json)
                     .as("absent components are omitted rather than written as explicit nulls, and the"
@@ -1098,22 +1098,22 @@ class TransactionListRequestTest {
 
             assertThat(base).isNotEqualTo(new TransactionListRequest(FILTER_WITHOUT_LEADING_ZEROS,
                     INDICATOR_AT_FULL_WIDTH, rowsMarkedAt(6), KeyAction.PFK08, navigation(),
-                    cursor(PageMetadata.PagingDirection.FORWARD)));
+                    cursor(PageMetadata.PagingDirection.FORWARD), null));
             assertThat(base).isNotEqualTo(new TransactionListRequest(FILTER_AT_FULL_WIDTH,
                     "00000004", rowsMarkedAt(6), KeyAction.PFK08, navigation(),
-                    cursor(PageMetadata.PagingDirection.FORWARD)));
+                    cursor(PageMetadata.PagingDirection.FORWARD), null));
             assertThat(base).isNotEqualTo(new TransactionListRequest(FILTER_AT_FULL_WIDTH,
                     INDICATOR_AT_FULL_WIDTH, rowsMarkedAt(7), KeyAction.PFK08, navigation(),
-                    cursor(PageMetadata.PagingDirection.FORWARD)));
+                    cursor(PageMetadata.PagingDirection.FORWARD), null));
             assertThat(base).isNotEqualTo(new TransactionListRequest(FILTER_AT_FULL_WIDTH,
                     INDICATOR_AT_FULL_WIDTH, rowsMarkedAt(6), KeyAction.PFK07, navigation(),
-                    cursor(PageMetadata.PagingDirection.FORWARD)));
+                    cursor(PageMetadata.PagingDirection.FORWARD), null));
             assertThat(base).isNotEqualTo(new TransactionListRequest(FILTER_AT_FULL_WIDTH,
                     INDICATOR_AT_FULL_WIDTH, rowsMarkedAt(6), KeyAction.PFK08,
-                    NavigationContext.empty(), cursor(PageMetadata.PagingDirection.FORWARD)));
+                    NavigationContext.empty(), cursor(PageMetadata.PagingDirection.FORWARD), null));
             assertThat(base).isNotEqualTo(new TransactionListRequest(FILTER_AT_FULL_WIDTH,
                     INDICATOR_AT_FULL_WIDTH, rowsMarkedAt(6), KeyAction.PFK08, navigation(),
-                    cursor(PageMetadata.PagingDirection.BACKWARD)));
+                    cursor(PageMetadata.PagingDirection.BACKWARD), null));
             assertThat(base)
                     .as("a mark at a different row is a different submission, which is exactly why the"
                             + " sequence may never be compacted")

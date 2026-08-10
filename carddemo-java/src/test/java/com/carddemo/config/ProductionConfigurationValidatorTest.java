@@ -683,7 +683,7 @@ final class ProductionConfigurationValidatorTest {
 
             for (final RequiredSetting setting : ProductionConfigurationValidator.REQUIRED_SETTINGS) {
                 assertThat(header)
-                        .as("%s is guarded, so the list a deployer reads must name it", 
+                        .as("%s is guarded, so the list a deployer reads must name it",
                                 setting.environmentVariable())
                         .contains(setting.environmentVariable());
             }

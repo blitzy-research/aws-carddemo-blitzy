@@ -323,7 +323,7 @@ class TransactionListResponseTest {
                 navigation(), NEXT_ROUTE,
                 TRANSACTION_ID_LOWER, PAGE_INDICATOR, message, false, List.of(), TRANSACTION_ID,
                 true, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
-                CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
+                CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME, null);
     }
 
     /**
@@ -342,7 +342,7 @@ class TransactionListResponseTest {
      */
     private static TransactionListResponse emptyResponse() {
         return new TransactionListResponse(null, null, null, null, null, null, null, false,
-                List.of(), null, false, null, null, null, null, null, null, null);
+                List.of(), null, false, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -708,7 +708,7 @@ class TransactionListResponseTest {
                     .isThrownBy(() -> new TransactionListResponse(rows(rowsCarried),
                             narrowerThanThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER,
                             PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
-                            CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME))
+                            CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME, null))
                     .withMessageContaining(String.valueOf(declaredPageSize))
                     .withMessageContaining(String.valueOf(rowsCarried));
         }
@@ -723,7 +723,7 @@ class TransactionListResponseTest {
             TransactionListResponse response = new TransactionListResponse(rows(declaredPageSize),
                     matchingThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
                     null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME,
-                    TRANSACTION_NAME, PROGRAM_NAME);
+                    TRANSACTION_NAME, PROGRAM_NAME, null);
 
             assertThat(response.rows()).hasSize(declaredPageSize);
 
@@ -731,7 +731,7 @@ class TransactionListResponseTest {
             // the page size, so only exceeding the declared size is a defect.
             assertThat(new TransactionListResponse(rows(1), matchingThePage, navigation(), NEXT_ROUTE,
                             TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
-                            TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME)
+                            TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME, null)
                     .rows())
                     .hasSize(1);
         }
@@ -742,7 +742,7 @@ class TransactionListResponseTest {
             TransactionListResponse response = new TransactionListResponse(
                     rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE), null, navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
-                    TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
+                    TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME, null);
 
             assertThat(response.pageMetadata()).isNull();
             assertThat(response.rows()).hasSize(PageMetadata.TRANSACTION_LIST_PAGE_SIZE);
@@ -885,12 +885,12 @@ class TransactionListResponseTest {
                     List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
-                    PROGRAM_NAME);
+                    PROGRAM_NAME, null);
             TransactionListResponse walkedBackward = new TransactionListResponse(
                     List.of(row(TRANSACTION_ID, AMOUNT)), backwardPaging(), navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
-                    PROGRAM_NAME);
+                    PROGRAM_NAME, null);
 
             assertThat(walkedForward.pageMetadata().direction())
                     .isEqualTo(PageMetadata.PagingDirection.FORWARD);
@@ -909,7 +909,7 @@ class TransactionListResponseTest {
             TransactionListResponse subject = new TransactionListResponse(descending, backwardPaging(),
                     navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
                     TransactionListResponse.MESSAGE_REACHED_TOP, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
-                    TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
+                    TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME, null);
 
             assertThat(subject.rows()).containsExactlyElementsOf(descending);
             assertThat(subject.rows()).isNotEqualTo(List.of(firstOfAll, middle, last));
@@ -1285,7 +1285,7 @@ class TransactionListResponseTest {
                     List.of(row(TRANSACTION_ID, AMOUNT)), supplied, navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
-                    PROGRAM_NAME);
+                    PROGRAM_NAME, null);
 
             assertThat(subject.pageMetadata()).isSameAs(supplied);
         }
@@ -1358,7 +1358,7 @@ class TransactionListResponseTest {
                     List.of(row(TRANSACTION_ID, AMOUNT)), exhausted, navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR,
                     TransactionListResponse.MESSAGE_REACHED_BOTTOM, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
-                    TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
+                    TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME, null);
 
             assertThat(subject.pageMetadata().hasMorePages()).isFalse();
             assertThat(subject.pageMetadata().nextCursorKey()).isNull();
@@ -1402,7 +1402,7 @@ class TransactionListResponseTest {
                     List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), supplied, NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
-                    PROGRAM_NAME);
+                    PROGRAM_NAME, null);
 
             assertThat(subject.navigationContext()).isSameAs(supplied);
         }
@@ -1437,7 +1437,7 @@ class TransactionListResponseTest {
 
             TransactionListResponse withEmpty = new TransactionListResponse(
                     List.of(), forwardPaging(), NavigationContext.empty(), null, null, null, null, false, List.of(), null, false,
-                    null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null);
 
             assertThat(withEmpty.navigationContext()).isEqualTo(NavigationContext.empty());
             assertThat(withEmpty.navigationContext().userId()).isNull();
@@ -1575,7 +1575,7 @@ class TransactionListResponseTest {
         @DisplayName("reports nothing for an empty string, because no blankness constraint applies")
         void reportsNothingForAnEmptyString() {
             TransactionListResponse subject = new TransactionListResponse(List.of(), null, null, "", "",
-                    "", "", false, List.of(), null, false, "", "", "", "", "", "", "");
+                    "", "", false, List.of(), null, false, "", "", "", "", "", "", "", null);
 
             assertThat(violationsOf(subject)).isEmpty();
         }
@@ -1677,7 +1677,7 @@ class TransactionListResponseTest {
 
             TransactionListResponse failing = new TransactionListResponse(List.of(), null, null, null,
                     null, null, TransactionListResponse.MESSAGE_INVALID_SELECTION, true, List.of(), null, false, null, null,
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
 
             assertThat(published(failing)).containsEntry("error", Boolean.TRUE);
             assertThat(failing.error()).isTrue();
@@ -1757,7 +1757,7 @@ class TransactionListResponseTest {
             String notARoute = "  not a route at all  ";
 
             TransactionListResponse subject = new TransactionListResponse(List.of(), null, null,
-                    notARoute, null, null, null, false, List.of(), null, false, null, null, null, null, null, null, null);
+                    notARoute, null, null, null, false, List.of(), null, false, null, null, null, null, null, null, null, null);
 
             assertThat(subject.nextRoute()).isEqualTo(notARoute);
         }

@@ -37,7 +37,6 @@ import com.carddemo.service.JobSubmissionService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ReportRequestService;
-import com.carddemo.service.ReportRetryTokenService;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.TestDataFactory;
@@ -1811,7 +1810,7 @@ public class ReportControllerIT extends AbstractPostgresIT {
         BatchAutoConfiguration.class})
     @Import({ReportController.class, ReportContractAdapter.class, ConversationStateAdapter.class,
         ScreenStateAdapter.class, GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class,
-        ModuleErrorController.class, ReportRequestService.class, ReportRetryTokenService.class,
+        ModuleErrorController.class, ReportRequestService.class,
         DateValidationService.class,
         MessageCatalogService.class, NavigationService.class, SignOnStateService.class,
         SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class})

@@ -35,10 +35,13 @@ import com.carddemo.service.DateValidationService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.OnlineTransactionBoundary;
+import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.service.TransactionAddService;
+import com.carddemo.service.TransactionListPageTokenService;
 import com.carddemo.service.TransactionListService;
 import com.carddemo.service.TransactionViewService;
+import com.carddemo.util.SensitiveFieldCodec;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
@@ -53,6 +56,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -722,8 +726,10 @@ public class TransactionControllerIT extends AbstractPostgresIT {
      * <p>The whole of it is published by the turn that served the page, so a client never assembles
      * cross-turn state of its own. It carries the two boundary keys, the direction the page was
      * assembled in, the page label and whether a further page follows - and <strong>no transaction
-     * identifier of a displayed row</strong>. The next turn establishes a marked row's identifier by
-     * re-reading the page these keys name; see {@code docs/decision-log.md} DL-299.</p>
+     * identifier of a displayed row</strong>. These keys position the page that follows; they do not
+     * name a marked row. A marking turn establishes the marked row's identity from the sealed slot
+     * snapshot the same response published, which callers echo alongside this payload under
+     * {@code rowSnapshotToken}, so an edited boundary key cannot move which row a mark resolves to.</p>
      *
      * @param  served the body of the page being echoed
      * @return the paging payload in the shape the request accepts inbound
@@ -1067,6 +1073,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
             forward.put("pageMetadata", pagingStateFrom(firstPage));
+            forward.put("rowSnapshotToken", textOf(firstPage, "rowSnapshotToken"));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             assertThat(publishedIdentifiers(secondPage))
@@ -1120,11 +1127,13 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
             forward.put("pageMetadata", pagingStateFrom(firstPage));
+            forward.put("rowSnapshotToken", textOf(firstPage, "rowSnapshotToken"));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
             backward.put("pageMetadata", pagingStateFrom(secondPage));
+            backward.put("rowSnapshotToken", textOf(secondPage, "rowSnapshotToken"));
             final JsonNode backwardPage = bodyOf(postList(backward));
 
             assertThat(publishedIdentifiers(backwardPage))
@@ -1152,11 +1161,13 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
             forward.put("pageMetadata", pagingStateFrom(firstPage));
+            forward.put("rowSnapshotToken", textOf(firstPage, "rowSnapshotToken"));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
             backward.put("pageMetadata", pagingStateFrom(secondPage));
+            backward.put("rowSnapshotToken", textOf(secondPage, "rowSnapshotToken"));
             final List<String> published = publishedIdentifiers(bodyOf(postList(backward)));
 
             assertThat(published.get(0))
@@ -1186,11 +1197,13 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
             forward.put("pageMetadata", pagingStateFrom(firstPage));
+            forward.put("rowSnapshotToken", textOf(firstPage, "rowSnapshotToken"));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
             backward.put("pageMetadata", pagingStateFrom(secondPage));
+            backward.put("rowSnapshotToken", textOf(secondPage, "rowSnapshotToken"));
             final JsonNode backwardPage = bodyOf(postList(backward));
 
             assertThat(textOf(backwardPage, "displayedPageNumber"))
@@ -1259,6 +1272,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
             backward.put("pageMetadata", pagingStateFrom(firstPage));
+            backward.put("rowSnapshotToken", textOf(firstPage, "rowSnapshotToken"));
             final JsonNode refused = bodyOf(postList(backward));
 
             assertThat(textOf(refused, "message"))
@@ -1287,6 +1301,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
             forward.put("pageMetadata", pagingStateFrom(lastPage));
+            forward.put("rowSnapshotToken", textOf(lastPage, "rowSnapshotToken"));
             final JsonNode refused = bodyOf(postList(forward));
 
             assertThat(textOf(refused, "message"))
@@ -1363,11 +1378,13 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> forward = listBody("PFK08");
             forward.put("navigationContext", reEntry());
             forward.put("pageMetadata", pagingStateFrom(firstPage));
+            forward.put("rowSnapshotToken", textOf(firstPage, "rowSnapshotToken"));
             final JsonNode secondPage = bodyOf(postList(forward));
 
             final Map<String, Object> backward = listBody("PFK07");
             backward.put("navigationContext", reEntry());
             backward.put("pageMetadata", pagingStateFrom(secondPage));
+            backward.put("rowSnapshotToken", textOf(secondPage, "rowSnapshotToken"));
             final JsonNode backwardPage = bodyOf(postList(backward));
 
             assertThat(textOf(backwardPage, "message"))
@@ -1497,11 +1514,13 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> toSecond = listBody("PFK08");
             toSecond.put("navigationContext", reEntry());
             toSecond.put("pageMetadata", pagingStateFrom(firstPage));
+            toSecond.put("rowSnapshotToken", textOf(firstPage, "rowSnapshotToken"));
             final JsonNode secondPage = bodyOf(postList(toSecond));
 
             final Map<String, Object> toThird = listBody("PFK08");
             toThird.put("navigationContext", reEntry());
             toThird.put("pageMetadata", pagingStateFrom(secondPage));
+            toThird.put("rowSnapshotToken", textOf(secondPage, "rowSnapshotToken"));
             return bodyOf(postList(toThird));
         }
     }
@@ -1544,6 +1563,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
             selection.put("pageMetadata", pagingStateFrom(page));
+            selection.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             selection.put("rowSelectors", selectorsWith(7, "S"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1571,6 +1591,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
             selection.put("pageMetadata", pagingStateFrom(page));
+            selection.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             selection.put("rowSelectors", selectorsWith(2, "s"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1594,6 +1615,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
             selection.put("pageMetadata", pagingStateFrom(page));
+            selection.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             selection.put("rowSelectors", selectorsWithBoth(3, 9, "S"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1621,6 +1643,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
             selection.put("pageMetadata", pagingStateFrom(page));
+            selection.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             selection.put("rowSelectors", selectorsWith(4, "X"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1656,6 +1679,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
             selection.put("pageMetadata", pagingStateFrom(page));
+            selection.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             selection.put("rowSelectors", selectorsWithBoth(3, 9, "X"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1681,6 +1705,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> selection = listBody("ENTER");
             selection.put("navigationContext", reEntry());
             selection.put("pageMetadata", pagingStateFrom(page));
+            selection.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             selection.put("rowSelectors", selectorsWith(4, "X"));
             final JsonNode body = bodyOf(postList(selection));
 
@@ -1712,11 +1737,23 @@ public class TransactionControllerIT extends AbstractPostgresIT {
 
             assertThat(body.has("continuation"))
                     .as("a submission body is not a trusted echo channel, so no continuation object "
-                            + "carrying displayed identifiers is published for one to be echoed back")
+                            + "carrying displayed identifiers in the clear is published for one to be "
+                            + "echoed back")
                     .isFalse();
             assertThat(body.toString())
                     .as("and no member anywhere in the response is an identifier list")
                     .doesNotContain("displayedTransactionIds");
+            assertThat(textOf(body, "rowSnapshotToken"))
+                    .as("what is published instead is one sealed snapshot of the slot map, which is the "
+                            + "channel the legacy screen map was")
+                    .isNotBlank();
+            assertThat(SensitiveFieldCodec.hasEnvelopeShape(textOf(body, "rowSnapshotToken")))
+                    .as("and it is an authenticated envelope rather than text a client could read")
+                    .isTrue();
+            assertThat(textOf(body, "rowSnapshotToken"))
+                    .as("no displayed identifier is legible inside it")
+                    .doesNotContain(ordered.get(0).getTranId())
+                    .doesNotContain(ordered.get(9).getTranId());
             assertThat(textOf(published, "previousCursorKey"))
                     .as("the forward key names the first presented slot, which is where an upward fill "
                             + "began and therefore what reproduces the page")
@@ -1731,39 +1768,75 @@ public class TransactionControllerIT extends AbstractPostgresIT {
         }
 
         /**
-         * A cursor altered by one byte resolves the row at the position it names, never the row the
-         * served page displayed in that slot.
+         * A cursor altered by one byte no longer changes which row a mark resolves to, because the
+         * marked slot is resolved against the sealed page rather than against a second read.
+         *
+         * <p>This is the inverse of what the earlier read-based arrangement asserted here, and the
+         * inversion is the point: under that arrangement the boundary key decided which page was
+         * re-read, so editing it moved the marked slot onto a different row. The sealed snapshot carries
+         * the page itself, so the cursor decides nothing about identity and only decides where the next
+         * page begins.
          *
          * @throws Exception if the boundary cannot be reached
          */
         @Test
-        @DisplayName("a boundary key altered by one byte resolves the row at the position it names, "
-                + "which is what proves the identifier is re-read rather than accepted")
-        void aTamperedBoundaryKeyResolvesTheRowAtThePositionItNames() throws Exception {
+        @DisplayName("a boundary key altered by one byte does not change which row a mark resolves to, "
+                + "because identity comes from the sealed page and not from the cursor")
+        void aTamperedBoundaryKeyDoesNotChangeWhichRowAMarkResolves() throws Exception {
             final List<Transaction> ordered = writeOrderedFixture();
             final JsonNode page = bodyOf(postList(listBody("ENTER")));
 
             final Map<String, Object> honest = listBody("ENTER");
             honest.put("navigationContext", reEntry());
             honest.put("pageMetadata", pagingStateFrom(page));
+            honest.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             honest.put("rowSelectors", selectorsWith(1, "S"));
 
             final Map<String, Object> tampered = listBody("ENTER");
             tampered.put("navigationContext", reEntry());
             tampered.put("pageMetadata", pagingStateWithATamperedForwardKey(page));
+            tampered.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             tampered.put("rowSelectors", selectorsWith(1, "S"));
 
+            final Map<String, Object> withATamperedSnapshot = listBody("ENTER");
+            withATamperedSnapshot.put("navigationContext", reEntry());
+            withATamperedSnapshot.put("pageMetadata", pagingStateFrom(page));
+            withATamperedSnapshot.put("rowSnapshotToken",
+                    withOneCharacterChanged(textOf(page, "rowSnapshotToken")));
+            withATamperedSnapshot.put("rowSelectors", selectorsWith(1, "S"));
+
             final String honestly = textOf(bodyOf(postList(honest)), "selectedTransactionId");
-            final String afterTamper = textOf(bodyOf(postList(tampered)), "selectedTransactionId");
+            final String afterCursorTamper =
+                    textOf(bodyOf(postList(tampered)), "selectedTransactionId");
+            final JsonNode afterSnapshotTamper = bodyOf(postList(withATamperedSnapshot));
 
             assertThat(honestly)
                     .as("an honest echo resolves the row the marked slot displayed")
                     .isEqualTo(ordered.get(0).getTranId());
-            assertThat(afterTamper)
-                    .as("a cursor naming the second row's position resolves the second row, because the "
-                            + "identifier is whatever the server's own read finds there")
-                    .isEqualTo(ordered.get(1).getTranId());
-            assertThat(afterTamper).isNotEqualTo(honestly);
+            assertThat(afterCursorTamper)
+                    .as("editing the boundary key changes nothing about identity: the sealed page still "
+                            + "says which row stood in the marked slot")
+                    .isEqualTo(honestly);
+            assertThat(textOf(afterSnapshotTamper, "selectedTransactionId"))
+                    .as("editing the sealed page instead makes it unopenable, and an unopenable page "
+                            + "names no row - the outcome a blank echoed identifier reaches")
+                    .isEmpty();
+            assertThat(textOf(afterSnapshotTamper, "nextRoute"))
+                    .as("so the turn re-arms on its own screen rather than transferring")
+                    .isNotEqualTo(NavigationService.Route.TRANSACTION_VIEW.getRouteValue());
+        }
+
+        /**
+         * One character of a sealed snapshot changed, so it can no longer be opened.
+         *
+         * @param  snapshot the snapshot a response published
+         * @return the same snapshot with its final character altered
+         */
+        private String withOneCharacterChanged(final String snapshot) {
+            final char[] characters = snapshot.toCharArray();
+            final int last = characters.length - 1;
+            characters[last] = characters[last] == 'A' ? 'B' : 'A';
+            return new String(characters);
         }
 
         /**
@@ -1809,6 +1882,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> markOnAnUnfilledSlot = listBody("ENTER");
             markOnAnUnfilledSlot.put("navigationContext", reEntry());
             markOnAnUnfilledSlot.put("pageMetadata", pagingStateFrom(body));
+            markOnAnUnfilledSlot.put("rowSnapshotToken", textOf(body, "rowSnapshotToken"));
             markOnAnUnfilledSlot.put("rowSelectors", selectorsWith(4, "S"));
 
             final JsonNode marked = bodyOf(postList(markOnAnUnfilledSlot));
@@ -1859,6 +1933,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final Map<String, Object> resubmitted = listBody("ENTER");
             resubmitted.put("navigationContext", reEntry());
             resubmitted.put("pageMetadata", pagingStateFrom(page));
+            resubmitted.put("rowSnapshotToken", textOf(page, "rowSnapshotToken"));
             resubmitted.put("rowSelectors", selectorsWith(4, "X"));
 
             final JsonNode row = bodyOf(postList(resubmitted)).get("rows").get(0);
@@ -2006,7 +2081,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
                             + "clause declares")
                     .hasSize(TransactionListResponse.AMOUNT_SCALE)
                     .hasSize(2);
-            assertThat(rawBody)
+            assertThat(applicationTextOf(rawBody))
                     .as("the shared configuration writes a decimal plainly, so nine integer digits "
                             + "reach the wire as digits and never as an exponent form")
                     .doesNotContain("E+")
@@ -2328,7 +2403,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
                     postView(reservedIdentifier(997), null, "ENTER", reEntry());
             final String rawBody = result.getResponse().getContentAsString(StandardCharsets.UTF_8);
 
-            assertThat(rawBody)
+            assertThat(applicationTextOf(rawBody))
                     .as("the operator gets a sentence, never a diagnostic; the three-letter prefix "
                             + "covers every symbolic transaction-manager and map constant at once, "
                             + "response codes and attribute names alike")
@@ -2505,7 +2580,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             assertThat(textOf(body, "focusScreenFieldId"))
                     .as("the duplicate arm returns the cursor to the account identifier item")
                     .isEqualTo("ACTIDIN");
-            assertThat(result.getResponse().getContentAsString(StandardCharsets.UTF_8))
+            assertThat(applicationTextOf(result.getResponse().getContentAsString(StandardCharsets.UTF_8)))
                     .as("the legacy writes a response code and a reason code to the screen on this arm; "
                             + "neither reaches the wire here")
                     .doesNotContain("RESP")
@@ -3083,7 +3158,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final MvcResult result = postAdd(validAddBody("Y"));
             final String rawBody = result.getResponse().getContentAsString(StandardCharsets.UTF_8);
 
-            assertThat(rawBody)
+            assertThat(applicationTextOf(rawBody))
                     .as("the legacy sets the message item green here and red on every failure arm; a "
                             + "colour is a terminal attribute and has no place in a machine contract")
                     .doesNotContain("GREEN")
@@ -3440,7 +3515,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
                     .as("a malformed request is a different matter from a screen outcome, so it is "
                             + "refused declaratively rather than answered with a screen")
                     .isEqualTo(400);
-            assertThat(rawBody)
+            assertThat(applicationTextOf(rawBody))
                     .as("a refusal names the item and nothing about the process serving it")
                     .doesNotContain("Exception")
                     .doesNotContain("org.springframework")
@@ -3466,7 +3541,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             final MvcResult result = postAdd(validAddBody("Q"));
             final String rawBody = result.getResponse().getContentAsString(StandardCharsets.UTF_8);
 
-            assertThat(rawBody)
+            assertThat(applicationTextOf(rawBody))
                     .as("no diagnostic, no statement text, no secret and no legacy artefact of any kind")
                     .doesNotContain("Exception")
                     .doesNotContain("stackTrace")
@@ -3523,6 +3598,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
     @Import({TransactionController.class, ModuleErrorController.class, ScreenStateAdapter.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, TransactionListService.class,
         TransactionViewService.class, TransactionAddService.class, DateValidationService.class,
+        TransactionListPageTokenService.class, SensitiveFieldEncryptionService.class,
         MessageCatalogService.class, NavigationService.class, OnlineTransactionBoundary.class,
         SignOnStateService.class, SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class})
     @EnableConfigurationProperties(JwtProperties.class)
@@ -3545,4 +3621,38 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             return FIXED_CLOCK;
         }
     }
+
+    /**
+     * Matches one sealed envelope literal, marker and Base64 body together, including its quotes.
+     *
+     * <p>The character class is the standard Base64 alphabet plus its padding, which is the whole of what
+     * the codec emits, so the match ends at the closing quote of the value and reaches no further.
+     */
+    private static final Pattern SEALED_VALUE = Pattern.compile("\"ENC1:[A-Za-z0-9+/=]*\"");
+
+    /**
+     * Returns one response body with every sealed opaque value replaced by a fixed placeholder.
+     *
+     * <p><strong>Why a scan of a raw body needs this.</strong> Several assertions in this class read the
+     * whole body as text and require that a short literal does not appear anywhere in it - a
+     * transaction-manager prefix, a terminal colour name, an exponent marker. That is the right question
+     * to ask of text the application composed. It is the wrong question to ask of a page token, whose
+     * value is Base64 over a fresh initialisation vector and an authentication tag, so its characters are
+     * drawn from {@code A-Za-z0-9+/=} at random on every call. A two-character literal made of those
+     * characters therefore appears inside a token roughly two and a half times in a hundred, and a
+     * three-character one about once in two thousand five hundred: not never, and not reproducibly.
+     *
+     * <p>Scanning the raw body was sound while no body carried ciphertext, and it produced exactly the
+     * failure this predicts once one did - {@code "E+"} matched inside {@code ...aUCzE+Kjh...}. Eliding
+     * the sealed value asks the intended question of the intended subject and removes the dependence on
+     * random bytes altogether, rather than weakening any assertion: every literal each caller forbids is
+     * still forbidden everywhere the application's own text appears.
+     *
+     * @param  body the response body as transmitted
+     * @return the same text with each sealed value replaced by a placeholder carrying none of its bytes
+     */
+    private static String applicationTextOf(final String body) {
+        return SEALED_VALUE.matcher(body).replaceAll("\"<sealed>\"");
+    }
+
 }

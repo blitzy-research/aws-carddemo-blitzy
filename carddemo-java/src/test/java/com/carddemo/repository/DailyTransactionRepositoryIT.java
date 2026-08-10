@@ -83,10 +83,20 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * refuse the offending row <em>at insert time</em>, making the invalid-card and account-not-found
  * reasons unreachable and the reject record unproducible - a direct byte-parity failure. The
  * zero-foreign-key test below is therefore the proof that those reason codes remain reachable, and it
- * exists so that a future maintainer does not "correct" the missing constraint. <strong>No foreign
- * key, no check constraint and no bean-validation constraint may be added to this table or its
- * entity.</strong> The validation cascade itself is not exercised here: it lives in the batch tier,
- * runs in source order, and short-circuits at the first rejection.</p>
+ * exists so that a future maintainer does not "correct" the missing constraint.
+ *
+ * <p><strong>The line to hold is about a value's CONTENT, not about constraints as such.</strong> This
+ * table does carry constraints, and the test below asserts exactly which: a primary key, and five
+ * checks - one encoding rule requiring {@code octet_length = char_length} on every text column, and
+ * four exact character widths on the identifier, the type code, the category code and the card number.
+ * Every one of those is a property of the 350-byte record IMAGE, and every field sliced from a valid
+ * image already has it, so no record the sequential reader can produce is refused by any of them. What
+ * may never be added is a rule that judges what a value MEANS - a foreign key, a uniqueness rule
+ * beyond the business key, a pattern, a value list, a range, or the bean-validation equivalent of any
+ * of them on the entity. Such a rule would refuse at insert time precisely the row whose rejection the
+ * reject dataset is contractually obliged to report, which is why the definitions of all five checks
+ * are asserted below and not merely their number. The validation cascade itself is not exercised here:
+ * it lives in the batch tier, runs in source order, and short-circuits at the first rejection.</p>
  *
  * <h2>The merchant-column asymmetry, which is the likeliest mapping error in this package</h2>
  *
@@ -648,24 +658,24 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
                             "ck_daily_transaction_single_byte_text",
                             "ck_daily_transaction_type_cd_width");
             assertThat(singleByteTextConstraintDefinition())
-                    .as("and the rule compares each column's encoded length against its character length "
-                            + "and nothing else: no literal, no pattern and no reference to another table")
-                    .doesNotContain("~")
-                    .doesNotContain("IN (")
-                    .doesNotContain("'");
+                    .as("the encoding rule compares each column's encoded length against its character "
+                            + "length and does nothing else")
+                    .isEqualTo(expectedSingleByteTextDefinition());
             assertThat(checkConstraintDefinitions())
-                    .as("THE ASSERTION THAT MATTERS, and it is now made over EVERY check rather than over "
-                            + "one named one: not a single definition on this table carries a pattern "
-                            + "match, a value list or a literal of any kind. A width is a property of the "
-                            + "350-byte image and every field sliced from a valid image already has it, so "
-                            + "no record the sequential reader can produce is refused - while a content "
-                            + "rule would take the invalid-card, over-limit and expired-account cases away "
-                            + "from the reject dataset that is contractually obliged to report them")
-                    .isNotEmpty()
-                    .allSatisfy(definition -> assertThat(definition)
-                            .doesNotContain("~")
-                            .doesNotContain("IN (")
-                            .doesNotContain("'"));
+                    .as("THE ASSERTION THAT MATTERS: every check on this table, stated in full and in "
+                            + "name order, so the set is closed. It is an equality and not a list of "
+                            + "forbidden spellings, because a blacklist of '~', 'IN (' and quoted "
+                            + "literals is exactly what a numeric content rule slips through - "
+                            + "`dalytran_amt >= 0` contains none of those three, would have satisfied "
+                            + "every one of them, and would refuse at INSERT time the negative amounts "
+                            + "the reject dataset is contractually obliged to report. Any check added, "
+                            + "removed or altered fails here, whatever it is spelled with")
+                    .containsExactly(
+                            expectedWidthDefinition("card_num", 16),
+                            expectedWidthDefinition("cat_cd", 4),
+                            expectedWidthDefinition("id", 16),
+                            expectedSingleByteTextDefinition(),
+                            expectedWidthDefinition("type_cd", 2));
             assertThat(constraintKinds())
                     .as("so the whole constraint vocabulary of this table is the primary key and its "
                             + "image checks")
@@ -1494,6 +1504,47 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
                    AND con.contype = 'c'
                  ORDER BY con.conname
                 """, String.class, LANDING_TABLE);
+    }
+
+    /**
+     * The definition PostgreSQL renders for one of this table's exact-width checks.
+     *
+     * <p>Built rather than pasted, because the shape is the assertion: {@code char_length} of the column
+     * cast to text, compared with an integer, and nothing more. The doubled parentheses and the
+     * {@code ::text} cast are how {@code pg_get_constraintdef} normalises a check over a {@code VARCHAR}
+     * column on PostgreSQL 16, which is the version both the pinned Compose image and the Testcontainers
+     * image run.
+     *
+     * @param bareColumn the column name without the {@code dalytran_} prefix
+     * @param width the exact character width the record image gives that field
+     * @return the normalised constraint definition to expect
+     */
+    private static String expectedWidthDefinition(final String bareColumn, final int width) {
+        return "CHECK ((char_length((" + COLUMN_PREFIX + bareColumn + ")::text) = " + width + "))";
+    }
+
+    /**
+     * The definition PostgreSQL renders for the single-byte-text check.
+     *
+     * <p>Derived from the record layout rather than transcribed, so the expectation cannot drift from the
+     * image it describes: every field of the 350-byte layout except the numeric amount must appear, in
+     * layout order, on both sides of an octet-length equality. A column added to the layout and left out
+     * of the constraint therefore fails here, and so does a constraint that covers a column the layout
+     * does not have - neither of which a transcribed string would notice.
+     *
+     * @return the normalised constraint definition to expect
+     */
+    private static String expectedSingleByteTextDefinition() {
+        final List<String> equalities = new ArrayList<>();
+        for (final FieldSpec field : TestDataFactory.DAILY_TRANSACTION.fields()) {
+            final String column = columnNameOf(field);
+            if (AMOUNT_COLUMN.equals(column)) {
+                continue;
+            }
+            equalities.add("(octet_length((" + column + ")::text) = char_length((" + column
+                    + ")::text))");
+        }
+        return "CHECK ((" + String.join(" AND ", equalities) + "))";
     }
 
     /**

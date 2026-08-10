@@ -33,13 +33,19 @@ import java.util.Objects;
  * {@code RECORDSIZE(50 50)} in {@code app/jcl/XREFFILE.jcl}, and by the offsets the schema migration
  * annotates on each column.
  *
- * <p>The {@code CXACAIX} alternate index over the account identifier becomes an index plus one finder,
- * not a mapped structure: {@code V2__create_indexes.sql} creates
+ * <p>The {@code CXACAIX} alternate index over the account identifier becomes an index plus two derived
+ * finders, not a mapped structure: {@code V2__create_indexes.sql} creates
  * {@code idx_card_cross_reference_xref_acct_id}, and
- * {@code CardCrossReferenceRepository.findByXrefAcctId} provides the access path, returning every row of
- * the account. The non-unique alternate index admits more than one row, so the single-row resolution the
- * legacy positioned read performs is applied by the calling service on the returned list rather than by a
- * second repository method. An index is physical; this class declares a logical mapping only.
+ * {@code CardCrossReferenceRepository} declares
+ * {@code findFirstByXrefAcctIdOrderByXrefCardNumAsc} and
+ * {@code findByXrefAcctIdOrderByXrefCardNumAsc} as the access paths over it. There are two because the
+ * alternate key is non-unique, and that makes two different questions of the same index: which single
+ * row a legacy keyed read of the path returns - the first duplicate in ascending card-number order,
+ * which the first finder answers in one bounded row - and which rows an account carries at all, which
+ * the second answers as an ordered, caller-limited list. The single-row rule therefore has one home, in
+ * the repository, rather than being re-applied by each calling service on a fully materialised list;
+ * {@code DL-121} and {@code DL-164} in {@code docs/decision-log.md} record why it moved there. An index
+ * is physical; this class declares a logical mapping only.
  *
  * <p>{@code V2__create_indexes.sql} constrains all three columns with foreign keys to the card,
  * account and customer tables, making this the most heavily constrained table in the schema - and it

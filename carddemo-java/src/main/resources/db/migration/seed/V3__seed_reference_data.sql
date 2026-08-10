@@ -212,16 +212,31 @@
 --      an all-blank group identifier misses the direct disclosure-group read, which is what drives
 --      the interest calculation down its DEFAULT-group fallback path. A direct-hit test against group
 --      'A000000000' needs a separately constructed fixture; it cannot come from this seed.
---   2. customer.cust_ssn is seeded as SQL NULL for all fifty rows, and it is the one nullable column
---      in the schema for exactly this reason. The nine bytes the legacy record holds at offset 279
---      are shaped like real national identifiers, and the correct handling of a value like that in a
---      checked-in artifact is not to carry it at all - not as cleartext, not as ciphertext, and not
---      in a comment. Sealing them would not help: every envelope in this file is sealed under the one
---      non-production fixture key, which is itself committed as a profile default, so anything sealed
---      under it is recoverable by anyone holding the repository. NULL here means "deliberately not
---      seeded", never "unmapped field": every other customer column is seeded. A test that needs a
---      stored identifier persists one through the application encryption path under its own key,
---      which is what CustomerSsnEncryptionIT does.
+--   2. customer.cust_ssn IS seeded, in all fifty rows, as a sealed ENC1 envelope over the nine bytes
+--      the legacy record holds at offset 279 - the same treatment anomaly 3 describes for the
+--      government-issued identifier, produced by the same service, bound to this column, under the
+--      same one non-production fixture key. Each envelope is 81 characters rather than 101 because
+--      the sealed payload is this column's name and nine digits rather than its name and twenty.
+--
+--      THIS REVERSES AN EARLIER DECISION, and the reason is that the earlier reasoning did not
+--      survive checking. The column was left null on the ground that a value shaped like a national
+--      identifier should not be carried in a checked-in artifact "not as cleartext, not as
+--      ciphertext", because anything sealed under a committed key is recoverable by anyone holding
+--      the repository. The premise is true and the conclusion does not follow: those exact nine
+--      bytes are ALREADY in this repository in cleartext, twice - at app/data/ASCII/custdata.txt,
+--      which is the read-only parity baseline and must stay byte-identical, and at
+--      src/test/resources/fixtures/input/custdata.txt, which this module committed itself. Anyone
+--      holding the repository already holds the values without a key at all, so omitting them here
+--      protected nothing and sealing them here exposes nothing. What the omission did cost was the
+--      only thing it could: no seeded row exercised a stored national identifier, so the reveal and
+--      masking path was proven against absence rather than against the fifty authoritative values,
+--      and the migration check below asserted that absence as though it were the contract.
+--
+--      The column stays nullable because the schema permits a customer with no identifier on file
+--      and the reveal path must carry that absence through as absence; a test that needs the absent
+--      case constructs it. CustomerSsnEncryptionIT continues to persist a value through the
+--      application encryption path under its own key, so the dynamic proof is unchanged and is no
+--      longer the ONLY proof.
 --   3. customer.govt_issued_id is NOT NULL and is seeded as an ENC1 envelope in every row - never as
 --      the cleartext the fixture record holds at offset 288. All fifty envelopes were produced by
 --      com.carddemo.service.SensitiveFieldEncryptionService over the twenty characters at that offset
@@ -284,15 +299,14 @@
 -- Seeded first because three of the six foreign keys added by V2 point at this table or at
 -- tables that point at it: card_cross_reference references customer, account and card.
 --
--- cust_ssn is inserted as NULL in every row - see anomaly 2 in the header. The nine bytes
--- the record holds at offset 279 are read by nothing in this file and appear nowhere in it.
---
--- govt_issued_id is inserted as an ENC1 envelope in every row, never as the cleartext the
--- record holds at offset 288 - see anomaly 3 in the header. Each literal below is 101
--- characters, is bound to this column, and was produced by the application's own encryption
--- service under the one non-production fixture key; each one occupies its own continuation
--- line so that the fifty sealed values read as a column and an unsealed row is visible at a
--- glance.
+-- Both protected columns are inserted as ENC1 envelopes in every row, never as the cleartext
+-- the fixture record holds - cust_ssn over the nine bytes at offset 279 (anomaly 2), and
+-- govt_issued_id over the twenty at offset 288 (anomaly 3). Each literal was produced by the
+-- application's own encryption service, bound to the column it sits in, under the one
+-- non-production fixture key. The national identifier measures 81 characters and the
+-- government-issued identifier 101, the difference being only the length of the sealed
+-- payload. Each occupies its own continuation line, in that column order, so that the two
+-- sealed values read as columns and an unsealed row is visible at a glance.
 --
 -- middle_name and addr_line_2 are stored but must never be validated downstream: the legacy
 -- update path decorates both for error display while coding no edit for either, so any
@@ -305,116 +319,166 @@
 --       [239:249] addr_zip       [249:264] phone_num_1     [264:279] phone_num_2
 --       [308:318] cust_dob       [318:328] eft_account_id
 --       [328:329] pri_card_holder_ind                      [329:332] fico_credit_score
---       [279:288] cust_ssn and [288:308] govt_issued_id are NOT read - both columns are seeded
---                 NULL, so the two regulated spans are skipped entirely
+--       [279:288] cust_ssn        [288:308] govt_issued_id
 --       [332:500] trailing filler, not a column
---   The govt_issued_id slice is the SOURCE of the sealed literal, not the stored value: the
---   twenty characters at [288:308] are what each envelope below opens to.
+--   Those last two slices are the SOURCE of the sealed literals, never the stored values: the nine
+--   characters at [279:288] and the twenty at [288:308] are what the two envelopes on each row
+--   below open to. No cleartext from either span appears anywhere in this file.
 -- -------------------------------------------------------------------------------------------------
 INSERT INTO customer (
     cust_id, first_name, middle_name, last_name, addr_line_1, addr_line_2, addr_line_3,
     addr_state_cd, addr_country_cd, addr_zip, phone_num_1, phone_num_2, cust_ssn, govt_issued_id,
     cust_dob, eft_account_id, pri_card_holder_ind, fico_credit_score
 ) VALUES
-('000000001', 'Immanuel', 'Madeline', 'Kessler', '618 Deshaun Route', 'Apt. 802', 'Altenwerthshire', 'NC', 'USA', '12546', '(908)119-8310', '(373)693-8684', NULL,
+('000000001', 'Immanuel', 'Madeline', 'Kessler', '618 Deshaun Route', 'Apt. 802', 'Altenwerthshire', 'NC', 'USA', '12546', '(908)119-8310', '(373)693-8684',
+    'ENC1:zFZGZk5pEfMkkWsK9onEb978Xys6faZzGkFxCdA3iC5QBh/4pnIKkIkBV3zMXa1q6CNBbqZSFQ==',
     'ENC1:RX7rSgeNquwqSu5orR/V5WtlUHW4Sf4t+JM00cA3RldYyJ05LsOIzP2I2VxhEGCamAyzigHbwf0aXXft8Fz/yCczT9VF6SXF', '1961-06-08', '0053581756', 'Y', '274'),
-('000000002', 'Enrico', 'April', 'Rosenbaum', '4917 Myrna Flats', 'Apt. 453', 'West Bernita', 'IN', 'USA', '22770', '(429)706-9510', '(744)950-5272', NULL,
+('000000002', 'Enrico', 'April', 'Rosenbaum', '4917 Myrna Flats', 'Apt. 453', 'West Bernita', 'IN', 'USA', '22770', '(429)706-9510', '(744)950-5272',
+    'ENC1:kmoRD1GdU3qEJCCDIs9yU5QJMlA3IVMC8ZH61du3HSuB5CwmyIucQNhL4OWftHq2mxqcj5IKeg==',
     'ENC1:Gs1ua9HTGs8VVLK4aRYhA+SEleKqWqR1c8ISEamOqsKSSt4YyTn/6sxolHEN9RHay96KYIt54CYAeDbZT5c4WT3DTa0c99UC', '1961-10-08', '0069194009', 'Y', '268'),
-('000000003', 'Larry', 'Cody', 'Homenick', '362 Esta Parks', 'Apt. 390', 'New Gladys', 'GA', 'USA', '19852-6716', '(950)396-9024', '(685)168-8826', NULL,
+('000000003', 'Larry', 'Cody', 'Homenick', '362 Esta Parks', 'Apt. 390', 'New Gladys', 'GA', 'USA', '19852-6716', '(950)396-9024', '(685)168-8826',
+    'ENC1:xv/OtxCuoch8+4TQ9whSFvrieaEVI9Teu+FMr2lTSMeJZlhdyz+xvtwn2hmYv4HSLYj0O4ETTw==',
     'ENC1:dlIuqQzeBzvlLxhjnfrlKLQE9jKEYs0uRajrGlmVcRhTOydDfZuqqUIqUQH4YAxQyp52pLt2veLcISQdAsRmjhb37apg7oQO', '1987-11-30', '0006465789', 'Y', '616'),
-('000000004', 'Delbert', 'Kaia', 'Parisian', '638 Blanda Gateway', 'Apt. 076', 'Lake Virginie', 'MI', 'USA', '39035-0455', '(801)603-4121', '(156)074-6837', NULL,
+('000000004', 'Delbert', 'Kaia', 'Parisian', '638 Blanda Gateway', 'Apt. 076', 'Lake Virginie', 'MI', 'USA', '39035-0455', '(801)603-4121', '(156)074-6837',
+    'ENC1:3629Bum14BRRSUlClxebS7gpc3wVAYyIHKqFBBSiRcORNgEP4gkUiEucVJU+KcfE/sxaFIKwZw==',
     'ENC1:L0RGDIJv8yynKxZUHOix6zZxh88kZh2OpjPjMx6RqsAXGGGmpA9xxbLrrFXahujKR8W4C7ebj5uSEJr8hhzDOXk7yKYNjPS+', '1985-01-13', '0040802739', 'Y', '776'),
-('000000005', 'Treva', 'Manley', 'Schowalter', '5653 Legros Plaza', 'Apt. 968', 'Alvinaport', 'MI', 'USA', '02251-1698', '(978)775-4633', '(439)943-7644', NULL,
+('000000005', 'Treva', 'Manley', 'Schowalter', '5653 Legros Plaza', 'Apt. 968', 'Alvinaport', 'MI', 'USA', '02251-1698', '(978)775-4633', '(439)943-7644',
+    'ENC1:Y8gHNmFXulM5obnKJ/OsuM3c5a2QUaBnwk8hxHgNS9J+qmY4BctuLuEpn3vKHXMDR70m8KzvjQ==',
     'ENC1:zOg80KDjL9tSnyv0/my4/9X1c1ExpeqW4+QWA6eBsfFVVguZEmv1QElWs4viwILq8GWaZOs2rng6f4DIQMKl3eZE/u9/nfa+', '1971-09-29', '0006365573', 'Y', '529'),
-('000000006', 'Ignacio', 'Emery', 'Douglas', '3963 Yasmin Port', 'Suite 756', 'Port Josephstad', 'VI', 'USA', '46713-5148', '(277)743-4266', '(519)010-8739', NULL,
+('000000006', 'Ignacio', 'Emery', 'Douglas', '3963 Yasmin Port', 'Suite 756', 'Port Josephstad', 'VI', 'USA', '46713-5148', '(277)743-4266', '(519)010-8739',
+    'ENC1:U9v7HE9I2ymBgJXk2nB2wNCtx8p0h8Bb6dtCYwn9eJRKbu7vtXMY/6basQd8NN44TE+LbNIYfg==',
     'ENC1:jjfhs8j83IUNkTPuM1ZLY87YTn6l5WKJ05GGBt8TkCAq4/HI/aHUOnUcTsy6wwnaD6w9OjitvoA+19sSC25Ja/vpt6TUVbz1', '1994-11-29', '0067163009', 'Y', '753'),
-('000000007', 'Cooper', 'Dennis', 'Mayert', '6490 Zakary Locks', 'Apt. 765', 'Madieport', 'AL', 'USA', '34206-2974', '(698)282-4096', '(458)199-0016', NULL,
+('000000007', 'Cooper', 'Dennis', 'Mayert', '6490 Zakary Locks', 'Apt. 765', 'Madieport', 'AL', 'USA', '34206-2974', '(698)282-4096', '(458)199-0016',
+    'ENC1:Y9PubaQkTnp0B2XFMz7/7cjpx/9cvQk99iWv0IvbQsuRWfFJjZhi5K0TvDDlFck/g4nGLMsnHg==',
     'ENC1:rIqPagambeRR1BFrs0lStliNLMcutlJe0ssSfU6pnuMN2mzWdlk81fud4v1Z5ZBUsBsFpGIH0m0o2bTMljAchemkfSfT3pVA', '1977-05-06', '0024571415', 'Y', '499'),
-('000000008', 'Kelsie', 'Jordyn', 'Dicki', '0925 Welch Streets', 'Apt. 152', 'North Nanniestad', 'SC', 'USA', '27610', '(345)563-7159', '(443)197-1271', NULL,
+('000000008', 'Kelsie', 'Jordyn', 'Dicki', '0925 Welch Streets', 'Apt. 152', 'North Nanniestad', 'SC', 'USA', '27610', '(345)563-7159', '(443)197-1271',
+    'ENC1:AKlCPfA/BLEXHFgnuOD725GdXjysOJfnpSVEJnFHguSgACf8QBd2FrQLpgdXVWJtCH7l/fl/Fg==',
     'ENC1:TiQ5HALz0OD3k1wpSNfxWVWuVPaQ9FOqNrjmvKcYE9dLKuD3Jg8yjyLKlclvVQBpneft/bYeuGP442HbyStz1BS/Y1SsS5Eh', '1964-03-25', '0033132723', 'Y', '051'),
-('000000009', 'Melvin', 'Regan', 'Ondricka', '87893 Samson Flats', 'Apt. 135', 'New Braden', 'VI', 'USA', '21113', '(035)456-1404', '(412)440-3130', NULL,
+('000000009', 'Melvin', 'Regan', 'Ondricka', '87893 Samson Flats', 'Apt. 135', 'New Braden', 'VI', 'USA', '21113', '(035)456-1404', '(412)440-3130',
+    'ENC1:jTEqeGR1nEXjAW5QHxtqaxi1xFy8RDDcYHKXgXcuGkqj8wUDi12WRKlkdsZaEXv4mbGQ2zIDlQ==',
     'ENC1:HEtvhqNILwB4ciOVM0YiKlE7ILiac0MbeocjCrX25iG53jWZcK37Z9KHC+MzbHbA0yF9Gb93tViVC5iTchl9z1cvXORIk0RH', '1975-11-07', '0039446039', 'Y', '699'),
-('000000010', 'Maybell', 'Creola', 'Mann', '77933 Adah Dale', 'Suite 343', 'Andersonfurt', 'CT', 'USA', '44803-4279', '(614)594-2619', '(667)057-0235', NULL,
+('000000010', 'Maybell', 'Creola', 'Mann', '77933 Adah Dale', 'Suite 343', 'Andersonfurt', 'CT', 'USA', '44803-4279', '(614)594-2619', '(667)057-0235',
+    'ENC1:+QrNpYlQN7XIfXg12fkle2t2/LzslPo8x1reNbjcEZNHupiHBj8RA8LPuOnMDu1j2V8O32e/eA==',
     'ENC1:Mb7zNz9hZISxIYeVJtNoE/BBMjow7zXMHZkUWcGeXJjQvVrl6+C0CvPH2FQI7YsjztdTp/xQa/53fZ2Sl9jQIj59hUuKQ57P', '1980-06-11', '0093803568', 'Y', '476'),
-('000000011', 'Hayden', 'Ressie', 'Pfannerstill', '14895 Everette Ridges', 'Apt. 443', 'Julianneburgh', 'WA', 'USA', '24984', '(002)533-6980', '(553)586-7718', NULL,
+('000000011', 'Hayden', 'Ressie', 'Pfannerstill', '14895 Everette Ridges', 'Apt. 443', 'Julianneburgh', 'WA', 'USA', '24984', '(002)533-6980', '(553)586-7718',
+    'ENC1:oALCC6ND6A/I8pHtjRsBx+n3LXa5LHmXmxMTtLqPjP3JTNDUaCcIpyoKSXzL/7yD4MQLeV0BFg==',
     'ENC1:mqaXiuB+OWVzo2xd11BMNbb3trDx7GJVjBiKzMau5cin9EXP6T2KAGBbiN+RyNy3uvBuRoO6l7Do7Dat6Q3M/6DRbYrPCq70', '1986-11-03', '0002650577', 'Y', '209'),
-('000000012', 'Maci', 'Alan', 'Robel', '80501 Isac Cliffs', 'Suite 623', 'Predovicton', 'MN', 'USA', '78861', '(584)045-5200', '(610)244-0407', NULL,
+('000000012', 'Maci', 'Alan', 'Robel', '80501 Isac Cliffs', 'Suite 623', 'Predovicton', 'MN', 'USA', '78861', '(584)045-5200', '(610)244-0407',
+    'ENC1:s+V5h2GZA0ttW9Kc+wai1UulkunmeQXsCQqaI0QDz+0xawokfsvfuhGxd27oG/cHtWopk0HBQg==',
     'ENC1:lhu0qqpoLrUmDWnvTz1Rj4RL65f2vnnBVcsMHwb0W5kxSpemCc7NErLgAGX+mwVgwo1U1Y95jJFm9tKWTkk76cvXjcWqEpOj', '1984-02-18', '0061317348', 'Y', '688'),
-('000000013', 'Mariane', 'Oma', 'Fadel', '2689 Derick Mission', 'Suite 055', 'Bruenfurt', 'OR', 'USA', '02322', '(875)943-7287', '(075)550-6435', NULL,
+('000000013', 'Mariane', 'Oma', 'Fadel', '2689 Derick Mission', 'Suite 055', 'Bruenfurt', 'OR', 'USA', '02322', '(875)943-7287', '(075)550-6435',
+    'ENC1:0LP8Ha2/Xs9EMX9X1dbY0Syc1qN0yk2bBR0KIqf4ER0iGchbk7udJiCItXAY5EIcvKMusyNYcA==',
     'ENC1:yOLwho0Ieo6D6Y1X8Bs2it9i0f2ytCbrHIlUPUWlOqWv05+FIGAzkSSA5qkhmXUEH0If/kUMN9dSJeKiJ/vutJ7ClrnBL2HV', '1999-03-09', '0044807431', 'Y', '053'),
-('000000014', 'Chelsea', 'Ignacio', 'Marks', '747 Dino Lodge', 'Apt. 850', 'West Chase', 'RI', 'USA', '12914-8465', '(141)807-6571', '(284)088-9052', NULL,
+('000000014', 'Chelsea', 'Ignacio', 'Marks', '747 Dino Lodge', 'Apt. 850', 'West Chase', 'RI', 'USA', '12914-8465', '(141)807-6571', '(284)088-9052',
+    'ENC1:NE4bTVh/u43cwCwxwwgsq/xnrDv/z4dsHroQwvlLuQfYqEcROb1aTHWohMeSvtiL3qp2SvHocg==',
     'ENC1:getqrz4tsKhxgTdTtFQuuUDqrhSphKq4Mw271aNZKZ3ZJsq+BHyMu91Ip8EN5yuX4iLrFJQ7xHFzeZM1kpJPKqHtlKTwpyTM', '1974-11-29', '0048306401', 'Y', '243'),
-('000000015', 'Aubree', 'Elliot', 'Hermann', '36365 Ledner Drives', 'Suite 882', 'Port Efrainland', 'DE', 'USA', '63205-7014', '(769)100-7971', '(366)310-2061', NULL,
+('000000015', 'Aubree', 'Elliot', 'Hermann', '36365 Ledner Drives', 'Suite 882', 'Port Efrainland', 'DE', 'USA', '63205-7014', '(769)100-7971', '(366)310-2061',
+    'ENC1:zY5Mh+smTlWibnMxd9+LQwIw5/TT2WnOc2EvaZj0A7wHaAWV/Qsz3zaCSNo7/WrrRCjkXlwqbA==',
     'ENC1:r4T+//b1xRP5ib5Jg2Pry31xDOIU1MDd8x7EcS5j+4r6q0iCVDwp4S7ZVVNIntWQjW8BF6PZ3XNjw3VuvEIIZYlAklO/Djge', '1964-12-06', '0000634612', 'Y', '681'),
-('000000016', 'Carroll', 'Cicero', 'Bergstrom', '06988 Thiel Falls', 'Suite 148', 'Concepcionland', 'VT', 'USA', '84390', '(631)343-8667', '(938)648-3716', NULL,
+('000000016', 'Carroll', 'Cicero', 'Bergstrom', '06988 Thiel Falls', 'Suite 148', 'Concepcionland', 'VT', 'USA', '84390', '(631)343-8667', '(938)648-3716',
+    'ENC1:PHI3F2KmVS6ep48CQdvMvmr+r/EWGqGeiXu43Au8DwAL/LCMqZJEitWTxI57RDWz8BiHtbtVRA==',
     'ENC1:PcYMSjj0G0imQuJXFJWjQfu5g9pJ4p2VaJvR4tfi8dEzLYLR5SbGKT9KFTwdyJX8gGJMh1tu7crw5zN/ljAir89ZU+xCGY7j', '1983-04-27', '0012556599', 'Y', '326'),
-('000000017', 'Sigrid', 'Angeline', 'Mann', '95666 Dare Isle', 'Suite 286', 'New Presley', 'FM', 'USA', '56181-0584', '(087)314-2070', '(541)003-6606', NULL,
+('000000017', 'Sigrid', 'Angeline', 'Mann', '95666 Dare Isle', 'Suite 286', 'New Presley', 'FM', 'USA', '56181-0584', '(087)314-2070', '(541)003-6606',
+    'ENC1:lwmsF6raowhZRE7q82pXYg6hCUiv7eBKzd/xXv3daRdY60RhXtaOGxisuzx0z550ld88nr5D5A==',
     'ENC1:z7w72WIQYeV3Qn8RDNmsppRfDJbT04vtqs1ChT/bTgUPdd2q1MhLxm2jfb4FbGruozSw+ySmsrqtFGst8PKBQV32BtsO8ZeE', '1979-01-26', '0052356071', 'Y', '054'),
-('000000018', 'Emile', 'Jairo', 'White', '133 Bergnaum Square', 'Apt. 328', 'Hansenville', 'AP', 'USA', '96003-5867', '(303)654-3323', '(520)186-2176', NULL,
+('000000018', 'Emile', 'Jairo', 'White', '133 Bergnaum Square', 'Apt. 328', 'Hansenville', 'AP', 'USA', '96003-5867', '(303)654-3323', '(520)186-2176',
+    'ENC1:LkoWUj6R3SAECg8SVmdPCCykexaWiC2lsT0mf+g79AePmf/WxBT/c1CrwPXQDBzZ1LCTv6WW+A==',
     'ENC1:7BH+jWIVu6hA8CHN0yXTxpJyQVvpsMQSHsF1Q5riPHkrQg25+l6L9fGncljdD3D5x+bzq4xs/MUlI1gE/6bP9DXc50YKoxjw', '1987-03-25', '0086459831', 'Y', '340'),
-('000000019', 'Hadley', 'Sigrid', 'Hamill', '6273 Ondricka Meadows', 'Apt. 130', 'New Arturoshire', 'RI', 'USA', '48161', '(817)452-4986', '(724)901-6019', NULL,
+('000000019', 'Hadley', 'Sigrid', 'Hamill', '6273 Ondricka Meadows', 'Apt. 130', 'New Arturoshire', 'RI', 'USA', '48161', '(817)452-4986', '(724)901-6019',
+    'ENC1:dy4Kh+Ms0nvqIUL+SCoNEBBBiaWyXjgwyz4SdLva0SCSJhP0lyL+4y3Fdderuq5vSrP451mN7w==',
     'ENC1:FZkt4xK/zgwur4LndvnKewEUi8nVMTRpezvrozT0wG9HEgLlFltRhZTVjNGNb9pxNVdw+dpY8Izf0+G26oG1vmUoB4KQBDE5', '1991-01-07', '0036492057', 'Y', '259'),
-('000000020', 'Carter', 'Oren', 'Veum', '5845 Allison Valleys', 'Suite 934', 'Mitchellmouth', 'MH', 'USA', '72362', '(618)994-0531', '(571)695-4136', NULL,
+('000000020', 'Carter', 'Oren', 'Veum', '5845 Allison Valleys', 'Suite 934', 'Mitchellmouth', 'MH', 'USA', '72362', '(618)994-0531', '(571)695-4136',
+    'ENC1:UWcZZIwDzaQ9HXnR58Y9sadpFTuYZasBr1sDbt7tdCn6EBF2vGHz0DvhslsHWVadUQernfvtWg==',
     'ENC1:vLksDNast0Je1ZJjTcZP26ekMB3b54ACgnrMcjq1jeCMCwc67zkSIsQ10lnsC+NITzHeR/YFCuRVpCDXeZ4vsnJzTaZ9sl5r', '1996-04-14', '0036749754', 'Y', '493'),
-('000000021', 'Jerrold', 'Adolphus', 'Maggio', '401 Haylie Crest', 'Apt. 320', 'North Myrnaton', 'CA', 'USA', '72407', '(399)526-3254', '(326)193-1118', NULL,
+('000000021', 'Jerrold', 'Adolphus', 'Maggio', '401 Haylie Crest', 'Apt. 320', 'North Myrnaton', 'CA', 'USA', '72407', '(399)526-3254', '(326)193-1118',
+    'ENC1:EZoIspuDcQqGM3WiR+3mf0NsZdanunwey7PaRj404vDFeG6/qyyMgsIlXWuPFJb88y3PGBgISA==',
     'ENC1:qb1SueNhHwzIXP2F0nvPemgG5jgdP6Qe45y62nfJilhryRNlyQgTR3YGJwPROWWCjLekbEWGtn1ComQZ8fdUTrXgtQmKiKC1', '1977-11-15', '0011744660', 'Y', '163'),
-('000000022', 'Allene', 'Icie', 'Brown', '4467 Donnie Crossroad', 'Apt. 437', 'Anabelton', 'MD', 'USA', '01993-9116', '(231)251-5792', '(494)652-0009', NULL,
+('000000022', 'Allene', 'Icie', 'Brown', '4467 Donnie Crossroad', 'Apt. 437', 'Anabelton', 'MD', 'USA', '01993-9116', '(231)251-5792', '(494)652-0009',
+    'ENC1:MAVqErNdVdYcJDtKDtVqi+AKmFhKzX+LDsfyHe7W6gpGER1HLGqUSbSZPSREaAdqcawbu+gmNw==',
     'ENC1:ka4o+1CdrVIqwA4LbxzO5qcD7vy97XVyNvdGZZ4VO66r1Bm/8/8Kh7h/ptjwHnVgpLrt2OzjoCUzU1qhKKstre7QPTtNR98c', '1994-02-20', '0024791470', 'Y', '597'),
-('000000023', 'Johnson', 'Blanca', 'Ruecker', '2433 Jacobi Forks', 'Apt. 845', 'Hendersonbury', 'KS', 'USA', '78239-9466', '(981)873-1589', '(131)638-5974', NULL,
+('000000023', 'Johnson', 'Blanca', 'Ruecker', '2433 Jacobi Forks', 'Apt. 845', 'Hendersonbury', 'KS', 'USA', '78239-9466', '(981)873-1589', '(131)638-5974',
+    'ENC1:H3ARGmYruhanRiDLQ3Qn1/s1uOxGm3FnseB1rWufdhmOGuCVUDmXQDp/CieB2TnLh1MX7pTbOQ==',
     'ENC1:kWJ+lb2iQxl7qbZ8asOR6GveNC/pkCzQTULfqVlEu8vz3h5TwtpsAKv160zv0pP7EWr8yhmhrLQXYNqUgBDM6ONwSA6lDDsV', '1998-12-07', '0075158529', 'Y', '337'),
-('000000024', 'Stefanie', 'Verla', 'Dickinson', '6367 Stracke River', 'Apt. 444', 'East Otho', 'KS', 'USA', '15414', '(617)348-9142', '(330)116-5634', NULL,
+('000000024', 'Stefanie', 'Verla', 'Dickinson', '6367 Stracke River', 'Apt. 444', 'East Otho', 'KS', 'USA', '15414', '(617)348-9142', '(330)116-5634',
+    'ENC1:jfGYZaiQSMGn1TsWHovsaKORSKOml2B3LjmqYvgvAo9Uu2YiAGJvGxawrhN2AA+iM0UDPtS7OQ==',
     'ENC1:5uOlChT7IPf7cccu5laJbM+B38XaOA3RE9xrpfREXdBbA+YGNve362v04J3FjwTvdAFS65X+0N/yi9LfnLE4pjFx2iGHXr0g', '1996-01-24', '0005459662', 'Y', '711'),
-('000000025', 'Elliott', 'Fermin', 'Howell', '9524 McKenzie Lakes', 'Suite 245', 'West Alexa', 'NH', 'USA', '75721-7382', '(092)336-8599', '(311)969-1460', NULL,
+('000000025', 'Elliott', 'Fermin', 'Howell', '9524 McKenzie Lakes', 'Suite 245', 'West Alexa', 'NH', 'USA', '75721-7382', '(092)336-8599', '(311)969-1460',
+    'ENC1:wc7+ygcBSqRbxaFJ6TZJtvm+J3ccYUU/CRJUtu8AJ6jzyomnkOU5eXOP1ESXpF8Qc8/pjbrJKg==',
     'ENC1:tEjBal3PUvc6ym3be7+OrmS6uAicoTaKpolCjqGtKQjz3eDdwVWSTYPZUycluEE7IulAJT5Y7Fo0QMSVlUYGU9DuY3UBB/LF', '1989-03-27', '0032297533', 'Y', '355'),
-('000000026', 'Marjory', 'Damien', 'Stracke', '30161 Bogan Canyon', 'Suite 916', 'Walshberg', 'IL', 'USA', '59945', '(584)772-2867', '(819)733-9809', NULL,
+('000000026', 'Marjory', 'Damien', 'Stracke', '30161 Bogan Canyon', 'Suite 916', 'Walshberg', 'IL', 'USA', '59945', '(584)772-2867', '(819)733-9809',
+    'ENC1:RjYU5cu/Tp7xRBUsFQZNZUw47yJMx9a4dkAkNTOyAC6b45Qi9cVHVgsoSLV3T03F6KMS5lLngA==',
     'ENC1:Fs8/sReM3MJtw8/Lv/ejGrRtzm33FAfiLkw7z4e87F6NWNq0GS0j8/HySTcoWv576dBzGQ+iNBKaDXpd4L0kAb8xrhMIDeLF', '1990-03-17', '0060808858', 'Y', '001'),
-('000000027', 'Ward', 'Henri', 'Jones', '210 Amaya Turnpike', 'Suite 180', 'Port Dwight', 'GU', 'USA', '07923-8822', '(935)027-1145', '(103)537-5007', NULL,
+('000000027', 'Ward', 'Henri', 'Jones', '210 Amaya Turnpike', 'Suite 180', 'Port Dwight', 'GU', 'USA', '07923-8822', '(935)027-1145', '(103)537-5007',
+    'ENC1:MROuRu2wKEsi7PhW9visio2kkKwRTGLo02kV5a3Lj/Bft/iSh6vBZBsCl3XGuepePj0qervAlw==',
     'ENC1:NypQZZcpRfPSR1BJKkHJ5wnk6zLRECmEeMGR9qPrYdUt7gHHR3NOf+gNNAbSP8mpmW2sDHlOaPzTrY/OqSpNukHbcHNck8o1', '1986-11-08', '0050024139', 'Y', '078'),
-('000000028', 'Hester', 'Vesta', 'Hane', '06816 Ursula Meadows', 'Suite 605', 'South Aurore', 'AS', 'USA', '77442-7954', '(122)357-7257', '(050)352-6579', NULL,
+('000000028', 'Hester', 'Vesta', 'Hane', '06816 Ursula Meadows', 'Suite 605', 'South Aurore', 'AS', 'USA', '77442-7954', '(122)357-7257', '(050)352-6579',
+    'ENC1:AdSL4JDioVgHCB4R/BjX++BqiKVXV5u7jbMpe+H7hhVzbubZIFIbzMHUSZ8e5TxiFs03H0cZdw==',
     'ENC1:ZlL1FS3IYMRzNJaLXekxJHtO3a0cYYpuhUBnfefW9uoJlORdanlSGTOn4++BmcLUYWiyfLpwX9L1YH0lKIMBhRDF+C00lqJ1', '1991-06-05', '0026946180', 'Y', '114'),
-('000000029', 'Rickie', 'Otho', 'Daugherty', '676 Funk Curve', 'Apt. 375', 'Hayesstad', 'NH', 'USA', '01226', '(418)291-9023', '(795)634-7776', NULL,
+('000000029', 'Rickie', 'Otho', 'Daugherty', '676 Funk Curve', 'Apt. 375', 'Hayesstad', 'NH', 'USA', '01226', '(418)291-9023', '(795)634-7776',
+    'ENC1:v7Cv9m0t2pDYFsRlfFtIlSE7gT42w9WisLnOmE/pzf7QhmAqd5E9gGg2vaHrOapPREQ3sM1shQ==',
     'ENC1:+ndRM52XSoc6V31qrzUd4SmyGk9f5YD1NyLdZ/FA61DEzXIRcjeC+HYYxiuOHK0aEB2OiXFRlfCNDnwbPqtzEKamiU9O4e0h', '1973-04-05', '0067736493', 'Y', '552'),
-('000000030', 'Layla', 'Dannie', 'Ullrich', '269 Eleazar Circle', 'Apt. 817', 'Kutchland', 'AK', 'USA', '64266', '(330)408-6966', '(413)347-7306', NULL,
+('000000030', 'Layla', 'Dannie', 'Ullrich', '269 Eleazar Circle', 'Apt. 817', 'Kutchland', 'AK', 'USA', '64266', '(330)408-6966', '(413)347-7306',
+    'ENC1:ZwYhb8yHuhZSo9B7w+EMcRFP0ZCAGOe6yRH+hBDV4hJlL38v911x9F4SEtW1t1izL6XUPo4C+w==',
     'ENC1:NDvFGXOz70uDejhK56504b9sqxfEr8H0EmVu8yI5qaqcW9uZJbazBBKL1u1CPJkUWyIw0tFIIRQZEW5GAwBUtbpx5RMH4cmi', '1965-11-28', '0050520060', 'Y', '133'),
-('000000031', 'Lucious', 'Otto', 'O''Connell', '919 Swift Valleys', 'Suite 548', 'Hermanborough', 'MS', 'USA', '56133-5636', '(259)414-9625', '(118)946-9264', NULL,
+('000000031', 'Lucious', 'Otto', 'O''Connell', '919 Swift Valleys', 'Suite 548', 'Hermanborough', 'MS', 'USA', '56133-5636', '(259)414-9625', '(118)946-9264',
+    'ENC1:qJvvNJPC4Ibkfogu5k2KV7Yw/tIm/7HXsePaLLA90xX4DW8rC6Cg3JajdXGM/cRH/WtijGyUtA==',
     'ENC1:PbTdwum1V+X8xoAQRZ8U4cgXjFzkrDBX+J25Ly53HF1mpaE+ck00ScCTn//bh2Zfm02K1uaVNKRAzF9DwgKjmpySI33V5Whh', '1976-08-03', '0092999757', 'Y', '058'),
-('000000032', 'Stephany', 'Meda', 'Fisher', '63452 Kenny Streets', 'Apt. 116', 'Predovicburgh', 'AK', 'USA', '85943-7605', '(202)436-5156', '(246)296-3533', NULL,
+('000000032', 'Stephany', 'Meda', 'Fisher', '63452 Kenny Streets', 'Apt. 116', 'Predovicburgh', 'AK', 'USA', '85943-7605', '(202)436-5156', '(246)296-3533',
+    'ENC1:NRNp1iFiP4VcqUHjDsXJuZqfxI1YRkgGsodHQilOwVKujOR+1dL7MnOPmdcT4kzbEFRYU3NzEw==',
     'ENC1:AXGRz59Ttgo814qjDfoFYRa3MdKUvRJMo9CJ9uZfyREkOblnLwrylq44QnYcQC9CYrMO0KTfTNfBzNofzq9x4w/HgrL7omdT', '1980-11-19', '0035970593', 'Y', '221'),
-('000000033', 'Bernice', 'Norbert', 'Herman', '877 Kassandra Ranch', 'Suite 956', 'Haleyport', 'AR', 'USA', '19113-4329', '(836)743-5487', '(640)208-1176', NULL,
+('000000033', 'Bernice', 'Norbert', 'Herman', '877 Kassandra Ranch', 'Suite 956', 'Haleyport', 'AR', 'USA', '19113-4329', '(836)743-5487', '(640)208-1176',
+    'ENC1:1Drdha4AR8ayM6TGuzymeYwvT/KVvQx69guOkrN6Baxj6ULFsRFR503bAsv1MOxdPMVSzXjYtA==',
     'ENC1:q3b+06J233I1SEBx9P4NKtYvRIuM0WN5NS4XfNO1qdLNGURh+ve3Y+mD0/UB7r8c6MK8nGjnfdwIzacxd/kPGKeVR0Z74pOY', '1988-05-19', '0065245171', 'Y', '469'),
-('000000034', 'Faustino', 'Jess', 'Schmidt', '44132 Michel Square', 'Suite 007', 'South Margarettaburgh', 'ME', 'USA', '49544-2869', '(179)036-5135', '(986)905-0112', NULL,
+('000000034', 'Faustino', 'Jess', 'Schmidt', '44132 Michel Square', 'Suite 007', 'South Margarettaburgh', 'ME', 'USA', '49544-2869', '(179)036-5135', '(986)905-0112',
+    'ENC1:iS3Uzd1YURNeFEx9Q6giiW9tqGWJCvIQeCyEzdjqNFzPle+AGmYZq+wuWPNZNCoPkdGsWnb/AA==',
     'ENC1:JIjCb6Vne+qFBaCSr5uYmUNX/VjPbjvtN5SoWIc3Buwj2HZEHBpQetcqrP3PJmaX0AMvb3MVMfdjVFec9m+ll+lXOOgXJWNh', '1994-03-21', '0067445089', 'Y', '104'),
-('000000035', 'Angelica', 'Damaris', 'Dach', '396 Pearl Loop', 'Suite 383', 'Pfefferhaven', 'LA', 'USA', '46142', '(303)480-9098', '(637)710-7367', NULL,
+('000000035', 'Angelica', 'Damaris', 'Dach', '396 Pearl Loop', 'Suite 383', 'Pfefferhaven', 'LA', 'USA', '46142', '(303)480-9098', '(637)710-7367',
+    'ENC1:uNnn+ockSSFZWx2nJFculhUOPV5H6WHXi2NxXUq45ypGTKIMAgpFf19etB3fkulHZBYagaY2og==',
     'ENC1:gHsGNdm3ySBE36ePjkHNd9braQNP9WxRPDanqr+X5X8rbEfCkO4/wqGg99iXHrVCJDlKR+Opk7myGXVDaUaovZ8+nAcQnk3J', '1987-06-23', '0047435332', 'Y', '793'),
-('000000036', 'Toney', 'Emerald', 'Gerhold', '35943 Raleigh Harbor', 'Apt. 116', 'Lake Derekburgh', 'AL', 'USA', '10932-0480', '(034)271-9180', '(507)529-4523', NULL,
+('000000036', 'Toney', 'Emerald', 'Gerhold', '35943 Raleigh Harbor', 'Apt. 116', 'Lake Derekburgh', 'AL', 'USA', '10932-0480', '(034)271-9180', '(507)529-4523',
+    'ENC1:6RytKveK6g7PTyz4uzPv3emr8z2kNzP/JW73bpaEhpc9hW4hgtebr0qLhfWOcbC4e96vdZyWng==',
     'ENC1:/cOi7dtCWwSvS9XEmxS01Y5DpjA9tlZoYYVogHk8HSseXGi122EZsqPrdp1S9iUfYMrijLUdmTCwS9kfEqbR5c07fOBMkire', '1991-03-31', '0066461979', 'Y', '266'),
-('000000037', 'Shany', 'Darby', 'Walker', '91196 Heaney Turnpike', 'Suite 814', 'Lubowitzberg', 'NV', 'USA', '11857-8177', '(052)759-5167', '(706)896-1282', NULL,
+('000000037', 'Shany', 'Darby', 'Walker', '91196 Heaney Turnpike', 'Suite 814', 'Lubowitzberg', 'NV', 'USA', '11857-8177', '(052)759-5167', '(706)896-1282',
+    'ENC1:Mek6lf0vxCvpJfiST6VhQBvoyBU0oBMHR2AZgYzft1x5n79BfaXoQ5FNwdAbbZnC81Xv9qSzcA==',
     'ENC1:XCEWpxkO3kr1XfU03uVgXOUHbal8C7+Je6Xkze//DpClrnEc4jJIPMOagk07AjxF3eA72pKhs30sTDD/9j6AyNDyYfbmypFy', '1984-12-09', '0066111704', 'Y', '653'),
-('000000038', 'Angela', 'Ceasar', 'Ankunding', '65482 Zoila Skyway', 'Apt. 054', 'East Malachi', 'VA', 'USA', '63928-0008', '(316)640-2650', '(148)111-1148', NULL,
+('000000038', 'Angela', 'Ceasar', 'Ankunding', '65482 Zoila Skyway', 'Apt. 054', 'East Malachi', 'VA', 'USA', '63928-0008', '(316)640-2650', '(148)111-1148',
+    'ENC1:3cSkbAIy4FyG/BX0zSTDXbKdv68EKId3bSrjDxxeCDCrq+0VBm9leSfvbm6ovSnzT7n5GqlOaA==',
     'ENC1:b8hVnSfSDwJiek/GelpddKUSuPNQpHxj2D/eb4Vt8iBM0S31XwWHk5lEqL4ZXX8UXvoC60U2f2kAFpPGQY5YMWh1kgCKkHbc', '1990-05-28', '0018048939', 'Y', '446'),
-('000000039', 'Aliyah', 'Horace', 'Berge', '5761 Pasquale Trail', 'Apt. 616', 'New Sabryna', 'IA', 'USA', '74267', '(089)096-3287', '(768)959-4733', NULL,
+('000000039', 'Aliyah', 'Horace', 'Berge', '5761 Pasquale Trail', 'Apt. 616', 'New Sabryna', 'IA', 'USA', '74267', '(089)096-3287', '(768)959-4733',
+    'ENC1:wq+1+5ZRWL+3C07ycQJgyy7DoI91yf+RPLNqys6cV/b57+CoHXFd3o6kzD9ilEjZ+Nc/bJA5qQ==',
     'ENC1:OcLh4pEiKX3sz2+GY74RtfB6UckpOr3CH05nOO2cGRNM9Ix0qlklB/b39XroF5vOWL5aBRJw0ZO1Ag95CyYY6pNGJFQeRqAg', '1972-08-26', '0061869530', 'Y', '475'),
-('000000040', 'Davon', 'Demond', 'Emmerich', '23499 Beer Views', 'Suite 816', 'Erniechester', 'TX', 'USA', '87156-8689', '(463)762-3017', '(419)414-2177', NULL,
+('000000040', 'Davon', 'Demond', 'Emmerich', '23499 Beer Views', 'Suite 816', 'Erniechester', 'TX', 'USA', '87156-8689', '(463)762-3017', '(419)414-2177',
+    'ENC1:aH1+9N9Pv/riakCY0sODc9UqSpZa3sPHWxuLrI8MuaCQNdclQQIf8q58ZK5OWrxpKIrCCOYyFQ==',
     'ENC1:TZWR0j4193PcfaZObix6LV3WurzvK/nuRCgOJWHxtCB0Vpo8lXmIbTwXhKP6qjO0j3M7EBNi660ONj2yDwMjAiweCm6j/rO7', '1992-01-26', '0087069976', 'Y', '284'),
-('000000041', 'Lucinda', 'Kiana', 'Dach', '3220 Yolanda Corner', 'Suite 649', 'East Harmonystad', 'VT', 'USA', '72971-7481', '(284)052-5831', '(091)234-2144', NULL,
+('000000041', 'Lucinda', 'Kiana', 'Dach', '3220 Yolanda Corner', 'Suite 649', 'East Harmonystad', 'VT', 'USA', '72971-7481', '(284)052-5831', '(091)234-2144',
+    'ENC1:EQS1pB5u8M236sYe3hhIDEvxraAlV8PFK0jiHxVYZuA44d3/LVGo0rwBRlc+BXKaVLpkWRxZDg==',
     'ENC1:i8UcBxSeNHjNHnL0PSOyqfqZsQZeWllM4lSNX4jn6FXYUNJmO6MZGdPD8F7uKldJNp+XZ9+e2sXwIqBTtPEAPw5NktCWvOIv', '1967-02-20', '0007315287', 'Y', '725'),
-('000000042', 'Heather', 'Ericka', 'Nienow', '5523 Archibald Club', 'Apt. 358', 'Reillyland', 'FM', 'USA', '83589', '(640)954-4538', '(565)873-6897', NULL,
+('000000042', 'Heather', 'Ericka', 'Nienow', '5523 Archibald Club', 'Apt. 358', 'Reillyland', 'FM', 'USA', '83589', '(640)954-4538', '(565)873-6897',
+    'ENC1:aKqSFDzIfRlcFsIX3sCtmMLb8Q6KG31tXG1goyPpfr8DJg7O6I6bsqF7ja1hL7c5CUaG0Lcj4Q==',
     'ENC1:YhVE1X/O8ZaQVUhLxi2IBfIQy42drGSJt65kuoUSt1H94wguG1h7wjFatjMZsIqw2uoUaFcvq45+IbD7gjH2URbSR5kHeqR/', '1964-11-03', '0079262985', 'Y', '044'),
-('000000043', 'Britney', 'Jermain', 'Waters', '97765 Bernhard Fort', 'Apt. 666', 'South Marisaview', 'OK', 'USA', '10050-7980', '(407)042-6952', '(438)659-6397', NULL,
+('000000043', 'Britney', 'Jermain', 'Waters', '97765 Bernhard Fort', 'Apt. 666', 'South Marisaview', 'OK', 'USA', '10050-7980', '(407)042-6952', '(438)659-6397',
+    'ENC1:csD6Ik31gdXENdT1ZMsJjB3EqGuY6TEM7wYGau4sEEWh0EkWX+wWUQqhSpOIjaoi/hHKyiLJUw==',
     'ENC1:Cwkq4VyJb5IirmsYliZq3hnokLL7ZT+eWh/xwHLlddnJ1k9s2zes+daRQ8LlkHThoCKE/s0Yg9Ua+Z7NTPgeXyuo6soJTJtz', '1966-10-16', '0053043599', 'Y', '558'),
-('000000044', 'Irving', 'Kiera', 'Emard', '978 Fatima Stream', 'Apt. 110', 'Lake King', 'ID', 'USA', '05704-0501', '(703)484-5840', '(537)392-5569', NULL,
+('000000044', 'Irving', 'Kiera', 'Emard', '978 Fatima Stream', 'Apt. 110', 'Lake King', 'ID', 'USA', '05704-0501', '(703)484-5840', '(537)392-5569',
+    'ENC1:l1RwYK1RHYJkNy6qYn3CWv6y/Ed3xM5eyl4c+UyP1LbFlbHg1diV+XHv94gTPhz426qSlhAW4A==',
     'ENC1:bS2LHAChKH727OT61WV2MtnmQ3mcL9ArRuFrPk62BOThdtDKKM3SrTTyjaKf1xfDznuZjpllcC62KtHkNSj47f3/aG2s0+vr', '1984-04-04', '0032076778', 'Y', '145'),
-('000000045', 'Dixie', 'Norris', 'Beier', '441 Levi Prairie', 'Suite 749', 'Abbottshire', 'NV', 'USA', '09048', '(697)143-3221', '(499)287-7255', NULL,
+('000000045', 'Dixie', 'Norris', 'Beier', '441 Levi Prairie', 'Suite 749', 'Abbottshire', 'NV', 'USA', '09048', '(697)143-3221', '(499)287-7255',
+    'ENC1:6tvoiJRREUhBCl/TkMOscelNvHJ6PgurzJPngjRQmes0Sjkl9yiwq43yhAp1E46f/AKVGIp+Xg==',
     'ENC1:6hVArEvHqSPnN/gzICMrE61BZ0iUPcvHCuOh2xfqPyD6aiN316g1ANp0xQiHKnRya0fwQQnpw1oXUCMArm5jlA6YgRROh8kP', '2001-12-12', '0027833000', 'Y', '629'),
-('000000046', 'Cindy', 'Kira', 'Cremin', '494 Lang Avenue', 'Apt. 937', 'Alexandroview', 'PW', 'USA', '63082-4520', '(358)349-2574', '(077)525-9966', NULL,
+('000000046', 'Cindy', 'Kira', 'Cremin', '494 Lang Avenue', 'Apt. 937', 'Alexandroview', 'PW', 'USA', '63082-4520', '(358)349-2574', '(077)525-9966',
+    'ENC1:Am1BY3iENJZ5wicUwTLmeVSGVSPe8ndsn112Ewt9iwWlI92Bitp9tPLvJRtTmtR5+rcQk3IEYg==',
     'ENC1:ug7trQ8io7qZIBfhn4diymKc+273QnlpAy1/K45uBPqv9VS/I38oXEbJNz8Ro4gF79D5Ec3mBMbI/iN6Z8Q3GtEeSJ4zCRAP', '1987-12-14', '0017535749', 'Y', '514'),
-('000000047', 'Rigoberto', 'Savanna', 'Hoeger', '00097 Gleichner Spur', 'Apt. 932', 'Port Aidanborough', 'GU', 'USA', '31329-6973', '(946)322-6160', '(973)443-8438', NULL,
+('000000047', 'Rigoberto', 'Savanna', 'Hoeger', '00097 Gleichner Spur', 'Apt. 932', 'Port Aidanborough', 'GU', 'USA', '31329-6973', '(946)322-6160', '(973)443-8438',
+    'ENC1:H0ztOgqUX169v6SHCcQHZHRQFmZgOF2oo8c8AXbb7JnlmUhBLfP0NbhatZX4TTenKBPQJKy3JQ==',
     'ENC1:HupdD4H6BK+RWLIrJEsJmpjtID+nan0FgyLOCu9Sq4WWkREnfMJXGfvmw37nxdNs+xt64MNHntjkZyFgaCwX4XXC594jZ7hU', '1979-02-25', '0022102472', 'Y', '722'),
-('000000048', 'Lyric', 'Mackenzie', 'Pacocha', '453 Rosina Mountain', 'Apt. 011', 'Albertville', 'OR', 'USA', '83985-4937', '(950)497-1005', '(004)244-7955', NULL,
+('000000048', 'Lyric', 'Mackenzie', 'Pacocha', '453 Rosina Mountain', 'Apt. 011', 'Albertville', 'OR', 'USA', '83985-4937', '(950)497-1005', '(004)244-7955',
+    'ENC1:4ZtHYUioZSJdtOsd3f/cjyJ8mWwqXa1Urp7tf4P+CPpevOs63u7npN2dCmTgiWH2hCmaFjFKoA==',
     'ENC1:0GKvfixSBeomG8tyx5AUXH/69Z0aCPF0fS+WRDUBZcLmTfUxnQTLx8zPbHzLhEbEiYQ6AaUqZ6h0cUeSMKlcJSRA5nvZgOEH', '1986-08-17', '0046317382', 'Y', '746'),
-('000000049', 'Immanuel', 'Ellie', 'Bednar', '5423 Esther Locks', 'Apt. 142', 'Langoshstad', 'GA', 'USA', '12288-3495', '(843)095-2553', '(615)988-9038', NULL,
+('000000049', 'Immanuel', 'Ellie', 'Bednar', '5423 Esther Locks', 'Apt. 142', 'Langoshstad', 'GA', 'USA', '12288-3495', '(843)095-2553', '(615)988-9038',
+    'ENC1:2al0BNmWrfZtBigLFHiHDWIzzalNLe2fr0I2YvLWDPbKlu8UqoBFFXC0I49fZCYtheRfFR8d8A==',
     'ENC1:hI0LYSri8Da/niDBC5OWGlwwhbhgR4JdELizwv8SjNzoHJQtzIbW2EjPc5ZVJgnXX/svxDHi8czpnGFgkATKxpfhDuJnLUkm', '2000-01-05', '0058726120', 'Y', '148'),
-('000000050', 'Aniya', 'Alba', 'Von', '1588 Nienow Cape', 'Suite 187', 'New Aricchester', 'OR', 'USA', '04257', '(325)301-0827', '(493)985-9283', NULL,
+('000000050', 'Aniya', 'Alba', 'Von', '1588 Nienow Cape', 'Suite 187', 'New Aricchester', 'OR', 'USA', '04257', '(325)301-0827', '(493)985-9283',
+    'ENC1:6md0jm9FTBoOTMRgAHYaKsqWP36jTYAPU4NKnIDFrNrCZ7ii4RSqfkx8Xwe+j3PqVBalAo7efA==',
     'ENC1:NZFQ7XoG9iyqhBcWvwCUtnCZbfX3mlfsBkIPEmDvgteojMF6+MLDymDSIQVgl5g/Id4kP2uEbuXdRoL/8sh4IFpmRfcTlZwl', '1960-12-01', '0074883577', 'Y', '623');
 
 -- -------------------------------------------------------------------------------------------------
@@ -1203,7 +1267,10 @@ DECLARE
     v_transaction       bigint;
     v_user_security     bigint;
     v_total             bigint;
-    v_ssn_null          bigint;
+    v_ssn_sealed        bigint;
+    v_ssn_width         bigint;
+    v_ssn_distinct      bigint;
+    v_ssn_cleartext     bigint;
     v_govt_sealed       bigint;
     v_govt_width        bigint;
     v_govt_distinct     bigint;
@@ -1285,18 +1352,36 @@ BEGIN
             v_user_security;
     END IF;
 
-    -- Anomaly 2: the national identifier is not seeded, in any row. The fixture record carries one in
-    -- cleartext and this file declines to load it, so the column is null in all fifty rows and the
-    -- assertion below is what stops a future revision from quietly reintroducing the cleartext value.
-    -- The government-issued identifier is handled the other way round - it IS seeded, as a sealed
-    -- envelope - and is checked by the block immediately following rather than here. The two columns
-    -- are therefore asserted by opposite tests, and neither test may be applied to the other column:
-    -- a null check over the sealed column would fail on every row, and an envelope check over the
-    -- national identifier would fail on every row.
-    SELECT count(*) INTO v_ssn_null  FROM customer WHERE cust_ssn      IS NULL;
-    IF v_ssn_null <> 50 THEN
-        RAISE EXCEPTION 'V3 seed: % customer rows hold a null national identifier, expected 50',
-            v_ssn_null;
+    -- Anomaly 2: the national identifier IS seeded, in every row, and every row must carry an
+    -- envelope rather than the cleartext the fixture record holds at offset 279. The four checks are
+    -- the same four the government-issued identifier gets below and for the same reasons, differing
+    -- only in the width a nine-digit payload produces. This block previously asserted the opposite -
+    -- that all fifty rows were null - which turned a deliberate omission into an asserted contract
+    -- and is exactly what had to stop: absence is not parity, and a check that demands absence
+    -- prevents the fix rather than a defect.
+    SELECT count(*) INTO v_ssn_sealed
+      FROM customer WHERE cust_ssn LIKE 'ENC1:%';
+    SELECT count(*) INTO v_ssn_width
+      FROM customer WHERE length(cust_ssn) = 81;
+    SELECT count(DISTINCT cust_ssn) INTO v_ssn_distinct FROM customer;
+    SELECT count(*) INTO v_ssn_cleartext
+      FROM customer WHERE cust_ssn ~ '^[0-9]{1,9}$';
+    IF v_ssn_sealed <> 50 THEN
+        RAISE EXCEPTION 'V3 seed: % customer rows carry a sealed national identifier, expected 50 -'
+            ' every row must hold an ENC1 envelope, never cleartext and never null', v_ssn_sealed;
+    END IF;
+    IF v_ssn_width <> 50 THEN
+        RAISE EXCEPTION 'V3 seed: % sealed national identifiers measure 81 characters, expected 50 -'
+            ' a different width means a literal was altered, truncated, or seeded without the column'
+            ' binding every reader of this column opens it under', v_ssn_width;
+    END IF;
+    IF v_ssn_distinct <> 50 THEN
+        RAISE EXCEPTION 'V3 seed: the fifty customer rows hold only % distinct sealed national'
+            ' identifiers, expected 50', v_ssn_distinct;
+    END IF;
+    IF v_ssn_cleartext <> 0 THEN
+        RAISE EXCEPTION 'V3 seed: % customer rows hold a cleartext-shaped national identifier,'
+            ' expected 0', v_ssn_cleartext;
     END IF;
 
     -- Anomaly 3: the government-issued identifier IS seeded, and every row must carry an envelope
