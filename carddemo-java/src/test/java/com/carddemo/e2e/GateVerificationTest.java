@@ -261,19 +261,25 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** The architecture description, which is the authority for the shape of the batch tier. */
     private static final String ARCHITECTURE = "architecture.md";
 
-    /** File name of the golden carrying the fifth contractual width, referenced by more than one row. */
+    /** File name of the golden carrying the supplemental width, referenced by more than one row. */
     private static final String CATEGORY_BALANCE_GOLDEN = "category-balance-report.txt";
 
     /**
      * The golden-backed output widths, keyed by the golden that carries each.
      *
-     * <p><strong>Five, not four.</strong> Gate 1 names four expected outputs and the tree carried four
-     * goldens for a long while, which is exactly how the fifth contractual width - the 40-byte
-     * category-balance report line the {@code PRTCATBL} job stream emits - came to have an implementation,
-     * a documented conflict resolution and no committed expectation at all. A sign-off checklist that read
-     * this map stayed green without it. The fifth golden is now committed beside the other four and
-     * compared byte for byte against a real run by {@code batch/CategoryBalanceReportJobConfigIT}, so the
-     * inventory and the roster agree at five.
+     * <p><strong>Five goldens behind four contractual widths.</strong> Gate 1's criterion is frozen at four
+     * expected outputs, and the tree carried four goldens for a long while - which is exactly how the
+     * 40-byte category-balance report line the {@code PRTCATBL} job stream emits came to have an
+     * implementation, a documented conflict resolution and no committed expectation at all. A sign-off
+     * checklist that read this map stayed green without it. That golden is now committed beside the other
+     * four and compared byte for byte against a real run by
+     * {@code batch/CategoryBalanceReportJobConfigIT}, so the roster holds five.
+     *
+     * <p>The distinction the roster deliberately does <em>not</em> encode is which of the five is
+     * contractual: this map is an inventory of delivered evidence, and four of its five widths are also the
+     * accepted criterion while the 40-byte one is supplemental to it. That separation is published by
+     * {@code docs/gate-evidence.md} under two headings and is enforced across the publications by
+     * {@code PublicationConsistencyTest}.
      */
     private static final Map<String, Integer> GOLDEN_WIDTHS = Map.of(
             "statement.txt", Integer.valueOf(80),
@@ -3500,25 +3506,30 @@ class GateVerificationTest extends AbstractPostgresIT {
     /**
      * The estate's fixed output widths, enumerated completely rather than golden by golden.
      *
-     * <h2>Why five and not four</h2>
+     * <h2>Five golden-backed widths, of which four are the criterion</h2>
      *
-     * <p>Gate 1 names four expected outputs - the reject record at 430 bytes, the report line at 133, the
-     * statement record at 80 and its hypertext counterpart at 100 - and for a long while the tree held
-     * exactly four goldens. A fifth width exists: the category-balance report line the {@code PRTCATBL} job
-     * stream emits, whose stream declares {@code SORTOUT DCB=(LRECL=40)}. It is genuinely an external file
-     * format rather than an internal detail. An inventory that counted the goldens counted four and called
-     * that the contract, which is how the fifth width came to be omitted from the plan's width table and
-     * from this suite.
+     * <p>Gate 1's criterion is four expected outputs - the reject record at 430 bytes, the report line at
+     * 133, the statement record at 80 and its hypertext counterpart at 100 - and for a long while the tree
+     * held exactly four goldens. A fifth width is emitted: the category-balance report line the
+     * {@code PRTCATBL} job stream produces, whose stream declares {@code SORTOUT DCB=(LRECL=40)}. It is
+     * genuinely an external file format rather than an internal detail, and it had an implementation and no
+     * committed expectation, which is how it came to be omitted from the plan's width table and from this
+     * suite.
      *
-     * <p>Counting the goldens now gives five. The fifth carries a committed expectation of its own,
-     * {@value #CATEGORY_BALANCE_GOLDEN}, authored from the reprojection and the delivered category-balance
-     * fixture and compared byte for byte against a real run - real server, real local dataset - by
-     * {@code batch/CategoryBalanceReportJobConfigIT}, which is also where its ordering and its
+     * <p>Counting the goldens now gives five. The supplemental one carries a committed expectation of its
+     * own, {@value #CATEGORY_BALANCE_GOLDEN}, authored from the reprojection and the delivered
+     * category-balance fixture and compared byte for byte against a real run - real server, real local
+     * dataset - by {@code batch/CategoryBalanceReportJobConfigIT}, which is also where its ordering and its
      * edited-balance formatting are asserted. The width itself is still read here from the emitting job's
      * own configuration, so this inventory cannot drift from the batch tier whichever of the two changes.
+     *
+     * <p>Naming it supplemental is not a demotion of the evidence and is the reason this nest counts five
+     * while Gate 1 counts four: the criterion is the accepted one and is not enlarged by evidence arriving
+     * beside it, and the evidence is not withdrawn by the criterion staying where it was.
      */
     @Nested
-    @DisplayName("Gates 1 and 5 - the five contractual output widths, every one golden-backed")
+    @DisplayName("Gates 1 and 5 - the four contractual output widths and the supplemental fifth, every one "
+            + "golden-backed")
     class ContractualOutputWidths {
 
         /** Creates the nested specification. */
@@ -3540,7 +3551,7 @@ class GateVerificationTest extends AbstractPostgresIT {
          * @throws IOException if a golden cannot be read
          */
         @Test
-        @DisplayName("each of the five goldens divides exactly into records of its contractual width and "
+        @DisplayName("each of the five goldens divides exactly into records of its own declared width and "
                 + "carries no separator byte, so the width is measured from the delivered bytes")
         void eachGoldenIsUniformAtItsContractualWidth() throws IOException {
             for (final Map.Entry<String, Integer> golden : GOLDEN_WIDTHS.entrySet()) {
@@ -3565,15 +3576,17 @@ class GateVerificationTest extends AbstractPostgresIT {
         }
 
         /**
-         * The complete inventory is five widths, and the fifth comes from the job that emits it.
+         * The complete inventory is five golden-backed widths, and the supplemental one comes from the job
+         * that emits it.
          */
         @Test
-        @DisplayName("the complete inventory is FIVE widths - 40, 80, 100, 133 and 430 - and every one of "
-                + "them now carries a committed golden, the fifth included")
+        @DisplayName("the complete inventory is FIVE golden-backed widths - the four contractual ones of 80, "
+                + "100, 133 and 430 plus the supplemental 40 - and every one of them carries a committed "
+                + "golden")
         void theCompleteInventoryIsFiveWidths() {
             assertThat(CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH)
-                    .as("the fifth width is read from the configuration of the job that emits it, so this "
-                            + "inventory cannot drift from the batch tier")
+                    .as("the supplemental width is read from the configuration of the job that emits it, so "
+                            + "this inventory cannot drift from the batch tier")
                     .isEqualTo(40);
 
             final Set<Integer> widths = new LinkedHashSet<>(GOLDEN_WIDTHS.values());
@@ -3585,32 +3598,44 @@ class GateVerificationTest extends AbstractPostgresIT {
                     .containsExactlyInAnyOrder(Integer.valueOf(40), Integer.valueOf(80),
                             Integer.valueOf(100), Integer.valueOf(133), Integer.valueOf(430));
             assertThat(GOLDEN_WIDTHS)
-                    .as("and the fifth width is golden-backed by name, so the roster cannot record the "
-                            + "width while omitting its expectation")
+                    .as("and the supplemental width is golden-backed by name, so the roster cannot record "
+                            + "the width while omitting its expectation")
                     .containsEntry(CATEGORY_BALANCE_GOLDEN,
                             Integer.valueOf(CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH));
         }
 
         /**
-         * The recorded evidence page names the fifth width and the test that verifies it.
+         * The recorded evidence page names both inventories and the test that verifies the supplemental one.
+         *
+         * <p>Both halves are asserted because the page has been wrong in both directions. It once recorded
+         * the supplemental golden as absent, hiding delivered evidence; a later revision folded it into the
+         * criterion, rewriting what the gate was accepted against. So the page must publish the four
+         * contractual widths <em>as</em> the contractual set, publish the supplemental width under its own
+         * heading, and name both the golden and the test that compares it.
          *
          * @throws IOException if the page cannot be read
          */
         @Test
-        @DisplayName("the recorded evidence names the fifth width and the test that verifies it, so the "
-                + "page and this suite cannot disagree about how many widths the contract has")
+        @DisplayName("the recorded evidence separates the four contractual widths from the supplemental one "
+                + "and names the test that verifies it, so the page and this suite cannot disagree")
         void theRecordedEvidenceNamesTheFifthWidth() throws IOException {
             final String recorded =
                     Files.readString(documentationFile(GATE_EVIDENCE), StandardCharsets.UTF_8);
 
             assertThat(recorded)
-                    .as("the complete set is stated on the page, not only the four Gate 1 names")
-                    .contains("40, 80, 100, 133 and 430");
+                    .as("the contractual set is stated on the page as the frozen four")
+                    .contains("### The four contractual widths")
+                    .contains("80, 100, 133 and 430");
             assertThat(recorded)
-                    .as("and the page names the test that compares the fifth golden against a real run")
+                    .as("and the supplemental width has an inventory of its own rather than being folded "
+                            + "into the criterion or left unmentioned")
+                    .contains("### The supplemental category-balance width");
+            assertThat(recorded)
+                    .as("and the page names the test that compares the supplemental golden against a real "
+                            + "run")
                     .contains("CategoryBalanceReportJobConfigIT");
             assertThat(recorded)
-                    .as("and it names the fifth golden itself, so a reader of the page can find the "
+                    .as("and it names the supplemental golden itself, so a reader of the page can find the "
                             + "committed expectation rather than take its existence on trust")
                     .contains(CATEGORY_BALANCE_GOLDEN);
         }
@@ -7774,7 +7799,7 @@ class GateVerificationTest extends AbstractPostgresIT {
      *
      * <p><strong>Every one of the five, and inspected rather than merely found.</strong> The predicate used
      * to name four files and test only that each held some bytes, which let the sign-off row report a
-     * satisfied end-to-end item while the fifth contractual width - the 40-byte category-balance report
+     * satisfied end-to-end item while the supplemental width - the 40-byte category-balance report
      * line - had no committed expectation whatsoever, and while a golden reduced to a partial record still
      * counted as present. It now reads the roster this class already declares, so a width added there
      * cannot be omitted here, and it requires of each golden the two properties that make it usable as an

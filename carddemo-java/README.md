@@ -46,13 +46,13 @@ cd carddemo-java && ./mvnw clean verify
 |---|---|
 | [The legacy estate is reference, never a dependency](#the-legacy-estate-is-reference-never-a-dependency) | understand what this module may and may not contain, and where its provenance is recorded |
 | [Prerequisites](#prerequisites) | set up a machine from nothing |
-| [Technology stack](#technology-stack--exact-versions-do-not-bump) | check or defend a version |
+| [Technology stack](#technology-stack-exact-versions-do-not-bump) | check or defend a version |
 | [Build](#build) | build, test, or produce the container image |
 | [Run](#run) | bring up the stack, choose a profile, or configure a deployment |
 | [Batch jobs](#batch-jobs) | launch a job or find its legacy antecedent |
 | [Validation gates](#validation-gates) | execute a gate and produce its evidence |
 | [Architecture and layering](#architecture-and-layering) | find your way around the packages |
-| [Behavioural fidelity](#behavioural-fidelity--read-this-before-changing-anything) | **change anything** — read this first |
+| [Behavioural fidelity](#behavioural-fidelity-read-this-before-changing-anything) | **change anything** — read this first |
 | [Directory layout](#directory-layout) | locate a file |
 | [Documentation](#documentation) | find the decision log or the traceability matrix, or check what is still pending |
 | [Continuous integration](#continuous-integration) | understand what CI enforces |
@@ -353,7 +353,7 @@ table or fails the build. Recorded in [`../docs/decision-log.md`](../docs/decisi
 Each override is a `<properties>` entry rather than a `<dependency>` version, so it applies uniformly
 to every transitive path and disappears automatically when a future Spring Boot 3.x release raises its
 own floor past it. The scan they satisfy covers the **whole build graph** including test scope — see
-[Gate 8](#gate-8--integration-sign-off) for what is carried by written determination rather than fixed.
+[Gate 8](#gate-8-integration-sign-off) for what is carried by written determination rather than fixed.
 
 ### Two version decisions that look like mistakes and are not
 
@@ -413,7 +413,7 @@ JaCoCo coverage check and the OWASP dependency-check entirely**. `verify` is the
 | `spring-boot-maven-plugin` | Repackages the executable, layered artifact and writes build info |
 | `maven-failsafe-plugin` | The integration and end-to-end tier — `**/*IT.java`, `**/*E2ETest.java`, `**/e2e/**/*Test.java`, against real containers, reporting failures at `verify` so containers are always torn down |
 | `jacoco-maven-plugin` | Merges the unit and integration execution data and **fails the build** below the line-coverage floor |
-| `dependency-check-maven` | Scans the **compile, runtime and test** dependency graph — `dependency-check.skipTestScope` is `false`, see [Gate 8](#gate-8--integration-sign-off) — and **fails the build** at CVSS 7.0, which catches every critical and high CVE in that scope |
+| `dependency-check-maven` | Scans the **compile, runtime and test** dependency graph — `dependency-check.skipTestScope` is `false`, see [Gate 8](#gate-8-integration-sign-off) — and **fails the build** at CVSS 7.0, which catches every critical and high CVE in that scope |
 
 The two test tiers are strictly complementary — the include and exclude sets are written so no test
 class is collected twice and none falls through the gap between them. The `*E2ETest.java` and `e2e/`
@@ -440,7 +440,7 @@ JARs.** Exactly one HIGH finding against that graph is **carried by a scoped det
 fixed**, because no patched release of the affected library is published yet: it is represented by a single
 rule in [`owasp-suppressions.xml`](owasp-suppressions.xml) with unused-suppression enforcement left on, so
 the build fails the moment the rule stops matching. It is set out in full under
-[Gate 8](#gate-8--integration-sign-off). Reproduce it:
+[Gate 8](#gate-8-integration-sign-off). Reproduce it:
 
 ```bash
 ./mvnw -B dependency-check:check   # writes target/dependency-check-report.{html,json,xml}
@@ -803,7 +803,7 @@ in the Jaeger UI on 16686. Prometheus cannot, without help: it *pulls*, and
 [`config/prometheus/prometheus.yml`](config/prometheus/prometheus.yml) targets the container name
 `app:8080`, which resolves on the Compose network and not to your host JVM. So a host-run process is
 traced but **not scraped**, and consequently the provisioned Grafana dashboard stays empty for it. If you
-need scraped metrics — as the performance baseline under [Gate 3](#gate-3--performance-baseline) does —
+need scraped metrics — as the performance baseline under [Gate 3](#gate-3-performance-baseline) does —
 run the application as the Compose `app` service and drive it over HTTP, or add a scrape target of your
 own for the host process.
 
@@ -1285,15 +1285,16 @@ rather than of the machine that ran it. This section documents each gate's *mech
 coverage* — including, gate by gate, what is proven today and what is still outstanding. For anything that
 is a per-run measurement, run the command and read the result rather than reading a status out of either
 file. **One thing genuinely remains outstanding and is marked as such throughout: golden coverage of four
-of the five reject reason codes.** The fifth contractual output width — the 40-byte category-balance report
-line — is **no longer among the gaps**: it now carries a committed golden of its own,
+of the five reject reason codes.** The supplemental 40-byte category-balance report line — a fixed width
+emitted beside the gate's four contractual ones rather than one of them — is **no longer among the gaps**:
+it now carries a committed golden of its own,
 `expected/category-balance-report.txt`, and that file is the verdict oracle of the job's own integration
 test. Earlier revisions of this manual described that fixture as pending or absent; those statements were
 true of an absent file and are false of a present one, so they are withdrawn rather than softened.
 
 | Gate | What it proves | How to run it | Coverage today |
 |---|---|---|---|
-| 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for all five contractual widths** — the four this gate names are compared as byte arrays from one seeded pipeline pass, and the fifth 40-byte width is compared as a byte array against its own committed golden from a dedicated job run in `batch/CategoryBalanceReportJobConfigIT`. Four of the five reject reason codes are still uncovered by a golden record |
+| 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for the four contractual widths**, compared as byte arrays from one seeded pipeline pass, **and for the supplemental 40-byte width**, compared as a byte array against its own committed golden from a dedicated job run in `batch/CategoryBalanceReportJobConfigIT`. Four of the five reject reason codes are still uncovered by a golden record |
 | 2 | Zero-warning build | `./mvnw -B clean verify` | **complete** — enforced by the compiler |
 | 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **eighteen** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
 | 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted, by name rather than by directory listing |
@@ -1346,17 +1347,23 @@ One gap remains, and it is not closed by the run above:
   exercises them. Cases for them are **outstanding**, and the end-to-end suite measures that as a fact
   rather than assuming it.
 
-Five output widths are contractual, and **every one of the five now has a committed golden** whose bytes
-divide exactly by that width. Four are compared from the single pipeline pass; the fifth is compared from
-the emitting job's own run, because that job is not a pipeline member:
+**Four output widths are contractual** — that criterion is frozen — and a fifth fixed-width record is
+emitted beside them. **Every one of the five now has a committed golden** whose bytes divide exactly by its
+width. The four contractual ones are compared from the single pipeline pass; the supplemental 40-byte one is
+compared from the emitting job's own run, because that job is not a pipeline member:
 
-| Width | What it is | Golden file | Evidence |
-|---|---|---|---|
-| **80 bytes** | statement text record | `expected/statement.txt` (100,960 bytes = 1,262 records) | golden-file comparison, from the pipeline pass |
-| **100 bytes** | statement HTML record | `expected/statement-html.txt` (663,200 bytes = 6,632 records) | golden-file comparison, from the pipeline pass |
-| **133 bytes**, fixed-length blocked | transaction report line | `expected/transaction-report.txt` (69,027 bytes = 519 records) | golden-file comparison, from the pipeline pass |
-| **430 bytes** | daily-transaction reject record — the 350-byte source image, then a 4-digit reason code, then a 76-character description | `expected/daily-reject.txt` (16,340 bytes = 38 records) | golden-file comparison, from the pipeline pass |
-| **40 bytes** | category-balance report line — account, type and category identifiers, an edited balance, then filler — declared by `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` | `expected/category-balance-report.txt` (2,120 bytes = 53 records) | golden-file comparison, from a dedicated run of the emitting job in `batch/CategoryBalanceReportJobConfigIT`, which also asserts the ordering and the edited-balance formatting |
+| Width | Standing | What it is | Golden file | Evidence |
+|---|---|---|---|---|
+| **80 bytes** | contractual | statement text record | `expected/statement.txt` (100,960 bytes = 1,262 records) | golden-file comparison, from the pipeline pass |
+| **100 bytes** | contractual | statement HTML record | `expected/statement-html.txt` (663,200 bytes = 6,632 records) | golden-file comparison, from the pipeline pass |
+| **133 bytes**, fixed-length blocked | contractual | transaction report line | `expected/transaction-report.txt` (69,027 bytes = 519 records) | golden-file comparison, from the pipeline pass |
+| **430 bytes** | contractual | daily-transaction reject record — the 350-byte source image, then a 4-digit reason code, then a 76-character description | `expected/daily-reject.txt` (16,340 bytes = 38 records) | golden-file comparison, from the pipeline pass |
+| **40 bytes** | **supplemental** | category-balance report line — account, type and category identifiers, an edited balance, then filler — declared by `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` | `expected/category-balance-report.txt` (2,120 bytes = 53 records) | golden-file comparison, from a dedicated run of the emitting job in `batch/CategoryBalanceReportJobConfigIT`, which also asserts the ordering and the edited-balance formatting |
+
+The **Standing** column is the distinction that matters when this table is quoted: the four contractual
+widths are the criterion Gate 1 was accepted against, and the supplemental row is evidence delivered beside
+that criterion rather than an addition to it. Neither statement weakens the other — the golden behind the
+supplemental row is compared exactly as strictly as the other four.
 
 Measure all five yourself rather than trusting the table. **Count bytes, not lines**: none of the five
 carries a record separator — that is itself an asserted property — so a line-oriented tool sees one
@@ -1723,7 +1730,7 @@ first one changed, which is the failure mode recorded in
 
 | Checklist item | Satisfying artifact | Check | Status |
 |---|---|---|---|
-| End-to-end verification | golden fixtures at **all five** contractual widths — 40, 80, 100, 133 and 430 bytes; four driven through one seeded pipeline pass, the 40-byte one through a dedicated run of the job that emits it | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte golden | **met** — the six-job pipeline runs against a Testcontainers PostgreSQL instance seeded from the fixtures and all four of its goldens are compared as byte arrays from that one run, with the comparison written to `target/gate-evidence/gate1-byte-equivalence.md`; the fifth golden is compared as a byte array against a real dataset the category-balance job wrote after reading a real server |
+| End-to-end verification | golden fixtures at the **four contractual widths** — 80, 100, 133 and 430 bytes, all four driven through one seeded pipeline pass — plus the **supplemental** 40-byte golden, driven through a dedicated run of the job that emits it | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte golden | **met** — the six-job pipeline runs against a Testcontainers PostgreSQL instance seeded from the fixtures and all four of its goldens are compared as byte arrays from that one run, with the comparison written to `target/gate-evidence/gate1-byte-equivalence.md`; the supplemental golden is compared as a byte array against a real dataset the category-balance job wrote after reading a real server |
 | Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `service/JobSubmissionServiceIT`, and `e2e/OnlineTransactionE2ETest` driving the submission endpoint over HTTP and draining the queue | **met** for the queue contract |
 | Interface contract verification | the seven sign-on literals and the admin/user routing rule | `e2e/OnlineTransactionE2ETest` — a booted context on a random port with a real datasource — backed by `api/AuthControllerIT` and `api/AuthControllerTest` at the narrower boundaries | **met** — the five direct texts compared character for character, the two shared texts at their full padded width, and the destination asserted for all ten delivered identities, because the legacy branch is an `ELSE` rather than a second equality test |
 | Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **eighteen** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
@@ -1915,7 +1922,7 @@ These are checkable by inspection, which is the point:
 | Composite-key classes | **3** | category balance, disclosure group, transaction category |
 | Enums | **9** | user type, account status, card status, transaction source, key action, file status, reject reason, date format, report period |
 | Spring Data repositories | **11** | including the two derived finders that replace the online alternate indexes |
-| Service implementations | **36** | every concrete `*Service.java` in the `service` package, and the arithmetic closes: **26** translation-bearing services, one per program or program family and exactly the set the migration plan names, plus **10** focused support services — concurrency tokens, credential digesting, field encryption, sign-on state, page tokens, batch launch and staging, job-completion notification and field-error translation. The package holds **72** files in all: those 36, plus **36** service-owned records, commands, outcomes, ports and view types, which are not `*Service.java` and are not counted here |
+| Service implementations | **38** | every concrete `*Service.java` in the `service` package, and the arithmetic closes: **26** translation-bearing services, one per program or program family and exactly the set the migration plan names, plus **12** focused support services — account and card concurrency tokens, credential digesting, field encryption, sign-on state, the three page-token services, batch launch and staging, job-completion notification and field-error translation. The package holds **65** files in all: those 38, plus **27** service-owned records, commands, outcomes, ports and view types, which are not `*Service.java` and are not counted here |
 | Batch job configurations | **9** | plus eight step components and the shared step template |
 | Hand-written record mappers | **12** | every `*RecordMapper.java` in `util`: one per verified record layout plus the statement work-area mapper, all explicit offsets, no reflection |
 | Request/response DTO files | **32** | every file in `api/dto`, derived from the 17 symbolic maps plus the shared transport types they need |
@@ -1924,8 +1931,8 @@ Count any of them yourself rather than trusting the table:
 
 ```bash
 cd carddemo-java
-ls src/main/java/com/carddemo/service/*Service.java | wc -l      # 36
-ls src/main/java/com/carddemo/service/*.java | wc -l              # 72 — the package total
+ls src/main/java/com/carddemo/service/*Service.java | wc -l      # 38
+ls src/main/java/com/carddemo/service/*.java | wc -l              # 65 — the package total
 ls src/main/java/com/carddemo/util/*RecordMapper.java | wc -l     # 12
 ls src/main/java/com/carddemo/api/dto/ | wc -l                    # 32
 ```
@@ -2267,7 +2274,7 @@ so a reviewer can check it rather than take it on trust.
 | 5 | **No production secret in source, and none defaulted** | `application-prod.yml` resolves every secret from the environment with **no fallback**, so a missing secret fails startup, and stored credentials are BCrypt hashes. Non-production throwaway values do exist in the tree — in `docker-compose.yml`, in the local and test overlays, and as a sample password in the read-only estate and in test constants — and they are inventoried under [Where local and test values actually live](#where-local-and-test-values-actually-live) rather than glossed over. |
 | 6 | **Versioned, forward-only schema evolution** | Flyway `V1`–`V4` flat in one `db/migration` location, with production pinned to schema version `2` and `validate-on-migrate` on everywhere. `clean` is **disabled by the shared baseline and by `prod`**, and deliberately re-enabled by the profiles whose database is disposable — `local`, so a developer can drop and re-apply a migration they are editing, and both copies of `test`, whose database is a per-run container. The concession is taken in those overlays rather than inherited, so it cannot reach production by omission. |
 | 7 | **A test pyramid with an enforced floor** | Unit tests over mappers, validators and services; integration tests against real containers; end-to-end tests over the full pipeline. JaCoCo fails the build below 80% line coverage; branch coverage is reported, not gated. |
-| 8 | **Supply-chain hygiene** | `dependency-check-maven` bound to `verify` and **executed**, failing at CVSS 7.0 on the **compile, runtime and test** graph (`skipTestScope` is `false`), with reports emitted in three formats and uploaded by CI. The enforced invariant is zero **unsuppressed** critical or high findings plus **one** scoped, evidenced, self-expiring determination, disclosed with its three-state vocabulary under [Gate 8](#gate-8--integration-sign-off) rather than left implicit. An earlier revision of this row described a compile-and-runtime-only scan and two HIGH findings in an excluded test graph; both statements are withdrawn — the transport that carried them was replaced, not excluded. |
+| 8 | **Supply-chain hygiene** | `dependency-check-maven` bound to `verify` and **executed**, failing at CVSS 7.0 on the **compile, runtime and test** graph (`skipTestScope` is `false`), with reports emitted in three formats and uploaded by CI. The enforced invariant is zero **unsuppressed** critical or high findings plus **one** scoped, evidenced, self-expiring determination, disclosed with its three-state vocabulary under [Gate 8](#gate-8-integration-sign-off) rather than left implicit. An earlier revision of this row described a compile-and-runtime-only scan and two HIGH findings in an excluded test graph; both statements are withdrawn — the transport that carried them was replaced, not excluded. |
 | 9 | **Observability as a first-class concern** | Actuator health and metrics, Micrometer timers on every endpoint and every batch step, Prometheus and Grafana provisioned in the stack, OTLP tracing wired to Jaeger, structured JSON logging with correlation identifiers. |
 | 10 | **Licence continuity** | The Apache-2.0 header on every generated Java source, SQL migration and comment-capable configuration file, matching the header in every legacy member; strict JSON lookup resources inherit the repository licence without invalid comments. |
 | 11 | **Full auditability of translation decisions** | [`../docs/decision-log.md`](../docs/decision-log.md) plus the **544-row** [`../docs/traceability-matrix.md`](../docs/traceability-matrix.md), both citing the checkout SHA and the upstream release stamp. |

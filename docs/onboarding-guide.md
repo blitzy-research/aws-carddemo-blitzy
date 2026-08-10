@@ -395,7 +395,7 @@ cd carddemo-java
 
 | Gate | What it proves | How to run it |
 | ---: | :------------- | :------------ |
-| **1** — End-to-end boundary | Byte-equivalent output at **all five** contractual widths — **40**, 80, 100, 133 and 430 bytes — every one compared as a byte array against a committed golden. Four come from one seeded pipeline pass; the 40-byte category-balance line comes from a dedicated run of the job that emits it, because that job is not a pipeline member | `./mvnw -B clean verify`, or `./mvnw -B verify -Pscoped-tests -Dit.test=BatchPipelineE2ETest` for the pipeline alone and `-Dit.test=CategoryBalanceReportJobConfigIT` for the fifth width. Docker required |
+| **1** — End-to-end boundary | Byte-equivalent output at the **four contractual widths** — 80, 100, 133 and 430 bytes — every one compared as a byte array against a committed golden from one seeded pipeline pass. A supplemental **40**-byte golden covers the category-balance line and is compared the same way from a dedicated run of the job that emits it, because that job is not a pipeline member; it is evidence beside the criterion rather than a fifth width of it | `./mvnw -B clean verify`, or `./mvnw -B verify -Pscoped-tests -Dit.test=BatchPipelineE2ETest` for the pipeline alone and `-Dit.test=CategoryBalanceReportJobConfigIT` for the supplemental width. Docker required |
 | **2** — Zero-warning build | A clean compile under `-Xlint:all -Werror` at `<release>25</release>` | `./mvnw -B clean verify` — the compiler is the gate |
 | **3** — Performance baseline | Elapsed time, peak heap and records per second. **The quotable figures come from `support/RunScopedPerformanceRecorder`**, which wall-clocks each job launch, reads peak heap from the JVM's own memory beans and divides records by elapsed time, writing `target/gate-evidence/gate3-*.md`. The Micrometer batch-step timers **corroborate** those figures; they do not supply them | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` and the Grafana `carddemo-overview` dashboard corroborate |
 | **4** — Named real-world artefacts | The nine ASCII fixtures and twelve encoded datasets by name, the ten seeded identities, and the five validation-lookup cardinalities | `BatchPipelineE2ETest` and `GateVerificationTest`, both inside `./mvnw -B clean verify` |
@@ -467,7 +467,7 @@ what the shipped code does at run time, so a test source is legitimately outside
 suppressed warning outright, and the annotation suppresses one wherever it is written — both trees are
 compiled by the same compiler under the same `-Xlint:all -Werror`. The published figure is measured over code
 with comments and literals blanked rather than by this grep, because the module names the annotation in
-several comments and asserted-on literals; see [Gate Evidence](gate-evidence.md#gate-2--zero-warning-build).
+several comments and asserted-on literals; see [Gate Evidence](gate-evidence.md#gate-2-zero-warning-build).
 
 **The audit is scoped to `src/main/java/` — everything beneath it and nothing else — and that scoping is
 load-bearing rather than cosmetic.** The Flyway files under `src/main/resources/db/migration/` are `.sql`

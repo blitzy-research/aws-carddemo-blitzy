@@ -45,9 +45,12 @@ same host already make the point the table exists to make.
 **Where a standing figure moves, it moves because the tree moved, and the older figure is not kept beside
 it.** Earlier runs of earlier revisions measured smaller source, test, line and branch totals, because the
 remediations of this checkpoint added production code and the tests that cover it. Those earlier figures are
-not reconciled with this page and are not meant to be: **every standing figure here is the recorded run's**,
-and the earlier runs survive only as dated rows in the Gate 3 table, which is where a per-run measurement
-belongs. The one thing that never moves is the shape of the claim — zero compiler diagnostics, no failing
+not reconciled with this page and are not meant to be: **every standing figure here is this tree's, and the
+build reconciles it against the run you just took** rather than against a frozen historical one, so a figure
+that has moved because the tree moved is a build failure until this page is corrected. What the recorded run
+below supplies is the material only a particular run can supply — its timings, its quoted transcript, and
+the first three rows of the Gate 3 table. Earlier runs survive only as further dated rows there, which is
+where a per-run measurement belongs. The one thing that never moves is the shape of the claim — zero compiler diagnostics, no failing
 test, byte-equal goldens, merged line coverage above the floor, and nothing unsuppressed at or above the
 vulnerability threshold.
 
@@ -56,7 +59,7 @@ vulnerability threshold.
 | Date, in UTC | 2026-08-10, build finished 18:39:35Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
 | Result | `BUILD SUCCESS`, total time 11:35 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 549 source counts, the same single `[WARNING]` block and it the scanner's rather than the compiler's, the same 26,962 and 1,645 test cases with no failure, the same 23,236 of 24,193 lines and 7,755 of 8,664 branches across the same 493 analysed classes, the same five byte-equal Gate 1 comparisons, and the same 168 dependencies with one below-threshold finding and one written determination. Only the timings differed, which is the distinction this table exists to draw |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 549 source counts, the same single `[WARNING]` block and it the scanner's rather than the compiler's, the same 26,964 and 1,645 test cases with no failure, the same 23,236 of 24,193 lines and 7,755 of 8,664 branches across the same 493 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 168 dependencies with one below-threshold finding and one written determination. Only the timings differed, which is the distinction this table exists to draw |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -186,13 +189,13 @@ position above is history; the column below is the result.
 
 | Gate | Recorded status | Evidence quoted on this page | Command |
 | --- | :---: | --- | --- |
-| 1 — End-to-end boundary verification | **PASS (measured)** | four contracts compared byte for byte, expected equal to actual on every record and byte count; the fifth width compared by its own job test | `./mvnw -B clean verify` |
+| 1 — End-to-end boundary verification | **PASS (measured)** | the four contractual widths compared byte for byte, expected equal to actual on every record and byte count; the supplemental 40-byte width compared by its own job test | `./mvnw -B clean verify` |
 | 2 — Zero-warning build | **PASS (measured)** | `BUILD SUCCESS`; zero compiler warnings across 245 production and 549 test sources under `-Werror`; zero warning suppressions across both trees | `./mvnw -B clean verify` |
 | 3 — Performance baseline | **PASS (measured)** | eighteen dated rows, three of them from the recorded run and the rest from earlier runs of earlier revisions, each beside its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
 | 4 — Named validation artefacts | **PASS (measured)** | nine ASCII fixtures at their measured byte counts, twelve encoded datasets by name, ten seeded identities, five lookup cardinalities | `./mvnw -B clean verify` |
 | 5 — Interface contract verification | **PASS (measured)** | seven message texts over real HTTP, routing for both delivered types, seventeen cards drained from a real queue | `./mvnw -B clean verify` |
-| 6 — Unsafe and low-level code audit | **PASS (measured)** | every count zero, with the raw output of the scoped audit published | the grep list below |
-| 7 — Scope matching | **PASS (measured)** | merged line coverage 95.60% against a build-failing floor of 80% | `./mvnw -B clean verify` |
+| 6 — Unsafe and low-level code audit | **PASS (measured)** | every count the requirement names is zero, with the raw output of the scoped audit published; the one wider measure this page adds — casts to a parameterised type, checked or not — stands at five, each enumerated and each checked | the grep list below |
+| 7 — Scope matching | **PASS (measured)** | merged line coverage 96.04% against a build-failing floor of 80% | `./mvnw -B clean verify` |
 | 8 — Integration sign-off | **PASS (measured)** | zero unsuppressed critical or high findings, dated; 544 traceability rows asserted; ten final-boundary criteria each held by an executed suite | `./mvnw -B clean verify` |
 
 No gate is PENDING and none is FAIL. Where a figure below is a property of one run rather than of the
@@ -217,8 +220,8 @@ graph LR
     S3 --> B["e2e/BatchPipelineE2ETest"]
     S4 --> B
     I --> B
-    B --> G1["Gate 1<br/>byte equivalence, 4 widths"]
-    C["batch/CategoryBalanceReportJobConfigIT<br/>the 40-byte width"] --> G1
+    B --> G1["Gate 1<br/>byte equivalence,<br/>4 contractual widths"]
+    C["batch/CategoryBalanceReportJobConfigIT<br/>the supplemental 40-byte width"] --> G1
     B --> G4["Gate 4<br/>named artefacts"]
     V["e2e/GateVerificationTest<br/>fixture names, seed cardinalities,<br/>544 rows, audit budgets"] --> G4
     V --> G6["Gate 6<br/>unsafe code"]
@@ -312,7 +315,7 @@ Three notes on running these, all recorded so a reader is not surprised by them:
 | **Requirement** | At least one production-representative input processed end to end locally, producing byte-equivalent output against the documented COBOL baseline. Mocked I/O does not satisfy this gate. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/gate-evidence/gate1-byte-equivalence.md`, written by the run that made the comparison; `target/failsafe-reports/`; the golden fixtures under `src/test/resources/fixtures/expected/` |
-| **Recorded status** | **PASS (measured).** Four contracts compared byte for byte with expected equal to actual on every record count and every byte count, and a fifth fixed width compared the same way by its own job's integration test. |
+| **Recorded status** | **PASS (measured).** The four contractual widths compared byte for byte with expected equal to actual on every record count and every byte count, and the supplemental 40-byte width compared the same way by its own job's integration test. |
 
 ### The comparison report
 
@@ -328,18 +331,22 @@ pipeline, so a row cannot exist without a comparison having been made.
 | `AWS.M2.CARDDEMO.STATEMNT.HTML` | `fixtures/input/dailytran.txt` | `fixtures/expected/statement-html.txt` | 100 | 6,632 | 6,632 | 663,200 | 663,200 | **PASS** |
 | `SORTOUT` of the category-balance report | seeded category balances | `fixtures/expected/category-balance-report.txt` | 40 | 53 | 53 | 2,120 | 2,120 | **PASS** |
 
-The first four rows come from one pass of the primary pipeline — posting, then accrual, then consolidation,
-then statements — driven by `e2e/BatchPipelineE2ETest` against a **Testcontainers PostgreSQL 16** instance
-seeded from the carried fixtures. The fifth is compared by `batch/CategoryBalanceReportJobConfigIT`, which
-fixes the database state completely, launches its job once and compares what the job wrote to a real local
-dataset with the committed file.
+The first four rows are the gate's four contractual widths and come from one pass of the primary pipeline —
+posting, then accrual, then consolidation, then statements — driven by `e2e/BatchPipelineE2ETest` against a
+**Testcontainers PostgreSQL 16** instance seeded from the carried fixtures. The last row is the supplemental
+40-byte width, compared by `batch/CategoryBalanceReportJobConfigIT`, which fixes the database state
+completely, launches its job once and compares what the job wrote to a real local dataset with the committed
+file.
 
 **The comparison is a byte-array equality assertion over fixed-width records, not a semantic comparison.**
 Nothing is trimmed, no line is normalised and no field is parsed before comparing. A trailing space that
 should not be there, a sign overpunch encoded the wrong way round and a record one byte short all fail the
 assertion rather than passing quietly, which is the only form of this gate worth having.
 
-### The five contractual widths
+### The four contractual widths
+
+This gate's criterion is fixed at **four** output widths, and these are they. The set is frozen: it is the
+criterion the migration was accepted against, so evidence is added beside it rather than folded into it.
 
 | Output | Width | Composition | Golden fixture |
 | --- | ---: | --- | --- |
@@ -347,23 +354,38 @@ assertion rather than passing quietly, which is the only form of this gate worth
 | Statement, plain text | 80 | fixed-width statement record | `fixtures/expected/statement.txt` |
 | Statement, HTML | 100 | fixed-width HTML statement record | `fixtures/expected/statement-html.txt` |
 | Transaction report line | 133 | report line, `RECFM=FB` | `fixtures/expected/transaction-report.txt` |
-| Category-balance report line | 40 | 32 content bytes and exactly 8 trailing blanks, `RECFM=FB` | `fixtures/expected/category-balance-report.txt` |
 
-The archive the backup job publishes is **not** a sixth gated width and has no plain-text golden. Its
-expectation is the encoded `fixtures/expected/transaction-archive.b64`, which
+The archive the backup job publishes is **not** a contractual width of this gate and has no plain-text
+golden. Its expectation is the encoded `fixtures/expected/transaction-archive.b64`, which
 `batch/BackupTransactionJobConfigTest` reads; the empty `transaction-archive.txt` that once sat beside the
 others was deleted rather than left to invite a vacuous assertion, and DL-219 records that. A row for it
 here would name a file that does not exist.
 
-**The fifth width was the one an earlier revision of this page missed.** The category-balance report the
-`PRTCATBL` job stream produces is 40 bytes per line, declared by that stream as `SORTOUT DCB=(LRECL=40)`,
-and for a while it had an implementation and no committed expectation. Its fixture now holds 53
-separator-free 40-byte records: one per delivered category-balance row, plus the three rows the test adds
-beyond the fifty and one it rewrites in place. It was authored from the reprojection at lines 53–56 of the
-job stream and from the delivered `tcatbal.txt` fixture, and it is **the verdict** for this width, with the
-edited-balance formatting and the three-key ascending ordering asserted in the same class and the width
-itself read from `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` rather than repeated as a literal.
-The complete set is **40, 80, 100, 133 and 430**, and all five are golden-backed.
+### The supplemental category-balance width
+
+**One further fixed width is emitted and is golden-backed, and it is supplemental evidence rather than a
+fifth contractual width.** The distinction is the whole point of this subsection. The criterion above is
+frozen at four, so this width does not enlarge it; and the golden behind this width exists and is compared
+byte for byte, so the criterion does not shrink the evidence either. Both statements are true at once, and
+each one is the correction of a different past error on this page.
+
+| Output | Width | Composition | Golden fixture |
+| --- | ---: | --- | --- |
+| Category-balance report line | 40 | 32 content bytes and exactly 8 trailing blanks, `RECFM=FB` | `fixtures/expected/category-balance-report.txt` |
+
+**This width is the one an earlier revision of this page recorded as having no golden at all.** The
+category-balance report the `PRTCATBL` job stream produces is 40 bytes per line, declared by that stream as
+`SORTOUT DCB=(LRECL=40)`, and for a while it had an implementation and no committed expectation. Its fixture
+now holds 53 separator-free 40-byte records: one per delivered category-balance row, plus the three rows the
+test adds beyond the fifty and one it rewrites in place. It was authored from the reprojection at lines 53–56
+of the job stream and from the delivered `tcatbal.txt` fixture, and it is **the verdict** for this width,
+with the edited-balance formatting and the three-key ascending ordering asserted in the same class and the
+width itself read from `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` rather than repeated as a
+literal. It is compared by `batch/CategoryBalanceReportJobConfigIT` rather than by the pipeline test, because
+the job that emits it is not a pipeline member.
+
+So the contractual set is **80, 100, 133 and 430**, the supplemental width is **40**, and every one of the
+five is golden-backed and compared as a byte array.
 
 A committed expectation is only possible over a state fixed in advance, which is why the golden run comes
 before the posting run rather than after it: the posting run's balances are a function of 300 input records
@@ -513,7 +535,7 @@ under `src/main/java` and 549 under `src/test/java`, which is every `.java` file
 `target/`. The exception turns out to have nothing to apply to. Maven creates
 `target/generated-sources/` and `target/generated-test-sources/` on every build, and in this module both are
 **empty** — no annotation processor is on the compiler path at all, which is the same decision that keeps
-the reflection count at zero under [Gate 6](#gate-6--unsafe-and-low-level-code-audit) (no Lombok, no
+the reflection count at zero under [Gate 6](#gate-6-unsafe-and-low-level-code-audit) (no Lombok, no
 MapStruct, no Immutables, no AutoValue). So the excluded set is empty because there is nothing generated to
 exclude, rather than because an exclusion was declared and then quietly widened.
 
@@ -876,12 +898,12 @@ layers executed in the recorded run; the table records what a checkout without i
 | **Requirement** | Every external interface verified by a local test that exercises the real contract. Self-certification is not acceptable. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/failsafe-reports/` |
-| **Recorded status** | **PASS (measured).** All three external contracts are exercised against real endpoints — golden files, a real queue and real HTTP — rather than against a builder's return value. The file-format contract spans **five** fixed widths, every one of them golden-backed. |
+| **Recorded status** | **PASS (measured).** All three external contracts are exercised against real endpoints — golden files, a real queue and real HTTP — rather than against a builder's return value. The file-format contract spans the **four** contractual widths plus the supplemental 40-byte width, every one of them golden-backed. |
 
 | Contract | How it is exercised | Status |
 | --- | --- | :---: |
-| The four fixed-width file formats Gate 1 names | byte-equality assertions against the golden fixtures listed under Gate 1, and a round trip of each through the real staging interface | **PASS (measured)** |
-| The fifth fixed-width format — the 40-byte category-balance report line | byte-equality assertion against `fixtures/expected/category-balance-report.txt`, plus its edited-balance formatting and its three-key ascending ordering, all by `batch/CategoryBalanceReportJobConfigIT`; `e2e/OnlineTransactionE2ETest` asserts that it is a fifth width rather than one of the four it stages, so the two inventories cannot drift apart | **PASS (measured)** |
+| The four contractual fixed-width file formats Gate 1 names | byte-equality assertions against the golden fixtures listed under Gate 1, and a round trip of each through the real staging interface | **PASS (measured)** |
+| The supplemental fixed-width format — the 40-byte category-balance report line | byte-equality assertion against `fixtures/expected/category-balance-report.txt`, plus its edited-balance formatting and its three-key ascending ordering, all by `batch/CategoryBalanceReportJobConfigIT`; `e2e/OnlineTransactionE2ETest` asserts that it is a width beyond the four it stages, so the contractual set and the supplemental one cannot drift into each other | **PASS (measured)** |
 | The sign-on message and routing contract | real HTTP requests asserting the message strings and the administrator/user routing outcome | **PASS (measured)** |
 | The batch trigger | the report-submission endpoint publishes to a **real** SQS FIFO queue on LocalStack; the test drains the queue and asserts the ordered card sequence, the four substituted date slots and the terminal sentinel | **PASS (measured)** |
 
@@ -973,9 +995,9 @@ design because the module exposes no browser interface.
 | | |
 | --- | --- |
 | **Requirement** | Documented counts of raw SQL string concatenation, `Runtime.exec` usage, reflection, unchecked casts and suppressed warnings. Any count above 50 requires per-site justification. |
-| **Command** | The grep list below, scoped to `carddemo-java/src/main/java/**` — except the suppression line, which is measured over both source trees because [Gate 2](#gate-2--zero-warning-build) forbids the construct outright |
+| **Command** | The grep list below, scoped to `carddemo-java/src/main/java/**` — except the suppression line, which is measured over both source trees because [Gate 2](#gate-2-zero-warning-build) forbids the construct outright |
 | **Evidence artefact** | The counts table and the raw output, both published here |
-| **Recorded status** | **PASS (measured).** Every count is zero. No count is above 50, so no per-site justification is required — and there are no sites to justify. |
+| **Recorded status** | **PASS (measured).** **Every count the requirement names is zero** — raw SQL string concatenation, `Runtime.exec` usage, reflection, unchecked casts and suppressed warnings — so no count is anywhere near the 50 above which per-site justification is owed, and for those five categories there are no sites to justify. This page also publishes **one wider measure the requirement does not ask for**: casts to a parameterised type, checked or not, which stands at **five**. All five are enumerated below with their file and line, all five are checked rather than unchecked, and none of them is an unchecked cast in the sense the requirement means — so the requirement's own count remains zero while the stronger question is answered too. Read the two rows together rather than either alone. |
 
 ### Budget against measured
 
@@ -986,7 +1008,7 @@ design because the module exposes no browser interface.
 | Reflection (`java.lang.reflect`, `Class.forName`) | 0 | **0** | A design constraint rather than hygiene: it is why all **twelve** record mapper classes are hand-written with explicit offsets and why no annotation processor appears in the dependency set. Twelve classes cover eleven persisted layouts; the twelfth maps the statement job's transient work record. |
 | Unchecked casts | ≤ 5 | **0** | `-Xlint:all -Werror` promotes an unchecked operation to a build failure, so the practical count cannot exceed zero. |
 | Casts to a parameterised type, checked or not | ≤ 5 | **5** | The wider measure, published beside the narrower one so the two cannot be confused. All five are enumerated below; all five are checked. |
-| Suppressed warnings | ≤ 3 | **0** | Same mechanism. Where an unchecked generic interaction with a framework API arose, the type was carried through a typed helper rather than suppressed. **This is the one row measured over both trees rather than over production alone** — 0 in `src/main/java`, 0 in `src/test/java`, 0 whole-source — because a suppression in a test source hides a warning just as effectively. Two were found in the test tree while this figure was production-scoped, and both were removed; see [Gate 2](#gate-2--zero-warning-build). |
+| Suppressed warnings | ≤ 3 | **0** | Same mechanism. Where an unchecked generic interaction with a framework API arose, the type was carried through a typed helper rather than suppressed. **This is the one row measured over both trees rather than over production alone** — 0 in `src/main/java`, 0 in `src/test/java`, 0 whole-source — because a suppression in a test source hides a warning just as effectively. Two were found in the test tree while this figure was production-scoped, and both were removed; see [Gate 2](#gate-2-zero-warning-build). |
 | Wildcard imports | 0 | **0** | Every import is explicit, so this audit can be performed by inspection rather than by resolution. |
 | `javax.*` imports | 0 | **0** | Every persistence, validation, servlet and transaction annotation imports from `jakarta.*`. **Ten** fully-qualified uses of the JDK's own `javax.crypto` exist across **one** class — `SensitiveFieldCodec` — and are not imports; that package was never part of the Jakarta rename and has no `jakarta` counterpart. That class states the reasoning at its use sites. The figure has moved twice, which is the argument for measuring it rather than transcribing it: ten uses in one class, then thirteen across two once a retry-token hash arrived in `util`, and ten in one again now that the retry-token protocol has been withdrawn and that class deleted. |
 
@@ -1073,7 +1095,7 @@ readily as a line that carries it, and this module mentions it in twelve comment
 in the table is measured over code with comments, string literals and text blocks blanked, which is what
 `GateVerificationTest.noWarningSuppressionExistsInEitherSourceTree` asserts. The `grep` above is published
 so a reader can reproduce the raw population; the lines it returns are counted as mentions under
-[Gate 2](#gate-2--zero-warning-build), and none of them is an annotation.
+[Gate 2](#gate-2-zero-warning-build), and none of them is an annotation.
 
 ### The raw output
 
@@ -1443,7 +1465,7 @@ point of this subsection: an earlier revision published 26,235 unit and 1,601 in
 time it was read the tree had moved underneath it — the numbers were a transcription of a run nobody could
 still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
 
-The suite behind those figures is the whole estate rather than a sample: the unit tier runs 26,962 test
+The suite behind those figures is the whole estate rather than a sample: the unit tier runs 26,964 test
 executions across 449 classes and the integration and end-to-end tier runs 1,645 across 80 classes,
 under the two inclusion rules stated above. Those class counts are the asserted half of the sentence —
 `config/DocumentedSourceCountsTest` measures both against this tree and fails the build on a
@@ -1461,9 +1483,9 @@ earlier attempt at exactly that is what prompted this paragraph.
 
 | Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Unit | `target/surefire-reports/` | 449 | 26,962 | 0 | 0 | 0 |
+| Unit | `target/surefire-reports/` | 449 | 26,964 | 0 | 0 | 0 |
 | Integration and end-to-end | `target/failsafe-reports/` | 76 | 1,645 | 0 | 0 | 0 |
-| **Whole suite** | both directories | **525** | **28,607** | **0** | **0** | **0** |
+| **Whole suite** | both directories | **525** | **28,609** | **0** | **0** | **0** |
 
 Derive them for yourself from any completed unscoped run. One report file per top-level class, with nested
 classes rolled into their outer class's file, so the file count is the count of classes that **ran**:
@@ -1531,7 +1553,7 @@ absorbed.** The migration plan enumerated **three** external sort specifications
 category-balance report job sorts on **three ascending keys** into a 40-byte record, which is a specification
 of its own and not a variant of any of the other three. [architecture.md](architecture.md) carries the same
 count and names the fourth, and `e2e/GateVerificationTest` asserts that it does, so the two pages cannot
-drift apart. The same discovery is what added the fifth golden-backed width under Gate 1.
+drift apart. The same discovery is what added the supplemental golden-backed width under Gate 1.
 
 ### The three alternate-index equivalents: which finder declares each, and which call path reaches it
 
@@ -1597,10 +1619,10 @@ bound always reached the index — it was a wider index range than necessary. DL
 
 | Checklist item | Satisfying artefact | Executable check | Recorded status |
 | --- | --- | --- | :---: |
-| End-to-end verification | golden fixtures at 40, 80, 100, 133 and 430 bytes under `src/test/resources/fixtures/expected/` | `e2e/BatchPipelineE2ETest`, plus `batch/CategoryBalanceReportJobConfigIT` for the 40-byte line | **PASS (measured)** |
+| End-to-end verification | golden fixtures at the four contractual widths of 80, 100, 133 and 430 bytes, plus the supplemental 40-byte golden, all under `src/test/resources/fixtures/expected/` | `e2e/BatchPipelineE2ETest`, plus `batch/CategoryBalanceReportJobConfigIT` for the supplemental 40-byte line | **PASS (measured)** |
 | Interface contract verification | seven sign-on message texts; the seventeen-card job image with its four slots and transmitted sentinel; a real SQS FIFO queue | `e2e/OnlineTransactionE2ETest`, plus `service/JobSubmissionServiceIT` | **PASS (measured)** |
 | Performance baseline | `support/RunScopedPerformanceRecorder`, whose generated `target/gate-evidence/gate3-*.md` files are where every quotable figure comes from; the Micrometer timers at `/actuator/prometheus` corroborate them. Transcribed into this page's *Measured runs* table | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md` | **PASS (measured)** — eighteen dated rows, each with its machine and its fixture volumes, the newest three from the recorded run |
-| Unsafe code audit | the fixed grep list scoped to `src/main/java/**` | the commands and raw output under Gate 6 | **PASS (measured)** — every count zero |
+| Unsafe code audit | the fixed grep list scoped to `src/main/java/**` | the commands and raw output under Gate 6 | **PASS (measured)** — every count the requirement names is zero; the wider cast measure Gate 6 adds stands at five, all checked |
 | Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 96.04% |
 | Zero critical/high CVEs | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0 over compile, runtime and test scope | `./mvnw -B clean verify`; report published below | **PASS (measured)** — zero unsuppressed critical, zero unsuppressed high |
 | Traceability 100% | [traceability-matrix.md](traceability-matrix.md) | `e2e/GateVerificationTest` row-count assertion at **544** | **PASS (measured)** |

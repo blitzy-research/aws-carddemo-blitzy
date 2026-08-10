@@ -292,8 +292,8 @@ job configurations inject, and the correction notes on decision-log entries DL-1
 move and the observation gap it left behind. The class is retained rather than removed because removing it
 would also decide DL-147's traced-boundary question, which belongs to a human.
 26 + 12 = 38, which is every concrete `*Service.java` in the
-package; the balance of the 64 files are the service-owned records, enums and interfaces those classes
-exchange, and they are not services. Counted directly:
+package; the balance of the 65 files — **27** of them — are the service-owned records, enums and interfaces
+those classes exchange, and they are not services. Counted directly:
 
 ```bash
 ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 38
@@ -368,7 +368,7 @@ The mapping unit is the paragraph: each of the 528 program paragraphs and 16 pro
 becomes a named method, which is what makes a 544-row traceability matrix possible in the first place.
 
 **Where those 544 methods actually live, counted from the matrix rather than assumed.** The package holds
-**36** concrete `*Service.java` classes, of which **26** are the translation-bearing services — one per
+**38** concrete `*Service.java` classes, of which **26** are the translation-bearing services — one per
 legacy program or program family. But the 544 rows resolve to **22 distinct owning classes**, not 26:
 **21 services plus one utility class**, `util.PfKeyTranslator`, which owns the two paragraphs of the
 attention-key copybook and is a utility precisely because five online programs include that copybook rather
@@ -399,12 +399,14 @@ paragraph; these five have none to claim. Saying "26 services own all 544 units"
 in two directions at once — it would credit five classes with rows they do not have, and it would hide the
 one utility class that does own rows.
 
-The remaining **10** of the 36 are focused support services with no legacy antecedent — account and card
-concurrency tokens, credential digesting, sensitive-field encryption, sign-on state, user-list page tokens,
-batch launch and staging, job-completion notification and field-error translation. So the arithmetic closes
-twice over: **26 + 10 = 36** service classes, and **21 + 1 = 22** owning classes covering **544** rows.
+The remaining **12** of the 38 are focused support services with no legacy antecedent — account and card
+concurrency tokens, credential digesting, sensitive-field encryption, sign-on state, the user-list, card-list
+and transaction-list page tokens, batch launch and staging, and job-completion notification and field-error
+translation. So the arithmetic closes twice over: **26 + 12 = 38** service classes, and **21 + 1 = 22**
+owning classes covering **544** rows. The two sums count different things and neither is a correction of the
+other: the first counts the classes in the package, the second counts the classes a traceability row names.
 
-The package holds **72** files in all: those 36 services plus **36** service-owned command, outcome,
+The package holds **65** files in all: those 38 services plus **27** service-owned command, outcome,
 browse-window and turn-result types — the types the `api` adapters map from, and the reason `service` never
 imports `api`.
 
@@ -616,12 +618,14 @@ carries it. That restatement is also what leaves the job member with a duplicate
 recorded among the source anomalies in [decision-log.md](decision-log.md). Four distinct orderings across
 five steps, and the duplication is documented rather than reproduced as two comparators.
 
-### The fifth contractual output width, and why it needs golden bytes
+### The supplemental fifth output width, and why it needs golden bytes
 
-Four fixed output widths are the ones usually named — the 430-byte reject record, the 80-byte statement
-line, the 100-byte HTML statement line and the 133-byte report line. The category-balance listing
-contributes a **fifth: 40 bytes, fixed and blocked**, and it now carries a committed golden of its own on
-the same terms as the other four.
+Four fixed output widths are **contractual** — the 430-byte reject record, the 80-byte statement line, the
+100-byte HTML statement line and the 133-byte report line — and that set is the frozen Gate 1 criterion. The
+category-balance listing emits a fifth fixed width, **40 bytes, fixed and blocked**, which now carries a
+committed golden of its own compared on the same terms as the other four. It is **supplemental evidence
+beside the criterion rather than an addition to it**: the criterion is not enlarged, and the evidence is not
+withdrawn.
 
 Its geometry had to be resolved rather than transcribed, because the reprojection and the record length
 disagree. Summed as declared — an 11-byte account identifier, a blank, a 2-byte type code, a blank, a
@@ -641,21 +645,22 @@ a width assertion, and why its integration test asserts the twelve mask characte
 zero balance and a sub-unit balance, and additionally that no line carries a blank anywhere inside the
 mask.
 
-### Five output widths are contractual
+### Four output widths are contractual, and a fifth is emitted beside them
 
 Every externally observable record the module emits is fixed width, and the width is part of the contract
-rather than a formatting choice:
+rather than a formatting choice. Four of them are the frozen Gate 1 criterion; the fifth is emitted by a job
+outside the primary pipeline and is carried here as supplemental evidence:
 
-| Width | Record | Emitted by |
-| ----: | :----- | :--------- |
-| **40** | category-balance report line | the category-balance listing job |
-| **80** | statement text record | the statement generator |
-| **100** | statement HTML record | the statement generator |
-| **133** | transaction report line, fixed-length blocked | the transaction report job |
-| **430** | daily-transaction reject record — the 350-byte source image, a 4-digit reason code, then a 76-character description | the posting job's reject writer |
+| Width | Standing | Record | Emitted by |
+| ----: | :------- | :----- | :--------- |
+| **80** | contractual | statement text record | the statement generator |
+| **100** | contractual | statement HTML record | the statement generator |
+| **133** | contractual | transaction report line, fixed-length blocked | the transaction report job |
+| **430** | contractual | daily-transaction reject record — the 350-byte source image, a 4-digit reason code, then a 76-character description | the posting job's reject writer |
+| **40** | supplemental | category-balance report line | the category-balance listing job |
 
-**All five are compared against committed golden files byte for byte.** Four of the goldens are compared
-from a single seeded pipeline pass in `e2e/BatchPipelineE2ETest`; the fifth,
+**All five are compared against committed golden files byte for byte.** The four contractual goldens are
+compared from a single seeded pipeline pass in `e2e/BatchPipelineE2ETest`; the supplemental one,
 `fixtures/expected/category-balance-report.txt`, is compared from a dedicated run of the category-balance
 job in `batch/CategoryBalanceReportJobConfigIT`, because that job is the one emitter the primary pipeline
 does not drive. Its test fixes the reported population completely — the fifty delivered category-balance

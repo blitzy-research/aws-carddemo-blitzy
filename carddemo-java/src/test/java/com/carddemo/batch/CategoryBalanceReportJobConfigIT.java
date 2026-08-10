@@ -145,10 +145,13 @@ import com.carddemo.support.TestDataFactory;
  * sharing would be wrong is that byte offset 263 is typed character in the statement job and zoned decimal
  * in the transaction-report job - the same offset, two typings, two jobs.
  *
- * <h2>The fifth contractual output width, its committed golden, and a one-byte conflict</h2>
- * The planning material names four fixed output widths - 80, 100, 133 and 430. This job introduces a
- * <strong>fifth: 40 bytes</strong>. That is a gap in the plan rather than a misreading of the member, and
- * it is recorded here as one. The fifth width now carries a golden of its own,
+ * <h2>The supplemental fifth output width, its committed golden, and a one-byte conflict</h2>
+ * The planning material names four contractual output widths - 80, 100, 133 and 430 - and Gate 1's
+ * criterion is frozen at those four. This job emits a <strong>fifth fixed width: 40 bytes</strong>, which is
+ * a gap in the plan's width table rather than a misreading of the member, and it is recorded here as one.
+ * The evidence for it is <strong>supplemental to that criterion rather than an enlargement of it</strong>:
+ * the criterion stays at four, and this width is compared exactly as strictly. It now carries a golden of
+ * its own,
  * {@value #REPORT_GOLDEN_RESOURCE}, and <strong>that file is this class's verdict oracle</strong>: the
  * job is run once against a state this class fixes completely, and the bytes it wrote to the local
  * dataset are compared with the bytes of the committed file. The reprojection at lines 53 to 56 assembles
@@ -917,7 +920,7 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     }
 
     /**
-     * THE GATE 1 VERDICT for the fifth contractual width: the report the job wrote is byte-identical to
+     * THE GATE 1 VERDICT for the supplemental width: the report the job wrote is byte-identical to
      * the committed forty-byte oracle.
      *
      * <p>Both sides are named explicitly, because which side is which is the whole point of this

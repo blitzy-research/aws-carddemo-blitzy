@@ -741,8 +741,9 @@ and `CBTRN03C`, and the only write anywhere is the category-balance `REWRITE` in
 carries the filler back out exactly as it read it in — a behaviour a constant emitted by a writer
 cannot reproduce and a mapped-field entity cannot carry, since the filler is deliberately not a
 column. Third and decisively, **none of the four bounded layouts is a gated output format.** Gate 1
-gates five widths — the 430-byte reject record, the 80-byte statement record, the 100-byte HTML
-statement record, the 133-byte report line and the 40-byte category-balance report line — and every one of
+is compared byte for byte at five widths — its four contractual ones, being the 430-byte reject record, the
+80-byte statement record, the 100-byte HTML statement record and the 133-byte report line, plus the
+supplemental 40-byte category-balance report line — and every one of
 them is assembled from mapped fields, by `RejectRecordWriter`, `StatementTextTemplates`,
 `StatementHtmlTemplates`, `ReportLineFormatter` and `batch/CategoryBalanceReportJobConfig` respectively,
 none of which places a reference-layout filler byte. The fifth width is the instructive one, because its
@@ -6892,6 +6893,12 @@ anywhere inside the mask.
 **What is unchanged.** The 40-byte record length, the eight-byte trailing filler resolved against the
 reprojection's own nine-blank declaration, the absence of a sign character, and the zoned-decimal key
 ordering are all separate decisions and none of them moved.
+
+**Correction — terminology only.** This entry calls the 40-byte report line "the fifth contractual output
+width". Gate 1's contractual set is frozen at four widths — 80, 100, 133 and 430 — so the correct term is
+**the supplemental fifth width**: golden-backed and byte-compared on exactly the terms this entry describes,
+but evidence beside that criterion rather than a member of it. DL-316 part two records why the distinction
+matters. Nothing about the mask, the geometry or the comparison in this entry changes.
 
 *Cited by:* `batch/CategoryBalanceReportJobConfig.java`. Proven by
 `batch/CategoryBalanceReportJobConfigIT.java` against a real database.
@@ -14702,8 +14709,10 @@ decides it, and fails on a disagreement:
 - the service row's two figures, the arithmetic sentence that reconciles them, and the shell block the page
   offers a reader are all recomputed from the directory, so the page cannot state one figure three ways and
   be wrong in two of them;
-- the eleven support services the page enumerates must each exist as a class, and must each be absent from
-  the traceability matrix, because the page's claim about them is precisely that they carry no paragraph;
+- the support services the page enumerates — twelve as it stands — must each exist as a class, and must each
+  be absent from the traceability matrix, because the page's claim about them is precisely that they carry no
+  paragraph; the count is derived from the enumeration rather than pinned, so a thirteenth support service
+  updates the page's arithmetic or fails the build;
   every service the matrix *does* name must exist, so the matrix stays followable in the direction it
   promises;
 - the override table must name exactly the properties the delimited block declares, at exactly the versions
@@ -14737,21 +14746,43 @@ the sweep; a targeted one is a sample.
 
 ---
 
-**Part two — the fifth golden arrived, and the reasoning that excused its absence stayed behind.**
+**Part two — the fifth golden arrived, and the reasoning that excused its absence stayed behind. Correcting
+that is not the same as enlarging the criterion, and the first attempt did both.**
 
-Two documents said Gate 1 compares four output widths and listed the fifth — the 40-byte category-balance
-report line — as an output with no golden fixture. Both were written when that was true. The golden exists:
+Two documents said Gate 1 compares four output widths and listed the 40-byte category-balance report line as
+an output with no golden fixture. Both were written when that was true. The golden exists:
 `src/test/resources/fixtures/expected/category-balance-report.txt`, 2,120 bytes, 53 records of 40 bytes with
 no separator at all, compared as a byte array by `CategoryBalanceReportJobConfigIT`; and
-`GateVerificationTest` had already carried five widths rather than four.
+`GateVerificationTest` had already carried five golden-backed widths rather than four.
 
-This is the rarer and more damaging direction of drift. An overstatement invites a reviewer to look for
-evidence and find none, which is self-correcting on contact. An *understatement* tells a reviewer that
+Understatement is the rarer and more damaging direction of drift. An overstatement invites a reviewer to look
+for evidence and find none, which is self-correcting on contact. An *understatement* tells a reviewer that
 evidence does not exist, so they stop looking — and the work stays unrecognised while the gap it describes
-reads as accepted. Five documents now say five, and the widths table names the file.
+reads as accepted. So the documents had to stop saying the fixture was pending or absent.
+
+**The first correction overshot, and the overshoot is the decision recorded here.** It closed the
+understatement by re-describing the inventory as *five contractual widths* — and that rewrites an accepted
+acceptance criterion. Gate 1's contractual set is **80, 100, 133 and 430 bytes**: four widths, fixed by the
+agreed plan, and not a measurement this delivery is free to re-take. A criterion that grows to match whatever
+evidence happens to exist is no longer a criterion, and a reader comparing the plan against the documents
+would find the two disagreeing about what was accepted.
+
+**Decision.** The two claims are separated, and both are published. The **contractual** set stays at four and
+is named as frozen. The 40-byte golden is published as **supplemental evidence** beside that criterion — same
+byte-array comparison, same strictness, its own inventory table under its own heading on the evidence page —
+and is never called a fifth contractual width. Every publication now names all five widths, so no evidence is
+hidden, and identifies which four are the criterion, so no criterion is rewritten. The distinction is
+mechanical rather than editorial: `PublicationConsistencyTest` parses both tables out of the evidence page,
+requires every publication to name every width in both, and forbids the phrasings of both failures — a table
+cell marking the golden absent or pending, and any wording promoting the supplemental width into the
+contractual set. An earlier revision of that test enforced the opposite: it banned the correct four-width
+wording, which made a rewritten criterion a condition of a green build and meant the documents could not be
+corrected without breaking it. That ban is removed, and its removal is the reason this part is worth
+recording — **a test that pins prose does not make the prose true, it makes the prose immovable**, which is
+the same lesson part one records about a wrong figure guarded by a green assertion.
 
 One geometric detail travelled with the correction, because a reader who measures the fixtures would
-otherwise conclude the fifth is malformed. The four record-per-line goldens carry one line feed per record,
+otherwise conclude the supplemental one is malformed. The four record-per-line goldens carry one line feed per record,
 so a byte count divides by width-plus-one. The category-balance golden is separator-free, so its byte count
 divides by 40 exactly. Both shapes are what the emitting program writes; neither is a defect.
 
@@ -14781,6 +14812,21 @@ now say.
 The qualifier is not pedantry. The documents a reviewer reads to discover whether a suppression exists were
 the documents whose phrasing implied none did. Stating the stronger claim concealed the mechanism that makes
 the weaker one trustworthy.
+
+**Which documents carry the qualifier is a second decision, and it is not "all of them".** The qualifier
+belongs wherever a document states the result, and exactly one summary does: the repository front page, which
+publishes the recorded outcome by identifier and score precisely so a reader is not surprised by the report.
+The migration deck states the *obligation* instead — what the criterion requires of any run — and defers every
+run outcome to `docs/gate-evidence.md`, which it links. That deferral is the deck's own published contract, is
+restated in `docs/index.md` and in the module manual, and exists because a scan result printed on a slide is
+stale the moment the scan is re-run, leaving a reader holding two answers with no way to tell which is
+current. A previous revision of `PublicationConsistencyTest` enrolled the deck alongside the front page and
+required it to repeat every disclosed identifier, which forced the deck to breach that contract to keep the
+build green: it then printed exact identifiers, scores and verdicts on the same slide as the sentence
+promising it printed none. The test now holds each document to its own promise — the front page to naming the
+finding, the deck to naming no outcome at all and linking to the authority — and the deck's own contract
+sentence is narrowed to what it actually claims, namely that no *measured run outcome* appears there, since
+the deck does legitimately carry counts describing the estate and the delivery.
 
 ---
 
@@ -14825,10 +14871,11 @@ the correction attributed, because a row that silently gains three sites reads a
 than as the fix to a stale one.
 
 *Embodied in:* `docs/architecture.md` (the delivered onboarding guide and registered navigation, the twelve
-package counts, the service arithmetic and its enumeration, the five compared widths),
-`README.md` and `docs/presentation/index.html` (five widths, the run-scoped recorder as the Gate 3 source,
-the unsuppressed qualifier), `docs/onboarding-guide.md` (the same three, the durable evidence set, and the
-fourteen required production variables), `carddemo-java/README.md` (the fifth golden and its geometry, the
+package counts, the service arithmetic and its enumeration, the four contractual widths and the supplemental
+one), `README.md` and `docs/presentation/index.html` (the same width distinction, the run-scoped recorder as
+the Gate 3 source, and — on the front page, which is answerable for the outcome as the deck is not — the
+unsuppressed qualifier), `docs/onboarding-guide.md` (the same three, the durable evidence set, and the
+fourteen required production variables), `carddemo-java/README.md` (the supplemental golden and its geometry, the
 twelve-row override table, the fourteen required and six defaulted production variables, and the prior
 delivery's breakdown cited rather than reproduced), `docs/gate-evidence.md` (the counting definition, the
 dated suite and coverage figures, and the corrected raw-SQL row),
@@ -14839,8 +14886,10 @@ boundary needs).
 both directions, the service figures against the directory, the support-service enumeration against the
 matrix, the override table against the delimited block, the suite's class counts and counting definition
 against the build's own inclusion rules, and both production-variable counts and lists against the profile),
-and `src/test/java/com/carddemo/config/BuildAndCiContractTest.java` (the narrowed pin that no longer holds a
-figure immovable).
+`src/test/java/com/carddemo/config/BuildAndCiContractTest.java` (the narrowed pin that no longer holds a
+figure immovable, and the deck's width vocabulary), and
+`src/test/java/com/carddemo/PublicationConsistencyTest.java` (both width inventories parsed out of the
+evidence page and every publication held to them, in both directions of the drift).
 
 ### DL-317 — The warning-suppression audit reaches both source trees, although every other unsafe-code count stops at production
 

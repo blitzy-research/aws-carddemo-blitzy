@@ -1257,6 +1257,106 @@ jobs:
             fi
           done
 
+          # ---- the summary PERCENTAGES, which the counter loop above could not see ------------
+          #
+          # The loop reconciles four covered-and-total pairs. It says nothing about the percentages the
+          # page also publishes, and a percentage is what a reader actually quotes: the status-at-a-glance
+          # row, the Gate 7 recorded status, the metric table's own percentage column, the per-tier table
+          # and the final checklist all carry one. A stale percentage therefore survived a green
+          # reconciliation - the page published 95.60% beside the very counters that compute 96.04% - so
+          # every published percentage is now derived here from the same bundle counters as the pairs.
+          #
+          # Scoped deliberately. The prior delivery's figures are quoted on this page as that delivery's
+          # own, attributed and dated, and they are NOT this run's to reconcile; nothing below matches
+          # them, because each rule is anchored on either the phrase "merged line coverage", the metric
+          # table's own Line row, the merged per-tier row, or the final checklist's line-coverage row.
+          percentage_of() {
+            local counter="$1"
+            local element
+            element="$(measured_of "${counter}")"
+            if [ -z "${element}" ]; then
+              return 1
+            fi
+            local missed covered
+            missed="$(printf '%s' "${element}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+            covered="$(printf '%s' "${element}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+            if [ $((missed + covered)) -eq 0 ]; then
+              return 1
+            fi
+            awk -v c="${covered}" -v t="$((missed + covered))" 'BEGIN { printf "%.2f", (c * 100) / t }'
+          }
+
+          line_percentage="$(percentage_of LINE)" || line_percentage=''
+          branch_percentage="$(percentage_of BRANCH)" || branch_percentage=''
+          if [ -z "${line_percentage}" ] || [ -z "${branch_percentage}" ]; then
+            echo "::error title=Percentage not derivable::${report} carries no usable LINE or BRANCH counter, so the published percentages cannot be reconciled"
+            status=1
+          else
+            echo "Derived from the merged report: line ${line_percentage}%, branch ${branch_percentage}%"
+            floor='80'
+
+            # Rule A - every sentence that states the merged line coverage. Any percentage on such a line
+            # must be the derived one or the floor the same sentence names.
+            stale_sentences="$(grep -i 'merged line coverage' "${evidence}" \
+                | grep -oE '[0-9]{1,3}(\.[0-9]{1,2})?%' \
+                | grep -vxF "${line_percentage}%" \
+                | grep -vxF "${floor}%" || true)"
+            for offender in ${stale_sentences}; do
+              echo "::error title=Published percentage is wrong::a 'merged line coverage' statement carries ${offender}, this run measured ${line_percentage}%"
+              status=1
+            done
+
+            # Rule B - the metric table's own Line row, whose fourth cell is the percentage.
+            published_line_percentage="$(awk -F'|' '
+              /^\|/ {
+                name = $2; gsub(/[*` ]/, "", name);
+                if (name == "Line") {
+                  cell = $5; gsub(/[*%, ]/, "", cell);
+                  if (cell ~ /^[0-9]+\.[0-9]+$/) { print cell; exit }
+                }
+              }' "${evidence}")"
+            if [ -z "${published_line_percentage}" ]; then
+              echo "::error title=Published row missing::${evidence} carries no Line metric row with a numeric percentage cell"
+              status=1
+            elif [ "${published_line_percentage}%" != "${line_percentage}%" ]; then
+              echo "::error title=Published percentage is wrong::Line metric row: the page publishes ${published_line_percentage}%, this run measured ${line_percentage}%"
+              status=1
+            fi
+
+            # Rule C - the per-tier table's merged row, which publishes line then branch. Keyed on its own
+            # first cell rather than on the report path, because two prose rows elsewhere on the page also
+            # name that path and neither carries a percentage.
+            merged_row="$(awk -F'|' '
+              /^\|/ {
+                name = $2;
+                if (name ~ /Merged/ && name ~ /jacoco-merged/) { print; exit }
+              }' "${evidence}")"
+            if [ -z "${merged_row}" ]; then
+              echo "::error title=Published row missing::${evidence} carries no per-tier row for the merged report"
+              status=1
+            else
+              merged_percentages="$(printf '%s' "${merged_row}" | grep -oE '[0-9]{1,3}\.[0-9]{1,2}%' | tr '\n' ' ')"
+              if [ "${merged_percentages}" != "${line_percentage}% ${branch_percentage}% " ]; then
+                echo "::error title=Published percentage is wrong::the merged per-tier row publishes '${merged_percentages}', this run measured '${line_percentage}% ${branch_percentage}% '"
+                status=1
+              fi
+            fi
+
+            # Rule D - the final checklist's line-coverage row, whose own key names the floor.
+            stale_checklist="$(awk -F'|' '
+              /^\|/ {
+                name = $2; gsub(/[*` ]/, "", name);
+                if (name ~ /^Linecoverage/) { print }
+              }' "${evidence}" \
+                | grep -oE '[0-9]{1,3}(\.[0-9]{1,2})?%' \
+                | grep -vxF "${line_percentage}%" \
+                | grep -vxF "${floor}%" || true)"
+            for offender in ${stale_checklist}; do
+              echo "::error title=Published percentage is wrong::the checklist's line-coverage row carries ${offender}, this run measured ${line_percentage}%"
+              status=1
+            done
+          fi
+
           # The analysed-class count is published in the same section and comes from the same report.
           classes="$(measured_of CLASS)"
           if [ -n "${classes}" ]; then

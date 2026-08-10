@@ -9,11 +9,14 @@ metadata:
   - cobol
   - mainframe
   - java
+  - java-25
   - spring-boot
   - spring-batch
+  - spring-data-jpa
   - postgresql
   - maven
   - aws
+  - testcontainers
   - migration
   - modernization
   - new-feature

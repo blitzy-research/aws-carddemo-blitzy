@@ -717,7 +717,7 @@ html.presenting section.slide { min-height: 60vh; }
       <tbody>
         <tr><th scope="row"><code>api</code>, <code>api.dto</code></th><td>service, domain, util, exception</td><td>controllers and the transport contracts derived from the symbolic maps</td></tr>
         <tr><th scope="row"><code>batch</code>, <code>batch.step</code></th><td>service, repository, domain, util, exception, config</td><td>nine job configurations and their step components over one shared template</td></tr>
-        <tr><th scope="row"><code>service</code></th><td>repository, domain, util, exception</td><td>thirty-six classes: twenty-six translation-bearing, ten support. The 544 procedure units resolve to <strong>twenty-two</strong> owning classes &mdash; twenty-one of those services, plus one utility class &mdash; one method each</td></tr>
+        <tr><th scope="row"><code>service</code></th><td>repository, domain, util, exception</td><td>thirty-eight classes: twenty-six translation-bearing, twelve support. The 544 procedure units resolve to <strong>twenty-two</strong> owning classes &mdash; twenty-one of those services, plus one utility class &mdash; one method each</td></tr>
         <tr><th scope="row"><code>repository</code></th><td>domain <strong>only</strong></td><td>eleven Spring Data interfaces; the three alternate indexes became finders and one declared range query</td></tr>
         <tr><th scope="row"><code>domain</code>, <code>domain.id</code>, <code>domain.enums</code></th><td>itself</td><td>entities at their verified widths, composite business keys, and nine enums drawn from 508 condition names</td></tr>
         <tr><th scope="row"><code>util</code>, <code>exception</code></th><td>domain, and nothing above</td><td>the zoned-decimal codec, <strong>twelve</strong> hand-written fixed-width mappers over eleven persisted record layouts, formatters and the failure types</td></tr>
@@ -920,13 +920,16 @@ html.presenting section.slide { min-height: 60vh; }
         <tr>
           <th scope="row" class="num">1</th><td>End-to-end boundary</td>
           <td>that a production-representative input is processed end to end locally and the emitted records
-          are <strong>byte-equivalent</strong> to committed golden files at all <strong>five compared widths</strong>,
-          which are the five contractual widths &mdash; <strong>40</strong>, <strong>80</strong>, <strong>100</strong>,
-          <strong>133</strong> and <strong>430</strong> bytes. Four are compared from a single seeded pipeline
-          pass; the 40-byte category-balance report line is compared from a dedicated run of the job that
-          emits it, because that job is the one emitter the primary pipeline does not drive. The comparison is
-          byte-array equality on fixed-width records, so a trailing space or a sign overpunch fails rather
-          than passing quietly. <strong>Mocked input and output does not satisfy it.</strong></td>
+          are <strong>byte-equivalent</strong> to committed golden files at the
+          <strong>four contractual widths</strong> this criterion is frozen at &mdash; <strong>80</strong>,
+          <strong>100</strong>, <strong>133</strong> and <strong>430</strong> bytes &mdash; each compared
+          from a single seeded pipeline pass. A further <strong>40</strong>-byte record, the
+          category-balance report line, carries a committed golden of its own and is compared the same way
+          from a dedicated run of the job that emits
+          it, because that job is the one emitter the primary pipeline does not drive; that comparison is
+          <strong>supplemental</strong> evidence beside the criterion rather than a fifth width of it. The
+          comparison is byte-array equality on fixed-width records, so a trailing space or a sign overpunch
+          fails rather than passing quietly. <strong>Mocked input and output does not satisfy it.</strong></td>
         </tr>
         <tr>
           <th scope="row" class="num">2</th><td>Zero-warning build</td>
@@ -976,18 +979,16 @@ html.presenting section.slide { min-height: 60vh; }
         </tr>
         <tr>
           <th scope="row" class="num">8</th><td>Integration sign-off</td>
-          <td>that all seven of the above hold together, plus a dependency vulnerability scan whose exact
-          recorded result is <strong>zero unsuppressed critical</strong>, <strong>zero unsuppressed
-          high</strong>, <strong>one high finding covered by a written analyst determination</strong>
-          (<code>CVE-2026-66299</code>, CVSS 7.5, matched on <code>tomcat-embed-core</code>, scoped to that
-          identifier alone and self-expiring) and <strong>one visible below-threshold medium</strong>
-          (<code>CVE-2026-41178</code>, CVSS 5.3, reported and not suppressed) &mdash; stated that way rather
-          than as &ldquo;no critical or high finding&rdquo;, because a scanner finding that an analyst
-          determined to be a false match is still a finding, and a deck that rounds it away is the reason a
-          reader would stop checking. The dated report is published in
-          <a href="../gate-evidence.md#gate-8--integration-sign-off-checklist">Gate Evidence</a>, and a CVE
-          result ages, so the scan is re-run before any sign-off. Plus traceability covering
-          <strong>100%</strong> of the estate's procedure units.</td>
+          <td>that all seven of the above hold together, plus a dependency vulnerability scan that runs
+          inside the build over the compile, runtime and test graph and <em>fails</em> it at the critical and
+          high threshold &mdash; where a finding an analyst has determined to be a false match must be carried
+          by a written, artifact-scoped, self-expiring determination that is published rather than silent,
+          because such a finding is still a finding and an obligation that let it be rounded away would be the
+          reason a reader stops checking. <strong>What any given scan found belongs to the evidence page and is
+          deliberately not reproduced here</strong>: read it in
+          <a href="../gate-evidence.md#gate-8-integration-sign-off-checklist">Gate Evidence</a>, dated and
+          beside its report, and re-run the scan before any sign-off, because a scan result ages. Plus
+          traceability covering <strong>100%</strong> of the estate's procedure units.</td>
         </tr>
       </tbody>
     </table>
@@ -1009,10 +1010,13 @@ html.presenting section.slide { min-height: 60vh; }
     criterion.</dd>
 
     <dt>This deck states obligations; the evidence page states outcomes</dt>
-    <dd>No result, count, percentage or scan verdict is reproduced here. The separation is deliberate: a
-    summary that restates a measured figure goes stale the moment the figure is re-measured, and a reader
-    would then hold two answers with no way to tell which is current. There is one authority for outcomes,
-    and it is <a href="../gate-evidence.md">gate-evidence.md</a>.</dd>
+    <dd><strong>No measured run outcome is reproduced here</strong> &mdash; no recorded result, no coverage
+    percentage, no elapsed time or throughput figure, and no vulnerability verdict or identifier. The counts
+    this deck does carry describe the <em>estate and the delivery</em>, which do not change when a suite is
+    re-run: 28 programs, 544 procedure units, eleven record layouts, nine fixtures. The separation is
+    deliberate: a summary that restates a measured figure goes stale the moment the figure is re-measured, and
+    a reader would then hold two answers with no way to tell which is current. There is one authority for
+    outcomes, and it is <a href="../gate-evidence.md">gate-evidence.md</a>.</dd>
   </dl>
 </section>
 

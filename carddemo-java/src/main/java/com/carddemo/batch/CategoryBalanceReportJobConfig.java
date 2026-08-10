@@ -198,7 +198,7 @@ import com.carddemo.util.ZonedDecimalCodec;
  * are decoded to signed values by {@link ZonedDecimalCodec}, whose overpunch convention folds the
  * sign into the final byte, and the character key compares lexicographically.
  *
- * <h2>The reprojection and a fifth contractual output width</h2>
+ * <h2>The reprojection and a fifth fixed output width, supplemental to the four contractual ones</h2>
  *
  * <p>The reprojection emits, in order: the account identifier, one blank, the transaction type code,
  * one blank, the transaction category code, one blank, then the balance rendered under an edit mask
@@ -209,7 +209,9 @@ import com.carddemo.util.ZonedDecimalCodec;
  * <p>The declared output record length is {@link #REPORT_RECORD_LENGTH} bytes, fixed-length blocked.
  * <strong>This is a fifth fixed output width in the estate</strong>, alongside the eighty-byte
  * statement, the hundred-byte HTML statement, the hundred-and-thirty-three-byte transaction report
- * and the four-hundred-and-thirty-byte reject record. The planning material names only those four.
+ * and the four-hundred-and-thirty-byte reject record. The planning material names only those four, and
+ * those four remain the contractual set Gate 1 is accepted against; this width is evidence
+ * <em>supplemental</em> to that criterion rather than an enlargement of it.
  * The fifth width is raised here for {@code docs/gate-evidence.md} and {@code docs/decision-log.md},
  * and it carries a golden fixture of its own in the expected-output fixtures -
  * {@code fixtures/expected/category-balance-report.txt}, an artefact of the test estate rather than of
