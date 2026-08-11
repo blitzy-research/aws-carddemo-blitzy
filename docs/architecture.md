@@ -1131,7 +1131,7 @@ regression: it is an **improvement, not a divergence to be corrected**. The full
 stronger guarantee cannot alter any output the legacy system produced, is in
 [decision-log.md](decision-log.md).
 
-### Six controls the legacy system had no equivalent of
+### Four controls the legacy system had no equivalent of
 
 Each of these guards a boundary the 3270 and VSAM estate did not have, so none of them is a translation of
 anything and none may be read as parity. Each is stated with what it does **not** claim, and each is
@@ -1139,12 +1139,25 @@ recorded in [decision-log.md](decision-log.md) at the entry named.
 
 | Boundary | The control | What it does not do | Entry |
 | :------- | :---------- | :------------------ | :---- |
-| Repeated sign-on | A spent allowance is refused before any credential is read, counted per identity and per caller address, and a **successful** sign-on releases the identity subject alone — the caller address decays only by its own window, so one valid low-privilege login cannot clear a sweep across generated identifiers | It does not lock an identity out permanently, and it refuses nobody when its store is unreachable | DL-342 |
-| Repeated sign-on, across replicas | That allowance is counted **once per deployment** rather than once per process: the state lives in one shared table under a ledger-wide advisory lock, so replicas share one allowance and a refusal survives a restart. Production cannot select the per-process store — the bean refuses to be created | It is not a rate limiter in front of the deployment, and it does not survive the table being dropped | DL-343 |
 | Anonymous readiness probing | Each provider-backed contributor answers from its own recent result for a bounded window and coalesces concurrent evaluations onto one, so probe volume does not become provider call volume. Every outcome is reused, including the failing ones | It does not withdraw the anonymity of the three health addresses — a container probe has no credential to present — and it does not hide a resource that goes away for longer than one window | DL-344 |
 | The cloud account this deployment runs against | Start-up verifies the **posture** of the three resources rather than their existence alone: public access blocked through all four controls, a bucket, queue and topic policy that grant no principal unconditionally and deny every action over plain transport, and a default encryption algorithm on the bucket. Absent or permissive, production does not start | It does not provision any of them in production — that is infrastructure work this migration has no authority over — and it audits nothing outside those three resources | DL-346 |
 | What a diagnostic is allowed to carry | An outbound failure reaches a span as a bounded classification of its type chain and never as the provider's own failure object; a start-up refusal carries the same classification and no chained cause; and a refusal about a configured credential names the rule broken and never a property of the value — not the matched word, not the observed length | It does not reduce what an operator can act on: a refusal still names the variable and the property, and a classification still names the failure type | DL-341, DL-347, DL-348 |
 | The three columns widened to hold a protected value | The **database** refuses anything else in them: an `ENC1` envelope on each regulated customer identifier and a structurally well-formed BCrypt digest at an accepted cost on the stored credential, so a bulk load, a repair script or a restored backup cannot put cleartext where the application would never have put it | The constraints are a necessary condition and not a sufficient one — a SQL `CHECK` cannot decode an envelope, so the application stays the precise gate | DL-349 |
+
+**Two further rows stood in that table and have gone, which is why it counts four rather than six.** A
+sign-on attempt allowance sat among these controls for one checkpoint — refused before any credential was
+read, counted per identity and per caller address, and held in a shared table under a ledger-wide advisory
+lock so that replicas shared one allowance. It was withdrawn as feature expansion, and the reasoning is the
+preservation boundary rather than a doubt about the control: legacy transaction `CC00` counts no attempts and
+has no lockout, so it reads the credential master once per submitted turn and answers, and bounding that is a
+behaviour this migration would have invented rather than carried across. Every artefact of it is gone — the
+governor, both ledger implementations, the configuration that chose between them, the attempt table with its
+schema version, and the caller-address attribution — so the deliberate migration-version gap this leaves is
+the one recorded under [Schema evolution](#schema-evolution) above. **This module therefore bounds repeated
+sign-on nowhere**, which the module manual states in the same terms for an operator, and a deployment that
+wants such a bound places it in front of the deployment rather than expecting it here.
+[decision-log.md](decision-log.md) DL-352 records the removal and what it costs, and DL-268, DL-342 and
+DL-343 carry corrections marking what in them no longer describes delivered behaviour.
 
 ### Secrets
 

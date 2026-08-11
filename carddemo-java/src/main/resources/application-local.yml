@@ -315,7 +315,7 @@ spring:
     # adding the seed location here is what admits V3__seed_reference_data.sql and
     # V4__seed_user_security.sql. Drop it and every fixture asserts against an empty result set.
     #
-    # NEVER REPLACE THESE TWO WITH THEIR PARENT classpath:db/migration. It would resolve the same six
+    # NEVER REPLACE THESE TWO WITH THEIR PARENT classpath:db/migration. It would resolve the same five
     # scripts and record each one under a name relative to the parent, breaking the migration names the
     # Compose bring-up check reads out of the history table; FlywayConfig refuses the parent outright.
     locations:

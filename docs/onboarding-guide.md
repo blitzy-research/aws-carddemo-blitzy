@@ -452,7 +452,7 @@ cd carddemo-java
 # 1 - the forbidden constructs of Gate 6's own scope. Expect no output at all: all five are zero.
 grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery' src/main/java/
 
-# 2 - cast candidates: every cast whose target is a parameterised type. Expect exactly six lines.
+# 2 - cast candidates: every cast whose target is a parameterised type. Expect exactly five lines.
 grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/java/
 
 # 3 - a statement verb inside a literal, joined to something that is not a literal. Expect EXACTLY ONE
@@ -503,7 +503,7 @@ several comments and asserted-on literals; see [Gate Evidence](gate-evidence.md#
 **The audit is scoped to `src/main/java/` — everything beneath it and nothing else — and that scoping is
 load-bearing rather than cosmetic.** The Flyway files under `src/main/resources/db/migration/` are `.sql`
 schema artefacts, not application code assembling a query out of strings; an unscoped grep would report
-**six phantom raw-SQL violations** that are in fact the versioned schema definition the design requires.
+**five phantom raw-SQL violations** that are in fact the versioned schema definition the design requires.
 Test sources are excluded for a related reason: assertion helpers legitimately do things production code
 does not.
 

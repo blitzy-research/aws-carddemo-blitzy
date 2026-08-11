@@ -118,6 +118,22 @@ final class DocumentedSourceCountsTest {
             Pattern.compile("\\(\\s*[A-Za-z_$][\\w.$]*\\s*<[^<>()]*>\\s*\\)\\s*[A-Za-z_$(]");
 
     /**
+     * How the evidence page opens its prose statement of what the cast census returns.
+     *
+     * <p>Held as the exact phrase rather than as a pattern over any number nearby, because the same page
+     * legitimately states other commands' line counts in neighbouring sentences - one line for the screen
+     * prompt, twelve for the suppression grep - and a looser rule would reconcile the wrong figure.
+     */
+    private static final String CAST_COUNT_CLAIM_ON_PAGE = "Command 2 produces exactly ";
+
+    /** How the onboarding guide states the same count, in the comment beside its copy of the command. */
+    private static final String CAST_COUNT_CLAIM_IN_GUIDE =
+            "cast whose target is a parameterised type. Expect exactly ";
+
+    /** What both phrases above are completed by, once the number word is in place. */
+    private static final String CAST_COUNT_CLAIM_TAIL = " lines";
+
+    /**
      * A statement verb inside a literal, joined to something that is not a literal: the published audit's
      * verb-only SQL shape.
      *
@@ -1244,7 +1260,8 @@ final class DocumentedSourceCountsTest {
         }
 
         /**
-         * Every published cast site names the file and the line the cast is actually on.
+         * Every published cast site names the file and the line the cast is actually on, and both
+         * documents state how many sites there are.
          *
          * <p>A published line number is the most perishable figure in this documentation set: it is
          * falsified by any edit above it in the same file, while every count on the page stays correct - so
@@ -1252,14 +1269,23 @@ final class DocumentedSourceCountsTest {
          * that way, by classes gaining code above the cast. Deriving the pair means the next such edit
          * either updates the page or breaks the build.
          *
+         * <p><strong>The census COUNT is derived here for the same reason, and it is the figure that went
+         * stale while the line numbers stayed right.</strong> Withdrawing a cast site moves the count and
+         * leaves every surviving line number correct, so the enumeration below the prose cannot report the
+         * drift and neither can the budget table beside it: the evidence page said six lines and inverted
+         * the cap's direction, and the onboarding guide's command comment said six above a result table
+         * that said five. Both documents state the count in prose beside the command a reader runs, which
+         * makes it a claim like any other, so both are held to the measured census - the positive phrase
+         * each publishes, and the absence of the same phrase carrying any other number word.
+         *
          * <p>The path is written page-relative, as {@code service/MenuService.java:527} is, so the assertion
          * compares the string a reader sees rather than an absolute path they never do.
          *
-         * @throws IOException if the tree or the page cannot be read
+         * @throws IOException if the tree or either document cannot be read
          */
         @Test
-        @DisplayName("every published cast site names the file and line the cast is on, derived from the "
-                + "source rather than transcribed")
+        @DisplayName("every published cast site names the file and line the cast is on, and both documents "
+                + "state the measured count, derived from the source rather than transcribed")
         void thePublishedCastSitesNameTheirActualLines() throws IOException {
             final List<String> sites = new ArrayList<>();
             for (final Path source : applicationSources()) {
@@ -1282,6 +1308,34 @@ final class DocumentedSourceCountsTest {
                                 + "it at that line: a line number is falsified by any edit above it and no "
                                 + "other figure on the page can report that it has drifted", site)
                         .contains(site);
+            }
+
+            // The two prose statements of the count, keyed on the phrase each document uses beside its own
+            // copy of the command. Each is asserted present with the measured number word and absent with
+            // every other, so a withdrawn or added cast site cannot leave either sentence standing.
+            final String measured = numberWord(sites.size());
+            assertThat(flattened(GATE_EVIDENCE_PAGE))
+                    .as("the evidence page states what command 2 returns in prose as well as in its "
+                            + "enumeration, and the census measures %s sites, so the sentence a reader "
+                            + "meets before the enumeration must state that number", measured)
+                    .contains(CAST_COUNT_CLAIM_ON_PAGE + measured + CAST_COUNT_CLAIM_TAIL);
+            assertThat(flattened(ONBOARDING_PAGE))
+                    .as("the guide publishes the same command with its expectation in the comment beside "
+                            + "it, and a reader who runs the command reads the comment first, so it must "
+                            + "state the measured %s rather than a figure the tree has moved past", measured)
+                    .contains(CAST_COUNT_CLAIM_IN_GUIDE + measured + CAST_COUNT_CLAIM_TAIL);
+            for (final String word : NUMBER_WORDS) {
+                if (word.equals(measured)) {
+                    continue;
+                }
+                assertThat(flattened(GATE_EVIDENCE_PAGE))
+                        .as("the evidence page must not also carry the same sentence with a different "
+                                + "count; a correct sentence added beside a stale one leaves the page "
+                                + "disagreeing with itself")
+                        .doesNotContain(CAST_COUNT_CLAIM_ON_PAGE + word + CAST_COUNT_CLAIM_TAIL);
+                assertThat(flattened(ONBOARDING_PAGE))
+                        .as("and neither must the guide's command comment")
+                        .doesNotContain(CAST_COUNT_CLAIM_IN_GUIDE + word + CAST_COUNT_CLAIM_TAIL);
             }
         }
     }

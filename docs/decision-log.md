@@ -7320,8 +7320,19 @@ own not-found arms leave unset - the commented-out `SET` at L3719 - so it walks 
 and the range still refuses to build a screen because neither record was fetched. A second read that fails
 overwrites the first one's text, which is precisely what an ungated move does.
 
-*Cited by:* `service/AccountUpdateService.java`. Proven by the `ReadFailureArms` nest of
-`service/AccountUpdateServiceTest.java`.
+*Cited by:* `service/AccountUpdateService.java`. Proven by two nests of
+`service/AccountUpdateServiceTest.java`: `CrossReferenceResolution`, which drives the not-found arm of each of
+the three reads - the empty cross-reference result, an account the master does not hold, a customer the master
+does not hold - and asserts the text each claims; and `WriteRangeAndRollback`, which drives both holds onto
+their single non-normal arm, asserts each lock text and asserts that no unit of work was opened.
+
+*What no test enters, stated rather than left to be found.* The catch-all arm itself. Each of the three reads
+and both holds map a raised `DataAccessException` onto the arm named above it, and nothing in either tier makes
+a repository raise on those five calls, so those five catch blocks and the two helpers behind them - the
+composition of the ungated file-error text and the hold-failure log - are uncovered in the merged report. What
+the suite establishes is the arm a failure is mapped **onto**; that the mapping exists is read from the source.
+The distinction is worth the sentence, because a citation that claimed otherwise is what a verifier would go
+looking for and not find.
 
 ---
 
@@ -14736,6 +14747,16 @@ integration tier the revision the evidence stamps*), and
 
 ### DL-316 — A count in prose is a claim about the tree, so the tree is asked: every published figure about this module's own shape is measured, dated or withdrawn
 
+> **Correction — two of the five classes this entry names as examples no longer exist.** The mechanism this
+> entry establishes is unaffected and is still delivered: every figure about this module's own shape is
+> derived by `config/DocumentedSourceCountsTest` from the artefact that decides it. What has moved is one
+> illustration inside it. `ReportRetryTokenService` in `service` and `ReportRetryTokens` in `util` were the
+> invented Idempotency-Key retry protocol, withdrawn as feature expansion because the legacy job-submission
+> queue is an append-only transient data queue with no deduplication key, token or window; the three classes
+> still delivered are named below. The example is the poorer for being smaller and the argument is the
+> stronger for it: a class list in prose went stale exactly as a count in prose does, which is why the
+> package table itself is derived rather than transcribed.
+
 **Context.** Most figures in this documentation set describe the legacy estate, which does not change — 28
 programs, 544 procedure units, eleven record layouts. A smaller set describes *this delivery*: how many
 files each package holds, how many concrete services exist, how many output widths have a golden fixture,
@@ -14749,9 +14770,9 @@ detect from the document itself, because a count carries no evidence of its own 
 **Part one — the failure mode is transcription, not carelessness.**
 
 The architecture page's package table had drifted by exactly four packages. The drift is not mysterious: the
-four are `config`, `service`, `util` and the total, and the classes that move them are five —
-`AwsResourceTrustVerifier` and `MigrationVersionRecordCallback` in `config`, `ReportRetryTokenService` in
-`service`, `ObservationPropagation` and `ReportRetryTokens` in `util`. Nothing is neglected in such a case:
+four are `config`, `service`, `util` and the total, and the classes still delivered that move them are three —
+`AwsResourceTrustVerifier` and `MigrationVersionRecordCallback` in `config`, and `ObservationPropagation` in
+`util`. Nothing is neglected in such a case:
 the page is correct, then code is added, and a number in a second file has no way to hear about it.
 
 The module README's override section was worse in degree and identical in kind. It said **three** versions
@@ -17011,6 +17032,20 @@ of `#rejectionReason(RequiredSetting, String)`, and `util/SensitiveFieldCodec#re
 
 ### DL-349 - The three columns widened to hold a protected value now refuse anything else at the column, and the rule arrives as version 2.2
 
+*Correction — read this before the version arithmetic and the assertion list below.* This entry was written
+against a migration set of six scripts, four of them schema, because a sign-on attempt ledger then held schema
+version **2.1**. DL-352 withdrew that ledger with the throttle it served, so **the delivered inventory is five
+scripts: three schema — `V1__create_schema.sql`, `V2__create_indexes.sql` and
+`V2_2__add_protected_value_invariants.sql` — and two seed, `V3__seed_reference_data.sql` and
+`V4__seed_user_security.sql`.** Nothing this entry decides is affected: the invariants script still arrives as
+version **2.2**, still adds exactly the three named `CHECK` constraints and nothing else, and the production
+ceiling is still `2.2`, because `V2_2` remains the highest version the schema location delivers. Two readings
+below are the arrangement of the day rather than the delivered one — the ordering written as `2 < 2.1 < 2.2 < 3`,
+whose delivered form is `2 < 2.2 < 3`, and the pin described as moving from `"2.1"` to `"2.2"`, which now simply
+is `"2.2"`. The dotted-version rule that produced both survives the withdrawal untouched: every schema version
+sorts below every seed version, and a new schema script takes the next free dotted version below `3` rather
+than back-filling the withdrawn `2.1`. The *Asserted by* line states the delivered five-script inventory.
+
 *Context.* `V1__create_schema.sql` widens three columns beyond their legacy record widths so that each can
 hold a protected value rather than the cleartext the record image carries. `customer.cust_ssn` and
 `customer.govt_issued_id` become `VARCHAR(255)` for an `ENC1` envelope where the copybook reserves 9 and 20
@@ -17128,16 +17163,16 @@ constraint per table rather than per column - rejected, because the three rules 
 refusal has to name the column that caused it. Adding a `char_length(body) % 4 = 0` clause to match the
 encoder's padding - rejected as stricter than the codec's reader, for the reason the floor is 43.
 
-*Asserted by:* `config/FlywayConfigTest` - the six-script inventory, the statement counts both `V2_1` and
-`V2_2` call contractual, the constraint names and both patterns read out of the delivered script text, and
+*Asserted by:* `config/FlywayConfigTest` - the five-script inventory, the statement count `V2_2` calls
+contractual, the constraint names and both patterns read out of the delivered script text, and
 the hundred seeded envelopes and ten seeded digests checked against the same patterns;
 `repository/SchemaConstraintNegativeProofIT` - twelve refusals and acceptances against a real server,
 including cleartext at both legacy widths, an envelope one byte short of the authenticated minimum, an
 envelope at the floor accepted, a URL-safe alphabet refused, a missing marker refused, a cost below the window
 refused, an unrecognised version marker refused, a tail outside radix-64 refused, and both ends of the cost
 window accepted; `service/UserSecurityCredentialIT` - the inverted assertion above;
-`config/FlywayConfigCoverageTest` and `config/ConfigurationProfileBaselineTest` - the raised pin and the
-four-script schema location.
+`config/FlywayConfigCoverageTest` and `config/ConfigurationProfileBaselineTest` - the pin held to the highest
+version the schema location delivers, and the three-script schema location.
 
 *Cited by:* `resources/db/migration/schema/V2_2__add_protected_value_invariants.sql`,
 `resources/application.yml`, `resources/application-local.yml`, `resources/application-test.yml`,

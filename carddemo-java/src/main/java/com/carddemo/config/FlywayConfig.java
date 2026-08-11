@@ -1030,7 +1030,7 @@ public final class FlywayConfig {
      * <p>This is the predicate production uses, and it is deliberately an equality test rather than a
      * containment test. A containment test cannot separate the packaged directory from a directory
      * that merely has the same name somewhere along its path, and the difference decides whether the
-     * scripts Flyway applies are the four this module ships or four an operator placed on disk. Every
+     * scripts Flyway applies are the five this module ships or five an operator placed on disk. Every
      * one of the following is <strong>refused</strong>:
      *
      * <ul>

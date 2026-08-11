@@ -54,10 +54,10 @@ vulnerability threshold.
 
 | Property | Value |
 | --- | --- |
-| Date, in UTC | 2026-08-11, build finished 13:50:31Z |
+| Date, in UTC | 2026-08-11, build finished 22:44:42Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
-| Result | `BUILD SUCCESS`, total time 11:36 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 545 source counts, no compiler diagnostic of any kind, the same 27,001 and 1,664 test cases with no failure, the same 23,243 of 24,204 lines and 7,763 of 8,671 branches across the same 494 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 168 dependencies. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and between the previous recorded run and this one a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off-checklist) with its date rather than folded into this row |
+| Result | `BUILD SUCCESS`, total time 12:03 min |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 545 source counts, no compiler diagnostic of any kind, the same 27,001 and 1,664 test cases with no failure, the same 23,243 of 24,204 lines and 7,763 of 8,671 branches across the same 494 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 168 dependencies. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and across the runs recorded below a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off-checklist) with its date rather than folded into this row |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -189,7 +189,7 @@ position above is history; the column below is the result.
 | --- | :---: | --- | --- |
 | 1 — End-to-end boundary verification | **PASS (measured)** | the four contractual widths compared byte for byte, expected equal to actual on every record and byte count; the supplemental 40-byte width compared by its own job test | `./mvnw -B clean verify` |
 | 2 — Zero-warning build | **PASS (measured)** | `BUILD SUCCESS`; zero compiler warnings across **245** production and **545** test sources under `-Werror`; zero warning suppressions across both trees | `./mvnw -B clean verify` |
-| 3 — Performance baseline | **PASS (measured)** | twenty-seven dated rows, three of them from the recorded run and the rest from earlier runs of earlier revisions, each beside its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
+| 3 — Performance baseline | **PASS (measured)** | thirty dated rows, three of them from the recorded run and the rest from earlier runs of earlier revisions, each beside its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
 | 4 — Named validation artefacts | **PASS (measured)** | nine ASCII fixtures at their measured byte counts, twelve encoded datasets by name, ten seeded identities, five lookup cardinalities | `./mvnw -B clean verify` |
 | 5 — Interface contract verification | **PASS (measured)** | seven message texts over real HTTP, routing for both delivered types, seventeen cards drained from a real queue | `./mvnw -B clean verify` |
 | 6 — Unsafe and low-level code audit | **PASS (measured)** | every count the requirement names is zero, with the raw output of the scoped audit published; the one wider measure this page adds — casts to a parameterised type, checked or not — stands at five, each enumerated and each checked | the grep list below |
@@ -456,8 +456,8 @@ The lines that matter, quoted from the recorded run rather than paraphrased. Eve
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  11:36 min
-[INFO] Finished at: 2026-08-11T13:50:31Z
+[INFO] Total time:  12:03 min
+[INFO] Finished at: 2026-08-11T22:44:42Z
 ```
 
 **Warning accounting, stated precisely rather than rounded off.** 245 production sources and 545 test
@@ -624,9 +624,12 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 
 | Date | Machine | Run | Records | Elapsed (ms) | Peak heap (bytes) | Records/second |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 13:50:31Z | `postTransactionJob` | 300 | 3414 | 323182048 | 87.85 |
-| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 13:50:31Z | `interestCalculationJob` | 100 | 371 | 205741536 | 269.09 |
-| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 13:50:31Z | `interestCalculationJob` | 3 | 26 | 383147984 | 111.35 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 22:44:42Z | `postTransactionJob` | 300 | 3032 | 238641952 | 98.93 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 22:44:42Z | `interestCalculationJob` | 100 | 461 | 266921712 | 216.65 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 22:44:42Z | `interestCalculationJob` | 3 | 26 | 1170548208 | 113.47 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 13:50:31Z | `postTransactionJob` | 300 | 3414 | 323182048 | 87.85 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 13:50:31Z | `interestCalculationJob` | 100 | 371 | 205741536 | 269.09 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 13:50:31Z | `interestCalculationJob` | 3 | 26 | 383147984 | 111.35 |
 | 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 10:57:47Z | `postTransactionJob` | 300 | 3659 | 263432048 | 81.97 |
 | 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 10:57:47Z | `interestCalculationJob` | 100 | 534 | 122711592 | 187.15 |
 | 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 10:57:47Z | `interestCalculationJob` | 3 | 85 | 333788624 | 35.01 |
@@ -652,18 +655,19 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 100 | 2600 | 474827040 | 38.46 |
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 3 | 107 | 235653920 | 27.91 |
 
-**Twenty-seven rows, and the machine column is what tells them apart rather than the date.** The count is not
+**Thirty rows, and the machine column is what tells them apart rather than the date.** The count is not
 transcribed here: `config/DocumentedSourceCountsTest` derives it from this table and holds the module
 manual's published figure to it, so the next measured run updates the prose or breaks the build (DL-340).
-Rows 1 to 3 are the recorded run this page carries, taken on 2026-08-11 and finishing 13:50:31Z, and their
-five figures are the ones the generated baselines of that run carry; rows 4 to 6 and rows 7 to 9 are the two
-runs this page carried previously — the same date, earlier revisions, finishing 10:57:47Z and 08:17:50Z —
+Rows 1 to 3 are the recorded run this page carries, taken on 2026-08-11 and finishing 22:44:42Z, and their
+five figures are the ones the generated baselines of that run carry; rows 4 to 6, rows 7 to 9 and rows 10 to
+12 are the three runs this page carried previously — the same date, earlier revisions, finishing 13:50:31Z,
+10:57:47Z and 08:17:50Z —
 relabelled here rather than dropped, so a row that was once "the recorded run" still says which run it was;
-rows 10 to 12 are the run carried before those, taken on 2026-08-10; rows 13 to 21 are three further full
+rows 13 to 15 are the run carried before those, taken on 2026-08-10; rows 16 to 24 are three further full
 runs taken on 2026-08-09 and separated by the run label inside the machine column — "earlier revision",
-"earlier run" and "repeat run"; rows 22 to 27 are two earlier runs on 2026-08-08 whose machine descriptions
-differ. The first nine rows share a date and differ only by the label beside the host, which is the whole
-point: grouping "the first nine rows" as one day's work would read three runs of three different revisions
+"earlier run" and "repeat run"; rows 25 to 30 are two earlier runs on 2026-08-08 whose machine descriptions
+differ. The first twelve rows share a date and differ only by the label beside the host, which is the whole
+point: grouping them as one day's work would read four runs of four different revisions
 as one for anybody who trusted the date column alone. The date does not identify a run; the label beside
 the host is what does.
 
@@ -1075,7 +1079,7 @@ forbidden-token grep cannot answer three of the five categories: a
 cast is a *shape* rather than a token, and "SQL built from strings" is a question about how a literal is
 *joined* rather than about whether a literal exists. Earlier revisions of this page published a cast check
 narrowed to `List`, `Map`, `Set` and `Collection` targets, which returns nothing here — not because no cast
-to a parameterised type exists, but because the six that do exist target `ConnectionCallback` and
+to a parameterised type exists, but because the five that do exist target `ConnectionCallback` and
 `PreparedStatementCallback`. A check that cannot see the sites the same page enumerates is not a check, so
 it is replaced:
 
@@ -1141,14 +1145,15 @@ $ grep -rn '@SuppressWarnings' src/main/java/ | wc -l
 ```
 
 Command 1 produces **no output at all**; an exit status of 1 from `grep` is the no-match status, which is the
-result this gate wants. Command 2 produces exactly six lines, which is the budget and not a coincidence — the cap was
-raised from five to six with the site that filled it, as a recorded decision rather than silently —
-and they are enumerated below. Command 3b produces **no output**, and command 4 produces **twelve** lines
+result this gate wants. Command 2 produces exactly five lines, which is the budget and not a coincidence — the cap
+came back down from six to five when the site that had filled it was withdrawn, as a recorded decision rather
+than silently — and they are enumerated below. Command 3b produces **no output**, and command 4 produces **twelve** lines
 over both trees and **none** over the production tree alone — the two figures that together say what the
-twelve are. Each stated expectation above is the output reproduced here; telling a reader to expect no output from
-commands 3 and 4 while publishing, a few lines further down, the one
-line and the twelve lines they actually return. The comment beside a command and the output beneath it are
-the same claim made twice, and a reader who tries the command reads the comment first.
+twelve are. Each stated expectation above is the output reproduced here, and that agreement is itself the claim:
+telling a reader to expect no output from commands 3 and 4 while publishing, a few lines further down, the one
+line and the twelve lines they actually return would leave the page contradicting itself. The comment beside a
+command and the output beneath it are the same claim made twice, and a reader who tries the command reads the
+comment first.
 
 **Command 3 produces exactly one line, and publishing it is the point.** The line is not SQL: it is the
 legacy menu prompt `SELECT OPTION` joined to the option number the user typed, reproduced from the 3270
@@ -1423,7 +1428,7 @@ The recorded run's figures, read from the merged report:
 | --- | ---: | ---: | ---: | :---: |
 | **Line** | 23,243 | 24,204 | **96.03%** | **yes, floor 80%** |
 | Branch | 7,763 | 8,671 | 89.53% | no |
-| Instruction | 100,705 | 104,586 | 96.29% | no |
+| Instruction | 100,707 | 104,588 | 96.29% | no |
 | Method | 4,413 | 4,468 | 98.77% | no |
 
 The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 494 classes` followed by
@@ -1652,7 +1657,7 @@ bound always reached the index — it was a wider index range than necessary. DL
 | --- | --- | --- | :---: |
 | End-to-end verification | golden fixtures at the four contractual widths of 80, 100, 133 and 430 bytes, plus the supplemental 40-byte golden, all under `src/test/resources/fixtures/expected/` | `e2e/BatchPipelineE2ETest`, plus `batch/CategoryBalanceReportJobConfigIT` for the supplemental 40-byte line | **PASS (measured)** |
 | Interface contract verification | seven sign-on message texts; the seventeen-card job image with its four slots and transmitted sentinel; a real SQS FIFO queue | `e2e/OnlineTransactionE2ETest`, plus `service/JobSubmissionServiceIT` | **PASS (measured)** |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, whose generated `target/gate-evidence/gate3-*.md` files are where every quotable figure comes from; the Micrometer timers at `/actuator/prometheus` corroborate them. Transcribed into this page's *Measured runs* table | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md` | **PASS (measured)** — twenty-seven dated rows, each with its machine and its fixture volumes, the newest three from the recorded run |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, whose generated `target/gate-evidence/gate3-*.md` files are where every quotable figure comes from; the Micrometer timers at `/actuator/prometheus` corroborate them. Transcribed into this page's *Measured runs* table | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md` | **PASS (measured)** — thirty dated rows, each with its machine and its fixture volumes, the newest three from the recorded run |
 | Unsafe code audit | the fixed grep list scoped to `src/main/java/**` | the commands and raw output under Gate 6 | **PASS (measured)** — every count the requirement names is zero; the wider cast measure Gate 6 adds stands at five, all checked |
 | Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 96.03% |
 | Zero critical/high CVEs | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0 over compile, runtime and test scope | `./mvnw -B clean verify`; report published below | **PASS (measured)** — zero unsuppressed critical, zero unsuppressed high |
@@ -1706,7 +1711,7 @@ The executed result, from the recorded run:
 | Scanner | `dependency-check-maven` 12.1.3, bound to `verify` |
 | Report | `target/dependency-check-report.html`, with `.json` and `.xml` beside it |
 | Tree scanned | the module as it stands in the revision that carries this page; the scan reads `target/` artefacts of that build rather than a named commit |
-| Scan completed | **2026-08-11T13:50:30Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the figures below were read from |
+| Scan completed | **2026-08-11T22:44:42Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the figures below were read from |
 | Vulnerability data state | NVD API last checked 2026-08-11T08:17:35Z, last modified 2026-08-11T07:17:30Z |
 | Dependencies scanned | 168 |
 | **Unsuppressed critical** | **0** |
@@ -1725,9 +1730,9 @@ the numbers a reader would want to check next release. Each disposition is *acce
 re-evaluated when a fixed release of the artefact is published.
 
 **The second of the two is the clearest illustration of why this section carries a date and the rest of the
-page does not.** The previous recorded run reported one below-threshold finding; this one reports two, and
-**no dependency version changed between them** — `CVE-2026-64607` was published against a version this
-module already pinned. Nothing about the module moved; the advisory feed did. That is exactly the class of
+page does not.** An earlier recorded run of this module reported one below-threshold finding and every run
+since has reported two, with **no dependency version changing between them** — `CVE-2026-64607` was
+published against a version this module already pinned. Nothing about the module moved; the advisory feed did. That is exactly the class of
 figure that must never be presented as a standing property, and it is why the instruction below is to re-run
 the scan rather than to quote this table.
 
