@@ -89,12 +89,10 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * {@code docs/decision-log.md}. It is an improvement over the legacy posture, not a regression from
  * it, and it is the only column in the schema whose width exceeds its legacy picture width.
  *
- * <p>Provenance: legacy checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
- * CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19). Recorded here as a header string only; no assertion is
- * made about it. Layout authority {@code app/cpy/CSUSR01Y.cpy}, seed authority
- * {@code app/jcl/DUSRSECJ.jcl}, routing authority {@code app/cbl/COSGN00C.cbl}. No source text from
- * the legacy estate is reproduced in this file: only member names, field names, widths, offsets, line
- * references and the non-secret seeded identities appear.
+ * <p>Recorded here as a header string only; no assertion is made about it. Layout authority
+ * {@code app/cpy/CSUSR01Y.cpy} , seed authority {@code app/jcl/DUSRSECJ.jcl} , routing authority
+ * {@code app/cbl/COSGN00C.cbl} . No source text from the legacy estate is reproduced in this file: only
+ * member names, field names, widths, offsets, line references and the non-secret seeded identities appear.
  */
 @DisplayName("UserSecurity - the entity form of the 80-byte sign-on credential record")
 class UserSecurityTest {

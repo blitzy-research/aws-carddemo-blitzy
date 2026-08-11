@@ -89,10 +89,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * controller hands the turn over once and republishes the answer without editing it. The adapter is real,
  * because a stubbed adapter could not show that the answer reaches the wire intact.
  *
- * <p>Provenance: {@code app/cbl/CORPT00C.cbl} and the {@code CR00} transaction definition at
- * {@code app/csd/CARDDEMO.CSD} line 409, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("ReportController :: the delivered report-request operation")
 class ReportControllerTest {

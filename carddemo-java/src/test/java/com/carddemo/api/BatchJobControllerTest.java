@@ -774,10 +774,10 @@ class BatchJobControllerTest {
                 + "rather than repeated, and nothing for the six that read none")
         void namesExactlyTheParametersEachJobReads() {
             // Declared as Map<String, Set<String>>, which is what the schema under test actually is.
-            // It used to be Map<String, Object>, and that single widening is what forced everything
-            // below it: the values came back as Object, so the comparison had to narrow each one
-            // through a cast, and the cast needed @SuppressWarnings("unchecked") to survive
-            // -Xlint:all -Werror. Gate 2 forbids a suppressed warning as firmly as a warning, and the
+            // // Map<String, Object> is prohibited here, because that single widening forces everything
+            // // below it: the values come back as Object, so the comparison has to narrow each one
+            // // through a cast, and the cast needs @SuppressWarnings("unchecked") to survive
+            // // -Xlint:all -Werror. Gate 2 forbids a suppressed warning as firmly as a warning, and the
             // type was never in doubt - Map.of infers Set<String> from this very target type, including
             // for the empty sets. Declaring it correctly removes the cast, the helper and the
             // suppression together, and the comparison becomes a direct one.

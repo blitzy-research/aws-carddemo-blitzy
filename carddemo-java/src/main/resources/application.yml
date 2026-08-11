@@ -131,12 +131,12 @@ spring:
   # THE CEILING STILL EXCLUDES THE SEEDS BY ARITHMETIC AS WELL AS BY DIRECTORY, and holding that
   # property is why the schema script after the indexes carries a DOTTED version. Every schema
   # version sorts below every seed version - 2 < 2.2 < 3 - so the pin at 2.2 stops below 3
-  # whatever the location list says. An earlier revision numbered a schema script 5, above the
-  # seeds, and three separate controls broke on it at once: the ceiling stopped excluding the seeds
-  # arithmetically, ProductionSeedRejectionCallback read a correctly-migrated production database as
-  # seeded because its rule is "at or above version 3", and adding the seed location to a schema-only
-  # database left 3 and 4 pending BELOW an applied 5, which Flyway refuses as out-of-order. The
-  # dotted numbering restores all three. A seed is therefore kept out of production four ways rather
+  # whatever the location list says. NUMBERING A SCHEMA SCRIPT ABOVE THE SEEDS BREAKS THREE SEPARATE
+  # CONTROLS AT ONCE: the ceiling stops excluding the seeds arithmetically,
+  # ProductionSeedRejectionCallback reads a correctly-migrated production database as seeded because its
+  # rule is "at or above version 3", and adding the seed location to a schema-only database leaves 3 and
+  # 4 pending BELOW the applied higher version, which Flyway refuses as out-of-order. The dotted
+  # numbering is what holds all three.
   # than one: FlywayConfig refuses under production any resolved location but
   # classpath:db/migration/schema, matched by EQUALITY; the pin declines every version above 2.2;
   # FlywayConfigTest asserts which directory each delivered script sits in, so a seed placed in the
@@ -148,9 +148,9 @@ spring:
   # NEVER DECLARE THE PARENT classpath:db/migration. A Flyway location is scanned RECURSIVELY, so the
   # parent reaches both children; it is also the reason both directories exist as siblings rather than
   # the seeds alone being moved down. The delivered inventory is exactly V1, V2, V2_2, V3, V4 - there
-  # is no V1.1, because the batch metadata tables are owned by Spring Batch, and no V2_1: a sign-on
-  # attempt ledger once held that number and was withdrawn with the throttle it served (DL-352), so the
-  # gap in the sequence is deliberate and must not be back-filled.
+  # is no V1.1, because the batch metadata tables are owned by Spring Batch, and no V2_1: that number is
+  # retired along with the sign-on attempt ledger and the throttle it served (DL-352), so the gap in the
+  # sequence is deliberate and must not be back-filled.
   #
   # THE CONSEQUENCE FOR A NEW SCRIPT, stated once here and repeated at each profile: a script that
   # production MUST run belongs in db/migration/schema; a script production must NEVER run belongs in
@@ -279,12 +279,12 @@ server:
 # THE MANAGEMENT SURFACE HAS ITS OWN FILTER CHAIN AND ITS OWN KIND OF IDENTITY. config/SecurityConfig
 # matches this whole base path with a higher-precedence chain that permits exactly THREE anonymous
 # paths - the aggregate health endpoint and its two probe groups - and requires the operator authority
-# ROLE_MONITORING for everything else beneath it. An earlier revision permitted /actuator/health/** as
-# a subtree and gated the rest on bare authenticated(), which every signed-on cardholder satisfies: any
-# ordinary application user could read per-endpoint request counts and latency distributions,
-# per-batch-step record counts, connection-pool saturation and JVM heap, thread and garbage-collection
-# internals. That set is enough to profile transaction volume and infer business activity, and none of
-# it is anything a cardholder's session needs.
+# ROLE_MONITORING for everything else beneath it. THREE ANONYMOUS PATHS, NOT THE /actuator/health/**
+# SUBTREE, AND NEVER BARE authenticated() FOR THE REST: bare authenticated() is satisfied by every
+# signed-on cardholder, so it would let any ordinary application user read per-endpoint request counts
+# and latency distributions, per-batch-step record counts, connection-pool saturation and JVM heap,
+# thread and garbage-collection internals. That set is enough to profile transaction volume and infer
+# business activity, and none of it is anything a cardholder's session needs.
 #
 # THE OPERATOR AUTHORITY IS NOT ONE OF THE TWO SIGN-ON AUTHORITIES, and it deliberately cannot be. The
 # estate declares exactly two user types and this module grants exactly two authorities from them,
@@ -338,9 +338,9 @@ management:
       # Liveness is "should this process be restarted", and the answer never depends on somebody else's
       # service: an instance that cannot reach a queue is not an instance a restart would help. It
       # contains only the process state, so it makes NO external call and is bounded by construction.
-      # That is why the container probe in the Dockerfile asks for this group and not the aggregate - an
-      # earlier revision asked for the aggregate under a five-second timeout, which made the probe's own
-      # duration a function of four external services and let successive probes overlap and accumulate.
+      # That is why the container probe in the Dockerfile asks for this group and not the aggregate: asking
+      # for the aggregate under a five-second timeout makes the probe's own duration a function of four
+      # external services and lets successive probes overlap and accumulate.
       #
       # READINESS IS BOUNDED TOO, BY THE CONTRIBUTORS THEMSELVES rather than by the caller. Every AWS
       # contributor in config/AwsResourceHealthConfig carries its own deadline and answers DOWN with a
@@ -352,9 +352,9 @@ management:
       # STILL PUBLISHED. Membership of this group means "an instance without this cannot serve", and that
       # is not true of the topic. The topic carries an operational notice that a batch job has ALREADY
       # finished; its absence loses a notice and prevents no work, so taking the whole instance out of
-      # service for it would be the wrong remedy applied to the wrong problem. An earlier revision had it
-      # both ways - service/JobCompletionNotificationService documented the channel as best-effort while
-      # this group treated it as required.
+      # service for it would be the wrong remedy applied to the wrong problem. THE TWO STATEMENTS MUST
+      # AGREE: documenting the channel as best-effort in service/JobCompletionNotificationService while this
+      # group treated it as required would be having it both ways.
       #
       # THIS EXCLUSION IS ABOUT DELIVERY, NOT ABOUT THE RESOURCE, and the distinction matters because the
       # word "optional" on its own would be false here. The contract has TWO STAGES. PROVISIONING AND
@@ -561,9 +561,9 @@ carddemo:
     # execution-local file because their restart state requires java.io.File access; the adapter
     # uploads that buffer only after the writer closes successfully. It never provisions or deletes
     # the bucket. Each job composes its own object key because a key names one object of one run while
-    # this namespace carries only what a deployment may decide. Six s3.prefix.* keys were declared
-    # here by an earlier revision and are withdrawn: no prefix is configurable and no job stages
-    # outside the shared adapter. See docs/decision-log.md DL-094.
+    # NO s3.prefix.* KEY IS DECLARED
+    # HERE AND NONE MAY BE ADDED: no prefix is configurable and no job stages outside the shared adapter.
+    # See docs/decision-log.md DL-094.
     s3:
       batch-staging-bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     # The single online-to-batch bridge of the legacy system: the CICS transient-data queue named
@@ -585,10 +585,9 @@ carddemo:
     # THE QUEUE NAME IS PRESCRIBED BY THE MIGRATION PLAN AND IS NOT THIS FILE'S CHOICE. The plan
     # names the resource the emulator bootstrap provisions as "the SQS FIFO JOBS queue" - the same
     # name the legacy CICS transient-data queue carried - and the queue service demands the .fifo
-    # suffix on a first-in-first-out queue, so the bound value is JOBS.fifo and nothing else. An
-    # earlier revision of this file renamed it to a module-namespaced form and asserted that the
-    # plan mandated that form; the plan does not, which is why the prescribed name is restored here
-    # rather than argued about again.
+    # suffix on a first-in-first-out queue, so the bound value is JOBS.fifo and nothing else. A
+    # MODULE-NAMESPACED FORM IS NOT AVAILABLE FOR THIS ONE RESOURCE and no reading of the plan mandates
+    # one, so the prescribed name is what is bound here rather than something argued about again.
     #
     # The other three names ARE this module's to choose, precisely because the plan names no value
     # for them - it says "S3 staging bucket", "message group" and "SNS topic" and stops there. They
@@ -596,8 +595,8 @@ carddemo:
     # carddemo-job-notifications. Only the queue stands in for a named legacy resource, so only the
     # queue carries a legacy name.
     #
-    # One warning is retained from the earlier revision because it is sound: a well-formed name that
-    # names nothing is exactly the input a create-on-absence default resolves by provisioning a queue
+    # One warning is worth stating on its own account: a well-formed name that names nothing is exactly
+    # the input a create-on-absence default resolves by provisioning a queue nothing consumes, so a
     # nothing consumes, so a submission would report complete while the cards sat unread. That is why
     # every one of the places listed above states one value, and why the fail-fast strategy described
     # above exists to make a disagreement loud rather than silent.

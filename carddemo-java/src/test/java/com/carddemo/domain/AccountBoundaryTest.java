@@ -61,10 +61,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the account identifier alone: including a mutable amount would let an instance change
  * its own hash across a flush. A test below mutates every non-key attribute of a stored
  * instance and proves it is still retrievable.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("Account: the three-hundred-byte account record")
 class AccountBoundaryTest {

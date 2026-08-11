@@ -60,12 +60,6 @@ import com.carddemo.util.SensitiveLogRedactor;
  * are recorded in {@code docs/decision-log.md}: executable logic is migrated even when nothing calls
  * it, whereas a data copybook with zero inclusions anywhere is not migrated at all.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No user-specified rules govern this file -
- * the project's rules document reports that none were provided - so the work is held to the
- * enterprise standards the specification substitutes for them, and faithful translation wins over
- * idiomatic Java wherever the two diverge.
- *
  * <p><strong>Six files opened, six closed, three ever read.</strong> The legacy program opens
  * {@code DALYTRAN} sequentially and {@code CUSTFILE}, {@code XREFFILE}, {@code CARDFILE},
  * {@code ACCTFILE} and {@code TRANFILE} for random access, then closes all six - but it reads only
@@ -931,16 +925,16 @@ public class DailyTransactionReadService {
      * it.
      */
     private enum ApplResult {
-        /** {@code MOVE 0 TO APPL-RESULT}, tested by the level-88 name {@code APPL-AOK}. */
+        /** Value {@code 0}, tested by the level-88 name {@code APPL-AOK}. */
         AOK(0),
 
-        /** {@code MOVE 8 TO APPL-RESULT}: armed before an operation and never tested on its own. */
+        /** Value {@code 8}: armed before an operation and never tested on its own. */
         PENDING(8),
 
-        /** {@code MOVE 12 TO APPL-RESULT}: the error arm, which has no level-88 name of its own. */
+        /** Value {@code 12}: the error arm, which has no level-88 name of its own. */
         ERROR(12),
 
-        /** {@code MOVE 16 TO APPL-RESULT}, tested by the level-88 name {@code APPL-EOF}. */
+        /** Value {@code 16}, tested by the level-88 name {@code APPL-EOF}. */
         EOF(16);
 
         private final int value;

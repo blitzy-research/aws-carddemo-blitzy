@@ -28,13 +28,10 @@ import java.util.List;
  * <p>The legacy antecedent is the program {@code app/cbl/COBIL00C.cbl} &mdash; 572 lines and
  * sixteen paragraphs, registered as transaction {@code CB00} &mdash; together with the screen it
  * drives, whose layout is declared in {@code app/bms/COBIL00.bms} and whose field-level contract is
- * declared in the generated symbolic map {@code app/cpy-bms/COBIL00.CPY}: the input group at line 17
- * and the output group that redefines it at line 79. Every component below is either one of that
+ * declared in the generated symbolic map {@code app/cpy-bms/COBIL00.CPY}: the input group at line
+ * 17 and the output group that redefines it at line 79. Every component below is either one of that
  * map's ten named fields, one value the program computes and displays, or one piece of state a
- * stateless client has to be handed back. The provenance of the whole translation is checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which is the stamp carried in this member's
- * own trailer comment at line 571.
+ * stateless client has to be handed back.
  *
  * <p><strong>There is one balance, because the screen has one balance field.</strong>
  * {@code currentBalance} is the <em>pre-payment</em> balance: the program moves the account's balance
@@ -174,23 +171,17 @@ import java.util.List;
  * resend flag or a duplicate-send indicator. This divergence is recorded in
  * {@code docs/decision-log.md}.
  *
- * <p><strong>What is deliberately absent, and why each omission is a decision.</strong> No terminal
- * artefact appears: none of the generated per-field control items of the symbolic map, not the
- * twelve-byte prefix filler at line 18 of the copybook, no map coordinate, no field attribute, no
- * highlight, no colour value and no cursor position. The screen's colours - the success text in green
- * and error text in red - are presentation decisions of a terminal and have no place in a machine
- * contract; where severity has to travel it travels as the semantic {@code generalError} flag. The
- * focus hint is an identity and nothing more, as described on {@link #focusScreenFieldId()}. None of the
- * fixed values the service stamps into the posted transaction appear either - its type, category,
- * source channel, description, merchant identity or timestamps - because they are properties of the
- * posted record rather than of this response, and the two twenty-six-character timestamp forms are
- * constructed by the service against the module's single clock. There is accordingly no date or time
- * type in this file at all. Neither is there any raw platform response or reason code: the legacy
- * writes those to its diagnostic channel on six failure arms, at lines 366, 397, 430, 461, 490 and
- * 541, and a REST body must never carry them, nor a stack trace, a failure class name, an internal
- * path, a query fragment or a schema name. Decision log entry D-16 states the general form of that
- * rule. Finally there is no route table, no route enumeration and no dispatch: the route is opaque
- * text, and the navigation vocabulary belongs to the navigation service.
+ * <p><strong>What is deliberately absent.</strong> No terminal artefact appears - no generated per-field
+ * control item, no prefix filler, no map coordinate, attribute, highlight, colour value or cursor
+ * position - because the screen's colours are presentation decisions of a terminal; where severity has to
+ * travel it travels as the semantic {@code generalError} flag, and the focus hint is an identity and
+ * nothing more. The fixed values the service stamps into the posted transaction are absent for the same
+ * reason: they are properties of the posted record, and the two twenty-six-character timestamp forms are
+ * constructed by the service against the module's single clock, so there is no date or time type in this
+ * file at all. No raw platform response or reason code appears either - the legacy writes those to its
+ * diagnostic channel on six failure arms, and a REST body must never carry them, nor a stack trace,
+ * failure class name, internal path, query fragment or schema name (decision log entry D-16). Finally the
+ * route is opaque text: the navigation vocabulary belongs to the navigation service.
  *
  * <p><strong>The shared screen work area is absent, and that is a measured omission rather than an
  * oversight.</strong> Several sibling response types in this package carry one, so its absence here

@@ -51,24 +51,6 @@ import org.springframework.batch.item.ItemProcessor;
  * stream of transaction-category-balance rows into one accrued, posted and closed account group per
  * account identifier, reproducing the read-loop orchestration of the batch interest calculator
  * {@code app/cbl/CBACT04C.cbl}.
- *
- * <p>Provenance: the legacy estate is read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here and
- * nothing on this path reads the legacy tree at run time; every claim below is a citation of a member,
- * a paragraph, a line, a field name or a status code.
- *
- * <h2>Rules provenance</h2>
- *
- * <p><strong>No user-specified rules were provided for this engagement.</strong> The project's rules
- * document reports that none were supplied, so no file enters scope by rule and no rule conflict
- * exists. That absence is not permission to lower the bar: this class is held to enterprise-standard
- * best practice instead - a zero-warning build under {@code -Xlint:all -Werror -parameters}, strict
- * downward layering, constructor injection, no reflection and no code generation, structured logging
- * that never carries a primary account number or a monetary amount, and a paragraph-level
- * traceability record. The construct mapping is a <em>requirement</em> and the validation gates are
- * <em>acceptance criteria</em>; neither is a rule and neither is weakened by the absence of rules.
- *
  * <h2>Where the division of labour falls, and why</h2>
  *
  * <p>{@link InterestCalculationService} owns every per-row behaviour of the legacy program: the

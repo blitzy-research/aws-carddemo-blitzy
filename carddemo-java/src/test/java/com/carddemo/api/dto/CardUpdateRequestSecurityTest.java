@@ -81,8 +81,7 @@ import com.carddemo.domain.enums.KeyAction;
  * sealing envelope's encoding. Every other map component must carry exactly its measured map width and
  * nothing else, and the echoed navigation state must cascade.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("CardUpdateRequest - the CCUP inbound contract")
 class CardUpdateRequestSecurityTest {

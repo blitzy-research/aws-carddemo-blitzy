@@ -45,11 +45,8 @@ import org.springframework.batch.item.ItemProcessor;
  * statement generator and hands on both of its record streams, each proved to its own contracted
  * width.
  *
- * <p>Legacy provenance: AWS CardDemo z/OS estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The authority members are
- * {@code [app/cbl/CBSTM03A.CBL]} - 924 lines, 25 paragraphs, dual output - its file-handling
- * subprogram {@code [app/cbl/CBSTM03B.CBL]}, the statement work area
+ * <p>The authority members are {@code [app/cbl/CBSTM03A.CBL]} - 924 lines, 25 paragraphs, dual
+ * output - its file-handling subprogram {@code [app/cbl/CBSTM03B.CBL]}, the statement work area
  * {@code [app/cpy/COSTM01.CPY]}, and the job stream {@code [app/jcl/CREASTMT.JCL]}. Those members
  * are read as reference and never copied: this file cites member names, paragraph names, line
  * numbers, data-definition names, record widths and raw status codes, and transcribes no source

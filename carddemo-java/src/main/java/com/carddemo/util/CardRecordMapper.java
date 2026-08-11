@@ -197,12 +197,6 @@ import com.carddemo.domain.Card;
  * mutable static state, and the encoding builder is scoped to the single call that creates it, so
  * every method is safe to call concurrently.
  *
- * <p><strong>Provenance.</strong> Translated from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. The copybook's trailer records the upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68}, dated 2022-07-19. The legacy tree is read-only
- * reference: no copybook, program or job-stream text is reproduced here, so traceability is carried
- * by citation of member names, field names, pictures, widths, offsets and codes only.
- *
  * @see Card
  * @see FixedWidthFieldReader
  * @see CobolStringUtils

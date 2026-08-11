@@ -114,12 +114,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy antecedents cited by the type under test: program {@code app/cbl/COACTUPC.cbl},
- * symbolic map {@code app/cpy-bms/COACTUP.CPY}, mapset {@code app/bms/COACTUP.bms}, record layouts
- * {@code app/cpy/CVACT01Y.cpy} and {@code app/cpy/CVCUS01Y.cpy}, and decoration macro
- * {@code app/cpy/CSSETATY.cpy}. Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec};
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source
- * text is reproduced here.
+ * <p>Legacy antecedents cited by the type under test: program {@code app/cbl/COACTUPC.cbl} , symbolic map
+ * {@code app/cpy-bms/COACTUP.CPY} , mapset {@code app/bms/COACTUP.bms} , record layouts
+ * {@code app/cpy/CVACT01Y.cpy} and {@code app/cpy/CVCUS01Y.cpy} , and decoration macro
+ * {@code app/cpy/CSSETATY.cpy} . No legacy source text is reproduced here.
  */
 @DisplayName("AccountUpdateResponse :: response contract of legacy transaction CAUP")
 class AccountUpdateResponseCoverageTest {

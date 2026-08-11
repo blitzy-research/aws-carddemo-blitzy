@@ -106,10 +106,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * expectation is read back from the class under test, and the module's own frozen literals are
  * referenced through the carriers that publish them so that a change to one is a test failure
  * rather than a silently agreeing pair.</p>
- *
- * <p>Provenance: behaviour cited, never transcribed, from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("GlobalExceptionHandler: the module's single REST failure adapter")
 class GlobalExceptionHandlerTest {

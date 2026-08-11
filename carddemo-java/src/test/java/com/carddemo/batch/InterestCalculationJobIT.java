@@ -120,9 +120,7 @@ import org.springframework.test.context.DynamicPropertySource;
  * the seeded default group holds a non-zero rate for one transaction type and a zero rate for another,
  * so both arms of the rate gate are reached without inventing a disclosure row.
  *
- * <p>Provenance: the legacy interest job member, the interest program and the generation-group
- * definitions at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here.
+ * <p>No legacy source text is transcribed here.
  */
 @SpringBootTest(classes = InterestCalculationJobIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

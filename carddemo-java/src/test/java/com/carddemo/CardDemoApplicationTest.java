@@ -71,9 +71,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * reaches every layered sub-package beneath it. Declaring a scan by hand would narrow that reach,
  * and a narrowed scan does not fail - it silently stops wiring whichever package was left out. The
  * assertions therefore fix the absence of the narrowing annotations, not the presence of them.
- *
- * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("Application entry point wiring contract")
 class CardDemoApplicationTest {

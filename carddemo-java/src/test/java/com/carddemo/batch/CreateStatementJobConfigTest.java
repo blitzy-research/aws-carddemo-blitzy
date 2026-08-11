@@ -81,9 +81,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 /**
  * Unit specification for {@link CreateStatementJobConfig}, the migrated customer statement job.
  *
- * <p>Every expectation here is measured from the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed.
+ * <p>No legacy source text is transcribed.
  *
  * <p>The properties these cases exist to protect, each of which would otherwise be a defect that
  * compiles and passes a test written under the same misunderstanding:
@@ -385,8 +383,8 @@ class CreateStatementJobConfigTest {
         @DisplayName("the gate outcomes are the shared NUMERIC decider's own verdicts, not framework "
                 + "status names and not a catch-all wildcard")
         void gateOutcomesAreTheNumericDecidersVerdicts() {
-            // COND=(0,NE) is "every earlier step returned zero". A wildcard alternative admitted any
-            // nonzero code that was not spelled FAILED, which the legacy gate would have refused.
+            // The legacy condition-code gate means "every earlier step returned zero". A wildcard
+            // alternative would admit any nonzero code not spelled FAILED, which that gate refuses.
             assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE)
                     .isSameAs(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO);
             assertThat(CreateStatementJobConfig.CONDITION_CODE_GATE.highestToleratedReturnCode())

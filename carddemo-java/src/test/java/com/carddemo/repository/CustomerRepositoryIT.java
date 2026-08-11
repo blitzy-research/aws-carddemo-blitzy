@@ -145,14 +145,9 @@ import com.carddemo.util.SensitiveFieldCodec;
  * a rejected write does so inside an explicit database transaction that it rolls back, so the seeded
  * row it borrows is put back by the server itself.
  *
- * <p>Provenance: translated from the read-only legacy estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The record geometry comes from copybook
- * {@code CVCUS01Y}, its alternate view from {@code CUSTREC}, the key and record length from job
- * {@code CUSTFILE}, and the cross-reference geometry from {@code CVACT03Y}. No legacy source text is
- * reproduced here: members, field names, widths, offsets and row counts are cited by reference only,
- * and the release stamp is a provenance string for the traceability matrix header rather than
- * something asserted against a member.
+ * <p>The record geometry comes from copybook {@code CVCUS01Y} , its alternate view from {@code CUSTREC} ,
+ * the key and record length from job {@code CUSTFILE} , and the cross-reference geometry from
+ * {@code CVACT03Y} .
  *
  * @see CustomerRepository
  * @see Customer

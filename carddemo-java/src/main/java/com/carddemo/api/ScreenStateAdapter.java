@@ -91,12 +91,6 @@ import org.springframework.stereotype.Component;
  * <p>Immutable and free of per-turn state, holding only the navigation authority it screens nominations
  * against, so the singleton is safe for unsynchronised concurrent use.
  *
- * <p>Provenance: {@code app/cpy/COCOM01Y.cpy}, {@code app/cpy/CVCRD01Y.cpy},
- * {@code app/cpy/CSSETATY.cpy} and the three paginated programs {@code app/cbl/COCRDLIC.cbl},
- * {@code app/cbl/COTRN00C.cbl} and {@code app/cbl/COUSR00C.cbl}, read as read-only reference at checkout
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook or program text is transcribed.
- *
  * @since 1.0.0
  */
 @Component

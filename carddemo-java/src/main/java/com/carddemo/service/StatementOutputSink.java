@@ -21,26 +21,24 @@ package com.carddemo.service;
  *
  * <p>The destination half of {@link StatementGenerationService}. The service owns the record content and
  * the order it is produced in; this interface owns nothing but the act of receiving one item. Between them
- * they replace the two {@code WRITE} statements of {@code [app/cbl/CBSTM03A.CBL]} - the 80-byte plain
- * record of {@code L45} and the 100-byte markup record of {@code L47} - with a call per record rather than
- * a list per run.
+ * they replace the two write statements of {@code [app/cbl/CBSTM03A.CBL]} - the 80-byte plain record of
+ * {@code L45} and the 100-byte markup record of {@code L47} - with a call per record rather than a list
+ * per run.
  *
- * <p><strong>Why a sink rather than a returned collection.</strong> A legacy {@code WRITE} hands one
- * record to an open dataset and forgets it: the program's working storage never holds the file. The number
- * of records one run emits is bounded only by the number of cross-reference records it consumes - the
- * mainline at {@code [app/cbl/CBSTM03A.CBL:L317-L329]} produces one statement per record it reads - so a
- * translation that returned the whole of both streams would hold the entire output of an unbounded input
- * on the heap and then copy it once more into its result. This interface is what makes the translated
- * program's working set bounded by one record instead, exactly as the legacy program's was.
+ * <p><strong>Why a sink rather than a returned collection.</strong> A legacy write hands one record to an
+ * open dataset and forgets it, so the program's working storage never holds the file. One run emits one
+ * statement per cross-reference record it consumes {@code [app/cbl/CBSTM03A.CBL:L317-L329]}, a count
+ * bounded only by the input, so returning both streams would hold the whole output of an unbounded input
+ * on the heap and copy it once more into the result. This interface keeps the translated program's working
+ * set bounded by one record, exactly as the legacy program's was.
  *
  * <p><strong>Every method is called during the run, never after it.</strong> A caller therefore observes
  * emission order directly, and a caller writing to a destination has written every record before the run
- * returns. One consequence is deliberate and must be understood rather than designed around: a
- * postcondition that can only be evaluated on a completed run - the count of dispatcher entries, or the
- * consistency of the run's own tallies - is evaluated <em>after</em> records have already reached the
- * sink. A destination whose content must not survive a failed run is therefore obliged to stage its
- * output and to seal it only once the run has completed, which is what the statement job does with its
- * two working files.
+ * returns. One consequence is deliberate: a postcondition that can only be evaluated on a completed run -
+ * the count of dispatcher entries, or the consistency of the run's own tallies - is evaluated
+ * <em>after</em> records have already reached the sink. A destination whose content must not survive a
+ * failed run is therefore obliged to stage its output and seal it only once the run has completed, which
+ * is what the statement job does with its two working files.
  *
  * <p><strong>Nothing here is optional and nothing here may be discarded silently.</strong> An
  * implementation that swallows an item is indistinguishable from a run that never produced it, which is
@@ -48,13 +46,12 @@ package com.carddemo.service;
  * item must throw; the exception propagates through the run and is reported as a failed generation.
  *
  * <p><strong>Not thread-safe by contract, and it does not need to be.</strong> One run holds one sink and
- * emits from a single thread, so an implementation may keep unsynchronised position or counter state. The
- * same reasoning that keeps a file position out of a shared singleton keeps a destination out of one; see
+ * emits from a single thread, so an implementation may keep unsynchronised position or counter state - the
+ * same reasoning that keeps a file position out of a shared singleton; see
  * {@link StatementCrossReferenceSource}.
  *
- * <p>The reasoning behind this interface, the seven-count result that replaced the four returned lists and
- * the containment of the one consequence of streaming is recorded as DL-293 in
- * {@code docs/decision-log.md}.
+ * <p>Recorded as DL-293 in {@code docs/decision-log.md}, which also records how the one consequence of
+ * streaming is contained.
  *
  * @see StatementGenerationService
  * @see StatementLineSummary
@@ -63,7 +60,7 @@ package com.carddemo.service;
 public interface StatementOutputSink {
 
     /**
-     * Receives one plain statement record, as {@code WRITE FD-STMTFILE-REC} does.
+     * Receives one plain statement record: one call per legacy write to the plain statement file.
      *
      * @param record the complete record at its declared width, never {@code null} and never carrying a
      *               line terminator - record framing on a destination belongs to the destination
@@ -71,7 +68,7 @@ public interface StatementOutputSink {
     void statementRecord(String record);
 
     /**
-     * Receives one markup statement record, as {@code WRITE FD-HTMLFILE-REC} does.
+     * Receives one markup statement record: one call per legacy write to the markup statement file.
      *
      * @param record the complete record at its declared width, never {@code null} and never carrying a
      *               line terminator
@@ -82,9 +79,9 @@ public interface StatementOutputSink {
      * Receives one per-transaction summary of a line the run has just emitted.
      *
      * <p>The legacy program writes no such summary to any dataset: this is the tabulated transaction the
-     * detail line was composed from, surfaced so that a caller can observe what the run charged to a card
-     * without parsing the fixed-width record back apart. A destination that has no use for it counts it
-     * and drops it.
+     * detail line was composed from, surfaced so a caller can observe what the run charged to a card
+     * without parsing the fixed-width record back apart. A destination with no use for it counts and drops
+     * it.
      *
      * @param summary the summary of the line just emitted, never {@code null}
      */

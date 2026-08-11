@@ -125,67 +125,62 @@ import com.carddemo.util.SanitisedObservation;
  *
  * <h2>What this class deliberately does not declare, and why</h2>
  *
- * <p><strong>No enabling annotation.</strong> Under this framework generation the batch
- * auto-configuration is guarded by a condition that backs off when the enabling annotation is present, so
- * adding it <em>switches off</em> the very infrastructure it appears to switch on and leaves the job
- * repository and its data source unwired. The application entry point carries only its own
- * application-level annotation for the same reason, and neither file may acquire an enabling annotation.
+ * <p><strong>No enabling annotation.</strong> Under this framework generation the batch auto-configuration
+ * is guarded by a condition that backs off when the enabling annotation is present, so adding it
+ * <em>switches off</em> the very infrastructure it appears to switch on and leaves the job repository and
+ * its data source unwired. The application entry point carries only its own application-level annotation
+ * for the same reason, and neither file may acquire an enabling annotation.
  *
  * <p><strong>No job repository, launcher, explorer, registry or operator.</strong> All five are already
- * published by the auto-configuration, together with the initialiser that registers every job bean into
- * the registry by name. Declaring any of them here would either duplicate a bean definition or shadow the
- * framework's own wiring, so {@code api/BatchJobController} injects them directly and this class stays out
- * of the way. The deprecated no-argument launcher and operator factory methods are never called.
+ * published by the auto-configuration, together with the initialiser that registers every job bean into the
+ * registry by name, so declaring any of them here would duplicate a bean definition or shadow the
+ * framework's own wiring. {@code api/BatchJobController} injects them directly; the deprecated no-argument
+ * launcher and operator factory methods are never called.
  *
- * <p><strong>No meter registry and no observation post-processor.</strong> The observability
- * post-processor that hands the observation registry to every job and step is already published when the
- * management dependency is present, so the framework's own job-level and step-level timings reach the
- * metrics scrape endpoint without anything being added here. {@code config/ObservabilityConfig} owns the
- * registry and the trace export; this class must not register a second registry, and must not suppress
- * what is already wired. {@code batch/step/AbstractCobolStep} additionally times each translated program
- * on its own timer.
+ * <p><strong>No meter registry and no observation post-processor.</strong> The post-processor that hands the
+ * observation registry to every job and step is already published when the management dependency is present,
+ * so the framework's own job-level and step-level timings reach the scrape endpoint unaided.
+ * {@code config/ObservabilityConfig} owns the registry and the trace export: this class must neither
+ * register a second registry nor suppress what is already wired.
  *
- * <p><strong>Publishing a measurement is not registering a registry, and this class does publish one.</strong>
- * Both registries are <em>injected</em> and remain owned elsewhere; what is added is a single counter and a
- * single observation, both at the job-boundary listener and both for one reason. The framework stops its
- * job timer and its job span <em>before</em> the terminal listener callbacks, and this module's required
- * durable boundary runs inside one of them and can turn a COMPLETED status into a persisted FAILED one. No
- * amount of framework telemetry can reflect that, because it was all recorded a moment earlier. So the
- * listener counts the persisted verdict alongside the observed one, and observes the object-store work that
- * would otherwise appear in no trace at all. Neither replaces a framework measurement; both exist because a
- * framework measurement cannot answer the question.
+ * <p><strong>Publishing a measurement is not registering a registry, and this class does publish
+ * one.</strong> Both registries are <em>injected</em> and remain owned elsewhere; what is added is one
+ * counter and one observation, both at the job-boundary listener. The framework stops its job timer and its
+ * job span <em>before</em> the terminal listener callbacks, and this module's required durable boundary runs
+ * inside one of them and can turn a COMPLETED status into a persisted FAILED one - which no framework
+ * telemetry can reflect, because it was all recorded a moment earlier. So the listener counts the persisted
+ * verdict alongside the observed one, and observes the object-store work that would otherwise appear in no
+ * trace at all.
  *
  * <p><strong>No logger configuration.</strong> {@code logback-spring.xml} owns appender selection and the
- * correlation fields, and the shared configuration document and its overlays own every verbosity level,
- * including the two batch categories and the migration-tool category whose output the Compose validation
- * reads. Nothing here may pin, raise or silence a level.
+ * correlation fields, and the shared configuration document and its overlays own every verbosity level.
+ * Nothing here may pin, raise or silence a level.
  *
- * <p><strong>No schema work.</strong> The framework provisions its own metadata tables under the prefix
- * the shared configuration declares; those tables are additional to, never instead of, the eleven
- * application tables that {@code db/migration/schema/V1__create_schema.sql} creates, and a table census
- * must exclude that prefix. {@code config/FlywayConfig} owns migration behaviour, and none of the delivered
- * scripts may define a metadata table.
+ * <p><strong>No schema work.</strong> The framework provisions its own metadata tables under the prefix the
+ * shared configuration declares; those tables are additional to, never instead of, the eleven application
+ * tables that {@code db/migration/schema/V1__create_schema.sql} creates, so a table census must exclude
+ * that prefix. {@code config/FlywayConfig} owns migration behaviour, and no delivered script may define a
+ * metadata table.
  *
  * <p>The delivered migration inventory stays at exactly five scripts, and that sentence is measured rather
  * than transcribed: {@code config/DocumentedSourceCountsTest} reads this file among the documents whose
  * migration claims it holds to the directory, so a sixth script either updates this line or fails the
- * build. It sat at six for one checkpoint while a withdrawn sign-on attempt ledger held version 2.1, and
- * nothing noticed because nothing was measuring it. See {@code docs/decision-log.md} DL-352.
+ * build. See {@code docs/decision-log.md} DL-352.
  *
  * <p><strong>No tuning of any kind.</strong> No chunk size, commit interval, task executor, thread count,
  * skip limit, retry limit, time-out or pool setting appears here, in code or in a comment. No numeric
- * service level is documented anywhere in the migrated estate, so performance for this implementation is
- * <em>measured and recorded</em> rather than asserted, and the connection pool keeps its shipped defaults.
+ * service level is documented anywhere in the migrated estate, so performance is <em>measured and
+ * recorded</em> rather than asserted, and the connection pool keeps its shipped defaults.
  *
  * <p><strong>No concurrency.</strong> The migrated batch tier is strictly sequential, record at a time.
  * Parallel or partitioned execution would reorder output that four fixed-width formats are compared byte
  * for byte, so neither is introduced.
  *
- * <p><strong>No orchestrator.</strong> The estate holds no master scheduler; the order in which jobs run
- * is an operational convention. The nine jobs are therefore never chained into a super-job, and no job
- * that "runs everything" exists. {@code batch/DailyTransactionReadJobConfig} in particular translates a
- * complete program that no job member, procedure or online resource definition invokes, so it is defined
- * and exercised by tests only and is wired into nothing that runs by default.
+ * <p><strong>No orchestrator.</strong> The estate holds no master scheduler; the order in which jobs run is
+ * an operational convention. The nine jobs are therefore never chained into a super-job, and no job that
+ * "runs everything" exists. {@code batch/DailyTransactionReadJobConfig} in particular translates a complete
+ * program that no job member, procedure or online resource definition invokes, so it is defined and
+ * exercised by tests only.
  *
  * <h2>Nothing fires when the context starts</h2>
  *
@@ -196,13 +191,7 @@ import com.carddemo.util.SanitisedObservation;
  * participant, initialising callback, event listener or scheduled trigger, and it declares no job name for
  * anything to resolve. Both beans it does publish are inert until a job configuration attaches them.
  *
- * <h2>Provenance</h2>
- *
- * <p>Migrated from the CardDemo mainframe estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy tree is cited, never transcribed: no
- * job-control, program, copybook or online-resource text appears in this module, and nothing here reads
- * that tree at run time.
+ * <h2>Shape and thread safety</h2>
  *
  * <p>Stateless and immutable: final, no instance fields and no mutable static state. The job-boundary
  * bean resolves the optional AWS collaborators supplied by its method parameters once, then captures
@@ -312,8 +301,8 @@ public final class BatchConfig {
      * collection and every query grouping by {@code job} collapses to the single scrape target -
      * silently, with the panel still rendering. Recorded as {@code DL-338}.
      *
-     * <p>Spelled in the camel case this module's other multi-word tag keys use - {@link #TAG_JOB_EXECUTION_ID}
-     * is declared on the same meters - so one meter does not carry two naming conventions.
+     * <p>Spelled in the camel case this module's other multi-word tag keys use - {@link
+     * #TAG_JOB_EXECUTION_ID} is declared on the same meters - so one meter does not carry two naming conventions.
      */
     static final String TAG_JOB = "batchJob";
 
@@ -351,9 +340,9 @@ public final class BatchConfig {
     /**
      * Observation name covering the durable artifact boundary that runs after the job's own span closed.
      *
-     * <p>The object-store work this callback performs was previously untraced in both directions: the
-     * framework's job span was already closed, and nothing here opened one of its own, so uploads, alias
-     * advances and retention deletions appeared in no trace at all. This observation makes that work
+     * <p>The object-store work this callback performs would otherwise be untraced in both directions: the
+     * framework's job span is already closed, and nothing here opens one of its own, so uploads, alias
+     * advances and retention deletions would appear in no trace at all. This observation makes that work
      * visible and gives the store's own per-operation observations a parent.
      *
      * <p><strong>It cannot be a child of the job's span, and that is a framework ordering rather than an
@@ -1014,8 +1003,8 @@ public final class BatchConfig {
          * job span are stopped before this callback runs, and the durable boundary inside it can turn a
          * status of COMPLETED into a persisted status of FAILED. Standard batch telemetry therefore
          * reports the earlier value forever. Publishing the later one here, next to the earlier one, makes
-         * the two comparable - a series carrying an observed COMPLETED and a persisted FAILED is precisely
-         * the case that used to be invisible, and it is now a query.
+         * the two comparable - a series carrying an observed COMPLETED and a persisted FAILED would
+         * otherwise be invisible, and here it is a query.
          *
          * <p>Non-fatal by construction. The verdict is already persisted and already logged; a metrics
          * registry that refuses a meter must not be able to change a job's outcome, so a failure here is
@@ -1071,16 +1060,16 @@ public final class BatchConfig {
          *
          * <h2>Three ways to end FAILED, and all three discard</h2>
          *
-         * <p>The local discard used to be reached from one of them only: the arm taken when the execution
-         * arrived here already non-COMPLETED. The other two arms &mdash; a completed job whose registered
-         * artifacts cannot be published because no store is available, and a publication that threw &mdash;
-         * both set the status to FAILED <em>after</em> that branch had been passed, and returned. A job that
-         * ends FAILED by either of those routes is in exactly the state the discard exists for: its
-         * completed local generations name nothing durable, because nothing was published, and they are
-         * still readable on disk and still resolvable by name to any component that asks the store for the
-         * current local generation of their base. One dead artifact per failed run, indistinguishable from
-         * real output. All three arms therefore discard, and the two failure arms do it through
-         * {@link #failPublicationAndDiscardLocalArtifacts(JobExecution, RuntimeException)}. See
+         * <p>The local discard must be reached from all three, and not only from the arm taken when the
+         * execution arrives here already non-COMPLETED. The other two arms &mdash; a completed job whose
+         * registered artifacts cannot be published because no store is available, and a publication that
+         * threw &mdash; both set the status to FAILED <em>after</em> that branch has been passed, and
+         * return. A job that ends FAILED by either of those routes is in exactly the state the discard
+         * exists for: its completed local generations name nothing durable, because nothing was published,
+         * and they are still readable on disk and still resolvable by name to any component that asks the
+         * store for the current local generation of their base. One dead artifact per failed run,
+         * indistinguishable from real output. All three arms therefore discard, and the two failure arms do
+         * it through {@link #failPublicationAndDiscardLocalArtifacts(JobExecution, RuntimeException)}. See
          * {@code docs/decision-log.md} entry DL-290.</p>
          *
          * <p>The converse is equally deliberate. Enforcing generation retention happens after the store's
@@ -1101,9 +1090,8 @@ public final class BatchConfig {
                 // "Its own" is exact: the store deletes only the paths THIS execution registered on its
                 // own context, plus the one working sibling it names for each of them, and re-checks each
                 // path is still a regular file this process owns before removing it. It does not sweep
-                // the root and it does not match on a name, which an earlier revision did - by
-                // predictable substring, so a file that merely contained this execution's token was
-                // removed whether or not the store had ever allocated it.
+                // the root and it does not match on a name. Matching by predictable substring would remove a file that
+                // merely contained this execution's token, whether or not the store had ever allocated it.
                 StagedGenerationStore.discardLocalArtifactsOf(jobExecution, this.stagingDirectory);
                 return PUBLICATION_SKIPPED;
             }

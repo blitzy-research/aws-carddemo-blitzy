@@ -108,13 +108,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * untouched, that it reaches the wire, and that a diagnostic rendering never discloses it - never
  * that it has any readable structure, because it has none and nothing may be parsed out of it.
  *
- * <p>Provenance of every citation in this file: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Cited in this documentation only and never
- * declared as a value: the stamp is not universal across the estate, so a constant asserting it
- * would be wrong for the members that carry a different one. No statement of the legacy source is
- * transcribed here - widths, offsets, counts, line numbers, member names and contract literals are
- * metadata about it, not extracts from it.
+ * <p>Cited in this documentation only and never declared as a value: the stamp is not universal across the
+ * estate, so a constant asserting it would be wrong for the members that carry a different one. No
+ * statement of the legacy source is transcribed here - widths, offsets, counts, line numbers, member names
+ * and contract literals are metadata about it, not extracts from it.
  */
 @DisplayName("CardUpdateResponse :: card-update response contract of legacy transaction CCUP")
 class CardUpdateResponseTest {

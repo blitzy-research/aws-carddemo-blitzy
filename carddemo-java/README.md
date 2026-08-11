@@ -278,8 +278,8 @@ docker compose config | grep image:                     # the server images, pin
 ```
 
 Two figures are sometimes quoted for "how many artifacts" and they count different things, so neither
-substitutes for the other. **231** was the resolved-artifact count of a one-off probe taken during
-analysis against an earlier revision of this POM; it is a historical datum and is not re-measured here.
+substitutes for the other. **231** is the resolved-artifact count of a one-off probe taken during analysis
+against a different POM state; it is a dated datum and is not re-measured here.
 The figure the build reports today is the **168 dependencies** the supply-chain scan enumerates across
 the compile, runtime and test graph, recorded under Gate 8 in
 [`../docs/gate-evidence.md`](../docs/gate-evidence.md). Read the current graph from `dependency:list`
@@ -344,9 +344,9 @@ finding the value clears. Do **not** revert any of them to the managed value:
 | `httpcomponents-core5.version` | 5.4.3 | the HTTP core of the non-shaded container transport |
 | `immutables.version` | 2.10.1 | the annotation-only companion that transport requires |
 
-An earlier revision of this section said **three**, and named the three most visible of them. It was
-correct when it was written; the block grew as the scan found more, and a hand-maintained count in a second
-document is exactly the thing that does not grow with it. The count and the property list are now asserted
+Naming only the most visible of them, or writing the count down here by hand, is what does not survive the
+block growing as the scan finds more: a hand-maintained count in a second
+document is exactly the thing that does not grow with it. The count and the property list are asserted
 against that block by `config/DocumentedSourceCountsTest`, so a thirteenth override either updates this
 table or fails the build. Recorded in [`../docs/decision-log.md`](../docs/decision-log.md) DL-316.
 
@@ -639,9 +639,9 @@ file, a dashboard password of `admin`, and a token signing secret committed in `
 so that `spring-boot:run` works with no environment prepared. They are fixtures, and what makes them
 fixtures is that nothing off this machine can reach the service that trusts them.
 
-An earlier revision of this section documented a widening procedure — a wildcard bind paired with
-generated values for `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` and `CARDDEMO_JWT_SECRET` — and
-**that procedure did not work.** The `app` service's `environment:` block forwards neither
+A widening procedure — a wildcard bind paired with generated values for `POSTGRES_PASSWORD`,
+`GRAFANA_ADMIN_PASSWORD` and `CARDDEMO_JWT_SECRET` — is documented nowhere here, because
+**such a procedure does not work.** The `app` service's `environment:` block forwards neither
 `CARDDEMO_JWT_SECRET` nor `CARDDEMO_MANAGEMENT_TOKEN` into the container; `docker compose config` shows
 the resolved environment and neither name is in it. An operator who followed it exported a generated
 signing secret into their own shell while the container went on minting and accepting tokens signed
@@ -882,10 +882,10 @@ Legacy transaction `CC00` has no attempt counter, no lockout and no refusal peri
 credential master once per submitted turn and answers. This module reproduces that, so **every submitted
 sign-on reaches the credential read** and a caller may spend attempts at whatever rate it can drive.
 
-An earlier revision did bound it — an allowance counted per identity and per caller address, refused
-before the credential read, with its state in a `sign_on_attempt` table at migration version `2.1`. The
-security reasoning was sound and the behaviour was still invented: the migration's scope is frozen at what
-the estate does, so the whole family was withdrawn. DL-352 records the removal, and DL-268, DL-342 and
+Bounding it — an allowance counted per identity and per caller address, refused before the credential read,
+with its state in a `sign_on_attempt` table — is not available. The
+security reasoning is sound and the behaviour is still invented: the migration's scope is frozen at what
+the estate does, so the whole family stays out. DL-352 records the removal, and DL-268, DL-342 and
 DL-343 carry corrections marking what in them no longer describes delivered behaviour.
 
 **What that means for a deployment, stated so it is not discovered later.** The sign-on surface
@@ -983,8 +983,8 @@ Six further variables are non-secret and therefore *do* carry a default — `CAR
 `CARDDEMO_S3_BUCKET`, `CARDDEMO_SNS_TOPIC`, `CARDDEMO_SQS_MESSAGE_GROUP_ID`,
 `CARDDEMO_TRACING_SAMPLE_RATE` and `CARDDEMO_TRUSTED_PROXIES`. Each names a resource, a sampling decision
 or a network boundary rather than a credential, so a default is a convenience rather than a hidden secret.
-An earlier revision counted five and omitted the proxy list; both figures are now measured against the
-profile by `config/DocumentedSourceCountsTest` rather than maintained by hand. AWS credentials in `prod` come from the standard AWS
+Counting five and omitting the proxy list is the drift this guards against; both figures are measured against
+the profile by `config/DocumentedSourceCountsTest` rather than maintained by hand. AWS credentials in `prod` come from the standard AWS
 provider chain rather than from configuration at all.
 
 **No production value for any of the variables above appears in this repository**, and none is defaulted
@@ -1081,9 +1081,9 @@ Batch metadata tables the framework's own PostgreSQL schema creates — `batch_j
 rather than tables and so do not enter this count — and Flyway's own `flyway_schema_history`.
 
 **Eleven of those eighteen are this module's, there is no `job_submission_outbox` and there is no durable
-resume.** An earlier revision of the bridge persisted delivery progress in a `job_submission_outbox` table
-so that a partial card stream could be completed by a later call, and this section described it. It was
-removed as feature expansion before delivery: the estate defines eleven record layouts, the legacy queue
+resume.** Persisting delivery progress in a `job_submission_outbox` table so that a partial card stream
+could be completed by a later call is feature expansion and is not available: the estate defines eleven
+record layouts, the legacy queue
 definition carries `ERROROPTION(IGNORE)`, and the emitting program abandons a refused write rather than
 deferring it — so there is no delivery state to persist. What the bridge actually does is reproduce that. It
 publishes each of its own cards once, in list order, into a single first-in-first-out message group; it
@@ -1135,6 +1135,30 @@ and the Compose file to state that inventory and that pin — and requires this 
 delivered scripts whose header still states a superseded pin. A fifth schema script therefore fails the
 build until every published summary, this erratum included, has been brought up to date. Recorded as
 DL-351.
+
+#### Note: the frozen headers are the one place a superseded design is narrated rather than stated
+
+Comments elsewhere in this module state a prohibition rather than recounting what a previous revision did.
+The five applied migration headers are the exception, and it is a mechanical one rather than a stylistic
+choice: `V2__create_indexes.sql` explains why there is no twelfth table by describing the operational
+outbox that was withdrawn as feature expansion, and it cites `docs/decision-log.md` DL-148 for the
+decision. Rewriting that sentence would change the script's Flyway checksum and fail validation on every
+already-migrated database, for exactly the reason the erratum above gives. The narration is therefore
+confined to the five frozen scripts, is cited to a numbered decision in every case, and is corrected here
+rather than in place.
+
+#### Note: `V2_2`'s header reasons about a `V2_1` that no longer ships
+
+`V2_2__add_protected_value_invariants.sql` states the delivered pin correctly, which is why the erratum above
+deliberately says nothing about it. One statement in its header is nonetheless out of date: it explains its own
+dotted number against an ordering of `2 < 2.1 < 2.2 < 3` and cites `V2_1`'s header for the rule that a further
+schema script takes the next free dotted version. **`V2_1` was withdrawn together with the sign-on attempt
+throttle it provisioned, so the delivered ordering is `2 < 2.2 < 3`.** Everything the statement was making
+true still holds: every schema version sorts below every seed version, `V2_2` is still the highest version the
+schema location delivers, and `FlywayConfig.PRODUCTION_TARGET` is therefore unchanged. The header is not
+corrected in place for the same checksum reason the erratum gives — it is applied wherever this module has run
+— and a new schema script still takes the next free dotted version below `3` rather than back-filling `2.1`.
+`docs/decision-log.md` DL-352 records the withdrawal and the migration-history decision behind it.
 
 ### AWS resources
 
@@ -1857,8 +1881,8 @@ rather than fixed.** The scan is bound to `verify` and actually executed, not me
 the build at a CVSS threshold of 7.0, which catches every critical and high finding **that no analyst
 determination covers**; it emits HTML, JSON and XML reports that CI uploads as artifacts; and
 `dependency-check.skipTestScope` is **`false`**, so the result covers the compile, runtime **and test**
-graph — 168 dependencies. An earlier revision of this section described a narrower scope and two
-unfixable HIGH findings in an excluded test graph. Both statements are withdrawn: the shaded transport
+graph — 168 dependencies. Neither a narrower scope nor an unfixable HIGH finding in an excluded test
+graph may be claimed here: the shaded transport
 that carried those findings was **replaced** by the visible Apache HTTP client 5 transport rather than
 excluded, which is what made the full-scope claim enforceable, and the scope was widened to match.
 
@@ -1875,9 +1899,9 @@ interchangeable:
 | **Reported below threshold** | the score is under 7.0 | the finding is printed on every run, no rule names it, and the build passes |
 
 So the claim this gate makes is **zero unsuppressed critical or high findings, plus exactly one carried
-determination** — never "zero findings", and never "zero suppressions". An earlier revision of this
-section, and of the comment in the build file, made that stronger claim; it was true before the
-determination existed and became an overstatement the moment the determination was configured.
+determination** — never "zero findings", and never "zero suppressions". The stronger claim is true only
+while no determination exists, and becomes an overstatement the moment one is configured, so neither this
+section nor the comment in the build file may make it.
 Overstating a gate is the same defect as softening one, so the wording is corrected here, in the build
 file and on the evidence page, and **nothing in the configuration was relaxed** to make the wording true:
 the threshold is still 7.0, the scope is still the whole graph, and `failBuildOnUnusedSuppressionRule` is
@@ -1929,8 +1953,7 @@ What remains is one carried HIGH and one reported MEDIUM, and neither is left im
   boundary between the build's surface and the product's surface stays checked on every run.
 
 The traceability matrix is the largest single deliverable of this gate, and it is
-**[published](../docs/traceability-matrix.md)**. An earlier revision of this section described the page as
-pending; that status is withdrawn. Its shape is exact — **544 rows**, one per procedure
+**[published](../docs/traceability-matrix.md)**, and not pending. Its shape is exact — **544 rows**, one per procedure
 unit, each naming the source member, the paragraph, the source line, the target Java class, the target
 method and the covering test, with both provenance identifiers in its header. The row count is asserted by
 `e2e/GateVerificationTest`, and asserted the only way that means anything: the 544 is checked against the

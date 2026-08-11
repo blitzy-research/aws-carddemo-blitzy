@@ -48,30 +48,22 @@ import com.carddemo.util.PfKeyTranslator;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy authority {@code app/cbl/COCRDUPC.cbl}, transaction {@code CCUP}, <b>1,560 lines</b>, read at
- * checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and carrying the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19 in its trailer comment at lines 1558 to 1560.
- * Two further authorities are consulted rather than translated here: {@code app/cpy/CVCRD01Y.cpy}, the
- * screen work area included at line 268, whose sixteen attention-key condition names and three business
- * keys are carried by {@code ScreenInputState}; and {@code app/cpy/CSSTRPFY.cpy}, the attention-key store
- * included with quoted syntax at line 1528, whose two paragraphs are credited to
- * {@code PfKeyTranslator}. No legacy source text is transcribed - member names, transaction ids,
- * paragraph names, line numbers, field names, widths, file names and the operator message literals are
- * cited, and nothing else.
+ * <p>Two further authorities are consulted rather than translated here: {@code app/cpy/CVCRD01Y.cpy},
+ * the screen work area included at line 268, whose sixteen attention-key condition names and three
+ * business keys are carried by {@code ScreenInputState}; and {@code app/cpy/CSSTRPFY.cpy}, the
+ * attention-key store included with quoted syntax at line 1528, whose two paragraphs are credited to
+ * {@code PfKeyTranslator}.
  *
  * <h2>Paragraph count: 48 measured against 45 in the action plan</h2>
  *
  * <p>A mechanical scan of Area A - column 7 not a comment marker, column 8 not blank - from the
- * {@code PROCEDURE DIVISION} header at line 366 to end of file returns <b>48</b> labels. They decompose
- * exactly: <b>45</b> paragraph labels declared in the member, which is the figure the action plan
- * records and which this class implements as 45 named methods; <b>2</b> paragraphs textually injected by
- * the single procedural {@code COPY 'CSSTRPFY'} directive at line 1528, namely the key-store paragraph
- * at copybook line 17 and its exit at copybook line 80, which are credited to {@code PfKeyTranslator}
- * and deliberately not duplicated here; and <b>1</b> {@code PROCEDURE DIVISION.} header line, which a
- * scanner counts as an Area-A label because it is one, though it is not a paragraph. The two figures are
- * therefore both right about different things: 45 paragraphs are declared, 47 paragraph bodies exist
- * once the copybook is expanded, and 48 Area-A labels are present. This member is one of the five
- * includers of that copybook.
+ * {@code PROCEDURE DIVISION} header at line 366 to end of file returns <b>48</b> labels: <b>45</b>
+ * paragraph labels declared in the member, which is the action plan's figure and which this class
+ * implements as 45 named methods; <b>2</b> paragraphs textually injected by the single procedural
+ * {@code COPY 'CSSTRPFY'} directive at line 1528, credited to {@code PfKeyTranslator} and deliberately
+ * not duplicated here; and <b>1</b> {@code PROCEDURE DIVISION.} header line, which a scanner counts as
+ * an Area-A label because it is one, though it is not a paragraph. So 45 paragraphs are declared, 47
+ * paragraph bodies exist once the copybook is expanded, and 48 Area-A labels are present.
  *
  * <h2>Family membership, and why the abend path is wired here</h2>
  *
@@ -157,8 +149,8 @@ import com.carddemo.util.PfKeyTranslator;
  * <p>The entity carries a row version and the persistence provider checks it when the update is flushed.
  * This class catches that failure and records it on the turn as the write outcome the legacy sets at lines
  * 1487 to 1490, so the conflict is reported on the screen the operator is holding rather than raised past
- * it; the conflict is recoverable and non-abending and never reaches the abend service. No pessimistic mode is
- * used anywhere - there is no lock hint and no lock-mode reference in this class. The row version plus
+ * it; the conflict is recoverable and non-abending and never reaches the abend service. No pessimistic mode
+ * is used anywhere - there is no lock hint and no lock-mode reference in this class. The row version plus
  * the database's read-committed isolation is a <em>strict improvement</em> over the legacy baseline of
  * uncommitted read integrity with no recovery and no journalling, and is recorded as such in the
  * decision log so a reviewer does not read the stronger isolation as a regression. The legacy's own
@@ -2636,9 +2628,9 @@ public final class CardUpdateService {
      * to 892; then moves the value through the two-character work field whose numeric redefinition at lines
      * 92 to 95 declares the accepted range, accepting at lines 898 to 899 and failing at lines 900 to 907.
      *
-     * <p>The range test reads the <em>numeric redefinition</em> of an alphanumeric field, so a value that is
-     * not two digits does not satisfy it. Both conditions are therefore checked: the field must be numeric
-     * across its declared width, and its value must fall in the declared range.
+     * <p>The range test reads the <em>numeric redefinition</em> of an alphanumeric field, so a value that
+     * is not two digits does not satisfy it. Both conditions are therefore checked: the field must be
+     * numeric across its declared width, and its value must fall in the declared range.
      *
      * @param state the turn's working storage
      */
@@ -3777,7 +3769,7 @@ public final class CardUpdateService {
             // Line 1425 carries CC-CARD-NUM into WS-CARD-RID-CARDNUM.
             state.recordIdentificationCardNumber = state.workAreaCardNumber;
 
-            // EXEC CICS READ ... UPDATE, lines 1427 to 1436.
+            // A read for update, lines 1427 to 1436.
             final Optional<Card> locked = readCardRecord(state, OPERATION_READ_UPDATE);
 
             // Lines 1441 to 1449.
@@ -3926,9 +3918,9 @@ public final class CardUpdateService {
             // NOTHING is marked for rollback here, and nothing needs to be. The rewrite ran inside an
             // independent boundary that has already rolled back by the time this handler is entered -
             // which the comment above the call states - so this method runs with no unit of work at all.
-            // A rollback marking used to be issued here and could not have had any effect: it resolved
-            // to the primitive's own no-transaction branch every time, and a reader was left believing
-            // the arm depended on it.
+            // // NOTHING may be marked for rollback here: such a marking could have no effect, because it
+            // // would resolve to the primitive's own no-transaction branch every time, and a reader would be
+            // // left believing the arm depended on it.
             LOG.warn("Card update refused by row version: rule=optimistic-lock resource={} outcome={}"
                     + " failureChain={}", LEGACY_CARD_FILE_NAME.trim(),
                     WriteOutcome.UPDATE_FAILED_AFTER_LOCK, FailureDiagnostics.failureChainOf(conflict));
@@ -3955,10 +3947,10 @@ public final class CardUpdateService {
     /**
      * The change-detection paragraph at line <b>1498</b>, with its exit at line 1521.
      *
-     * <p><strong>Fold site two.</strong> Lines <b>1499</b> to 1501 convert the locked record's embossed name
-     * to upper case <em>in place</em> on the working-storage copy, and they do so at the <em>head</em> of
-     * the paragraph - before the comparison at lines <b>1503 to 1508</b> reads it. The carried image's copy
-     * of that name was itself folded before capture, at line 1357. Both sides of the comparison are
+     * <p><strong>Fold site two.</strong> Lines <b>1499</b> to 1501 convert the locked record's embossed
+     * name to upper case <em>in place</em> on the working-storage copy, and they do so at the <em>head</em>
+     * of the paragraph - before the comparison at lines <b>1503 to 1508</b> reads it. The carried image's
+     * copy of that name was itself folded before capture, at line 1357. Both sides of the comparison are
      * therefore folded, and the consequence is contractual: <b>a change that differs only in letter case is
      * not detected as a change.</b> Folding for display, or folding after the comparison, or folding one
      * side, each flips that outcome.

@@ -30,9 +30,9 @@ import com.carddemo.domain.Customer;
  * <h2>The authoritative layout</h2>
  * Two copybooks are the source of truth, {@code [app/cpy/CVCUS01Y.cpy]} and
  * {@code [app/cpy/CUSTREC.cpy]}, and both declare the same {@code CUSTOMER-RECORD} group. The cluster
- * definition in {@code [app/jcl/CUSTFILE.jcl]} corroborates the geometry independently, declaring
- * corroborates the geometry independently: 500-byte fixed records with a nine-byte key at offset
- * zero. Offsets below are zero-based byte offsets into the record image.
+ * definition in {@code [app/jcl/CUSTFILE.jcl]} corroborates the geometry independently: 500-byte fixed
+ * records with a nine-byte key at offset zero. Offsets below are zero-based byte offsets into the
+ * record image.
  *
  * <pre>
  *  #   COBOL field                  PIC       Offset  Length  Java property on Customer
@@ -60,259 +60,165 @@ import com.carddemo.domain.Customer;
  *  -  FILLER                       X(168)       332     168  not mapped, not persisted
  * </pre>
  *
- * <p><strong>Width arithmetic: 332 + 168 = 500.</strong> The eighteen mapped field lengths sum to
- * 332 bytes - {@code 9 + 25 + 25 + 25 + 50 + 50 + 50 + 2 + 3 + 10 + 15 + 15 + 9 + 20 + 10 + 10 + 1
- * + 3} - and the 168-byte filler that follows brings the record to 500. That relationship is not
- * asserted at run time and is not merely documented here: every offset constant below is
- * <em>derived</em> from the preceding offset plus the preceding length, {@link #MAPPED_DATA_WIDTH} is
- * derived from the last field's offset plus its length, and {@link #RECORD_WIDTH} is derived as
- * {@code MAPPED_DATA_WIDTH + FILLER_LENGTH}. All of them are compile-time constant expressions, so a
- * length edited without its offset cannot compile to a self-consistent but wrong layout - the
- * classic fixed-width mapper defect. Every {@code fromRecord} input is additionally validated as
- * exactly {@value #RECORD_WIDTH} <em>encoded bytes</em>.
+ * <p><strong>Width arithmetic: 332 + 168 = 500.</strong> The eighteen mapped field lengths sum to 332
+ * bytes and the 168-byte filler brings the record to 500. That relationship is enforced rather than
+ * documented: every offset constant below is <em>derived</em> from the preceding offset plus the
+ * preceding length, {@link #MAPPED_DATA_WIDTH} from the last field's offset plus its length, and
+ * {@link #RECORD_WIDTH} as {@code MAPPED_DATA_WIDTH + FILLER_LENGTH}, all as compile-time constant
+ * expressions - so a length edited without its offset cannot compile to a self-consistent but wrong
+ * layout, which is the classic fixed-width mapper defect. Every {@code fromRecord} input is
+ * additionally validated as exactly {@value #RECORD_WIDTH} <em>encoded bytes</em>.
  *
- * <p><strong>No zoned-decimal field exists in this layout.</strong> Every field is either character
- * data or an unsigned digit string; none is signed, none carries an implied decimal point and none
- * is monetary. {@link ZonedDecimalCodec} is therefore deliberately never invoked from this class.
- * That is recorded explicitly rather than left as an absence so a reviewer can confirm by
- * inspection that no monetary field was overlooked: the codec exists for the signed two-decimal
- * amounts and rates of the account, transaction, category-balance and disclosure-group layouts.
+ * <p><strong>No zoned-decimal field exists in this layout</strong> - every field is character data or
+ * an unsigned digit string, none signed, none carrying an implied decimal point and none monetary - so
+ * {@link ZonedDecimalCodec} is deliberately never invoked here. Stated rather than left as an absence
+ * so a reviewer can confirm by inspection that no monetary field was overlooked.
  *
  * <h2>Two COBOL spellings of the date of birth, one entity, one mapper, one code path</h2>
- * {@code [app/cpy/CVCUS01Y.cpy]} and {@code [app/cpy/CUSTREC.cpy]} declare the same record name, the
- * same eighteen fields with the same picture clauses in the same order, and the same 168-byte filler.
- * They differ in exactly one respect: the field at offset 308 is spelled with hyphens between the
- * date parts in the first and without them in the second. Both spellings denote the same ten bytes at
- * the same offset.
+ * The two copybooks declare the same record name, the same eighteen fields with the same picture
+ * clauses in the same order, and the same filler. They differ in one respect: the field at offset 308
+ * is spelled with hyphens between the date parts in {@code CVCUS01Y} and without them in
+ * {@code CUSTREC}. Both spellings denote the same ten bytes at the same offset, and both are live -
+ * {@code [app/cbl/CBSTM03A.CBL]} includes {@code CUSTREC} and never {@code CVCUS01Y}, while six other
+ * programs include {@code CVCUS01Y}.
  *
- * <p>The unhyphenated spelling is <strong>live</strong>, not dead code: the statement-generation
- * program {@code [app/cbl/CBSTM03A.CBL]} includes {@code CUSTREC} and never {@code CVCUS01Y}, while
- * six other programs include {@code CVCUS01Y}. Both are therefore in force at once.
+ * <p>Because the byte geometry is identical this is <strong>one alternate 500-byte view of one
+ * entity</strong>, so a single {@code fromRecord} and {@code toRecord} pair serves both and there is
+ * deliberately no variant flag, enum, overload pair or second class: the bytes do not differ, so the
+ * code must not branch. Both spellings are published as constants, {@link #CUST_DOB_FIELD_CVCUS01Y}
+ * and {@link #CUST_DOB_FIELD_CUSTREC}, so the dual naming is auditable in code rather than only in
+ * prose.
  *
- * <p>Because the byte geometry is identical, this is <strong>one alternate 500-byte view of one
- * entity</strong>, not a second entity and not a second layout. A single {@code fromRecord} and
- * {@code toRecord} pair serves both. There is deliberately no variant flag, no variant enum, no
- * overload pair and no second class distinguishing them: the bytes do not differ, so the code must
- * not branch. The distinction is documentation only, and both spellings are published as constants -
- * {@link #CUST_DOB_FIELD_CVCUS01Y} and {@link #CUST_DOB_FIELD_CUSTREC} - so that the dual naming is
- * auditable in code rather than only in prose.
- *
- * <p>The spelling of the field name says nothing about the format of the value. The seeded value at
- * offset 308 of the first record of {@code [app/data/ASCII/custdata.txt]} is {@code 1961-06-08} -
- * hyphenated ISO form - so the unhyphenated <em>name</em> does not imply an unhyphenated
- * <em>value</em>. The field is carried as a raw ten-byte string in both directions. This class
- * performs no date parsing, no reformatting and no calendar validation; that is the date-validation
- * service's responsibility.
+ * <p>The spelling of the field name says nothing about the format of the value: the seeded value at
+ * offset 308 of the first record of {@code [app/data/ASCII/custdata.txt]} is {@code 1961-06-08}, in
+ * hyphenated ISO form. The field is carried as a raw ten-byte string in both directions; date parsing,
+ * reformatting and calendar validation belong to the date-validation service.
  *
  * <h2>The two regulated identifiers cross a caller-supplied seam</h2>
- * The record image carries the national identifier and the government-issued identifier in clear
- * text. {@link Customer} refuses to store either in that form: both its eighteen-argument constructor
- * and its two mutators admit only a value already sealed into the module's protected-value envelope,
- * and the national identifier may alternatively be {@code null}. The entity itself neither encrypts
- * nor decrypts, because the domain layer may not depend on the utility or service layers.
+ * The record image carries the national identifier and the government-issued identifier in clear text.
+ * {@link Customer} refuses to store either in that form: its constructor and mutators admit only a
+ * value already sealed into the module's protected-value envelope, and the national identifier may
+ * alternatively be {@code null}. The entity neither encrypts nor decrypts, because the domain layer
+ * may not depend on the utility or service layers.
  *
- * <p>This mapper does not encrypt either, and holds no key, no algorithm name and no salt. It
- * <strong>slices both fields exactly as they appear</strong> and hands the raw slice to a sealing
- * operation the caller supplies, and on the way out hands the stored envelope to the caller's
- * inverse operation to recover the ten or nine bytes the record image requires. The seam is a plain
- * {@code UnaryOperator<String>} from the platform library, so this class acquires no dependency on
- * the service that implements it and the layering rule is preserved in both directions. A caller
- * wires the field-encryption service's sealing method into {@code fromRecord} and its revealing
- * method into {@code toRecord}.
+ * <p>This mapper holds no key, algorithm name or salt. It <strong>slices both fields exactly as they
+ * appear</strong> and hands the raw slice to a sealing operation the caller supplies, and on the way
+ * out hands the stored envelope to the caller's inverse operation. The seam is a plain
+ * {@code UnaryOperator<String>} from the platform library, so this class acquires no dependency on the
+ * service that implements it and the layering rule is preserved in both directions. Consequently no
+ * cleartext regulated value is ever written to a column by this mapper and no ciphertext is ever
+ * written into a record image, and neither the seam nor this class changes a byte of geometry: the
+ * record image stays nine bytes at offset 279 and twenty at offset 288 however wide the column behind
+ * them is.
  *
- * <p>Consequently no cleartext regulated value is ever written to a column by this mapper, and no
- * ciphertext is ever written into a record image. Neither the seam nor this class changes a single
- * byte of record geometry: the record image stays nine bytes at offset 279 and twenty bytes at offset
- * 288 regardless of how wide the column behind them is.
- *
- * <h2>The two regulated identifiers are treated alike here and differently by the schema</h2>
- * Both identifiers are protected values in the column, and this class is null-tolerant for both. The
+ * <h2>Null tolerance here, and the schema's asymmetry</h2>
+ * Both identifiers are protected values in the column and this class is null-tolerant for both. The
  * schema is not: {@code cust_ssn} is the one intentionally nullable column in the whole schema, and
- * {@code govt_issued_id} is {@code NOT NULL}.
- *
- * <p>The difference is a seeding decision rather than a difference in kind. Static SQL cannot produce
- * a protected-value envelope from cleartext without committing key material to a checked-in artifact,
- * so the reference seed records absence for the national identifier and leaves the encryption path to
- * supply a real value at run time. For the government-issued identifier the seed instead carries a
- * pre-sealed envelope for every one of the fifty rows, produced under the shared non-production
- * fixture key, which is what lets a mandatory protected column be seeded at all without any cleartext
- * appearing in the artifact. The national identifier was deliberately not given the same treatment:
- * see the reasoning recorded alongside the seed itself.
- *
- * <p>Null tolerance in <em>this</em> class is therefore not a consequence of what the seed happens to
- * hold, and would remain correct if the seed changed. An in-memory customer assembled at a boundary
- * may legitimately not yet carry a protected value for either identifier - the entity accepts absence
- * and refuses only cleartext - and a fixed-width record has to be composable from whatever the
- * instance holds. Whether such an instance may be <em>persisted</em> is a question for the column, not
- * for this class: an absent government-issued identifier is refused by {@code NOT NULL} at the
- * persistence boundary, and an absent national identifier is accepted there. The tolerance is
- * consequently symmetric across both fields:
+ * {@code govt_issued_id} is {@code NOT NULL}. The tolerance here is a property of layout translation
+ * rather than a consequence of what the seed holds, and whether such an instance may be
+ * <em>persisted</em> is a question for the column:
  *
  * <ul>
- *   <li>{@code fromRecord} always reads the nine bytes at offset 279 and the twenty bytes at offset
- *       288. A record's field is never absent - a fixed-width record has no notion of a missing field
- *       - so each slice is always present and is always passed to the caller's sealing operation, even
- *       when it is all spaces.</li>
+ *   <li>{@code fromRecord} always reads the nine bytes at offset 279 and the twenty at offset 288. A
+ *       fixed-width record has no notion of a missing field, so each slice is always present and is
+ *       always passed to the caller's sealing operation, even when it is all spaces.</li>
  *   <li>{@code toRecord} <strong>tolerates a null</strong> in either identifier and emits a field of
- *       <strong>spaces</strong> in its place - nine for the national identifier, twenty for the
- *       government-issued one - without consulting the caller's revealing operation at all, because
- *       there is no envelope to open. Raising on the national identifier would break every round trip
- *       against the seeded database, because every seeded row holds {@code null} in it; raising on the
- *       government-issued identifier would make an in-memory instance uncomposable before it had ever
- *       been offered to the column that actually requires it, and would move a persistence constraint
- *       into a layout translator that has no business restating one.</li>
+ *       <strong>spaces</strong> in its place - nine or twenty - without consulting the caller's
+ *       revealing operation, because there is no envelope to open. Raising on the national identifier
+ *       would break every round trip against the seeded database, where every row holds {@code null}
+ *       in it; raising on the government-issued identifier would make an in-memory instance
+ *       uncomposable before it had been offered to the column that actually requires it, moving a
+ *       persistence constraint into a layout translator.</li>
  * </ul>
  *
- * <p>An absent value is rendered as an all-space field and never as {@code 000000000}, which is how
- * COBOL renders an unset field and which also avoids fabricating a value that was never held. An
- * all-space field round-trips exactly: read back, the field is spaces, and placing spaces reproduces
- * spaces.
- *
- * <p>No diagnostic raised by this class contains the national identifier, the government-issued
- * identifier or any other field value. Messages name the artefact, the field, the offset and the
- * widths, all of which are layout facts rather than data. Nothing here is logged: this class holds no
- * logger, writes to no stream and prints nothing.
+ * <p>An absent value is rendered as an all-space field and never as {@code 000000000}, which avoids
+ * fabricating a value that was never held and round-trips exactly: read back the field is spaces, and
+ * placing spaces reproduces spaces. No diagnostic raised by this class contains a field value - a
+ * message names the artefact, the field, the offset and the widths, which are layout facts rather than
+ * data - and nothing here is logged, streamed or printed.
  *
  * <h2>The credit score is not range-validated here, and must not be</h2>
  * {@code CUST-FICO-CREDIT-SCORE} is three bytes of unsigned external decimal at offset 329. The
- * 300-to-850 range is screen-level edit validation belonging to the account-update path, not a
- * property of the stored record, and the evidence is measured rather than assumed: the first record
- * of {@code [app/data/ASCII/custdata.txt]} carries {@code 274}, and <strong>21 of the 50 seeded rows
- * carry a score below 300</strong>, the lowest being {@code 001}. A range, digit or pattern check
- * here would make the reference data unloadable and would fail the end-to-end and named-artefact
- * acceptance gates outright. The value is carried as a raw string and never as an {@code int}, so its
- * leading zeros survive.
+ * 300-to-850 range is screen-level edit validation belonging to the account-update path, not a property
+ * of the stored record, and the evidence is measured: the first seeded record carries {@code 274} and
+ * <strong>21 of the 50 seeded rows carry a score below 300</strong>, the lowest {@code 001}. A range,
+ * digit or pattern check here would make the reference data unloadable and fail the end-to-end and
+ * named-artefact acceptance gates outright. The value is carried as a raw string so its leading zeros
+ * survive.
  *
  * <h2>Leading zeros are significant in five fields</h2>
  * The identifier, the national identifier, the government-issued identifier, the
- * electronic-funds-transfer account identifier and the credit score all look numeric and none of them
- * is a number. Verified values from the first seeded record are {@code 000000001},
- * {@code 020973888}, {@code 00000000000049368437}, {@code 0053581756} and {@code 274}. Parsing any of
- * them to {@code int} or {@code long} and re-formatting would destroy the leading zeros and with them
- * the byte parity of the output. Every field in this layout is carried as a {@link String} end to
- * end, and no numeric type appears anywhere in this class. No floating-point type appears either.
+ * electronic-funds-transfer account identifier and the credit score all look numeric and none is a
+ * number. Verified values from the first seeded record are {@code 000000001}, {@code 020973888},
+ * {@code 00000000000049368437}, {@code 0053581756} and {@code 274}. Parsing any of them to
+ * {@code int} or {@code long} and re-formatting would destroy the leading zeros and with them the byte
+ * parity of the output, so every field in this layout is carried as a {@link String} end to end and no
+ * numeric or floating-point type appears anywhere in this class.
  *
  * <h2>Values are copied raw; nothing is trimmed, folded or normalised</h2>
  * Trailing and interior spaces are contractual in this estate, so a slice is returned exactly as it
- * appears in the record. Nothing here trims, strips, case-folds, normalises a postal code,
- * normalises a telephone number, translates an indicator to an enumeration or validates a state code.
- * The permitted state codes and the state-and-postal-prefix combinations belong to the
- * validation-lookup service; calendar validity belongs to the date-validation service; the credit
- * score range belongs to the account-update service. This class performs no arithmetic of any kind.
+ * appears. Nothing here trims, case-folds, normalises a postal code or telephone number, translates an
+ * indicator to an enumeration or validates a state code: permitted state codes and state-and-postal
+ * prefix combinations belong to the validation-lookup service, calendar validity to the
+ * date-validation service and the credit-score range to the account-update service. This class
+ * performs no arithmetic of any kind.
  *
- * <h2>The worked example this mapper is verified against</h2>
- * {@code [app/data/ASCII/custdata.txt]} is 25,050 bytes: fifty records at a 501-byte stride, being
- * the 500-byte record plus one {@code 0x0A} terminator. The terminator is a record separator and is
- * never part of the record, so a caller strips it - or addresses the record inside the whole-file
- * buffer through {@link #fromRecord(byte[], int, UnaryOperator)}, which leaves it behind. Read at
- * offset, the first record yields:
- *
- * <pre>
- *   0  000000001                     249  (908)119-8310  &lt;- two trailing spaces
- *   9  Immanuel                      264  (373)693-8684
- *  34  Madeline                      279  020973888      &lt;- leading zero, stays a String
- *  59  Kessler                       288  00000000000049368437
- *  84  618 Deshaun Route             308  1961-06-08     &lt;- hyphenated value
- * 134  Apt. 802                      318  0053581756
- * 184  Altenwerthshire               328  Y
- * 234  NC                            329  274            &lt;- below 300, accepted
- * 236  USA                           332  168 spaces
- * 239  12546          &lt;- five trailing spaces
- * </pre>
- *
- * <p>Each character field above is space-padded to its declared width in the record and is returned
- * with that padding intact.
+ * <h2>The fixture this mapper is verified against</h2>
+ * {@code [app/data/ASCII/custdata.txt]} is 25,050 bytes: fifty records at a 501-byte stride, being the
+ * 500-byte record plus one {@code 0x0A} terminator. The terminator is a record separator and never part
+ * of the record, so a caller strips it - or addresses the record inside the whole-file buffer through
+ * {@link #fromRecord(byte[], int, UnaryOperator)}, which leaves it behind. Each character field is
+ * space-padded to its declared width in the record and is returned with that padding intact.
  *
  * <h2>Filler, and the exact bound for a round-trip comparison</h2>
  * {@code toRecord} emits the 168-byte filler as spaces. The legacy filler is declared without an
- * initial value and is therefore uninitialised, so no byte value is canonical, and the sample
- * data shows exactly that divergence: the four master fixtures carry space filler while the four
- * reference-table fixtures carry ASCII-zero filler. Space is the module-wide default.
+ * initial value and is therefore uninitialised, so no byte value is canonical, and the fixtures show
+ * exactly that divergence: the four master fixtures carry space filler while the four reference-table
+ * fixtures carry ASCII-zero filler. Space is the module-wide default.
  *
  * <p><strong>Every fixture round-trip assertion for this layout therefore compares only the mapped
- * data prefix, the byte range from 0 inclusive to {@value #MAPPED_DATA_WIDTH} exclusive.</strong>
- * For this particular fixture the filler happens to be spaces in all fifty records, so a whole-record
- * comparison would also pass - but the prefix bound is the rule of the family and is stated here so
- * that a test author does not encode the coincidence instead of the rule.
+ * data prefix, the byte range from 0 inclusive to {@value #MAPPED_DATA_WIDTH} exclusive.</strong> For
+ * this fixture the filler happens to be spaces in all fifty records, so a whole-record comparison would
+ * also pass - the prefix bound is the rule of the family and is stated so that a test author does not
+ * encode the coincidence instead of the rule.
  *
  * <h2>Identity, versioning and column naming</h2>
- * The JPA identifier is {@code custId}, the legacy business key itself. The cluster key is nine
- * bytes at offset zero, the leading substring of the record image, so no surrogate identifier is
- * introduced: a surrogate would sever the record-image-to-row correspondence that byte-level output
- * parity depends on.
- *
- * <p>The customer entity carries <strong>no version attribute</strong>. Only the account and card
- * tables have a version column in this schema, so there is no optimistic-locking field to map here
- * and none is written.
+ * The JPA identifier is {@code custId}, the legacy business key itself: the cluster key is the leading
+ * nine bytes of the record image, so no surrogate identifier is introduced, because a surrogate would
+ * sever the record-image-to-row correspondence that byte-level output parity depends on. The entity
+ * carries <strong>no version attribute</strong> - only the account and card tables have one in this
+ * schema - so there is no optimistic-locking field to map.
  *
  * <p>Column naming in the entity is <strong>not uniformly prefixed</strong>: only the identifier, the
- * national identifier and the date of birth carry a {@code cust_} prefix, and the remaining fifteen
- * columns do not. That asymmetry is transcribed from the schema migration that owns the table, and
- * regularising it would name columns the schema does not have. It is stated here so that a reviewer
- * reading this mapper alongside the entity does not "correct" it.
+ * national identifier and the date of birth carry a {@code cust_} prefix and the remaining fifteen do
+ * not. That asymmetry is transcribed from the schema migration that owns the table, and regularising it
+ * would name columns the schema does not have. It is stated so a reviewer does not "correct" it.
  *
  * <h2>Failure contract</h2>
  * A record image whose encoded byte length is anything other than {@value #RECORD_WIDTH} raises
- * {@link IllegalArgumentException} naming the artefact, the expected width and the actual encoded
- * byte length. Input is never silently padded, never truncated, never partially mapped and never
- * returned as {@code null}. Widths are always measured in encoded bytes and never as a character
- * count, so a multi-byte character cannot slip through a width check and shift the geometry.
- *
- * <p>No exception type from this module's own exception package is used for that condition, and the
- * omission is deliberate: none of the six models "the caller handed me the wrong number of bytes".
- * A short or long record has no legacy antecedent at all, because VSAM and QSAM records are fixed
- * length by construction, so the check is a Java-only defensive guard against a caller defect and the
- * platform's own precondition exception is the honest signal. {@code null} arguments raise
+ * {@link IllegalArgumentException} naming the artefact, the expected width and the actual encoded byte
+ * length. Input is never silently padded, truncated, partially mapped or returned as {@code null}.
+ * Widths are always measured in encoded bytes and never as a character count, so a multi-byte character
+ * cannot slip through a width check and shift the geometry. No exception type from this module's own
+ * package is used, deliberately: a short or long record has no legacy antecedent at all, because VSAM
+ * and QSAM records are fixed length by construction, so the check is a Java-only defensive guard and
+ * the platform's own precondition exception is the honest signal. {@code null} arguments raise
  * {@link NullPointerException} through {@link Objects#requireNonNull(Object, String)}, the single
- * exception being the national identifier inside {@code toRecord}, whose absence is a legitimate
- * stored state rather than a defect.
+ * exception being the national identifier inside {@code toRecord}, whose absence is a legitimate stored
+ * state rather than a defect.
  *
  * <h2>Shape</h2>
- * This class is a static contract rather than a component: it is final, it exposes only static
- * members, it holds no state - mutable or otherwise - beyond compile-time constants, and its single
- * private constructor raises rather than returning. Keeping it uninstantiable keeps this layout
- * single-valued, which matters because two callers holding per-instance copies of an offset table
- * could disagree about a layout the legacy record defines exactly once. Every method is pure and
- * side-effect free: no input or output, no clock, no environment, no randomness and no persistence.
- * It is therefore safe to use from any thread.
+ * A static contract rather than a component: final, static members only, no state beyond compile-time
+ * constants, and a single private constructor that raises. Keeping it uninstantiable keeps this layout
+ * single-valued, which matters because two callers holding per-instance copies of an offset table could
+ * disagree about a layout the legacy record defines exactly once. Every method is pure - no input or
+ * output, no clock, no environment, no randomness, no persistence - so it is safe to use from any
+ * thread.
  *
- * <h2>Decisions this file raises for the decision log</h2>
- * <ol>
- *   <li>The date-of-birth field is spelled two ways across the two copybooks, hyphenated in
- *       {@code CVCUS01Y} and unhyphenated in {@code CUSTREC}. Resolved as one alternate 500-byte view
- *       of one entity with one mapper and one code path; {@code CBSTM03A} includes the latter, so
- *       both spellings are live.</li>
- *   <li>The unhyphenated field name does not imply an unhyphenated value - the seeded value is
- *       {@code 1961-06-08} - and no parsing or reformatting is performed here.</li>
- *   <li>The two regulated identifiers are sliced exactly as they appear. Sealing and revealing are
- *       the caller's, delegated through a platform functional interface rather than performed here,
- *       because the entity fails closed on cleartext and this layer may hold no key. Already recorded
- *       for the entity and the encryption service; recorded again here because the seam is what makes
- *       the mapper compatible with a fail-closed entity.</li>
- *   <li>{@code toRecord} emits nine spaces for an absent national identifier rather than raising or
- *       zero-filling, because every seeded row is {@code null} and that column is the schema's only
- *       nullable one.</li>
- *   <li>The credit score is not range-validated in the mapper: 21 of the 50 seeded rows fall below
- *       the screen's 300-to-850 range, so validating here would make the reference data
- *       unloadable.</li>
- *   <li>The filler byte is not uniform across the fixtures, so round-trip assertions compare only
- *       the mapped data prefix. Already carried as anomaly 20 and its resolution.</li>
- *   <li>Malformed fixed-width input raises {@link IllegalArgumentException} rather than a module
- *       exception type, because a short record has no legacy antecedent. Already recorded for the
- *       fixed-width primitive; it governs this mapper's contract too.</li>
- *   <li>A further source observation, outside the module's anomaly register: the opening field
- *       declarations of {@code [app/cpy/CUSTREC.cpy]} are indented with literal tab
- *       characters where its sibling copybook uses spaces. It affects that member's own source
- *       formatting only - no field, no offset, no width and no record byte - and the legacy tree is
- *       left byte-identical, so nothing is corrected. Recorded so that a reviewer diffing the two
- *       copybooks reads the whitespace difference as known rather than as a transcription error.</li>
- * </ol>
- *
- * <p><strong>Provenance.</strong> Translated from the read-only legacy estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which appears in the trailer comment of both
- * source copybooks. No legacy source text is reproduced in this module: members, field names, widths,
- * offsets and values are cited by reference only.
+ * <p>One source observation is recorded because a reviewer diffing the two copybooks will meet it: the
+ * opening field declarations of {@code [app/cpy/CUSTREC.cpy]} are indented with literal tab characters
+ * where its sibling uses spaces. It affects that member's own formatting only - no field, no offset, no
+ * width and no record byte - and the legacy tree is left byte-identical, so nothing is corrected.
  */
 public final class CustomerRecordMapper {
 

@@ -78,8 +78,7 @@ import com.carddemo.domain.enums.KeyAction;
  * are asserted individually, and the ordered view over them is asserted to preserve position including the
  * absent ones, because collapsing or compacting them would move a selection onto a different card.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("CardListRequest - the CCLI inbound contract")
 class CardListRequestSecurityTest {

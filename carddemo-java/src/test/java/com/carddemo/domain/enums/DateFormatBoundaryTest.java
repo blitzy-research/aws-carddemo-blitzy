@@ -52,10 +52,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * protects instead: that both declared selectors measure exactly ten bytes in the
  * legacy single-byte character set, measured as encoded bytes rather than as Java
  * characters, because the linkage slot is a byte reservation.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("DateFormat: the ten-byte format selector of the date-validation linkage")
 class DateFormatBoundaryTest {

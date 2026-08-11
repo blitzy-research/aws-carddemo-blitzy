@@ -110,11 +110,7 @@ import com.carddemo.support.AbstractPostgresIT;
  * its version and its credentials are the shared ones, so what is exercised is still the pinned
  * PostgreSQL 16 the module targets - and drops each one afterwards.
  *
- * <p>Provenance: this control has no legacy antecedent. It guards the schema that replaces the ten
- * {@code DEFINE CLUSTER} provisioning job streams in {@code app/jcl} and the in-stream sign-on
- * identities of {@code app/jcl/DUSRSECJ.jcl}, taken from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text appears here.
+ * <p>Provenance: this control has no legacy antecedent. No legacy source text appears here.
  */
 @DisplayName("Production seeded-database refusal, driven through real migrations")
 class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {

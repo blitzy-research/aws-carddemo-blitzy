@@ -108,11 +108,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy antecedents cited by the type under test: program {@code app/cbl/COTRN02C.cbl}, symbolic
- * map {@code app/cpy-bms/COTRN02.CPY}, mapset {@code app/bms/COTRN02.bms} and record layout {@code
- * app/cpy/CVTRA05Y.cpy}. Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is
- * reproduced here.
+ * <p>Legacy antecedents cited by the type under test: program {@code app/cbl/COTRN02C.cbl} , symbolic map
+ * {@code app/cpy-bms/COTRN02.CPY} , mapset {@code app/bms/COTRN02.bms} and record layout
+ * {@code app/cpy/CVTRA05Y.cpy} . No legacy source text is reproduced here.
  */
 @DisplayName("TransactionAddResponse :: response contract of legacy transaction CT02")
 class TransactionAddResponseCoverageTest {
@@ -1453,9 +1451,9 @@ class TransactionAddResponseCoverageTest {
          * Two responses differing only in amount value are not equal, so a substituted amount is
          * detectable even when both amounts are record-shaped.
          *
-         * <p>An earlier revision made this point with two amounts differing only in scale. That case no
-         * longer exists to be distinguished, because the scale-shifted amount cannot be constructed - a
-         * refusal is a stronger guarantee than an inequality a caller has to think to check.</p>
+         * <p>THE POINT CANNOT BE MADE WITH TWO AMOUNTS DIFFERING ONLY IN SCALE: that case does not exist to be
+         * distinguished, because the scale-shifted amount cannot be constructed - a refusal is a stronger
+         * guarantee than an inequality a caller has to think to check.</p>
          */
         @Test
         @DisplayName("distinguishes two amounts that differ only in value")

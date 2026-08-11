@@ -81,11 +81,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * oversight, and it costs nothing that is gated: the module's enforced coverage floor is met with
  * room to spare, and every other member of both classes is exercised below.
  *
- * <p>Provenance: derived by inspection from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy estate is read-only reference,
- * so no source text is transcribed here; member names, field names, byte offsets, widths and codes
- * are cited as metadata instead.
+ * <p>The legacy estate is read-only reference, so no source text is transcribed here; member names, field
+ * names, byte offsets, widths and codes are cited as metadata instead.
  *
  * @see TransactionCategoryBalance
  * @see TransactionCategoryBalanceId

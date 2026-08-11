@@ -136,9 +136,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * {@code docs/decision-log.md} DL-113. The zoned-decimal sign convention it relies on is DL-015 and the
  * assert-as-bytes discipline is DL-046.
  *
- * <p><strong>Provenance.</strong> Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source statement is
- * reproduced here; the legacy layouts are cited by copybook and field width.</p>
+ * <p>No legacy source statement is reproduced here; the legacy layouts are cited by copybook and field
+ * width.</p>
  */
 @DisplayName("Named fixtures: the nine sequential inputs and the derived credential fixture, measured")
 final class FixtureContractTest {

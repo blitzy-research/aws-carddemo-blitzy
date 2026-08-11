@@ -78,9 +78,6 @@ import org.junit.jupiter.api.Test;
  * <p>The negative direction is asserted too. Agreement is cheap to fake by saying nothing, so each check
  * also forbids the superseded phrasing: a document that has been corrected must not still contain the
  * sentence that made it wrong, and must not have replaced it with the opposite error.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("publication consistency: the operator-facing documents agree with the evidence page")
 final class PublicationConsistencyTest {
@@ -297,10 +294,10 @@ final class PublicationConsistencyTest {
                 // The superseded phrasings, forbidden by name, in BOTH directions of the same drift.
                 //
                 // Each banned string is one only a wrong state can contain. That precision is deliberate:
-                // an earlier draft of this check banned "no 40-byte golden", and the first thing it caught
-                // was the manual's own paragraph explaining that the gap had been closed. A guard that
-                // forbids describing the defect forbids the correction along with it, so the strings below
-                // are the claims themselves - a table cell reading "none yet", an evidence cell calling the
+                // // banning "no 40-byte golden" would instead catch the manual's own paragraph explaining that the
+                // // gap had been closed. A guard that forbids describing the defect forbids the correction along with
+                // // it, so the strings below are the claims themselves - a table cell reading "none yet", an evidence
+                // // cell calling the
                 // fixture pending, an inventory that counts the supplemental width as contractual - and not
                 // the words used to discuss them. Note what is deliberately NOT banned any more: the
                 // correct four-width wording. Banning it was the mechanism that made the overstatement
@@ -375,12 +372,10 @@ final class PublicationConsistencyTest {
          * <p>This is deliberately the inverse of the assertion above, and the inversion is the finding. The
          * deck's own published contract - stated on its own face, in the documentation index and in the
          * module manual - is that it describes what each criterion <em>verifies</em> and that every run
-         * outcome belongs to the evidence page. An earlier revision of this class enrolled the deck
-         * alongside the front page and required it to repeat every disclosed identifier, which forced the
-         * deck to breach that contract in order to keep the build green: the deck then printed exact CVE
-         * identifiers, CVSS scores and scan verdicts on the same slide as the sentence promising it printed
-         * none.
-         *
+         * outcome belongs to the evidence page. ENROLLING THE DECK ALONGSIDE THE FRONT PAGE and requiring it to
+         * repeat every disclosed identifier would force the deck to breach that contract in order to keep the
+         * build green: the deck would then print exact CVE identifiers, CVSS scores and scan verdicts on the
+         * same slide as the sentence promising it printed
          * <p>So the deck is held to the other half instead. It must carry no identifier the authority
          * discloses, no CVSS score and no unsuppressed-count verdict, and it must link to the authority for
          * the result. That keeps one document answerable for the outcome and one answerable for the

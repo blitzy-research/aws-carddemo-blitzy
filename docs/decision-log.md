@@ -360,7 +360,7 @@ Reproducing that would satisfy parity and breach the no-cleartext-credential con
 time. **Decision:** the credential column is sized 60 to hold a BCrypt digest — never the legacy
 width of 8, and never a cleartext value — and no component may store or compare a cleartext
 credential.
-**Status at the time of writing: the storage format, the encoder and the seed are delivered; the sign-on
+**Delivery status: the storage format, the encoder and the seed are delivered; the sign-on
 path is not.** (Superseded by the correction above - the sign-on path is delivered.)
 `service/CredentialDigestService` is delivered and is the only component that turns a credential into
 a stored value: it wraps `BCryptPasswordEncoder`, produces a 60-character digest, exposes a verifying
@@ -624,14 +624,34 @@ statement at all, so the reporting path introduces no arithmetic and must not ac
 *Also recorded as:* DL-014 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
 
-### D-04 — Negative zero collapses to positive zero
+### D-04 — A negative zero is not representable as a value, so it is carried beside the value
 The byte image distinguishes a trailing `}` (negative, low-order digit zero) from `{` (positive,
-low-order digit zero), but `BigDecimal` has no negative zero. **Decision:** both images decode to
-zero at the requested scale, and encoding a zero value always emits `{`. The asymmetry is observable
-only for a field whose *every* digit is zero, where the arithmetic value is identical either way. It
-is not observable for an ordinary negative amount whose cent digit happens to be zero: such a value
-ends in `}` and re-encodes to `}`.
-*Embodied in:* `util/ZonedDecimalCodec.java`.
+low-order digit zero). `BigDecimal` has no negative zero and neither has a numeric column, so the
+distinction cannot be carried *by* the value. **Decision:** it is carried *beside* it. Two statements,
+which are separate and must not be collapsed into one:
+
+1. **The value.** Both images decode to zero at the requested scale, and a bare `BigDecimal` zero
+   encodes as `{`. Arithmetically the two images are identical, so no computation, comparison,
+   persisted column or report figure can depend on which byte the input carried.
+2. **The sign byte, where a byte-parity obligation exists.** Where an image must round-trip byte for
+   byte, the codec's *signed* form carries the original overpunch alongside the decoded amount:
+   `ZonedDecimalCodec.ZonedValue(BigDecimal value, boolean negativeZero)`, whose constructor refuses
+   the marker on any amount that is not zero, because a non-zero amount already carries its own sign.
+   The five mappers that decode an amount use that form, and the two transaction layouts keep the bit
+   on a transient entity attribute — `DailyTransaction.dalytranAmtNegativeZero` and
+   `Transaction.tranAmtNegativeZero` — so a re-encode reproduces the byte the input held rather than
+   normalising it. This exists because the reject dataset echoes the input amount: a re-encoded
+   negative zero would be a byte-parity failure there.
+
+*Supersession note.* This entry previously read "Negative zero collapses to positive zero" and stated
+only point 1. That was true of the codec's plain form and never of the signed one, and stated alone it
+described a byte-parity defect the module does not have. Point 1 stands unchanged for a plain
+`BigDecimal`; point 2 records the round-trip path. The transient marker is not persisted and never
+participates in arithmetic, so nothing in point 1 is weakened by it.
+*Embodied in:* `util/ZonedDecimalCodec.java`, `util/DailyTransactionRecordMapper.java`,
+`util/TransactionRecordMapper.java`, `domain/DailyTransaction.java`, `domain/Transaction.java`.
+*Also recorded as:* DL-295, which records why the reject record echoes the input image rather than a
+rendering of it.
 
 ### D-05 — A wrong scale is rejected, never re-scaled — DIVERGENCE
 The legacy `MOVE` into a `V99` field silently re-scales. **Decision:** a value arriving at any scale
@@ -2534,7 +2554,7 @@ module cites resolves to exactly one entry — and it is the mechanical guarante
 
 ---
 
-## 15. Decisions taken while resolving code review findings
+## 15. Corrections and the decisions behind them
 
 Every entry below was authored while closing a finding raised against the delivered module. Each one
 records a point where the finding's substance could be satisfied only by diverging from the legacy
@@ -2794,7 +2814,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-089 - Comment volume was reduced where the content was redundant, and retained where it is the parity contract
 
-**Context.** A review measured the module's production Java at roughly 72% comment lines against roughly 13% in the neighbouring COBOL, and asked that essays, repeated provenance, option catalogues and line-by-line narration be condensed while durable rationale, parity traps, external constraints and security trade-offs be retained. Every category named was measured rather than estimated, and the measurements decided what happened to each.
+**Context.** The module's production Java measured roughly 72% comment lines against roughly 13% in the neighbouring COBOL. Essays, repeated provenance, option catalogues and line-by-line narration are condensed; durable rationale, parity traps, external constraints and security trade-offs are retained. Every category named was measured rather than estimated, and the measurements decided what happened to each.
 
 **What was redundant, and was removed.** `JpaAuditConfig` stated the decision not to enable framework auditing twice in full, once as a paragraph and once as a headed section with the same three facts, and gave the reason the clock is UTC three times over; it also enumerated all five views of the legacy date work area field by field with widths and line numbers, for a class that implements none of them. `WebMvcConfig` carried a bean-semantics essay restating what its own annotation and its absence of fields already say, and said "nothing is injected" in three places - a class paragraph, a constructor paragraph and a constructor body comment. A statement-template test opened with a paragraph that restated three of the five list items immediately below it. Across the test tier, 481 standalone comment lines consisted only of dashes, equals signs or hashes: banner rulers carrying no information, whose label lines were kept. Those removals total roughly 600 comment lines and lose nothing, because every fact removed was still stated once elsewhere or was never a fact.
 
@@ -2824,7 +2844,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 **The annotations divergence is unchanged by the raise, and its explanation is the durable part of the earlier entry.** The 2.22 resolution was never attributable to this property. Neither bill of materials ties the annotations artifact to the patch version: the second-generation one versions it minor-only, and the third-generation one - which has no annotations module of its own and reuses the second-generation artifact - pins it to the newest 2.x release. The third-generation declaration wins, because `tools-jackson.version` is 3.2.1 for the structured logging encoder. So annotations resolves one minor ahead of the rest of the family by upstream design, both before and after this raise. That is safe, because the 2.x annotations contract is compatible across the line - precisely why both bills of materials version it separately and why the third generation reuses it rather than shipping a replacement.
 
-**Declined alternatives.** Staying at 2.21.4 and documenting non-applicability more thoroughly was rejected: that is the defence the review examined and did not accept, and thoroughness does not convert a statement about today's sources into a property of the classpath. Moving the family to the 2.22 line was rejected as more than the fix requires: the patch release clears the advisory, and a minor move changes more surface for no additional benefit. Forcing the annotations artifact down to the rest of the family's version was rejected twice over, as before: no 2.21.5 annotations release exists, and pinning it back would fight the third-generation bill of materials the logging encoder depends on, trading a documented compatible one-minor lead for a real risk to a working component. Raising the property without correcting the build file's comment was rejected because the comment had been left asserting that the value restates the inventory and therefore pins rather than overrides, and a comment that misdescribes the declaration beneath it is the same class of defect as the one this entry is remediating.
+**Declined alternatives.** Staying at 2.21.4 and documenting non-applicability more thoroughly was rejected: documenting non-applicability is not a control, and thoroughness does not convert a statement about today's sources into a property of the classpath. Moving the family to the 2.22 line was rejected as more than the fix requires: the patch release clears the advisory, and a minor move changes more surface for no additional benefit. Forcing the annotations artifact down to the rest of the family's version was rejected twice over, as before: no 2.21.5 annotations release exists, and pinning it back would fight the third-generation bill of materials the logging encoder depends on, trading a documented compatible one-minor lead for a real risk to a working component. Raising the property without correcting the build file's comment was rejected because the comment had been left asserting that the value restates the inventory and therefore pins rather than overrides, and a comment that misdescribes the declaration beneath it is the same class of defect as the one this entry is remediating.
 
 **Consequence for the build, measured rather than assumed.** An executed resolution confirms the second-generation family - streaming core, databind, the JDK 8 and JSR-310 data types, the parameter-names module and the TOML and YAML data formats - all at 2.21.5, the annotations artifact at 2.22 on its own line, and the third-generation coordinates still at 3.2.1 reaching the class path only through the logging encoder. An executed rescan against vulnerability data checked the same day reports no finding of any kind against any Jackson coordinate. No test encoded the reverted literal, so nothing in the suite had to be edited to agree with this decision - which is itself worth recording, because it means the build file was the only place the value was stated.
 
@@ -2834,7 +2854,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-091 - Build identity is generated, because the information endpoint was described as publishing something the artifact did not carry
 
-**Context.** The shared configuration exposes the information endpoint and describes it as confirming build and runtime identity, with the environment contributor deliberately disabled so that no property whose name begins with the exposed prefix can be published. A review found the artifact carried neither generated build information nor version-control information, so the endpoint answered with process and runtime detail alone. The configuration was describing a surface the build did not produce.
+**Context.** The shared configuration exposes the information endpoint and describes it as confirming build and runtime identity, with the environment contributor deliberately disabled so that no property whose name begins with the exposed prefix can be published. The artifact carried neither generated build information nor version-control information, so the endpoint answered with process and runtime detail alone. The configuration was describing a surface the build did not produce.
 
 **Decision.** The framework's `build-info` goal is bound as a second execution of the packaging plugin, so the generated properties file is written during resource generation and packaged into the artifact. The build-information contributor then has something real to publish, and the endpoint's description becomes true. Binding the goal is also the only way to make it true: the file records the build time, so it cannot be authored by hand without becoming stale the moment it is committed.
 
@@ -2851,7 +2871,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-092 - The job-submission queue is named `JOBS.fifo`, which is the one AWS resource name the plan prescribes; the namespaced `carddemo-jobs.fifo` is withdrawn
 
-**Context.** The legacy estate's entire online-to-batch bridge is a CICS transient-data queue named `JOBS`, written from exactly one site. This entry has now been decided three times, and the third decision is a correction of the second. The queue was originally configured as `carddemo-jobs.fifo`. A revision renamed it to `JOBS.fifo`. A later revision renamed it back to `carddemo-jobs.fifo`, on the stated ground that the plan mandates all four AWS resource names byte-identically. A review then found that value to disagree with the plan, and re-reading the plan settles it.
+**Context.** The legacy estate's entire online-to-batch bridge is a CICS transient-data queue named `JOBS`, written from exactly one site. The name has been argued both ways - `carddemo-jobs.fifo` on the ground that the plan mandates all four AWS resource names byte-identically, and `JOBS.fifo` on the ground that the plan prescribes this one resource by name - and re-reading the plan settles it.
 
 **Decision.** The queue is named **`JOBS.fifo`**. The value is standardised across the shared configuration, the local overlay, both copies of the test configuration, the container composition, the emulator bootstrap script, the continuous-integration workflow, the publishing service and every test that names the canonical destination. The production profile continues to resolve it from the environment with no fallback.
 
@@ -2888,7 +2908,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-093 - An unresolvable queue is refused rather than created, because the library default makes a wrong name look like a successful submission
 
-**Context.** The messaging library leaves its queue-not-found strategy unset, and the publishing template it builds then defaults to creating a queue whose name it cannot resolve. Inspection of the library confirmed this is reached by omission rather than by declaration: the properties object initialises no default for the strategy, the auto-configuration forwards it only when present, and the template's own options initialise it to creation. A review found the shipped configuration declared nothing, so the effective behaviour was to create.
+**Context.** The messaging library leaves its queue-not-found strategy unset, and the publishing template it builds then defaults to creating a queue whose name it cannot resolve. Inspection of the library confirmed this is reached by omission rather than by declaration: the properties object initialises no default for the strategy, the auto-configuration forwards it only when present, and the template's own options initialise it to creation. The shipped configuration declared nothing, so the effective behaviour was to create.
 
 **Decision.** The shared configuration fixes `spring.cloud.aws.sqs.queue-not-found-strategy` to `FAIL`. A queue that cannot be resolved is refused, and the submission fails through the publisher's existing non-fatal path.
 
@@ -2903,11 +2923,11 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-094 - The withdrawn record-width and failure-tolerance keys, which read as configuration while nothing bound them
 
-**Context.** The configuration declared `carddemo.aws.sqs.record-length` as `80` and `carddemo.aws.sqs.fail-on-error` as `false`, in the shared baseline, the local overlay and the test configuration. A review found no Java consumer bound either one. Both values were inert: the publisher enforced the width against its own constant and was non-fatal by construction, and editing either key changed nothing.
+**Context.** The configuration declared `carddemo.aws.sqs.record-length` as `80` and `carddemo.aws.sqs.fail-on-error` as `false`, in the shared baseline, the local overlay and the test configuration. No Java consumer bound either one. Both values were inert: the publisher enforced the width against its own constant and was non-fatal by construction, and editing either key changed nothing.
 
 **Decision.** Both keys are removed from every document. The two facts remain where they are enforced - the width as the constant the publisher checks each card's encoded byte count against, the tolerance as the publisher catching a failed write and reporting it through its return value rather than rethrowing - and the legacy provenance of both, the queue definition's record size and its error option, is recorded as prose against the queue-contract block and in the traceability matrix.
 
-**Why removal rather than binding.** The review offered either. Binding them was rejected because neither is a deployment choice: a different width is a different record format and a different tolerance is a different failure contract, so neither describes this queue. A validator admitting only `80` and only `false` would relocate the pretence rather than remove it, leaving a switch with one position; and for the tolerance it would be worse than inert, because a value the validator rejects at start-up can never be observed, so any branch on the bound value would be unreachable code that no test could cover. Configuration should express what a deployment may decide. These two express what the legacy definition already decided.
+**Why removal rather than binding.** Binding them was rejected because neither is a deployment choice: a different width is a different record format and a different tolerance is a different failure contract, so neither describes this queue. A validator admitting only `80` and only `false` would relocate the pretence rather than remove it, leaving a switch with one position; and for the tolerance it would be worse than inert, because a value the validator rejects at start-up can never be observed, so any branch on the bound value would be unreachable code that no test could cover. Configuration should express what a deployment may decide. These two express what the legacy definition already decided.
 
 **Consequence for the tests.** A configuration test asserts both keys are absent from all four documents, so the pseudo-configurable surface cannot return unnoticed. The width and the non-fatal path keep their existing direct assertions against the publisher, which is where the behaviour actually lives.
 
@@ -2916,7 +2936,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-095 - One card write is one attempt, because the client's retry strategy would reissue a write the legacy program performed once
 
-**Context.** The legacy reporting program writes one card with one `WRITEQ TD` and inspects that write's response immediately; there is no retry around it. A review found the module published through the auto-configured client, whose standard retry strategy classifies a refused transport as transient and reissues, so one logical card write could become several on the wire.
+**Context.** The legacy reporting program writes one card with one `WRITEQ TD` and inspects that write's response immediately; there is no retry around it. Publishing through the auto-configured client instead classifies a refused transport as transient and reissues under its standard retry strategy, so one logical card write becomes several on the wire.
 
 **Decision.** An AAP-sanctioned configuration class publishes a client customizer that installs the no-retry strategy on the queue client builder. One publish is one attempt. No client is built here, no region, endpoint or credential is resolved here, and no timeout, attempt count, backoff interval or pool size is set - removing the retry is the absence of a figure rather than the choice of one, which is what makes it a parity statement rather than a tuning decision.
 
@@ -2933,7 +2953,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-096 - Request authorization is stated as one explicit chain, because the framework's defaults answered a question the configuration had already answered differently
 
-**Context.** The module carried the security starter and declared no filter chain of its own. Two consequences followed, and a review found both. The shared configuration described the metrics scrape endpoint as an unauthenticated surface and one profile reopened the interface description, while the framework's own defaults permit the health probe and authenticate everything else - so the collector would have been refused and the description unreachable, and the configuration's description of reachability was simply untrue. Separately the framework supplied an interactive login backed by a generated in-memory user whose password is written to the log at start-up, which is the authentication mechanism the module would actually have run.
+**Context.** Carrying the security starter while declaring no filter chain of its own has two consequences. The shared configuration described the metrics scrape endpoint as an unauthenticated surface and one profile reopened the interface description, while the framework's own defaults permit the health probe and authenticate everything else - so the collector would have been refused and the description unreachable, and the configuration's description of reachability was simply untrue. Separately the framework supplied an interactive login backed by a generated in-memory user whose password is written to the log at start-up, which is the authentication mechanism the module would actually have run.
 
 **Decision.** One chain is declared explicitly and closes by default. Its final rule authenticates any request no earlier rule named, so a route reachable without a credential is reachable because a rule says so. The health probe and the scrape endpoint are permitted individually; the interface description is permitted only in a profile that publishes it, decided by binding the same switch that decides whether it is served; the sign-on route is permitted because it is the route that issues credentials; every remaining management endpoint is required to be authenticated by a rule that precedes the administrative and catch-all rules, so a profile that widens its exposure list widens what a credential reaches and never what anonymity reaches; the administrative region requires the administrative entitlement; everything else requires a credential.
 
@@ -3454,7 +3474,7 @@ category-balance record mapper. Both statements described a class that was not o
 two entities are corrected to describe the arrangement honestly instead of describing an intended end
 state as though it had arrived. Each entity keeps the citation, because naming where offset knowledge
 belongs is the point of the paragraph and remains true, and each now adds that the mapper is a separate
-deliverable of the record-mapper boundary and is not present at this checkpoint.
+deliverable of the record-mapper boundary.
 
 **Why deferring is correct here rather than merely convenient.** Both files are already assigned, with
 their layouts, their round-trip bounds and their decision citations fully specified, and both
@@ -3489,7 +3509,7 @@ consequence of the zero-reflection budget.
 
 ### DL-107 - Three improvements are withdrawn, because an improvement that changes an observable outcome is a regression wearing better clothes
 
-**Context.** A review found three places where the target had replaced a legacy behaviour with a better-
+**Context.** Three places in the target had replaced a legacy behaviour with a better-
 reasoned one and recorded the replacement in its own documentation as a deliberate divergence. Each
 replacement was defensible read on its own terms, and each was wrong under this migration's governing
 constraint, which is that business-logic semantics are preserved with zero behavioural regression. A
@@ -3857,8 +3877,8 @@ arrangement. It records that the arrangement was *reversed and then restored*, b
 finds three entries defending flatness and a fourth (DL-108) defending a split has no way to tell
 which one the code follows, and that ambiguity is what caused the reversal.
 
-**What happened.** A review finding reported that the profile documents described a five-script
-topology including `V1_1__create_batch_metadata.sql`, and asked for alignment to the plan's exact
+**What was wrong.** The profile documents described a five-script topology including
+`V1_1__create_batch_metadata.sql`, against the plan's exact
 V1-V4 inventory "rather than exact V1-V4 profile scoping". Two changes were made in response. Deleting
 `V1_1` and letting the batch framework own its own metadata tables was correct, and stands. Splitting
 the four scripts across `db/migration/schema` and `db/migration/seed` was not, and has been withdrawn.
@@ -4002,8 +4022,8 @@ The original profile-scoped-location decision is retained below because it expla
 alternative and the recursive-location reasoning that led to it. It no longer describes the
 delivered file layout or profile configuration.
 
-**What the review found, and why it is right.** A checkpoint review scored the schema-evolution
-arrangement as an AAP-compliance failure and named five files: `FlywayConfig.java`, the three profile
+**What was wrong, and why the objection holds.** The schema-evolution arrangement was an
+AAP-compliance failure across five files: `FlywayConfig.java`, the three profile
 overlays and the shared baseline. The finding is that the plan's structural-decisions list requires
 `FlywayConfig` to resolve `V3` and `V4` **from profile-scoped locations**, so that a production
 deployment migrates schema and indexes without inheriting sample data or seeded credentials, and that
@@ -4061,8 +4081,8 @@ directories remain inside the plan's own delivery pattern for this module, `db/m
 `**` anticipates nesting. What could not be preserved is the subdirectory prohibition itself, because it
 and the profile-scoped-location requirement cannot both hold: the prohibition exists only to explain why
 the location mechanism was thought unimplementable, and moving the schema scripts down removes that
-reason. The named structural decision in the plan governs over a path listing, and the review has ruled
-on which reading is binding.
+reason. The named structural decision in the plan governs over a path listing, which is what settles
+which reading is binding.
 
 **The inverted guards are inverted back, which is most of the work.** DL-119 left behind assertions
 whose purpose was to make a third attempt at the split *fail a test*: two withdrawn folder names kept as
@@ -4228,8 +4248,8 @@ would reorder the report without breaking anything a compiler or an unwitting te
 
 **A deviation from this file's own generation brief, recorded rather than smoothed over.** The brief
 for the transaction repository fixed the range query's return type as a list and prohibited a paged
-overload. The migration plan fixes neither, and the review that reported both consequences above
-governs the point, so the return type changed. The brief's *countable* constraint was honoured
+overload. The migration plan fixes neither, and both consequences above
+govern the point, so the return type changed. The brief's *countable* constraint was honoured
 literally: the interface still declares exactly two methods, because the pre-bound is derived inside
 the query text instead of becoming a third parameter that every caller would have to compose
 correctly.
@@ -4469,50 +4489,33 @@ candidate list for Prometheus to try.
 
 ### DL-128 - Eighteen artefacts published ahead of their processing position are absorbed and reviewed rather than reset, because the alternative destroys mandated deliverables
 
-**Context.** A checkpoint review found that eighteen paths outside its declared processed range had been
-modified by the same commit that delivered the range: sixteen test classes, the provisioned Grafana
-dashboard, and this log. Its finding is correct as stated - those contents were not covered by that
-review's file-by-file pass - and the resolution it suggested was to move them to their owning checkpoint
-or reset them from the branch before publication.
+**The situation this governs.** A commit that delivers a range of files can also touch mandated artefacts
+that sit outside it - a covering test class, the provisioned observability configuration, this log - and the
+question is what may be done about that.
 
-**Two constraints decide what "resolving" it can mean here, and they point the same way.** The
-publication contract this work runs under prohibits history-altering git operations outright - no
-rebase, no reset, no force - in the repository and in every submodule, so a reset is not available. And
-the migration plan mandates each of the eighteen by pattern: the test tree, the observability
-configuration directory, and this document are all named as deliverables to create. So the only reset-like
-action available - deleting them in a further commit - would delete mandated artefacts.
+**Two external constraints decide it, and they point the same way.** The publication contract this work runs
+under prohibits history-altering git operations outright - no rebase, no reset, no force - in the repository
+and in every submodule, so a reset is not available. And the migration plan mandates the test tree, the
+observability configuration directory and this document by pattern, as deliverables to create. So the only
+reset-like action that remains available - deleting them in a further commit - deletes mandated artefacts.
 
-**What deleting them would actually cost, stated concretely rather than as a worry.** Fifteen of the
-sixteen test classes are the covering suites of production files *inside* the reviewed range: the
-exception handler, four screen contracts, the reject-record writer, the AWS properties holder, the
-entity mapping inventory, the transaction entity, both concurrency-token services, the menu and
-report-request services, the named fixtures, and two record mappers. They contribute 1,086 executing
-assertions. Removing them would drop coverage that the enforced floor depends on, and would remove the
-verification of work the same review passed. This log is cited by forty-seven production sources by
-decision number, so deleting it would break every one of those citations - including the citations three
-of this session's own fixes add. The dashboard is the artefact the metrics job's own topology decision is
-verified against, and it is mounted by the compose stack.
+**What deletion costs, stated concretely rather than as a worry.** A covering suite removed with its
+production file left in place drops coverage the enforced floor depends on and removes the verification of
+work already accepted. This log is cited by production sources by decision number, so deleting it breaks
+every one of those citations. The dashboard is the artefact the metrics topology decision is verified
+against, and the compose stack mounts it.
 
-**Decision.** The eighteen stay, and the review's underlying concern - unreviewed content on the branch
-- is answered by reviewing them here rather than by removing them. Every one was read and audited in
-this session: each Java file carries the exact fourteen-line licence header, none imports from the
-pre-Jakarta namespace, none uses a wildcard or star import, none carries a warning suppression, none
-contains a placeholder, a deferred-work marker or a hardcoded credential, and all sixteen execute in the
-suite with no failure, no error and nothing skipped. Reflection appears in four of them and is
-legitimate and in scope: it is used to assert record components, a handler's declared methods and the
-constructors of static-only utility classes, and the unsafe-code audit is explicitly scoped to
-production sources, where the count remains zero. The dashboard parses as JSON, declares eleven panels
-and is wired by the provisioning provider the compose stack mounts.
+**Decision.** Such an artefact stays, and the underlying concern - content on the branch that no file-by-file
+pass has covered - is answered by reviewing it in place rather than by removing it. What that review must
+establish is fixed: the exact project licence header, no pre-Jakarta import, no wildcard import, no warning
+suppression, no placeholder or deferred-work marker, no hardcoded credential, and execution in the suite
+with no failure, error or skip. Reflection in a test is in scope where it asserts record components, a
+handler's declared methods or the constructors of static-only utility classes, because the unsafe-code audit
+is scoped to production sources, where the count is zero.
 
-**Two of the eighteen were changed again in this session, deliberately.** The report-request suite gained
-the eight cases that hold the corrected turn-termination contract, and the named-fixture suite gained the
-two that forbid the credential literal. Both are the covering suites of production files fixed in this
-same pass, and a fix without its covering assertions would be the weaker outcome of the two available.
-
-**What is not claimed.** This does not make the eighteen part of the range that review covered, and it
-does not overturn the finding. It records that the artefacts are mandated, that the suggested remedy is
-unavailable and its available approximation destructive, and that the content has now been reviewed and
-is owned. A reviewer re-checking this should expect the paths to still be present.
+**What this does not claim.** It does not place such an artefact inside the range a review covered. It
+records that the artefact is mandated, that a reset is unavailable, that its available approximation is
+destructive, and that reviewing in place is therefore the disposition.
 
 *Cited by:* nothing in code - this entry exists so the disposition is on the record rather than inferred
 from a diff.
@@ -5282,7 +5285,7 @@ entitled to run the transaction", adding that the role-sensitive mask "begins to
 boundary that holds the authenticated principal". DL-144 named `api/AccountController` as that
 boundary for the view screen, but had it present `RevealAuthorization.unprivileged(ACCOUNT_VIEW,
 null)` - a fixed authority that masks for every caller, an administrator included - and left the
-update screen ungated. Review found both halves: authenticated-only access to a route that returns
+update screen ungated. Both halves are defective: authenticated-only access to a route that returns
 full regulated identifiers, and a route that accepts no principal from which any authority could be
 derived. This entry supersedes the residual-exposure paragraph of DL-143 and the fixed-authority
 paragraph of DL-144.
@@ -5443,7 +5446,7 @@ written correctly rather than written against the defect.
 > **Further correction — the superseded service is now gone, not merely bypassed.** For one checkpoint
 > after the move above, `service/BatchStagingService` remained on the component path: annotated
 > `@Service`, injected by nothing, reached by no configuration, and named in this entry's citation list as
-> though it were still the owner of the rule. Review found it as dead surface and it was removed, together
+> though it were still the owner of the rule. It was dead surface and is removed, together
 > with its dedicated test and a test-support double of it. Nothing in the reasoning below changes — the
 > positive name rule, the per-artefact contracts and the diagnostic restriction are all still in force —
 > but they are enforced by `StagedResourceNames`, `batch/BatchStagingArea` and
@@ -5977,7 +5980,7 @@ two keys of a map - which is precisely what the builder does with them.
 or high finding. `DeployableSupplyChainIT` already asserted the other half of that claim's honesty -
 that nothing the gate deliberately skips, meaning the test graph, reaches the deployable archive. Neither
 mechanism addressed the opposite direction: a library that reaches the archive without ever having been
-in the graph at all. Review found one, and it is not an oversight in a declaration.
+in the graph at all. One such case exists, and it is not an oversight in a declaration.
 
 **What was actually happening.** `spring-boot-jarmode-tools-3.5.16.jar` shipped inside `BOOT-INF/lib`
 and the container image went on to **execute** it - `Dockerfile` runs `java -Djarmode=tools -jar <jar>
@@ -6280,8 +6283,8 @@ its message and frames - the message being where a data layer quotes the connect
 driver quotes the statement and its bound parameters. All thirty-four now report authored context plus
 `util/FailureDiagnostics.failureChainOf`, which composes the chain of failure TYPES and reads no message, no
 frame and no suppressed throwable. The legacy diagnostic constant remains the leading token of each message so
-operator log-matching still works. The review named twenty of the thirty-four; the remainder were found by
-scanning for the pattern rather than working the list, and fixing only the named ones would have made the guard
+operator log-matching still works. Twenty of the thirty-four are readily apparent; the remainder are found
+only by scanning for the pattern rather than working a list, and fixing only the apparent ones would make the guard
 below worthless.
 
 **The decision on the primary account number.** Four diagnostics wrote a card number in full. Each now emits the
@@ -6841,7 +6844,7 @@ determination - the first rule the file has ever carried - and nothing else abou
 threshold stays at 7.0, the test graph stays in scope, the scan stays bound to `verify`, and the rule
 names one identifier on three named artifacts of one library at one version.
 
-**Why the rule names three jars when one was flagged.** Because the CPE assignment is not stable between
+**Why the rule names three jars when one carries the advisory.** Because the CPE assignment is not stable between
 scans, and relying on it would leave the gate failing again for a determination already made. Two runs
 six minutes apart over the same graph and the same pinned version attributed the finding differently:
 the first named `tomcat-embed-core` only; the second, after `core` was covered, named
@@ -10498,10 +10501,10 @@ value - the assertion still bites, and the failure output is safe.
 
 **Where the line was drawn, and why it is not "everything".**
 
-Converted: values of the five kinds the review named - session token, stored credential digest, fixture
-password, card number, card verification code - plus the government-issued identifier and the national
-identifier on the account screens, which are identity documents and fall under the same standard even though
-the review filed them under the privacy-policy finding instead.
+Converted: values of five kinds - session token, stored credential digest, fixture password, card number,
+card verification code - plus the government-issued identifier and the national identifier on the account
+screens, which are identity documents and fall under the same standard whether or not they are classed as a
+privacy concern rather than a credential one.
 
 Deliberately not converted, in each case because obscuring would cost the diagnostic everything and protect
 nothing:
@@ -10519,7 +10522,7 @@ nothing:
 
 ### DL-275 - Three delivered claims described a system other than the delivered one, and the corrections are recorded rather than quietly applied
 
-**Context.** A security review found three statements in the delivered evidence that the delivered code
+**Context.** Three statements in the delivered evidence did not match what the delivered code
 contradicts. None of them was a coding defect; all three were worse in one specific way, which is that a
 reader with no access to the source would have believed them. Documentation that overstates is how a gap
 reaches production unnoticed, because the next person to look does not look.
@@ -11385,8 +11388,7 @@ That is a real cost rather than a stylistic one, and it has three distinct parts
   accumulated state at teardown, so a partial selection published a partial record that still looked
   complete.
 
-**A second ordering dependency existed that the review did not name, and it was the more instructive
-one.** The comparison-report assertion required the accumulated comparison list to hold four rows — a
+**A second ordering dependency existed, and it is the more instructive one.** The comparison-report assertion required the accumulated comparison list to hold four rows — a
 condition satisfied not by the run but by *the four golden comparison tests having already
 executed*. So the class did not have one producer and forty-one consumers; it had a chain in which
 consumers were themselves producers for later consumers. Fixing only the reported dependency would
@@ -11733,7 +11735,7 @@ a balance filling all nine declared integer digits *inside* the committed expect
 then re-applied after the posting run, because posting owns one of their keys, which restores exactly the
 state the posted-state assertions were written against.
 
-**What the in-test builder is for now.** Decomposition, and nothing else. It names which field of which
+**Purpose of the in-test builder.** Decomposition, and nothing else. It names which field of which
 record differs when the byte comparison fails, and it checks the report produced over the *posted* state
 field by field — which no committed file can do, for the reason above. It is no longer the verdict for the
 width, the mask, the separators or the ordering.
@@ -13894,8 +13896,8 @@ possible; it was that the interface said it was not.
 *What was rejected.* Persisting the outcome of every logical request, or deduplicating durably on the
 consumer side, would close the gap by making the promise true for longer. Both add a table, a retention
 policy and a reconciliation path to a module whose schema is fixed at eleven tables derived from eleven
-verified record layouts, for a submission surface that is one screen. The alternative the review offered
-second - limit the promise to what the broker delivers, and enforce the limit - costs one utility, one small
+verified record layouts, for a submission surface that is one screen. The alternative - limit the promise
+to what the broker delivers, and enforce the limit - costs one utility, one small
 service and no schema at all, and it is the honest shape: five minutes is a real property of the system, and
 a contract that states it is a contract a reader can rely on.
 
@@ -14359,7 +14361,7 @@ that does not exist renders nothing, and the test says so before anybody deploys
 It cannot catch the quiet one. A meter this module registers, tags, and relies on, that no panel reads, is
 indistinguishable from a meter that does not exist - except that it costs memory and cardinality budget and
 gives an operator false confidence that the thing is watched. Nine boundary families were in exactly that
-state, and the review named six of them.
+state.
 
 The inventory is therefore a **requirement** rather than a description. Fifteen families are named, each a
 boundary where this module talks to something outside itself or refuses something before a caller is
@@ -14540,7 +14542,7 @@ two apart.
 
 ---
 
-**Part four — a comment binds no property, which is why the bootstrap's key table was wrong for a whole checkpoint.**
+**Part four — a comment binds no property, which is why the bootstrap's key table can be wrong indefinitely.**
 
 The emulator bootstrap's header carries a table mapping each resource it provisions to the configuration
 key the application binds that resource from. Two of its five rows named keys no profile declares:
@@ -14570,7 +14572,7 @@ resource table and *present* in the header's prose, so a reader who does not fin
 is told they exist elsewhere rather than left to conclude they were forgotten.
 
 The same drift had reached the shared baseline's own commentary, which called six keys "the six keys under
-this prefix" after this checkpoint added a seventh that a different component binds. The sentence is now
+this prefix" once a seventh was added that a different component binds. The sentence is now
 about what `AwsProperties` binds, the seventh key is named with the component that reads it and the reason
 it is not a component of the settings type, and the two statements no longer have to be reconciled by a
 reader counting keys.
@@ -14690,8 +14692,8 @@ publishing nothing, because it looks like evidence.
 
 The Gate 8 sign-off had nine rows: the seven items the plan's Gate 8 enumerates, plus two the plan adds for
 the named artefacts and the schema. Every row is computed from an artefact, none is a literal, and an absent
-artefact is emitted as MISSING and fails the assertion that writes the table. It is a good mechanism, and it
-signed off a state in which a review then raised thirty-one findings.
+artefact is emitted as MISSING and fails the assertion that writes the table. It is a good mechanism, and a
+good mechanism can still sign off a state that has defects it does not measure.
 
 That is not a contradiction, and understanding why is the whole of this part. Not one of the nine rows is
 about the boundary where this module talks to something outside itself. So a build in which every outbound
@@ -14747,11 +14749,10 @@ detect from the document itself, because a count carries no evidence of its own 
 **Part one — the failure mode is transcription, not carelessness.**
 
 The architecture page's package table had drifted by exactly four packages. The drift is not mysterious: the
-four are `config`, `service`, `util` and the total, and the classes that moved them are the five this
-checkpoint's own remediation added — `AwsResourceTrustVerifier` and `MigrationVersionRecordCallback` in
-`config`, `ReportRetryTokenService` in `service`, `ObservationPropagation` and `ReportRetryTokens` in
-`util`. Nothing was neglected. The page was correct, then code was added, and a number in a second file has
-no way to hear about it.
+four are `config`, `service`, `util` and the total, and the classes that move them are five —
+`AwsResourceTrustVerifier` and `MigrationVersionRecordCallback` in `config`, `ReportRetryTokenService` in
+`service`, `ObservationPropagation` and `ReportRetryTokens` in `util`. Nothing is neglected in such a case:
+the page is correct, then code is added, and a number in a second file has no way to hear about it.
 
 The module README's override section was worse in degree and identical in kind. It said **three** versions
 sit above the managed floor and named the three most visible. The build's delimited security-remediation
@@ -14782,7 +14783,7 @@ decides it, and fails on a disagreement:
 A third instance was found while closing the first two, and it is the most instructive of the three because
 it had a test. The operator documents publish the production profile's required environment variables — the
 ones resolved with no fallback, so that a missing one fails startup — and both said **thirteen** while the
-profile required **fourteen**: the account identifier this checkpoint added for outbound resource trust was
+profile required **fourteen**: the account identifier added for outbound resource trust was
 absent from both lists. Worse, the module manual said **five** variables carry a default while the profile
 defaulted **six**, omitting the trusted-proxy list, and that figure had been wrong since before this
 checkpoint began. And a build assertion **pinned the wrong sentence**, requiring the manual to contain
@@ -15732,8 +15733,8 @@ ceiling, which production now declares and which `FlywayConfig.resolveTarget` re
   That argument establishes that the location split is **necessary**; it does not establish that the
   named control is **forbidden**, and reading it as forbidding the named value converted a
   belt-and-braces posture into a single point of failure by choice.
-- A review of the delivered module recorded the absent ceiling as a departure from the frozen
-  requirement, with `FlywayConfig` "explicitly refusing every numeric production ceiling" as the finding.
+- The absent ceiling is a departure from the frozen requirement, with `FlywayConfig`
+  "explicitly refusing every numeric production ceiling" as the objection.
   Where a requirement names a value and the argument against it is about that value's *sufficiency*
   rather than its *correctness*, the resolution is to satisfy the requirement and neutralise the
   insufficiency, not to decline the requirement.
@@ -16075,8 +16076,8 @@ grouping of the terminal-verdict panel, which never named the reserved label.
 
 **The delivered behaviour was right and the description of it was not.** Five artefacts described the
 notification channel as "optional", and one of them was a class whose sibling *refuses to let a production
-instance start* without the topic. Read as one claim the two are a contradiction, and a reviewer was right
-to record it. Read as two stages they are both true, and the stages are what a reader needs — so the word
+instance start* without the topic. Read as one claim the two are a contradiction, and the objection is
+sound. Read as two stages they are both true, and the stages are what a reader needs — so the word
 "optional" is withdrawn in favour of naming which stage is meant.
 
 **Stage one — provisioning and ownership are MANDATORY, and settled before anything can publish.**
@@ -16134,7 +16135,7 @@ source, the bucket and the queue, and the topic is published as its own componen
 
 ### DL-340 - Gate evidence is held to the artefact that decides it: a provisional sign-off is reconciled after verify, and every published inventory figure is derived rather than transcribed
 
-*Context.* A review found seven separate defects in the gate-evidence chain, and they turned out to be
+*Context.* Seven separate defects in the gate-evidence chain turned out to be
 three shapes of one problem rather than seven problems. **A figure was transcribed from an artefact that
 kept changing** - the published coverage table was out by three lines, two hundred instructions and two
 methods; the dashboard was described as carrying 33 panels while it carried 46; the module manual published
@@ -16983,7 +16984,7 @@ the finding only when the deployment is not production - rejected: this check ru
 control with a mode that discloses is a control somebody will run in the wrong mode.
 
 *The same shape, found once and corrected with it.* A sweep for the pattern - a message interpolating a
-measured property of a secret - found one sibling outside the two the review named:
+measured property of a secret - found one sibling beyond the two most apparent:
 `util/SensitiveFieldCodec` refused key material of the wrong length by naming the length supplied. It is the
 same defect for the same reason: the exception aborts start-up, so the text is rendered into the deployment
 log, and an operator about to regenerate their key gains nothing from being told how long the rejected one
@@ -17252,6 +17253,17 @@ determination while documenting the review protocol.
 
 ### DL-351 - The four earliest migration headers are superseded rather than edited, and the current topology is published where a check can reach it
 
+*Correction — read this before the counts below.* This entry was written against a migration set of six
+scripts, four of them schema. DL-352 subsequently withdrew the sign-on attempt throttle and with it schema
+version **2.1**, so **the delivered inventory is five scripts: three schema — `V1__create_schema.sql`,
+`V2__create_indexes.sql` and `V2_2__add_protected_value_invariants.sql` — and two seed,
+`V3__seed_reference_data.sql` and `V4__seed_user_security.sql`.** The production ceiling is unchanged at
+`2.2`, because `V2_2` is still the highest version the schema location delivers, and the delivered ordering
+`2 < 2.2 < 3` still excludes the seeds by number as well as by directory. Every "six" and "four" below is the
+arrangement this entry was authored against; the decision it records — supersede the superseded headers rather
+than edit a checksum-protected script — is unaffected by the withdrawal, and the erratum it mandates still
+covers exactly those applied scripts whose headers state a superseded pin.
+
 *Context.* Schema evolution reached its delivered shape in three steps. DL-298 moved every script one level
 down into two sibling locations - `classpath:db/migration/schema` and `classpath:db/migration/seed` - and left
 their shared parent empty, so that a production profile which never lists the seed location cannot resolve a
@@ -17321,7 +17333,7 @@ rejected for the same reason with a wider blast radius, and unnecessary, since n
 or configuration depends on the headers' wording. **Deleting the superseded paragraphs from the four headers**
 - rejected: it is an edit, with the same checksum consequence, and it would remove the reasoning that explains
 why the seeds are excluded by number as well as by directory. **Leaving the headers to be read as current and
-correcting only the README row** - rejected: it is what the review found, and it leaves four files stating a
+correcting only the README row** - rejected: it is the defect itself, and it leaves four files stating a
 production ceiling this module refuses.
 
 *Asserted by:* `config/DocumentedSourceCountsTest` - the derived migration inventory, the derived production
@@ -17403,8 +17415,8 @@ rejected: dead production surface, which is the same defect as the one recorded 
 staging service, and a counter that refuses nobody is a cost with no property. **Moving the allowance to the
 web layer as a filter** - rejected: it is the same invented behaviour one layer out, and it would still
 answer a submitted turn without reading the file. **Keeping the `sign_on_attempt` table for a future
-control** - rejected: an empty operational table nothing reads is exactly the extra surface this checkpoint
-required to be removed.
+control** - rejected: an empty operational table nothing reads is exactly the extra surface that has to
+be removed.
 
 *Two other entries name version 2.1 in passing, and they are history rather than error.* The correction on
 DL-334 records that the pin moved to `2.2` because the ledger script and then the invariants script arrived

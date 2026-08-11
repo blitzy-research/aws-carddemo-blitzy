@@ -65,10 +65,6 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
  *   <li>Decimals are written plainly rather than in scientific notation, because no consumer of a
  *       fixed-width monetary field can interpret an exponent.</li>
  * </ul>
- *
- * <p>Provenance: the wire contract derives from the seventeen symbolic screen maps of the legacy
- * online estate at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 final class JsonContractSupport {
 

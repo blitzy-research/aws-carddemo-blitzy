@@ -63,10 +63,8 @@ import io.micrometer.observation.ObservationRegistry;
  * failure or into a misleading trace. The unwrapped return is therefore a contract, not an
  * optimisation, and it is asserted as one.
  *
- * <p>Provenance: legacy estate checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Nothing here has a legacy
- * antecedent: the estate ran one task at a time on one thread and had no context to lose. See
- * {@code docs/decision-log.md} entry DL-305.
+ * <p>Nothing here has a legacy antecedent: the estate ran one task at a time on one thread and had no
+ * context to lose. See {@code docs/decision-log.md} entry DL-305.
  */
 @DisplayName("ObservationPropagation - carrying a submitter's context onto a worker")
 class ObservationPropagationTest {

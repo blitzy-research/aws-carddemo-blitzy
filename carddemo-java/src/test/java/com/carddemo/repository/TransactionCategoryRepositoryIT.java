@@ -136,12 +136,8 @@ import org.springframework.transaction.annotation.Transactional;
  * shared server, the real provider, the whole domain package mapped, the real repository proxy and a real
  * transaction manager. Nothing is mocked and no in-memory engine is substituted.
  *
- * <p>Provenance: the legacy facts cited above were read at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability matrix header only and is asserted against nothing here. No copybook, job-stream or
- * resource-definition source text is reproduced: the estate is cited by member name, resource name,
- * width, offset and row count alone.
+ * <p>No copybook, job-stream or resource-definition source text is reproduced: the estate is cited by
+ * member name, resource name, width, offset and row count alone.
  *
  * @see TransactionCategoryRepository
  * @see TransactionCategory

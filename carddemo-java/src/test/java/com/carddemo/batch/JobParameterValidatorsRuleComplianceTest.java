@@ -107,13 +107,6 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * <p>The property is asserted structurally — by scanning the produced text for any character outside
  * the printable range — rather than by matching one expected string, so a future diagnostic added to
  * the class is covered by these tests without them having to be rewritten.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Expectations derived from the CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Every legacy fact is cited by member and line
- * number; no COBOL, JCL or cataloged-procedure text is transcribed.</p>
  */
 @DisplayName("JobParameterValidators: the four measured launch contracts, the delegated calendar "
         + "cascade and the diagnostic discipline they are reported under")

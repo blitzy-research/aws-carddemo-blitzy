@@ -61,10 +61,10 @@ import com.carddemo.domain.enums.KeyAction;
  * clearing payment, and the confirmation answer is the single character that decides whether that payment
  * is applied - so a rendering carrying either is a rendering that describes a financial instruction.</p>
  *
- * <p>An earlier revision of the contract asserted that neither carried value was sensitive and that the
- * generated rendering could therefore stand. That assessment was wrong about the identifier and, more
- * tellingly, disagreed with the outbound contract for this very screen, which already withholds both.
- * These tests hold the corrected position: both are withheld, and the confirmation answer specifically,
+ * <p>NEITHER CARRIED VALUE MAY BE TREATED AS NON-SENSITIVE, so the generated rendering cannot be left
+ * to stand. Such an assessment is wrong about the identifier and, more tellingly, disagrees with the
+ * outbound contract for this very screen, which already withholds both. These tests hold the corrected
+ * position: both are withheld, and the confirmation answer specifically,
  * because a rejection must never echo the value it rejected. That is the same rule the response side
  * records, and the two halves of one screen now agree.</p>
  *
@@ -78,8 +78,7 @@ import com.carddemo.domain.enums.KeyAction;
  * derived from the highest existing one. Accepting any of the three from a client would let a caller
  * choose how much to clear or which key to occupy.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("BillPaymentRequest - the CB00 inbound contract")
 class BillPaymentRequestSecurityTest {

@@ -53,14 +53,12 @@ import org.springframework.web.bind.annotation.RestController;
  * REST surface of the two account-servicing screens: transaction {@code CAVW}, the account view, and
  * transaction {@code CAUP}, the account update.
  *
- * <p><strong>What this class does and does not do.</strong> It binds one screen turn out of the HTTP
- * request, hands that turn to the service that owns the transaction, publishes the answer on the
- * declared response contract and records how long the turn took. It holds no rule of its own: no
- * presence test, no range test, no lookup, no comparison against a previously fetched image, no lock,
- * no write, no field decoration and no message text. Every one of those lives in
+ * <p><strong>What this class does.</strong> It binds one screen turn out of the HTTP request, hands
+ * that turn to the service that owns the transaction, publishes the answer on the declared response
+ * contract and records how long the turn took. Every rule - presence and range tests, lookups,
+ * before-image comparison, locking, writing, decoration and message text - lives in
  * {@link AccountViewService} or {@link AccountUpdateService}, which is what lets both be exercised
- * without a servlet and what keeps this class from becoming a second, divergent copy of the account
- * rules.
+ * without a servlet and keeps this class from becoming a second, divergent copy of the account rules.
  *
  * <p><strong>Exactly two surfaces, and no third.</strong> The resource-definition file registers
  * eighteen transactions; two of them are account transactions and both are bound here. Nothing else is
@@ -108,13 +106,6 @@ import org.springframework.web.bind.annotation.RestController;
  * here forwards, redirects or holds server-side conversation state. That is what replaces the legacy
  * transfer-control dispatch and the re-arm that followed it, and it is why each endpoint can be
  * exercised on its own.
- *
- * <p>Provenance: {@code app/cbl/COACTVWC.cbl} and {@code app/cbl/COACTUPC.cbl} with their symbolic maps
- * {@code app/cpy-bms/COACTVW.CPY} and {@code app/cpy-bms/COACTUP.CPY}, and the transaction definitions
- * at {@code app/csd/CARDDEMO.CSD} L306 and L317, all read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement, map declaration or
- * copybook layout is transcribed here.
  *
  * @since 1.0.0
  */
@@ -285,11 +276,11 @@ public class AccountController {
     /**
      * The only permitted converter between the account-update wire contract and the service-owned pair.
      *
-     * <p>The update transaction takes the transmitted screen, and returns the settled turn, in the forms the
-     * service layer owns, because nothing may depend upward on {@code api.dto}. This collaborator is where
-     * both crossings happen, and it converts positionally over forty-six components inbound and fifty-seven
-     * outbound: no operator-typed value is trimmed, padded, defaulted, parsed or re-scaled on the way
-     * through, and no monetary component is rounded.
+     * <p>The update transaction takes the transmitted screen, and returns the settled turn, in the forms
+     * the service layer owns, because nothing may depend upward on {@code api.dto}. This collaborator is
+     * where both crossings happen, and it converts positionally over forty-six components inbound and
+     * fifty-seven outbound: no operator-typed value is trimmed, padded, defaulted, parsed or re-scaled on
+     * the way through, and no monetary component is rounded.
      */
     private final AccountUpdateContractAdapter accountUpdateContractAdapter;
 
@@ -580,12 +571,12 @@ public class AccountController {
      * The authority under which one turn of this controller asks for the regulated values.
      *
      * <p><strong>One derivation, read by both screens, which is the point of it existing.</strong> The
-     * view turn used to carry a constant authority instead - permanently unprivileged, with no user type
-     * at all - so an administrator received masks on the view screen and cleartext on the update screen
-     * for the same four values of the same record. The two screens are the same regulated data behind the
-     * same policy, and a policy that answers differently depending on which screen asked is not a policy.
-     * Deriving it once here means the two cannot come to disagree by an edit to one of them, which is what
-     * this class's own contract claims and what a constant could not deliver.
+     * view turn must not carry a constant authority instead - permanently unprivileged, with no user type
+     * at all - because an administrator would then receive masks on the view screen and cleartext on the
+     * update screen for the same four values of the same record. The two screens are the same regulated
+     * data behind the same policy, and a policy that answers differently depending on which screen asked
+     * is not a policy. Deriving it once here means the two cannot come to disagree by an edit to one of
+     * them, which is what this class's own contract claims and what a constant could not deliver.
      *
      * <p><strong>What authority is asserted, and what is deliberately not.</strong> An administrator
      * reveals, from the sign-on split at {@code app/cbl/COSGN00C.cbl:L227-L236}. Every other caller
@@ -748,11 +739,11 @@ public class AccountController {
      *
      * <p><strong>Two filters, three states each, and the states are not interchangeable.</strong> The
      * transaction keeps an account-filter state and a customer-filter state, and each holds valid, not in
-     * order, or blank. Blank is how the screen says a filter was never supplied; not-in-order is how it says
-     * one was supplied and cannot be used. The legacy renders the two differently - the attribute setup at
-     * {@code app/cbl/COACTVWC.cbl} lines 546 to 574 writes the marker for the blank state and only the
-     * colour change for the not-in-order one - so publishing one boolean and one message line loses both
-     * which filter was at fault and which of its two states it was in.
+     * order, or blank. Blank is how the screen says a filter was never supplied; not-in-order is how it
+     * says one was supplied and cannot be used. The legacy renders the two differently - the attribute
+     * setup at {@code app/cbl/COACTVWC.cbl} lines 546 to 574 writes the marker for the blank state and only
+     * the colour change for the not-in-order one - so publishing one boolean and one message line loses
+     * both which filter was at fault and which of its two states it was in.
      *
      * <p><strong>The blank state is conditional and the not-in-order state is not.</strong> The marker is
      * written only on a re-entry, which is the same gate the field-decoration macro applies across this
@@ -761,9 +752,9 @@ public class AccountController {
      *
      * <p><strong>Order is the transaction's, not this method's.</strong> The account filter is edited and
      * can fail before the customer master is ever read, so its finding precedes the customer one. The
-     * customer finding names no screen field, and that is not an omission: this screen has exactly one input
-     * item, so the customer-filter state has no map field of its own - it exists to tell the customer-master
-     * miss apart from the other two misses on a screen with one cursor position.
+     * customer finding names no screen field, and that is not an omission: this screen has exactly one
+     * input item, so the customer-filter state has no map field of its own - it exists to tell the
+     * customer-master miss apart from the other two misses on a screen with one cursor position.
      *
      * @param result the settled turn
      * @return the findings in the transaction's own order, never {@code null} and possibly empty

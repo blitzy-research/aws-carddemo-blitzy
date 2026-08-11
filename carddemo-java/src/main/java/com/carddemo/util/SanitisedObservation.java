@@ -27,24 +27,21 @@ import io.micrometer.observation.Observation;
  *
  * <h2>The problem this exists to solve</h2>
  *
- * <p>{@link Observation#observe(Supplier)} is the convenient form, and it does three things in one call:
- * it starts the observation, opens its scope, and - on a failure - hands the <em>raw</em> throwable to
- * {@link Observation#error(Throwable)} before rethrowing it. That third step is the problem. The tracing
- * bridge turns a recorded error into exported span data: the exception type, its message, and its stack
- * trace, all leaving the process for whichever collector the deployment points at.
+ * <p>{@link Observation#observe(Supplier)} starts the observation, opens its scope and - on a failure -
+ * hands the <em>raw</em> throwable to {@link Observation#error(Throwable)} before rethrowing it. That
+ * third step is the problem, because the tracing bridge turns a recorded error into exported span data:
+ * the exception type, its message and its stack trace, all leaving the process for whichever collector
+ * the deployment points at.
  *
  * <p>A provider failure is the one value crossing this module's outbound boundaries whose text this
- * module does not author. An object-store refusal names the bucket and the key it refused; a queue
- * failure names the queue and frequently the endpoint and the credential's principal; a driver failure
- * names the connection string. {@code util/FailureDiagnostics} exists because of exactly that, and every
- * boundary <em>log</em> site in this module already publishes a bounded type chain rather than the
- * throwable. The span was the one channel still carrying the unedited object, so the same value the log
- * deliberately withheld was being exported anyway, to a destination with a different audience and a
- * different retention period.
- *
- * <p>It is a volume lever as well as a disclosure one, for the same reason the log rendering is: a caller
- * who can provoke a failure whose message they influence chooses how many bytes each of their requests
- * writes into the collector.
+ * module does not author. An object-store refusal names the bucket and key it refused; a queue failure
+ * names the queue and frequently the endpoint and the credential's principal; a driver failure names the
+ * connection string. {@code util/FailureDiagnostics} exists for exactly that reason, and every boundary
+ * <em>log</em> site already publishes a bounded type chain rather than the throwable. The span was the
+ * one channel still carrying the unedited object, so the value the log deliberately withheld was being
+ * exported anyway, to a destination with a different audience and a different retention period. It is a
+ * volume lever as well as a disclosure one: a caller who can provoke a failure whose message they
+ * influence chooses how many bytes each of their requests writes into the collector.
  *
  * <h2>What is recorded, and what is withheld</h2>
  *
@@ -61,30 +58,24 @@ import io.micrometer.observation.Observation;
  * <h2>What deliberately does not change</h2>
  *
  * <p>The call's own outcome. The original failure is rethrown, unwrapped and unaltered, to the caller
- * that asked for the call - so every existing handler, every non-fatal verdict and every sanitised log
- * record at the call site behaves exactly as before. This class edits what the <em>span</em> says, and
- * nothing else. The observation is still started, still scoped around the call so a nested observation
- * descends from it, still marked as a failure rather than left looking successful, and still stopped on
- * every path.
+ * that asked for the call, so every existing handler, non-fatal verdict and sanitised log record at the
+ * call site behaves exactly as before. This class edits what the <em>span</em> says and nothing else: the
+ * observation is still started, still scoped around the call so a nested observation descends from it,
+ * still marked as a failure rather than left looking successful, and still stopped on every path.
  *
  * <h2>Why a helper rather than five hand-written blocks</h2>
  *
  * <p>Five outbound boundaries need this - the queue publish, the notification publish, the two
  * object-store families and the batch publication callback - and a hand-written start/scope/error/stop
  * block at each is five chances to forget the {@code stop()} on one path or to pass the raw throwable at
- * one site. One helper makes the policy a single decision, and makes "does any boundary export a raw
- * provider failure" answerable by reading one file.
+ * one site. One helper makes the policy a single decision and makes "does any boundary export a raw
+ * provider failure" answerable by reading one file. It sits in the utility layer beside
+ * {@link ObservationPropagation} and {@link FailureDiagnostics}, the other two halves of the same
+ * concern, depends on nothing above it, holds no state, reads no configuration and declares no logger.
  *
- * <p>It sits in the utility layer beside {@link ObservationPropagation} and {@link FailureDiagnostics},
- * which are the other two halves of the same concern, and it depends on nothing above it, holds no state,
- * reads no configuration and declares no logger of its own.
- *
- * <p>See {@code docs/decision-log.md} entry DL-341.
- *
- * <p>Provenance: legacy estate checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Nothing here has a legacy
- * antecedent: the estate's only diagnostic channel was a console display statement, which wrote a literal
- * and a named field and had no failure object to export.
+ * <p>See {@code docs/decision-log.md} entry DL-341. Nothing here has a legacy antecedent: the estate's
+ * only diagnostic channel was a console display statement, which wrote a literal and a named field and
+ * had no failure object to export.
  *
  * @since 1.0.0
  */

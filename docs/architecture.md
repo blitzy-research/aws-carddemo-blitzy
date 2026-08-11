@@ -20,10 +20,8 @@ be a regular file *and* to appear in the nav, and requires the landing page to l
 migration deck at [`presentation/index.html`](presentation/index.html) is deliberately not a nav entry: it is
 a self-contained HTML deck served as a static asset and reached from the landing page.
 
-*Labelled as history rather than dropped:* earlier revisions of this section recorded the onboarding guide as
-undelivered, and this page and the traceability matrix as unregistered. Both statements were true when they
-were written, and the tree they described no longer exists — the guide is published and the nav names all
-eight pages.
+The onboarding guide is published, and the documentation nav names all eight pages including this one and the
+traceability matrix.
 
 Where a claim here is a count or a width, it was measured against the analysed checkout rather than
 quoted. Where the mechanism in the code differs from what the plan anticipated, this page describes the
@@ -142,7 +140,7 @@ graph TD
     UTIL["util<br/>fixed-width mappers, codec, formatters"]
     EXC["exception"]
     CFG["config<br/>security, batch, AWS, observability, JPA, Flyway"]
-    DB[("PostgreSQL 16<br/>Flyway V1 to V4")]
+    DB[("PostgreSQL 16<br/>Flyway: schema then seed")]
 
     API --> DTO
     API --> SVC
@@ -603,7 +601,7 @@ shared**:
   record through an edit mask that renders that balance with an inserted decimal point and pads the result
   to a fixed **40-byte** line. It is a full sort-and-reprojection step in its own right and not an unload:
   the job's earlier step is the unload, and this one is what turns the unloaded dataset into the report.
-  This is the fourth specification, and an earlier revision of this page omitted it and counted three. It is
+  This is the fourth specification, and a count of three omits it. It is
   verified, at both its ordering and its width, by `batch/CategoryBalanceReportJobConfigIT`.
 
 The same field is typed zoned decimal in one job and character in another. A single shared comparator would

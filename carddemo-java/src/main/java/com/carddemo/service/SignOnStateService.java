@@ -110,9 +110,6 @@ import org.springframework.stereotype.Service;
  * stateless and safe for concurrent use. Nothing here logs an identifier's credential, its digest, a
  * fingerprint or any fragment of any of them, and the one failure it reports carries only the failure
  * chain {@link FailureDiagnostics} composes rather than a caught throwable.
- *
- * <p>Provenance: repository SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @Service
 public class SignOnStateService {

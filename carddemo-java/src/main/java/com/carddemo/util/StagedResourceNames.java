@@ -44,11 +44,11 @@ import java.util.Objects;
  * exactly what the legacy names this replaces were - {@code AWS.M2.CARDDEMO.DALYTRAN.PS} is one dataset
  * name, not a path - so the rule refuses nothing any faithful configuration would supply.
  *
- * <p><strong>The separator check names both conventions explicitly rather than asking the platform.</strong>
- * The platform separator on the deployment target is the forward slash, so a value carrying a backslash
- * would pass a platform-sensitive check and then be a legal single file name whose own text looks like a
- * path - which is exactly the value a reviewer would expect this rule to have refused. Refusing both makes
- * the rule the same rule wherever the module runs, and no legacy dataset name contains either character.
+ * <p><strong>The separator check names both conventions explicitly rather than asking the
+ * platform.</strong> The platform separator on the deployment target is the forward slash, so a value
+ * carrying a backslash would pass a platform-sensitive check and then be a legal single file name whose own
+ * text looks like a path - which is exactly the value a reviewer would expect this rule to have refused.
+ * Refusing both makes the rule the same rule wherever the module runs, and no legacy dataset name contains either character.
  *
  * <h2>What this deliberately does not do</h2>
  *
@@ -57,10 +57,6 @@ import java.util.Objects;
  * system: nothing here resolves, creates, opens or stats anything, so it is safe to call while binding
  * configuration, before any directory exists. And it states no format rule beyond containment - a dataset
  * naming convention belongs to the configuration that declares the default, not here.
- *
- * <p>Provenance: the staging names of {@code app/jcl} data-definition statements, read as read-only
- * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * @since 1.0.0
  */

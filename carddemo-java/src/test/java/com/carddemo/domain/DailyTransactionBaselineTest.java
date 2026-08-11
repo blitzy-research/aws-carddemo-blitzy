@@ -75,10 +75,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  * database connection, reads no file, touches no network, runs no container and performs no
  * introspection. Every expected value is a literal typed out in this source.
  *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Cited as provenance only and never asserted
- * against a member.
+ * <p>Cited as provenance only and never asserted against a member.
  */
 @DisplayName("DailyTransaction - the entity form of the 350-byte daily-transaction record")
 class DailyTransactionBaselineTest {

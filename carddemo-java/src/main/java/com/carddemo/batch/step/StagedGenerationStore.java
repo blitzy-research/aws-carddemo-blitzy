@@ -96,12 +96,12 @@ import org.springframework.stereotype.Component;
  *
  * <h2>An abnormal end discards what it allocated</h2>
  *
- * <p>{@link #discardLocalArtifactsOf(JobExecution, Path)} removes the local files one non-completing execution
- * created: its completed generations, whose publication was skipped, and any working file its steps left
- * half composed. Only files carrying that execution's own generation token are touched, so a concurrently
- * running job's artifacts cannot be caught by it. This is the abnormal disposition of the legacy
- * allocation - a dataset the job stream created and did not end normally with was deleted rather than
- * catalogued - and without it a failed run leaves a local file that nothing will ever publish, read or
+ * <p>{@link #discardLocalArtifactsOf(JobExecution, Path)} removes the local files one non-completing
+ * execution created: its completed generations, whose publication was skipped, and any working file its
+ * steps left half composed. Only files carrying that execution's own generation token are touched, so a
+ * concurrently running job's artifacts cannot be caught by it. This is the abnormal disposition of the
+ * legacy allocation - a dataset the job stream created and did not end normally with was deleted rather
+ * than catalogued - and without it a failed run leaves a local file that nothing will ever publish, read or
  * prune. See {@code docs/decision-log.md} entry DL-211.
  *
  * <h2>Partial files are never publishable, and are not left behind either</h2>
@@ -642,8 +642,8 @@ public final class StagedGenerationStore {
                     observed(OPERATION_UPLOAD, key, () -> this.objectStore.upload(bucket, key, body));
                 }
             } catch (final IOException | RuntimeException failure) {
-                // The key is reconciled rather than assumed empty. An earlier revision stated that "a
-                // failed upload uploaded nothing" and therefore compensated nothing; that is true of
+                // // The key is reconciled rather than assumed empty. "A failed upload uploaded nothing" - and
+                // // therefore compensating nothing - is true of
                 // every failure except the one that matters, an upload whose bytes the service accepted
                 // and whose response was lost, which throws while leaving an ordinary visible current
                 // generation of this base behind. The reasoning is developed in full on
@@ -1140,8 +1140,8 @@ public final class StagedGenerationStore {
      *
      * <h2>Why the attempted set and not the succeeded set</h2>
      *
-     * <p>An earlier revision compensated the list of generations the pass had successfully published,
-     * built by appending each entry after its upload call returned. That list is exactly one entry short
+     * <p>Compensating the list of generations the pass has successfully published - built by appending each
+     * entry after its upload call returns - is exactly one entry short
      * in the case that matters most: an upload whose bytes the object store accepted and whose
      * <em>response</em> was lost. The call throws - a connection reset, a read timeout, an expiring call
      * budget - the entry is never appended, and the compensation that follows walks every key but that
@@ -1496,10 +1496,10 @@ public final class StagedGenerationStore {
      *
      * <p>The predicate applied instead is {@link SecureStagedFiles#isTrustedStagedArtifact(Path, Path)},
      * which asks four things together: that the candidate is a real regular file inspected <em>without</em>
-     * following links, that its normalised parent is the root it is being trusted as a child of, that it and
-     * the root share an owner, and that neither grants write permission outside that owner. The root is the
-     * registered path's own normalised parent, which is the staging directory the store itself composed the
-     * generation name inside; requiring the file to be a direct child of a directory that is itself
+     * following links, that its normalised parent is the root it is being trusted as a child of, that it
+     * and the root share an owner, and that neither grants write permission outside that owner. The root is
+     * the registered path's own normalised parent, which is the staging directory the store itself composed
+     * the generation name inside; requiring the file to be a direct child of a directory that is itself
      * owner-trustworthy is what closes the case where the root is somebody else's to write in.
      *
      * <p>This is the check <em>before</em> the uploads begin, and it is deliberately not the last one: the

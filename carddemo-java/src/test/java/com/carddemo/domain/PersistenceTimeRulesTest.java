@@ -58,9 +58,7 @@ import jakarta.persistence.PreUpdate;
  * never become a row is never refused, and both write callbacks are bound, so an identifier edited in
  * place is checked exactly as an inserted one is.
  *
- * <p>Provenance: the widths and picture clauses asserted here are those of the read-only legacy copybooks
- * under {@code app/cpy} at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("Persistence-time rules: exact key widths, digit classes, and scale-two truncation")
 final class PersistenceTimeRulesTest {

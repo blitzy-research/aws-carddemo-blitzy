@@ -41,10 +41,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * Unit tests for {@link TranTypeRecordMapper}, which maps the sixty-byte {@code TRAN-TYPE-RECORD}
  * declared by {@code app/cpy/CVTRA03Y.cpy} onto {@link TransactionType} and back.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>The fixture is the authority, not a convenience.</strong> Every decode assertion below is
  * made against the real bytes of {@code fixtures/input/trantype.txt}, which carries seven records at a
  * stride of sixty-one — sixty bytes of record plus one line terminator that is a separator and never

@@ -80,8 +80,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * adapter is derived from the established identity, by one derivation both routes read: an administrator
  * reveals and every other caller receives masks. That is asserted in both directions here, because a
  * change in either direction would still compile and would still pass every service test. The boundary
- * previously held a <em>constant</em> unprivileged authority on the view route, which masked the values for
- * an administrator while the update route revealed them - the two screens disagreeing about the same four
+ * A <em>constant</em> unprivileged authority on the view route would mask the values for an
+ * administrator while the update route revealed them - the two screens disagreeing about the same four
  * values of the same record - so the administrative reveal on the view route is asserted directly and not
  * merely on the update route. The absent-customer path is asserted to yield absent rather than masked
  * values, because a mask would tell an operator a record exists.

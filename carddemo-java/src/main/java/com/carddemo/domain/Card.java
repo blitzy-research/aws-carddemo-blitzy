@@ -60,20 +60,13 @@ import jakarta.persistence.Version;
  * and no requirement in scope introduces one, so the gap is carried forward as an explicit unclosed
  * finding (decision D-14) rather than closed by unrequested work. {@link #toString()} redacts the
  * card number; nothing in this package logs, and no caller may log these values.
- *
- * <p>The mapping is validated rather than generated - Flyway owns the {@code card} table and the
- * provider runs in validate-only mode - so a renamed column, changed width or wrong Java type fails
- * start-up instead of reshaping the database. Translated from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19); no legacy source text is copied into this
- * module.
  */
 @Entity
 @Table(name = "card")
 public class Card {
     /**
-     * Width of the card number in characters: 16, from the copybook's own picture clause and from the cluster
-     * key definition that keys the base cluster at width 16 and offset 0.
+     * Width of the card number in characters: 16, from the copybook's own picture clause and from the
+     * cluster key definition that keys the base cluster at width 16 and offset 0.
      *
      * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
      * than two copies of it.

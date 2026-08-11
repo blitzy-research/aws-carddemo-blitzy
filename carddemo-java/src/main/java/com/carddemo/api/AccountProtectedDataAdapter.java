@@ -36,10 +36,10 @@ import org.springframework.stereotype.Component;
  * on the way in or publishes ciphertext on the way out. Neither is acceptable, and nothing bridged them.
  * This class is that bridge, and it is the only place either direction happens.
  *
- * <p><strong>Why revealing is gated rather than automatic, and why that is a deliberate divergence.</strong>
- * The legacy system showed the full identifier to any signed-on operator who reached the account view
- * transaction; it had no field-level protection at all, and the specification records that gap in
- * &sect;0.7.4 rather than pretending otherwise. Reproducing it would mean publishing a national
+ * <p><strong>Why revealing is gated rather than automatic, and why that is a deliberate
+ * divergence.</strong> The legacy system showed the full identifier to any signed-on operator who reached
+ * the account view transaction; it had no field-level protection at all, and the specification records that
+ * gap in &sect;0.7.4 rather than pretending otherwise. Reproducing it would mean publishing a national
  * identifier in a JSON body to every authenticated caller. The specification's own tie-break governs
  * this: a divergence is licensed when an external constraint compels it, and a regulated-data
  * constraint does. So the value is <em>masked by default</em> and revealed only when an authorization
@@ -348,13 +348,13 @@ public final class AccountProtectedDataAdapter {
      * Applies the same gate to the update screen's eight regulated values when they arrive already
      * revealed rather than as a stored record.
      *
-     * <p><strong>Why this form exists alongside {@link #revealForUpdate(Customer, RevealAuthorization)}.</strong>
-     * The update transaction is reproduced paragraph for paragraph in the service layer, and that layer
-     * legitimately holds the cleartext: it compares every typed field against the stored value to decide
-     * whether a change occurred, and the national identifier and the government-issued identifier are two
-     * of the fields it compares. The layering direction forbids a service from naming this class, so the
-     * service cannot apply the gate itself, and the boundary that can does not receive the record - it
-     * receives the screen the service composed. This method is the gate for exactly that shape.
+     * <p><strong>Why this form exists alongside {@link #revealForUpdate(Customer,
+     * RevealAuthorization)}.</strong> The update transaction is reproduced paragraph for paragraph in the
+     * service layer, and that layer legitimately holds the cleartext: it compares every typed field against
+     * the stored value to decide whether a change occurred, and the national identifier and the
+     * government-issued identifier are two of the fields it compares. The layering direction forbids a
+     * service from naming this class, so the service cannot apply the gate itself, and the boundary that
+     * can does not receive the record - it receives the screen the service composed. This method is the gate for exactly that shape.
      *
      * <p>The masking is the same masking, produced by the same helper, so the two forms cannot come to
      * disagree about what a masked value looks like. The one asymmetry is deliberate and matches

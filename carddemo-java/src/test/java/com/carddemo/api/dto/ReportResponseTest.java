@@ -1727,9 +1727,8 @@ class ReportResponseTest {
          *
          * <p>The decoration list is the one exception and is not a displayed value at all - it reports
          * which of those scalar fields are in which error state, one entry per faulted field, which is
-         * inherently as many entries as there are faulted fields. Asserting its absence is what the
-         * earlier revision of this test did, and that is exactly what left a client unable to highlight
-         * anything.
+         * inherently as many entries as there are faulted fields. Asserting its absence is what would leave
+         * a client unable to highlight anything.
          */
         @Test
         @DisplayName("publishes no array-shaped member other than the per-field decoration list, "

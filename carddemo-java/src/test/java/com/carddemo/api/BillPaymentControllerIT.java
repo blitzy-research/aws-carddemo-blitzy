@@ -131,15 +131,9 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
  * the pinned instant and this specification's graph reads it, which is what lets the two timestamps of a
  * posted transaction be asserted at an exact value rather than inside a window.
  *
- * <p>Provenance: {@code app/cbl/COBIL00C.cbl}, its symbolic map {@code app/cpy-bms/COBIL00.CPY}, its
- * mapset {@code app/bms/COBIL00.bms}, the record layouts {@code app/cpy/CVACT01Y.cpy},
- * {@code app/cpy/CVACT03Y.cpy} and {@code app/cpy/CVTRA05Y.cpy}, and the communication area
- * {@code app/cpy/COCOM01Y.cpy} - all read as read-only reference at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Message texts, field widths, record widths,
- * fixed field values, transaction identifiers and paragraph line numbers are contract and metadata; no
- * source line of any legacy member is transcribed here, and nothing under {@code app/} is read at run
- * time.
+ * <p>Message texts, field widths, record widths, fixed field values, transaction identifiers and paragraph
+ * line numbers are contract and metadata; no source line of any legacy member is transcribed here, and
+ * nothing under {@code app/} is read at run time.
  */
 @SpringBootTest(classes = BillPaymentControllerIT.BillPaymentContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.MOCK,

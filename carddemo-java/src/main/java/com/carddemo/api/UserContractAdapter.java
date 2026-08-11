@@ -59,11 +59,6 @@ import org.springframework.stereotype.Component;
  * <p>Stateless apart from the one injected collaborator, holding no mutable field, so the singleton is
  * safe for unsynchronised concurrent use.
  *
- * <p>Provenance: {@code app/cbl/COUSR00C.cbl}, {@code COUSR01C.cbl}, {@code COUSR02C.cbl},
- * {@code COUSR03C.cbl} and their four mapsets, read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook or program text is transcribed.
- *
  * @since 1.0.0
  */
 @Component

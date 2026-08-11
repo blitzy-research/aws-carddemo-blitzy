@@ -57,11 +57,7 @@ import com.carddemo.support.AbstractPostgresIT;
  * database. The paging nest uses the complete seed to verify the explicit ordering and page continuity
  * used by {@code CardListService}.
  *
- * <p>Provenance: the browse behaviour asserted here is that of {@code app/cbl/COCRDLIC.cbl} (the list
- * screen, seven rows, base-cluster order) and {@code app/cbl/COCRDSLC.cbl} (the keyed alternate-index
- * read), with the first-match reasoning recorded as {@code DL-121}; read as read-only reference at commit
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("Card browse: repository-side ordered first match and the keyset browse of the list screen")
 final class CardBrowseRepositoryIT extends AbstractPostgresIT {

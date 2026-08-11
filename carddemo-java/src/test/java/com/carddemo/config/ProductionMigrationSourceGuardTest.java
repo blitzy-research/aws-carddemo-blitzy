@@ -91,10 +91,7 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * a start-up log that echoed a supplied value would let whoever supplied it write a chosen line into
  * it.
  *
- * <p>Traceability: the migration set these controls protect stands in for the ten
- * {@code DEFINE CLUSTER} provisioning job streams of the legacy estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.
+ * <p>No legacy source text is reproduced here.
  */
 @DisplayName("Production migration isolation that does not depend on the migration tool running")
 final class ProductionMigrationSourceGuardTest {

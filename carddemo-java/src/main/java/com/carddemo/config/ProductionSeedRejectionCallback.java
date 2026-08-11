@@ -109,11 +109,7 @@ import org.slf4j.LoggerFactory;
  * and it applies with particular force here: the whole point of the refusal is that this database
  * holds data that must not be exposed, and a diagnostic is the hardest place to remove it from.
  *
- * <p>Provenance: this control has no legacy antecedent. It guards the PostgreSQL schema that replaces
- * the ten {@code DEFINE CLUSTER} provisioning job streams in {@code app/jcl} and the in-stream sign-on
- * identities of {@code app/jcl/DUSRSECJ.jcl}, taken from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text appears here.
+ * <p>Provenance: this control has no legacy antecedent. No legacy source text appears here.
  */
 final class ProductionSeedRejectionCallback implements Callback {
 

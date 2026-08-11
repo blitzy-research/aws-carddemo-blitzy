@@ -39,10 +39,6 @@ import org.junit.jupiter.api.Test;
  *
  * <p>A pure unit test: no Spring context, no connection, no container.
  *
- * <p>Provenance: {@code app/cpy/CSSETATY.cpy} and its expansion sites in {@code app/cbl/COACTUPC.cbl},
- * read as read-only reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 @DisplayName("FieldErrorMarks :: the validation accumulation, owned by the service layer")

@@ -301,11 +301,11 @@ public final class MessageCatalogService {
      *
      * <p>Padding is derived arithmetically from the declared width so that no space in this source file is
      * ever counted by eye, and the returned value is exactly {@code width} characters by construction. No
-     * runtime assertion confirms the width, because assertions are disabled by default in a normal JVM launch
-     * and would guarantee nothing.
+     * runtime assertion confirms the width, because assertions are disabled by default in a normal JVM
+     * launch and would guarantee nothing.
      *
-     * <p>Two failure modes are rejected eagerly, during class initialisation, so either surfaces as the bean
-     * failing to load rather than as wrong bytes on a screen. Text longer than its declared width is a
+     * <p>Two failure modes are rejected eagerly, during class initialisation, so either surfaces as the
+     * bean failing to load rather than as wrong bytes on a screen. Text longer than its declared width is a
      * contract violation rather than something to truncate, because silently shortening screen text would
      * corrupt the field layout. Null text means a catalog entry was initialised from a field declared later
      * in this class, which Java would otherwise resolve to null silently.

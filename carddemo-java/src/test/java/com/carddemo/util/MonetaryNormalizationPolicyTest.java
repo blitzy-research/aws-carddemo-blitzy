@@ -68,11 +68,8 @@ import com.carddemo.domain.StoredValueRules;
  * above the halfway point separates truncation from {@code HALF_UP} and {@code HALF_EVEN}, and a negative
  * value separates truncation toward zero from {@code FLOOR}. Both appear below, in both directions.
  *
- * <p>Provenance: the scale and the absence of a rounding clause were established against the read-only
- * legacy estate under {@code app/} at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is
- * transcribed here — only the scale, the widths and the truncation behaviour, which are metadata rather
- * than source.
+ * <p>No COBOL statement is transcribed here — only the scale, the widths and the truncation behaviour,
+ * which are metadata rather than source.
  */
 @DisplayName("Monetary normalisation policy: one policy, two enforcement points, no drift")
 final class MonetaryNormalizationPolicyTest {

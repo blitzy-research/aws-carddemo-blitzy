@@ -90,10 +90,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * suppressed dispatch and the administrator-only option - which exist in the source and must still be
  * shown to travel.
  *
- * <p>Provenance: {@code app/cbl/COMEN01C.cbl}, {@code app/cbl/COADM01C.cbl},
- * {@code app/cpy/COMEN02Y.cpy}, {@code app/cpy/COADM02Y.cpy} and {@code app/csd/CARDDEMO.CSD}, read as
- * read-only reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("MenuController :: the delivered menu operations")
 class MenuControllerTest {

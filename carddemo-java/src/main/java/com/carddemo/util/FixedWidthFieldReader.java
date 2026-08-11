@@ -136,8 +136,8 @@ import java.util.Objects;
  * encoding is its exact inverse. The card number below is a synthetic, width-preserving placeholder
  * and not a value drawn from any data set.
  *
- * <pre>{@code
- * FixedWidthFieldReader record = FixedWidthFieldReader.of("ACCOUNT", image, 300);
+ * <pre>{@code FixedWidthFieldReader
+ * record = FixedWidthFieldReader.of("ACCOUNT", image, 300);
  * String accountId = record.field("ACCT-ID", 0, 11); // "00000000001", untrimmed
  * String key       = record.key(11);                 // leading 11 bytes
  * String data      = record.data(11);                // remaining 289 bytes

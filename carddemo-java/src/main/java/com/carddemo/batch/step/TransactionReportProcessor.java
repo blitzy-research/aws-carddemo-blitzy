@@ -42,14 +42,11 @@ import org.springframework.batch.item.ItemProcessor;
  *
  * <h2>Provenance</h2>
  *
- * <p>Translated from the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The stamp is the migration's provenance
- * anchor, carried by a measured subset of the estate rather than by every member, so it identifies
- * the delivery this translation was taken from and is never asserted per member. The authorities
- * are the report program {@code app/cbl/CBTRN03C.cbl}
- * (649 lines), the report layout copybook {@code app/cpy/CVTRA07Y.cpy}, the job
- * {@code app/jcl/TRANREPT.jcl} and the cataloged procedure {@code app/proc/TRANREPT.prc}. They are
+ * <p>The stamp is the migration's provenance anchor, carried by a measured subset of the estate
+ * rather than by every member, so it identifies the delivery this translation was taken from and is
+ * never asserted per member. The authorities are the report program {@code app/cbl/CBTRN03C.cbl}
+ * (649 lines), the report layout copybook {@code app/cpy/CVTRA07Y.cpy}, the job {@code
+ * app/jcl/TRANREPT.jcl} and the cataloged procedure {@code app/proc/TRANREPT.prc}. They are
  * <strong>cited, never transcribed</strong>, and nothing on this path reads the legacy tree at run
  * time. A census of the report program must be taken over both extension casings the estate uses -
  * {@code app/cbl/**.cbl} and {@code app/cbl/**.CBL} - because a lowercase-only pattern silently
@@ -140,13 +137,11 @@ import org.springframework.batch.item.ItemProcessor;
  *       record area, then emits the final page total and the grand total.</li>
  * </ol>
  *
- * <p>The report program contains <strong>zero computation statements</strong>. That is a verified
- * property of the authority rather than a style observation, and it is why neither the service nor
- * this class introduces a derived figure of any kind: no percentage, no average, no recomputation of
- * a total from the rows and no algebraic rearrangement. Accumulation of already-scaled amounts is
- * the only arithmetic in the feature, scaling is {@link ZonedDecimalCodec}'s single responsibility,
- * and <strong>this class performs no arithmetic at all</strong> - it holds no accumulator, calls no
- * scaling operation and declares no floating-point type.
+ * <p>The report program contains <strong>zero computation statements</strong>. That is a verified property
+ * of the authority rather than a style observation, and it is why neither the service nor this class
+ * introduces a derived figure of any kind - no percentage, average, recomputed total or algebraic
+ * rearrangement. Accumulation of already-scaled amounts is the only arithmetic in the feature, scaling is
+ * {@link ZonedDecimalCodec}'s single responsibility, and this class performs none at all.
  *
  * <h2>Width fidelity is proved, not assumed</h2>
  *

@@ -57,12 +57,10 @@ import com.carddemo.util.ZonedDecimalCodec;
 /**
  * Posts daily transactions onto the account, category-balance and transaction stores.
  *
- * <p>Translation of {@code app/cbl/CBTRN02C.cbl}, the batch daily-transaction posting program. Each of
- * its procedure units has a named method here, and {@code docs/traceability-matrix.md} carries the
- * unit-to-method inventory with the source line range of each; every method below also states its own
- * paragraph name and line range. Provenance: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * <p>Translation of {@code app/cbl/CBTRN02C.cbl}, the batch daily-transaction posting program. Each
+ * of its procedure units has a named method here, and {@code docs/traceability-matrix.md} carries
+ * the unit-to-method inventory with the source line range of each; every method below also states
+ * its own paragraph name and line range.
  *
  * <h2>Record authorities</h2>
  * Five copybooks fix the widths this class moves values between: {@code app/cpy/CVTRA06Y.cpy}, the
@@ -150,12 +148,12 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <p><strong>The durable unit is one posting STAGE, not one record.</strong> Lines 440 to 442 perform three
  * stores in one order, over three files defined {@code RECOVERY(NONE)} with {@code JOURNAL(NO)}, and the
- * member contains no rollback site: a store that completed stayed completed whatever the store after it did,
- * so a refused transaction-file write left the category balance and the account rewrite in place and abended
- * on top of them. {@link PostingStageTransactionBoundary} therefore opens one unit per stage, and the
- * posting cascade calls it three times per posted record in the source's order. One unit around all three
- * would invent an all-or-none property the source does not have and would discard two stores no legacy
- * mechanism discards.
+ * member contains no rollback site: a store that completed stayed completed whatever the store after it
+ * did, so a refused transaction-file write left the category balance and the account rewrite in place and
+ * abended on top of them. {@link PostingStageTransactionBoundary} therefore opens one unit per stage, and
+ * the posting cascade calls it three times per posted record in the source's order. One unit around all
+ * three would invent an all-or-none property the source does not have and would discard two stores no
+ * legacy mechanism discards.
  *
  * <p>The member's other two I/O acts - the cross-reference read and the account read of validation - take a
  * unit each through the same boundary, so nothing this class hands back is managed by a caller's unit of
@@ -1432,12 +1430,12 @@ public class TransactionPostingService {
      * different table and asks this row nothing.
      *
      * <p>The hold is a strengthening of the legacy baseline and is recorded as one in
-     * {@code docs/decision-log.md} entry DL-170 rather than presented as parity. The legacy cluster is defined {@code READINTEG(UNCOMMITTED)},
-     * {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}, and this program rewrites by key - the file is
-     * {@code ORGANIZATION IS INDEXED, ACCESS MODE IS RANDOM} at lines 51 to 53 - so no row was ever
-     * actually held and a concurrent change was invisible. It does not replace the version predicate,
-     * which still carries the version validation read; the two answer different questions, presence and
-     * change.
+     * {@code docs/decision-log.md} entry DL-170 rather than presented as parity. The legacy cluster is
+     * defined {@code READINTEG(UNCOMMITTED)}, {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}, and this
+     * program rewrites by key - the file is {@code ORGANIZATION IS INDEXED, ACCESS MODE IS RANDOM} at lines
+     * 51 to 53 - so no row was ever actually held and a concurrent change was invisible. It does not
+     * replace the version predicate, which still carries the version validation read; the two answer
+     * different questions, presence and change.
      *
      * @param  record  the record being posted
      * @param  account the account read during validation

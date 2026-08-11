@@ -54,9 +54,7 @@ import java.util.regex.Pattern;
  * to the members that include them - the second copybook is included by five members, so counting its
  * paragraphs against each of them would report ten units for two and the total would no longer be 544.
  *
- * <p>Provenance: the matrix cites checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Only counts, member names
- * and paragraph names are read here; no legacy source text is involved.
+ * <p>Only counts, member names and paragraph names are read here; no legacy source text is involved.
  */
 public final class TraceabilityMatrixCensus {
 

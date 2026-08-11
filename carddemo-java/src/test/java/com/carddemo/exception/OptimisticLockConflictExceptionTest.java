@@ -153,14 +153,6 @@ import org.junit.jupiter.params.provider.EnumSource;
  * compile time by this test never calling such a member: no reflective enumeration of members is
  * performed anywhere here, and the platform reflection API is not referenced at all, because the
  * module's audited budget for reflection is zero.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Every citation above was verified against the legacy checkout at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed; the
- * line references are citations, and the four operator messages are reproduced as external
- * contract strings rather than as source code.</p>
  */
 @DisplayName("OptimisticLockConflictException - the recoverable write-conflict contract")
 class OptimisticLockConflictExceptionTest {

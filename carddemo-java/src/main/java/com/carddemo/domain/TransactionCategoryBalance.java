@@ -65,8 +65,8 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
 public class TransactionCategoryBalance {
 
     /**
-     * Total digit count of the balance column: 11, being nine digits before the implied decimal point and two
-     * after, from the copybook's own picture clause.
+     * Total digit count of the balance column: 11, being nine digits before the implied decimal point and
+     * two after, from the copybook's own picture clause.
      *
      * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
      * than two copies of it.

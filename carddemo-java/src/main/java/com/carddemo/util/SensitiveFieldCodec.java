@@ -104,14 +104,6 @@ import java.util.Objects;
  * substitute. Checked cryptographic failures are caught as
  * {@link java.security.GeneralSecurityException}, which is the shared supertype and lives in
  * {@code java.security}, so no {@code javax} type appears in a signature or a catch clause either.
- *
- * <h2>Provenance</h2>
- *
- * <p>Derived from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy estate is read-only reference
- * material; the field offsets and widths quoted above are citations, not transcriptions, and no
- * legacy source text is reproduced here.
  */
 public final class SensitiveFieldCodec {
 
@@ -347,7 +339,7 @@ public final class SensitiveFieldCodec {
      * misconfiguration is reported as a configuration fault rather than as an opaque cryptographic
      * one.
      *
-     * <p>The message states the required length and never the material - nor, since this checkpoint, the
+     * <p>The message states the required length and never the material - nor the
      * length that was supplied. The observed length is a property of the key, this exception aborts
      * start-up, and start-up failure reporting renders whatever it carries into the deployment log; an
      * operator who is about to pad or regenerate their key gains nothing from being told how long the

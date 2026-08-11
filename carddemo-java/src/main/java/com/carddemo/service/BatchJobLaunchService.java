@@ -66,8 +66,8 @@ import org.springframework.stereotype.Service;
  * gap: a job member resubmitted with an identical parameter set simply ran again - the posting job on the
  * same processing date, the accrual run with the same run date, the backup after a failed cycle - and
  * refusing the second submission would be a behavioural regression presented as an idempotency guarantee.
- * What <em>is</em> refused is an overlapping run: the coordinator holds a per-job lock and declines while an
- * execution of that job is active, which is the property the operational surface actually needs. This
+ * What <em>is</em> refused is an overlapping run: the coordinator holds a per-job lock and declines while
+ * an execution of that job is active, which is the property the operational surface actually needs. This
  * paragraph replaces one that claimed the opposite; see {@code docs/decision-log.md} entry DL-310.
  *
  * <p><strong>Parameter values are passed through byte for byte.</strong> Two of them make that
@@ -96,18 +96,11 @@ import org.springframework.stereotype.Service;
  * job is outside the closed inventory are all answered the same way - {@code null} - so a caller cannot
  * tell them apart and cannot use the difference to discover what else the framework has run.
  *
- * <p><strong>Nothing starts when the context starts.</strong> This service contributes no runner, no
- * lifecycle participant, no initialising callback, no event listener and no scheduled trigger, and it
- * names no job for anything to resolve, so a job runs only when one of these operations is called. It
- * constructs no repository, no launcher, no registry, no operator, no transaction manager, no metadata
- * table and no data source: all of those arrive from the framework's auto-configuration.
- *
- * <p>Provenance: the resource definitions of {@code app/csd/CARDDEMO.CSD} register eighteen transactions
- * and not one of them starts a job, so batch control is not a translated transaction and carries no
- * screen; read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No resource definition or job control statement
- * is transcribed.
+ * <p><strong>Nothing starts when the context starts.</strong> This service contributes no runner,
+ * lifecycle participant, initialising callback, event listener or scheduled trigger, and names no job for
+ * anything to resolve, so a job runs only when one of these operations is called. The repository,
+ * launcher, registry, operator, transaction manager, metadata tables and data source all arrive from the
+ * framework's auto-configuration.
  *
  * <p>Stateless and immutable: every field is final and there is no mutable static state. The parameter
  * carrier the framework's launch signature requires is built inside the method that launches, is handed
@@ -143,10 +136,10 @@ public class BatchJobLaunchService {
      * Takes the three framework collaborators and refuses a missing one, so the bean cannot exist half
      * wired.
      *
-     * <p>Three and not four. An earlier revision also took the framework's {@code JobOperator}, for a
-     * repeat and a resume operation that the delivered surface does not offer - the control surface maps
-     * exactly the launch and the status read, and its integration contract asserts that a repeat address
-     * and a resume address both answer as absent. A collaborator held for an operation nobody can reach is
+     * <p>Three and not four. The framework's {@code JobOperator} is deliberately not taken: it serves a
+     * repeat and a resume operation the delivered surface does not offer - the control surface maps exactly
+     * the launch and the status read, and its integration contract asserts that a repeat address and a
+     * resume address both answer as absent. A collaborator held for an operation nobody can reach is
      * a dependency the bean does not have, so it is not taken.
      *
      * @param jobRegistry the registry a stable job name is resolved through
@@ -192,9 +185,9 @@ public class BatchJobLaunchService {
      * <p>Nothing is added to the parameters here. The one identifying value that makes each launch a
      * distinct instance is minted below this method by the launch port, so the same name with the same
      * values deliberately starts a second run rather than being answered out of the framework's metadata -
-     * which is what a resubmitted job member did on the estate. An <em>overlapping</em> run is what the port
-     * refuses. Which parameters the job accepts, and what each must contain, is decided by the job's own
-     * validator during the launch and is not restated here.
+     * which is what a resubmitted job member did on the estate. An <em>overlapping</em> run is what the
+     * port refuses. Which parameters the job accepts, and what each must contain, is decided by the job's
+     * own validator during the launch and is not restated here.
      *
      * @param stableJobName the allow-listed name to resolve through the registry
      * @param jobParameters the parameters to launch with; every value is passed through unchanged, and

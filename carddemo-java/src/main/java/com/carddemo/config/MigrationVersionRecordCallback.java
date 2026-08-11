@@ -27,15 +27,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Writes this module's own record of which schema versions <strong>this invocation</strong> applied, and the
- * highest version among them.
+ * Writes this module's own record of which schema versions <strong>this invocation</strong> applied, and
+ * the highest version among them.
  *
  * <h2>What the record is, stated as narrowly as the mechanism can support</h2>
  *
  * <p>The contract is deliberately about the <em>effect of this start-up</em> and not about the state of the
  * database, and the distinction is not pedantry: on every start-up after the first there is nothing to
- * apply, so there is no version to name, and an earlier wording that promised "the version it reached"
- * described something this callback cannot see. A Flyway callback receives a
+ * apply, so there is no version to name, and a promise of "the version it reached" would describe
+ * something this callback cannot see. A Flyway callback receives a
  * {@link org.flywaydb.core.api.callback.Context}, which offers the migration currently being applied and
  * nothing about migrations applied by anyone else; establishing the version an already-current database
  * stands at means querying the schema-history table, which is the one thing this record is written to
@@ -86,11 +86,6 @@ import org.slf4j.LoggerFactory;
  * is single-threaded, so the atomics are not there for contention; they are there because the same callback
  * instance serves the whole context lifetime and a second migration operation - a test that migrates twice
  * against one context - must not inherit the first one's totals.
- *
- * <p>Provenance: the migrations this records are the relational translation of the ten
- * {@code DEFINE CLUSTER} provisioning jobs of the legacy estate, at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
  *
  * <p>See {@code docs/decision-log.md} entries DL-311 and DL-335, the latter recording why the contract is
  * the effect of one invocation rather than the state of the database.

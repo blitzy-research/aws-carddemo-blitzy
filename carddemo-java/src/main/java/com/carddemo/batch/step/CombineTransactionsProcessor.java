@@ -42,8 +42,8 @@ import org.springframework.batch.item.ItemProcessor;
  * instrumentation still govern the two steps, but they are applied by the job configuration around a
  * chunk-oriented step rather than inherited by a tasklet.
  *
- * <p>The external sort becomes ordinary in-process ordering inside {@code
- * CombineTransactionsJobConfig}. The copy utility becomes an ordinary reader, this processor, and a
+ * <p>The external sort becomes ordinary in-process ordering inside {@code CombineTransactionsJobConfig}.
+ * The copy utility becomes an ordinary reader, this processor, and a
  * writer that saves through {@code com.carddemo.repository.TransactionRepository}. No operating
  * system utility, shell command, process, container command or external tool is invoked anywhere on
  * that path, and nothing on it reads the legacy tree at run time.
@@ -178,11 +178,6 @@ import org.springframework.batch.item.ItemProcessor;
  * could not substitute for that, since it would measure neither reading nor writing nor the step's
  * own overhead, so this class registers no meter and takes no meter registry: it has no collaborator
  * to inject, and pretending otherwise would put a dependency in a constructor purely to look busy.
- *
- * <p>Provenance: translated from the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy job, procedure, control member
- * and copybook are cited, never transcribed, and are never read at run time.
  *
  * @see Transaction
  * @see TransactionRecordMapper

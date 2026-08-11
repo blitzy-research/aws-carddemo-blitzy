@@ -28,11 +28,6 @@ import jakarta.validation.constraints.Size;
  * parameterized macro {@code app/cpy/CSSETATY.cpy}, and the echoed request state derives from the
  * communication area {@code app/cpy/COCOM01Y.cpy}.
  *
- * <p>Provenance of every citation in this file: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Line numbers refer to that checkout, and
- * the legacy tree is read-only reference: no statement of it is transcribed here.
- *
  * <p><strong>What the map contributes.</strong> The symbolic map declares an input group and an
  * output group that redefines it, and the two have full width parity, so a single set of widths
  * governs both directions. Fifteen of the output group's seventeen displayable items are modelled:
@@ -42,16 +37,14 @@ import jakarta.validation.constraints.Size;
  * (mapset lines 158 and 163). They convey no state, so they are deliberately absent: a REST client
  * that needs to know the save gate reads it from the contract, not from a caption.
  *
- * <p><strong>What the map deliberately does not contribute.</strong> Each map item is generated
- * with a family of one-character control sub-fields - length, flag, attribute, colour, highlight,
- * programmed-symbol and validation - and the group opens with a twelve-byte terminal-buffer prefix.
- * All of it is 3270 rendering plumbing. None of it appears here: this type holds no attribute byte,
- * no colour value, no highlight value, no marker character, no map coordinate, no cursor position
- * and no edited screen overlay. The legacy program signalled a field error by writing a colour into
- * a control sub-field and, for a blank field only, a marker over the displayed value (program lines
- * 1243 to 1307); it positioned the cursor by writing a sentinel into a length sub-field (lines 1211
- * to 1235). Both mechanisms are discarded and only their meaning survives, as
- * {@link ErrorResponse.FieldError} entries and as {@link #focusScreenFieldId()}.
+ * <p><strong>What the map deliberately does not contribute.</strong> Every 3270 rendering artefact - the
+ * one-character control sub-fields each map item is generated with, the twelve-byte terminal-buffer
+ * prefix, attribute and colour values, map coordinates and cursor positions - stays out of this type.
+ * The legacy program signalled a field error by writing a colour into a control sub-field and, for a
+ * blank field only, a marker over the displayed value (program lines 1243 to 1307), and positioned the
+ * cursor by writing a sentinel into a length sub-field (lines 1211 to 1235). Both mechanisms are
+ * discarded and only their meaning survives, as {@link ErrorResponse.FieldError} entries and as
+ * {@link #focusScreenFieldId()}.
  *
  * <p><strong>Two widths that look like defects and are not.</strong> On this map the information
  * line is 40 characters and the error line is 80 (map lines 206 and 212, corroborated by mapset

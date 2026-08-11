@@ -212,18 +212,15 @@ import org.springframework.transaction.support.TransactionTemplate;
  * cluster is registered to the online region, but its processing-timestamp alternate index is not -
  * only the card-side paths are - which is what makes the window access path batch-only.
  *
- * <p>Provenance: the behaviour asserted here is that of {@code app/cpy/CVTRA05Y.cpy} (the 350-byte
- * record layout), {@code app/jcl/TRANFILE.jcl} and {@code app/jcl/TRANIDX.jcl} (the base cluster and
- * the one logical alternate index described in both), {@code app/proc/TRANREPT.prc} with
+ * <p>Provenance: the behaviour asserted here is that of {@code app/cpy/CVTRA05Y.cpy} (the 350-byte record
+ * layout), {@code app/jcl/TRANFILE.jcl} and {@code app/jcl/TRANIDX.jcl} (the base cluster and the one
+ * logical alternate index described in both), {@code app/proc/TRANREPT.prc} with
  * {@code app/jcl/TRANREPT.jcl} (the inclusive window, the sort positions and the 133-byte line),
  * {@code app/jcl/CREASTMT.JCL} (the statement job that types the same card-number bytes as character),
- * {@code app/cbl/COBIL00C.cbl} (identifier minting), {@code app/cbl/COTRN00C.cbl} (the list browse and
- * its page size), {@code app/cbl/CBTRN03C.cbl} (the report that performs no arithmetic) and
- * {@code app/csd/CARDDEMO.CSD} (which registers the base cluster online and this index nowhere). All
- * are read-only reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance
- * string for the traceability matrix header only and is not asserted against any member. Members are
- * cited by name, width, offset and row count only: <strong>no legacy source statement is transcribed
+ * {@code app/cbl/COBIL00C.cbl} (identifier minting), {@code app/cbl/COTRN00C.cbl} (the list browse and its
+ * page size), {@code app/cbl/CBTRN03C.cbl} (the report that performs no arithmetic) and
+ * {@code app/csd/CARDDEMO.CSD} (which registers the base cluster online and this index nowhere). Members
+ * are cited by name, width, offset and row count only: <strong>no legacy source statement is transcribed
  * anywhere in this file.</strong>
  *
  * @see TransactionRepository
@@ -1518,9 +1515,9 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
      * Proves the highest-key read is a single-row read and issues no count.
      *
      * <p>The add screen positions its browse at the end of the key sequence and reads backward once
-     * [app/cbl/COTRN02C.cbl:L444, L475], which lands on the highest key present. An earlier revision
-     * expressed that as page zero of a descending sort at size one, and read only the page's content. A
-     * page carries a total, so the provider issued a second statement counting every row of the transaction
+     * [app/cbl/COTRN02C.cbl:L444, L475], which lands on the highest key present. EXPRESSING THAT AS PAGE
+     * ZERO OF A DESCENDING SORT AT SIZE ONE and reading only the page's content is prohibited: a page
+     * carries a total, so the provider issues a second statement counting every row of the transaction
      * master - on a screen that displays one row, on every copy-last and every add, with nothing ever
      * reading the figure.
      *

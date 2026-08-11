@@ -29,13 +29,13 @@ import org.springframework.mock.env.MockEnvironment;
 /**
  * Specification of the quality a production management credential must have.
  *
- * <h2>What review found, and why presence was not enough</h2>
+ * <h2>Why presence is not enough</h2>
  *
  * <p>One shared machine credential reaches every metrics endpoint, the exposition scrape and every non-probe
- * management path of this deployment, and until this check existed the only requirement on it was that it not
- * be blank. A single character was a valid production credential. It is also long-lived by construction,
- * because it is presented on every scrape, and it was compared without any limit on attempts - so a weak
- * value was not merely weak but weak indefinitely and quietly.
+ * management path of this deployment, and a requirement that it merely not be blank would admit a
+ * single character as a valid production credential. It is also long-lived by construction, because it
+ * is presented on every scrape, and it is compared without any limit on attempts - so a weak value is
+ * not merely weak but weak indefinitely and quietly.
  *
  * <h2>The three rules, and what each is for</h2>
  *
@@ -313,9 +313,9 @@ class ManagementCredentialQualityTest {
         void namesEveryBrokenRule() {
             // The credential offered breaks all three rules: it is shorter than the byte floor, it holds
             // seven distinct characters where sixteen are required, and it is one of the refused words
-            // outright. It used to be "secret", and the assertion used to require the refusal to quote
-            // the matched word back - which is the disclosure this suite now forbids. "changeme" is
-            // offered instead because, unlike "secret" and "token", it appears nowhere in the refusal's
+            // // outright. "secret" is deliberately not the value offered, because an assertion requiring the
+            // // refusal to quote the matched word back is the disclosure this suite forbids. "changeme" is
+            // // offered instead because, unlike "secret" and "token", it appears nowhere in the refusal's
             // own prose, so its absence is a statement about the finding rather than about the wording.
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> ProductionConfigurationValidator
@@ -380,14 +380,16 @@ class ManagementCredentialQualityTest {
         }
 
         @Test
-        @DisplayName("the distinctness floor sits far below what generated material yields, so it can only "
-                + "ever refuse a hand-typed pattern")
-        void theDistinctnessFloorCannotRefuseGeneratedMaterial() {
+        @DisplayName("the distinctness floor is cleared by thirty-two characters drawn from a wide "
+                + "alphabet, which is the shape the profile's guidance names")
+        void theDistinctnessFloorIsClearedByTheGeneratorTheGuidanceNames() {
             assertThat(ProductionConfigurationValidator.MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS)
                     .isEqualTo(16);
             assertThat(ACCEPTABLE.chars().distinct().count())
-                    .as("thirty-two generated characters clear this floor comfortably, which is the "
-                            + "property that makes the rule safe to apply")
+                    .as("thirty-two characters over a base64-width alphabet clear this floor, which is "
+                            + "what makes the rule safe to apply to the generator the profile names; a "
+                            + "narrow alphabet does not, and the profile says so rather than leaving a "
+                            + "deployer to find out by being refused")
                     .isGreaterThan(ProductionConfigurationValidator
                             .MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS);
         }

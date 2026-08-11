@@ -126,15 +126,6 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>Stateless apart from its injected collaborators, holding no mutable field, so the singleton is
  * safe for unsynchronised concurrent use.
  *
- * <p>Provenance: {@code app/cbl/COMEN01C.cbl} and {@code app/cbl/COADM01C.cbl}, their symbolic maps
- * {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY}, their option tables
- * {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy}, the communication area
- * {@code app/cpy/COCOM01Y.cpy}, and the resource definitions in {@code app/csd/CARDDEMO.CSD} whose
- * transaction entries bind {@code CM00} and {@code CA00} to those two programs - all read as read-only
- * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed and no
- * screen attribute, length or position byte is published.
- *
  * @since 1.0.0
  */
 @RestController

@@ -195,8 +195,8 @@ public record TransactionListResponse(
      * map generator forms names and carry no meaning - but a row's slot <em>is</em> carried, because
      * its index in the enclosing list is not the same thing: a backward browse fills the screen's
      * slots downward from the last, so on a partial backward page the two differ and the selector a
-     * client returns is addressed by slot. The generated length, flag and attribute items and the terminal-area filler are
-     * likewise absent as terminal plumbing.</p>
+     * client returns is addressed by slot. The generated length, flag and attribute items and the
+     * terminal-area filler are likewise absent as terminal plumbing.</p>
      *
      * <p>Every component may be {@code null} or blank, because a row the browse did not fill is blank
      * on the legacy screen, and none is validated beyond its declared width.</p>

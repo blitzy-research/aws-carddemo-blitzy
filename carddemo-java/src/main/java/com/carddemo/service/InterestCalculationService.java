@@ -57,11 +57,6 @@ import com.carddemo.util.ZonedDecimalCodec;
  * The monthly interest accrual run: the Java realisation of the batch interest calculator
  * {@code app/cbl/CBACT04C.cbl}, <strong>652 lines and 22 procedure-division paragraphs</strong>.
  *
- * <p>Provenance: the legacy estate is read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here;
- * every claim below is a citation of a member, a paragraph, a line, a field name or a status code.
- *
  * <h2>Record authorities and their byte widths</h2>
  *
  * <ul>
@@ -544,10 +539,10 @@ public class InterestCalculationService {
      * <p>The source invokes that paragraph from exactly two places and only one of them can be reached.
      * The reachable one is the key-change control break at {@code app/cbl/CBACT04C.cbl:L196}. The other
      * is the {@code ELSE} arm at lines 219 to 221, which sits inside a {@code PERFORM UNTIL
-     * an until-loop over the end-of-file flag whose condition is evaluated <strong>before</strong> each iteration; the read
-     * paragraph raises the flag itself at line 340, so the loop ends and the arm never runs. The last
-     * account of a run therefore never has its balance posted and never has its cycle accumulators
-     * closed, while every interest record of that account has already been written - because
+     * an until-loop over the end-of-file flag whose condition is evaluated <strong>before</strong> each
+     * iteration; the read paragraph raises the flag itself at line 340, so the loop ends and the arm never
+     * runs. The last account of a run therefore never has its balance posted and never has its cycle
+     * accumulators closed, while every interest record of that account has already been written - because
      * {@code 1300-COMPUTE-INTEREST} and {@code 1300-B-WRITE-TX} run per row at lines 215 and 468,
      * inside the loop, long before any control break.
      *

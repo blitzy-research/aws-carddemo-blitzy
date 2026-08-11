@@ -56,23 +56,19 @@ public interface SessionTokenIssuer {
      * <p><strong>Why the stored code and the resolved authority are two arguments and not one.</strong>
      * The legacy route split tests one condition - is the stored code the administrator letter - and its
      * alternative is unconditional, so <em>every</em> other stored value, including one the estate never
-     * declared, resolves to the standard authority. The stored code and the resolved authority therefore
-     * genuinely differ for such a record: the code is whatever the record holds and the authority is the
-     * standard one. Collapsing them into a single argument forces an implementation to either re-derive
-     * the code from the authority - which invents a value the record does not carry - or to compare the
-     * two for equality, which refuses exactly the records the legacy admitted. Both are passed so that
-     * neither is guessed.
+     * declared, resolves to the standard authority. For such a record the two genuinely differ, so
+     * collapsing them would force an implementation either to re-derive the code from the authority,
+     * inventing a value the record does not carry, or to compare the two for equality, refusing exactly
+     * the records the legacy admitted.
      *
-     * <p><strong>An implementation may nevertheless re-check the record, and the delivered one does.</strong>
-     * The reason is not distrust of the caller: a session has to carry something that lets a later
-     * request find out whether these facts are <em>still</em> true, that something can only be derived
-     * from the record, and so the record is read again regardless. Once it has been read, an operator
-     * who has been deleted, or whose stored type code is no longer the one being minted, is visible for
-     * nothing - and issuing a session in either case would hand out a credential describing a record
-     * that does not say what it says. An implementation that finds either condition refuses rather than
-     * returning a session, which is why this method is declared to throw. What it must <em>not</em> do is
-     * require the stored code to equal the resolved authority's own code, because that is false for every
-     * record carrying an undeclared code and those records sign on successfully.
+     * <p><strong>An implementation may re-check the record, and the delivered one does.</strong> A session
+     * must carry something that lets a later request find out whether these facts are <em>still</em> true,
+     * and that can only be derived from the record, so the record is read again regardless. An operator
+     * who has been deleted, or whose stored type code is no longer the one being minted, is then visible
+     * for nothing, and issuing a session in either case would hand out a credential describing a record
+     * that does not say what it says - which is why this method is declared to throw. What it must
+     * <em>not</em> do is require the stored code to equal the resolved authority's own code, because that
+     * is false for every record carrying an undeclared code and those records sign on successfully.
      *
      * @param userId the identifier the credential record is keyed by, never {@code null}
      * @param userType the authority resolved from that record, never {@code null}

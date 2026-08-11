@@ -98,13 +98,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *       masked, not hashed, not as a length and not as a presence flag. Where a credential-shaped
  *       value is needed at all, this file uses a synthetic one.</li>
  * </ul>
- *
- * <h2>Provenance</h2>
- *
- * <p>Every width, count, line citation and message literal asserted below was read from the legacy
- * estate at repository checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source line is transcribed
- * here: the message texts are external contract, and widths, counts and member names are metadata.
  */
 @DisplayName("UserResponse :: the shared contract of legacy transactions CU00, CU01, CU02 and CU03")
 class UserResponseTest {

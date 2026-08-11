@@ -39,16 +39,13 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * Verifies {@link ScreenWorkArea}, the replacement for the per-screen scratch area that five of the
  * online programs shared.
  *
- * <p><strong>What it replaces.</strong> {@code app/cpy/CVCRD01Y.cpy} declares the
- * {@code CC-WORK-AREAS} group: the attention identifier the terminal last raised, the next program,
- * mapset and map to display, an error message, a return message, and three identifier fields, each
- * of which is declared twice - once as fixed-width text and once as an unsigned numeric
- * redefinition over the very same bytes. Only the five-program family that included this copybook
- * used it, which is why the three identifier fields appear here and not on the wider communication
- * area. The provenance of every source citation in this suite is the checkout at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose members carry the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook text is reproduced here; only
- * field widths, line numbers and contract literals, which are metadata rather than source.
+ * <p> {@code app/cpy/CVCRD01Y.cpy} declares the {@code CC-WORK-AREAS} group: the attention identifier the
+ * terminal last raised, the next program, mapset and map to display, an error message, a return message,
+ * and three identifier fields, each of which is declared twice - once as fixed-width text and once as an
+ * unsigned numeric redefinition over the very same bytes. Only the five-program family that included this
+ * copybook used it, which is why the three identifier fields appear here and not on the wider communication
+ * area. No copybook text is reproduced here; only field widths, line numbers and contract literals, which
+ * are metadata rather than source.
  *
  * <p><strong>This suite owns two acceptance assertions for the whole transfer-object folder.</strong>
  * They are the two that a plausible, compiling, wrong implementation would silently break, so they

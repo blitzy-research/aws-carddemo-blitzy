@@ -98,10 +98,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * reaches the persistence context is rolled back rather than committed. The shared server therefore leaves
  * this class in the state it entered it, and no reset is needed.
  *
- * <p><strong>Provenance.</strong> The legacy estate carries no test harness of any kind. The response arms
- * this classification feeds are read-only reference material at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; no legacy source text is reproduced here.
+ * <p>The legacy estate carries no test harness of any kind.
  *
  * @see RecordWriter#isDuplicateKey(Throwable)
  */

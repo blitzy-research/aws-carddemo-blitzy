@@ -49,10 +49,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * implemented by {@code app/cbl/COACTUPC.cbl} - the largest program in the estate at 4,236 lines and 85
  * paragraphs - over screen {@code app/cpy-bms/COACTUP.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Two components deliberately carry no width, and that is this class's most important
  * assertion.</strong> The legacy program decorates thirty-nine fields for error display through the
  * {@code CSSETATY} macro, but two of the thirty-nine are decorated and never actually validated - the

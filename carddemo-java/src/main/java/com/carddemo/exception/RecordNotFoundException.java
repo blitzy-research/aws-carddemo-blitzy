@@ -132,11 +132,6 @@ package com.carddemo.exception;
  * Every context field is final and there are no mutators, so an instance is
  * immutable once constructed; a cause must therefore be supplied to the
  * canonical constructor rather than attached afterwards.</p>
- *
- * <p>Provenance: translated from the AWS CardDemo mainframe estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source text
- * is reproduced in this module.</p>
  */
 public class RecordNotFoundException extends RuntimeException {
 

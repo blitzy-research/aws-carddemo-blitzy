@@ -45,14 +45,13 @@ import org.junit.jupiter.api.Test;
  * <p>Three documents state figures about this tree: the architecture page publishes a file count per
  * package and two figures about the service package, and the module README publishes the number of
  * managed-version properties in the POM's security-remediation block together with the properties
- * themselves. Each figure was correct when it was written, and each is the kind of figure that drifts
- * silently — the package table had drifted by four packages one checkpoint after it was authored, and
- * the override count was published as three while the block held twelve.</p>
+ * themselves. Every one of them is the kind of figure that drifts silently, because a document has no way
+ * to notice a directory gaining a class or a scan gaining an override.</p>
  *
  * <p>The remedy is not a more careful author. It is to stop transcribing: every figure named above is
- * asserted here against the directory, the POM block or the matrix that decides it, so a package that
- * gains a class and a scan that adds an override both either update the prose or break the build.
- * Recorded in {@code docs/decision-log.md} DL-316.</p>
+ * asserted here against the directory, the POM block or the matrix that decides it, so prose that falls
+ * behind the tree breaks the build instead of misinforming a reader. Recorded in
+ * {@code docs/decision-log.md} DL-316.</p>
  */
 @DisplayName("documented source counts: every published figure is measured, not transcribed")
 final class DocumentedSourceCountsTest {
@@ -76,10 +75,10 @@ final class DocumentedSourceCountsTest {
     /**
      * Every further document that states how many values the production profile requires.
      *
-     * <p>Held here because the count had drifted in all four of them at once while the two documents
-     * with a derived assertion stayed correct — which is the argument for the assertion rather than for
-     * another correction. Each writes the figure in the same "resolves all N of its required values"
-     * sentence, so one derived check covers them.</p>
+     * <p>Held here because a hand-maintained count drifts in every document at once while a derived one
+     * cannot — which is the argument for the assertion rather than for another correction. Each writes
+     * the figure in the same "resolves all N of its required values" sentence, so one derived check
+     * covers them.</p>
      */
     private static final List<Path> DOCUMENTS_STATING_THE_REQUIRED_COUNT = List.of(
             Path.of("README.md"),
@@ -478,7 +477,7 @@ final class DocumentedSourceCountsTest {
          * one was not, because it sits in a table about patterns rather than about counts and reads as
          * background. It drifted for exactly that reason: it published a total behind the tree while every
          * derived figure beside it stayed correct, and a reader comparing the two rows could not tell which
-         * had been measured. Review found it, which is the failure mode a transcribed count has and a
+         * had been measured. That is the failure mode a transcribed count has and a
          * derived one does not.
          *
          * <p>The row is matched by its own leading cell rather than by line number, so it can move on the
@@ -702,9 +701,9 @@ final class DocumentedSourceCountsTest {
      * Compose comments, and the explanatory comments of four profile documents — and it moved twice after
      * most of them were written: the scripts split into two sibling locations, and two further schema
      * scripts took dotted versions between the indexes and the seeds, which raised the production ceiling.
-     * A review found the summaries describing the arrangement <em>before</em> those moves: four scripts flat
-     * in one location, production pinned at the version the indexes carry. The active configuration was
-     * correct throughout, which is exactly why nothing failed.</p>
+     * A summary can therefore describe the arrangement <em>before</em> those moves - four scripts flat in
+     * one location, production pinned at the version the indexes carry - while the active configuration
+     * stays correct throughout, which is exactly why nothing fails.</p>
      *
      * <p>So the figures are derived here instead of transcribed. The inventory comes from the two migration
      * directories and the pin from {@link FlywayConfig#PRODUCTION_TARGET}, and a further schema script

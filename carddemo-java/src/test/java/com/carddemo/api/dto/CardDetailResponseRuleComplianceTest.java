@@ -45,10 +45,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for {@link CardDetailResponse}, the response body of legacy transaction {@code CCDL}
  * implemented by {@code app/cbl/COCRDSLC.cbl} over screen {@code app/cpy-bms/COCRDSL.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Three literals carry padding that looks like a mistake and is not.</strong> The
  * found-details message opens with three spaces, the exit message closes with fourteen, and both come
  * straight from the legacy {@code MOVE} of a space-filled literal into a fixed screen field. A reader

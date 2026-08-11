@@ -133,10 +133,10 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
  * masks of the same width the revealed values occupy for an ordinary caller and in the clear for an
  * administrator. Withholding them from an ordinary caller is a deliberate, documented divergence from the
  * estate, which showed those values to any signed-on operator, and it is recorded in
- * {@code docs/decision-log.md}. The boundary previously held one <em>constant</em> unprivileged authority
- * here, which masked them for an administrator too while the update turn revealed them - the two screens
- * disagreeing about the same four values of the same record. This specification asserts the shipped
- * behaviour rather than the legacy one, and states the divergence here so a reader is not misled.
+ * {@code docs/decision-log.md}. A single <em>constant</em> unprivileged authority at this boundary would
+ * mask them for an administrator too while the update turn revealed them - the two screens disagreeing
+ * about the same four values of the same record. This specification asserts the shipped behaviour rather
+ * than the legacy one, and states the divergence here so a reader is not misled.
  *
  * <p>Second, <strong>the update screen's two lock-failure texts stay distinct.</strong> The program has
  * one for the account record and one for the customer record, where the sibling card-update program has
@@ -1294,10 +1294,10 @@ class AccountControllerIT extends AbstractPostgresIT {
         @DisplayName("reveals the same four values to an administrator, because the two screens are the "
                 + "same regulated data behind the same policy and must not answer differently")
         void revealsTheFourRegulatedValuesToAnAdministrator() throws Exception {
-            // The boundary used to hold one CONSTANT view authority, permanently unprivileged and carrying
-            // no user type, while the update turn derived its authority from the principal. An
-            // administrator therefore received masks here and cleartext there for the same four values of
-            // the same record - a policy that answers by which screen asked is not a policy. Both turns
+            // // ONE CONSTANT view authority at this boundary - permanently unprivileged and carrying no user
+            // // type - while the update turn derives its authority from the principal would give an administrator
+            // // masks here and cleartext there for the same four values of the same record, and a policy that
+            // // answers by which screen asked is not a policy. Both turns
             // now read one derivation, and this is the assertion that would fail if the constant returned.
             final JsonNode screen = viewedScreen(OWNED_ACCOUNT_ID);
 

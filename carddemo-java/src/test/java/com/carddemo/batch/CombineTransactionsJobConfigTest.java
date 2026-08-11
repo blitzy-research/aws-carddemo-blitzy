@@ -93,9 +93,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 /**
  * Unit specification for {@link CombineTransactionsJobConfig}, the migrated combine-transactions job.
  *
- * <p>Every expectation here is measured from the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed.
+ * <p>No legacy source text is transcribed.
  *
  * <p>The four properties these cases exist to protect, each of which would otherwise be a defect that
  * compiles and passes a test written under the same misunderstanding:

@@ -117,8 +117,8 @@ import java.util.Objects;
  * byte comparison this artefact exists to satisfy. The consequence is that the emitted file is a
  * <em>parity artefact</em> and not a document to be served to a browser from untrusted storage; any
  * consumer that renders it inherits the legacy design's exposure and must encode at its own boundary.
- * The residual is recorded in {@code docs/decision-log.md} entries DL-209 and DL-267 alongside this note, and the
- * boundary rule that removes the control-byte half of it is asserted by
+ * The residual is recorded in {@code docs/decision-log.md} entries DL-209 and DL-267 alongside this note,
+ * and the boundary rule that removes the control-byte half of it is asserted by
  * {@code TransportControlCharacterRefusalTest}.</p>
  *
  * <p><strong>No templating engine.</strong> A templating engine, and any general-purpose format-string

@@ -62,12 +62,8 @@ import java.util.Locale;
  * <p>Decision {@code DL-117} records why this contract is stated here once rather than separately in
  * the publisher and the emulator bootstrap, and how the two are held to agree.
  *
- * <p>Provenance: the queue these rules govern replaces the estate's sole online-to-batch bridge, the
- * CICS transient-data queue defined at the end of {@code app/csd/CARDDEMO.CSD} and written from the one
- * {@code EXEC CICS WRITEQ TD} site in {@code app/cbl/CORPT00C.cbl}, taken from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The rules themselves are the queue service's,
- * not the legacy system's, and have no legacy antecedent. No legacy source text appears here.
+ * <p>The rules themselves are the queue service's, not the legacy system's, and have no legacy
+ * antecedent. No legacy source text appears here.
  */
 public final class SqsNamingRules {
 

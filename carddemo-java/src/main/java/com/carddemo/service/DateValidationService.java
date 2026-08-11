@@ -1166,10 +1166,10 @@ public final class DateValidationService {
      * builds a message quoting both the severity and the message number.
      *
      * <p><strong>Anomaly: this stage is unreachable in the shipped estate, and that shapes the whole public
-     * interface.</strong> Entry is gated at {@code [app/cpy/CSUTLDPY.cpy:L274]}, which admits the stage only
-     * while the flag group still reads all-valid; the head paragraph writes the all-invalid value into that
-     * group before any stage runs, and the migration analysis records the guard as never satisfied. Two
-     * load-bearing consequences follow: the embedded subprogram invocation at
+     * interface.</strong> Entry is gated at {@code [app/cpy/CSUTLDPY.cpy:L274]}, which admits the stage
+     * only while the flag group still reads all-valid; the head paragraph writes the all-invalid value into
+     * that group before any stage runs, and the migration analysis records the guard as never satisfied.
+     * Two load-bearing consequences follow: the embedded subprogram invocation at
      * {@code [app/cpy/CSUTLDPY.cpy:L293]} never executes, so the cascade never invokes the subprogram; and
      * the valid-marking statement at {@code [app/cpy/CSUTLDPY.cpy:L327]} is unreachable with it, so the
      * cascade can only accumulate failures. That is why {@link DateEditResult} reports flags and a message
@@ -1223,12 +1223,12 @@ public final class DateValidationService {
     }
 
     /**
-     * The date-of-birth paragraph, {@code [app/cpy/CSUTLDPY.cpy:L341]} &mdash; a reasonableness check rather
-     * than a format check. A date of birth in the future is refused, and the comparison at
-     * {@code [app/cpy/CSUTLDPY.cpy:L350]} is strict, so <strong>the current date is itself refused</strong>.
-     * The commented-out duration-based alternative at {@code [app/cpy/CSUTLDPY.cpy:L351]} stays inactive, as
-     * the source leaves it. On failure all three flags are cleared even though the date is well formed and
-     * merely unreasonable, because the screen depends on that to highlight the whole field group.
+     * The date-of-birth paragraph, {@code [app/cpy/CSUTLDPY.cpy:L341]} &mdash; a reasonableness check
+     * rather than a format check. A date of birth in the future is refused, and the comparison at
+     * {@code [app/cpy/CSUTLDPY.cpy:L350]} is strict, so <strong>the current date is itself
+     * refused</strong>. The commented-out duration-based alternative at {@code [app/cpy/CSUTLDPY.cpy:L351]}
+     * stays inactive, as the source leaves it. On failure all three flags are cleared even though the date
+     * is well formed and merely unreasonable, because the screen depends on that to highlight the whole field group.
      */
     private void editDateOfBirth(final CascadeState state, final LocalDate currentDate) {
         final LocalDate dateOfBirth = toCalendarDate(state.ccyymmddImage);
@@ -1396,9 +1396,9 @@ public final class DateValidationService {
     }
 
     /**
-     * Reproduces an alphanumeric move into a fixed-width field. Such a receiver is left justified: a shorter
-     * sender is padded with spaces on the right and a longer one loses its <em>rightmost</em> excess &mdash;
-     * the opposite of the right-justified receiver the menu programs use, so the two must not be confused.
+     * Reproduces an alphanumeric move into a fixed-width field. Such a receiver is left justified: a
+     * shorter sender is padded with spaces on the right and a longer one loses its <em>rightmost</em>
+     * excess &mdash; the opposite of the right-justified receiver the menu programs use, so the two must not be confused.
      *
      * <p>The move is performed on the encoded image, not on the character sequence. A receiving field
      * declares a byte count, so measuring by character count would leave a field whose byte width is wrong
@@ -1426,9 +1426,9 @@ public final class DateValidationService {
      * Refuses a value the single-byte character set of the legacy fields cannot carry. The scan runs before
      * any encode, and that ordering is the whole point: the encoder substitutes a question mark for an
      * unmappable character, so encoding first cannot tell a substituted byte from a question mark that was
-     * genuinely sent. The loop bound is a character count used purely to walk the value; the width authority
-     * is always the encoded length. The diagnostic reports the position and the numeric code unit and never
-     * the character, so a rejected value cannot place its own content into a message a caller may log.
+     * genuinely sent. The loop bound is a character count used purely to walk the value; the width
+     * authority is always the encoded length. The diagnostic reports the position and the numeric code unit
+     * and never the character, so a rejected value cannot place its own content into a message a caller may log.
      */
     private static void requireSingleByteRepresentable(final String value, final String fieldName) {
         for (int index = 0; index < value.length(); index++) {
@@ -1458,10 +1458,10 @@ public final class DateValidationService {
 
     /**
      * Reproduces the paired all-null-or-all-spaces test as written at
-     * {@code [app/cpy/CSUTLDPY.cpy:L30, L94, L154]}. Each half compares the <em>whole</em> field against one
-     * figurative value, so a slice that mixes null characters and spaces satisfies neither half and is not
-     * treated as unsupplied &mdash; which is the legacy behaviour and is easy to lose by testing character
-     * by character.
+     * {@code [app/cpy/CSUTLDPY.cpy:L30, L94, L154]}. Each half compares the <em>whole</em> field against
+     * one figurative value, so a slice that mixes null characters and spaces satisfies neither half and is
+     * not treated as unsupplied &mdash; which is the legacy behaviour and is easy to lose by testing
+     * character by character.
      *
      * @param  slice the field slice
      * @return whether the slice is entirely null characters or entirely spaces
@@ -1507,9 +1507,9 @@ public final class DateValidationService {
      * service's control &mdash; possibly assembled from something a person typed, and possibly carrying a
      * line separator that would split one log record into two.
      *
-     * <p>So the entry condition decides. A message this module authored is written in full, because it names
-     * which edit claimed the field. One the caller brought is described rather than repeated, which loses
-     * nothing the caller does not already know. See {@code docs/decision-log.md} DL-100.
+     * <p>So the entry condition decides. A message this module authored is written in full, because it
+     * names which edit claimed the field. One the caller brought is described rather than repeated, which
+     * loses nothing the caller does not already know. See {@code docs/decision-log.md} DL-100.
      */
     private static String authoredHere(final String currentReturnMessage,
                                        final String accumulatedMessage) {

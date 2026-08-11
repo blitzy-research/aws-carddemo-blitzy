@@ -75,9 +75,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  * test until it has been classified, which is the point - the classification is a decision someone must
  * make, not a default someone can inherit.
  *
- * <p>Provenance: the route-to-entitlement split reproduces the transaction definitions in
- * {@code app/csd/CARDDEMO.CSD} at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No definition text is copied.
+ * <p>No definition text is copied.
  */
 @DisplayName("Every delivered route sits in the security region its legacy transaction sat in")
 class DeliveredRouteSecurityStateTest {

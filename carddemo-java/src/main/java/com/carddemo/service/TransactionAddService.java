@@ -46,11 +46,9 @@ import com.carddemo.util.ZonedDecimalCodec;
  * transaction master.
  *
  * <p>Translation of {@code app/cbl/COTRN02C.cbl}, legacy CICS transaction {@code CT02}, 783 source
- * lines and 18 procedure-division paragraphs. Provenance: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy tree is read-only reference and
- * no source text from it is copied here: this record cites member names, paragraph names, line
- * numbers, field names, widths and the exact operator-visible message literals only.
+ * lines and 18 procedure-division paragraphs. The legacy tree is read-only reference and no source
+ * text from it is copied here: this record cites member names, paragraph names, line numbers, field
+ * names, widths and the exact operator-visible message literals only.
  *
  * <p><strong>This member is outside the five-program family.</strong> It includes neither the
  * attention-key copybook {@code app/cpy/CSSTRPFY.cpy} nor {@code app/cpy/CVCRD01Y.cpy}, and it
@@ -59,28 +57,10 @@ import com.carddemo.util.ZonedDecimalCodec;
  * source's own evaluation uses.
  *
  * <h2>Paragraph map: all 18 paragraphs, each to one named method</h2>
- * <ol>
- *   <li>{@code MAIN-PARA} line 107 &rarr; {@code mainPara}, reached from
- *       {@code processTransactionAdd}, which also carries the terminal
- *       {@code EXEC CICS RETURN TRANSID} at lines 156 to 159;</li>
- *   <li>{@code PROCESS-ENTER-KEY} line 164 &rarr; {@code processEnterKey};</li>
- *   <li>{@code VALIDATE-INPUT-KEY-FIELDS} line 193 &rarr; {@code validateInputKeyFields};</li>
- *   <li>{@code VALIDATE-INPUT-DATA-FIELDS} line 235 &rarr; {@code validateInputDataFields};</li>
- *   <li>{@code ADD-TRANSACTION} line 442 &rarr; {@code addTransaction};</li>
- *   <li>{@code COPY-LAST-TRAN-DATA} line 471 &rarr; {@code copyLastTranData};</li>
- *   <li>{@code RETURN-TO-PREV-SCREEN} line 500 &rarr; {@code returnToPrevScreen};</li>
- *   <li>{@code SEND-TRNADD-SCREEN} line 516 &rarr; {@code sendTrnaddScreen};</li>
- *   <li>{@code RECEIVE-TRNADD-SCREEN} line 539 &rarr; {@code receiveTrnaddScreen};</li>
- *   <li>{@code POPULATE-HEADER-INFO} line 552 &rarr; {@code populateHeaderInfo};</li>
- *   <li>{@code READ-CXACAIX-FILE} line 576 &rarr; {@code readCxacaixFile};</li>
- *   <li>{@code READ-CCXREF-FILE} line 609 &rarr; {@code readCcxrefFile};</li>
- *   <li>{@code STARTBR-TRANSACT-FILE} line 642 &rarr; {@code startbrTransactFile};</li>
- *   <li>{@code READPREV-TRANSACT-FILE} line 673 &rarr; {@code readprevTransactFile};</li>
- *   <li>{@code ENDBR-TRANSACT-FILE} line 702 &rarr; {@code endbrTransactFile};</li>
- *   <li>{@code WRITE-TRANSACT-FILE} line 711 &rarr; {@code writeTransactFile};</li>
- *   <li>{@code CLEAR-CURRENT-SCREEN} line 754 &rarr; {@code clearCurrentScreen};</li>
- *   <li>{@code INITIALIZE-ALL-FIELDS} line 762 &rarr; {@code initializeAllFields}.</li>
- * </ol>
+ * Each of the eighteen paragraphs resolves to exactly one named method below, and
+ * {@code processTransactionAdd} carries the terminal {@code EXEC CICS RETURN TRANSID} of
+ * {@code MAIN-PARA} at lines 156 to 159. The mapping with its source lines is held once in
+ * {@code docs/traceability-matrix.md}.
  *
  * <h2>The send ends the task, so a turn reports at most one field failure</h2>
  * The send paragraph at lines 516 to 534 issues {@code EXEC CICS SEND MAP} and then
@@ -178,47 +158,12 @@ import com.carddemo.util.ZonedDecimalCodec;
  * collaborator this translation cannot use would be dead code.
  *
  * <h2>What this service does not do</h2>
- * It adds one transaction. It performs no paging, renders no stored transaction for viewing and runs
- * no date-range query &mdash; those are the list, view and report services. It carries no
- * bill-payment behaviour: it neither reads a balance nor drives one to zero. It wires no abend path,
- * uses no key translator, throws no not-found exception, holds no HTTP concept, spawns no process,
- * issues no raw SQL and emits no schema. It performs no rescaling: the monetary conversion is
+ *
+ * <p>It adds one transaction, and nothing else: paging, rendering a stored transaction and date-range
+ * querying belong to the list, view and report services, and the bill-payment behaviour that drives a
+ * balance to zero belongs to its own service. It performs no rescaling - the monetary conversion is
  * delegated to the module's single decimal authority, which truncates toward zero because the estate
  * contains no rounding directive on any arithmetic statement anywhere.
- *
- * <h2>Divergences raised for the decision log</h2>
- * Every place where legacy semantics and idiomatic Java pull apart is resolved in favour of the
- * legacy. The owning document is maintained elsewhere; the entries this translation raises are:
- * <ol>
- *   <li>the online 26-character timestamp always carries a {@code 000000} fraction because the legacy
- *       zero-fills it, so this translation forces the zeros rather than rendering real
- *       microseconds;</li>
- *   <li>the online and batch 26-character forms are deliberately not unified and no shared formatter
- *       type exists, each tier holding a private helper instead;</li>
- *   <li>the date-acceptance test is two-level, so a non-zero severity carrying message number
- *       {@code 2513} is accepted silently and the test is not collapsed into one boolean;</li>
- *   <li>the transaction identifier is a 16-character business key with no sequence and no generated
- *       value, because a sequence would diverge permanently after the first rollback gap;</li>
- *   <li>the cross-reference alternate index is non-unique, so the access path yields the first
- *       matching row and an absent row is the not-found path;</li>
- *   <li>there are zero foreign keys on the transaction-related tables in every migration version,
- *       deliberately, so the batch tier's reject paths remain reachable;</li>
- *   <li>the transaction table starts empty after the reference-data seed, so the first identifier this
- *       service mints on a fresh database is {@code 0000000000000001};</li>
- *   <li>the send ends the task, so a turn evaluates and reports at most one field failure &mdash; that
- *       is the legacy's own cardinality and not a simplification;</li>
- *   <li>the positioning half of the browse cannot fail independently of the read once the ordered
- *       index is a relational one, so the not-found arm at lines 655 to 660 is unreachable here while
- *       the end-of-file arm at line 689 is the live empty-table path, which is what makes the first
- *       identifier reachable at all;</li>
- *   <li>the copy-last-transaction path re-runs the key-field validation because the source performs it
- *       twice, once at line 473 and again through the enter-key paragraph at line 495, and the
- *       duplication is reproduced rather than optimised away;</li>
- *   <li>the source's blank-field cascade checks the description <em>before</em> the amount, which is
- *       not the order the fields appear on the screen; the source order is preserved;</li>
- *   <li>the numeric-conversion of an argument that is not a well-formed numeric lexeme is undefined in
- *       the language, so the field is left exactly as transmitted and the following test fires.</li>
- * </ol>
  *
  * <p>This bean is a stateless singleton. Everything the legacy held in working storage lives in a
  * per-invocation state object, so two concurrent turns cannot observe one another and no identifier
@@ -997,9 +942,9 @@ public final class TransactionAddService {
      *
      * <p>This is the procedure division: it establishes the working storage the legacy declares at
      * lines 35 to 93, runs the main paragraph, and then performs the terminal
-     * the pseudo-conversational return that re-arms this transaction with the carried work area, at lines 156 to 159, by
-     * re-arming the transaction. Nothing is retained between calls, so two concurrent turns are wholly
-     * independent and no identifier is ever cached.
+     * the pseudo-conversational return that re-arms this transaction with the carried work area, at lines
+     * 156 to 159, by re-arming the transaction. Nothing is retained between calls, so two concurrent turns
+     * are wholly independent and no identifier is ever cached.
      *
      * <p>The turn remains outside a transaction until the allocating write paragraph. That paragraph
      * takes the advisory lock, reads the highest key and flushes the insert in one independent unit;
@@ -1571,14 +1516,14 @@ public final class TransactionAddService {
      * transaction-scoped advisory lock is taken before the browse and remains held through the flushed
      * insert, preventing another allocator from reading the same highest key.
      *
-     * <p><strong>The allocation lock is taken here, before the browse, and the span is bounded-retried.</strong>
-     * The legacy region held its browse position across the read, the increment and the write, and a
-     * relational store expresses that hold as {@link TransactionRepository#lockIdentifierAllocation(long)}:
-     * transaction-scoped, so it covers the whole turn, and taken once because it is re-entrant. Lines 444
-     * to 466 are then performed up to {@link #IDENTIFIER_ALLOCATION_ATTEMPTS} times, so an identifier
-     * taken by a writer that reached the table <em>without</em> the lock is re-minted from a re-read
-     * highest key rather than refused. The copy-last-transaction path takes no lock, because it mints
-     * nothing.
+     * <p><strong>The allocation lock is taken here, before the browse, and the span is
+     * bounded-retried.</strong> The legacy region held its browse position across the read, the increment
+     * and the write, and a relational store expresses that hold as {@link
+     * TransactionRepository#lockIdentifierAllocation(long)}: transaction-scoped, so it covers the whole
+     * turn, and taken once because it is re-entrant. Lines 444 to 466 are then performed up to {@link
+     * #IDENTIFIER_ALLOCATION_ATTEMPTS} times, so an identifier taken by a writer that reached the table
+     * <em>without</em> the lock is re-minted from a re-read highest key rather than refused. The
+     * copy-last-transaction path takes no lock, because it mints nothing.
      *
      * <p><strong>Field assignment, lines 450 to 465, in the source's order and no other.</strong> The
      * record is initialised, then the key, type code, category code, source, description, amount, card
@@ -2293,7 +2238,7 @@ public final class TransactionAddService {
      * @param state the turn's working storage
      */
     private void initializeAllFields(final TurnState state) {
-        // MOVE -1 TO ACTIDINL OF COTRN2AI at line 764.
+        // Line 764 places the cursor on the account-identifier field of the input map.
         state.focusField = FIELD_ACCOUNT_ID;
 
         state.accountId = blankField(ACCOUNT_ID_WIDTH);
@@ -2568,8 +2513,8 @@ public final class TransactionAddService {
     }
 
     /**
-     * Reproduces line 448, where TRAN-ID is carried into WS-TRAN-ID-N: the sixteen-character record key read
-     * as the sixteen-digit numeric work field the increment is applied to.
+     * Reproduces line 448, where TRAN-ID is carried into WS-TRAN-ID-N: the sixteen-character record key
+     * read as the sixteen-digit numeric work field the increment is applied to.
      *
      * <p>Every writer in this module stores the zero-filled numeric form, so a key that is not sixteen
      * digits cannot arise. Should one somehow be present, the numeric move is undefined in the language, so

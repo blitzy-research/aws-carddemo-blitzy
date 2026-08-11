@@ -208,11 +208,6 @@ import java.util.List;
  * data-access type, performs no input or output, and contains no business logic, no ordering, no
  * comparison and no arithmetic.
  *
- * <p>Provenance: repository checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy estate under
- * {@code app/} is read-only reference and is cited by name, width and line number only; no legacy
- * source text is reproduced here.
- *
  * @param accountIdFilter optional account filter - map field {@code ACCTSID}, width 11, staged by
  *        {@code COCRDLIC} line 969. Carried as text so that a leading zero survives; an 11-digit
  *        identifier whose leading zeros are part of the value can never be a numeric type here.

@@ -56,9 +56,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * nothing until it is asked to, which is what makes the packaged artifact safe to start in any
  * environment. Mapping validation against the migrated schema does run at start-up, and a mismatch
  * is meant to stop the context rather than be caught here.
- *
- * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @SpringBootApplication
 public class CardDemoApplication {

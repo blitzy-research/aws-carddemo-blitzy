@@ -137,11 +137,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy antecedents cited by the type under test: program {@code app/cbl/COTRN00C.cbl}, symbolic
- * map {@code app/cpy-bms/COTRN00.CPY}, mapset {@code app/bms/COTRN00.bms} and record layout {@code
- * app/cpy/CVTRA05Y.cpy}. Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is
- * reproduced here.
+ * <p>Legacy antecedents cited by the type under test: program {@code app/cbl/COTRN00C.cbl} , symbolic map
+ * {@code app/cpy-bms/COTRN00.CPY} , mapset {@code app/bms/COTRN00.bms} and record layout
+ * {@code app/cpy/CVTRA05Y.cpy} . No legacy source text is reproduced here.
  */
 @DisplayName("TransactionListResponse :: response contract of legacy transaction CT00")
 class TransactionListResponseCoverageTest {
@@ -1581,10 +1579,10 @@ class TransactionListResponseCoverageTest {
          * An amount off the record scale cannot be constructed at all, so a scale-shifted row is not a
          * value this contract has to distinguish - it is a value it refuses.
          *
-         * <p>An earlier revision proved the point by constructing two rows differing only in scale and
-         * asserting them unequal. That is a weaker guarantee than the one now in force: unequal means a
-         * lost decimal place is <em>detectable</em> by a caller that thinks to compare, whereas a
-         * refusal means it never crossed the boundary. Both scale directions are covered, because
+         * <p>PROVING THE POINT BY CONSTRUCTING TWO ROWS DIFFERING ONLY IN SCALE and asserting them unequal is a
+         * weaker guarantee than the one in force: unequal means a lost decimal place is <em>detectable</em> by a
+         * caller that thinks to compare, whereas a refusal means it never crossed the boundary. Both scale
+         * directions are covered, because
          * a value carrying too few decimal places and one carrying too many are separate mistakes and
          * the refusal reports each with its own count.</p>
          */
@@ -2078,10 +2076,10 @@ class TransactionListResponseCoverageTest {
          * The browse position is withheld whether or not one is carried, so the rendering discloses
          * nothing at all about the operator's position in the browse.
          *
-         * <p>An earlier revision asserted the converse - that a response carrying neither nested
-         * record substituted nothing - which was true of a type that declared no rendering of its own.
-         * Unconditional substitution is the stronger property: if the placeholder appeared only when a
-         * cursor was held, its presence or absence would itself report whether the operator had paged,
+         * <p>ASSERTING THE CONVERSE - that a response carrying neither nested record substitutes nothing - is
+         * only true of a type that declares no rendering of its own. Unconditional substitution is the stronger
+         * property: if the placeholder appeared only when a cursor was held, its presence or absence would itself
+         * report whether the operator had paged,
          * and a diagnostic that leaks one bit is still a diagnostic that leaks. The navigation state is
          * printed by delegation instead, so its absence is visible as {@code null} - that is safe
          * precisely because the state withholds its own identifying values.</p>

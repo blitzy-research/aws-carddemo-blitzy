@@ -91,9 +91,6 @@ import org.junit.jupiter.api.Test;
  * evaluation of the same computation. Where an equality or hash expectation involves two keys, the
  * two are constructed independently. Every padded value is typed out character by character rather
  * than assembled, so its trailing spaces are visible at the point of use.
- *
- * <p><strong>Provenance.</strong> Checkout 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream stamp
- * CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19.
  */
 @DisplayName("DisclosureGroupId :: sixteen-byte composite key of the disclosure-group table")
 class DisclosureGroupIdTest {

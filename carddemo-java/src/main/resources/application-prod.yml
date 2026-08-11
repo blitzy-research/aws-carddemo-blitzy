@@ -211,9 +211,10 @@
 # least one of them.
 #
 # The same class also refuses, at migration time, any resolved location other than the one packaged
-# classpath:db/migration/schema, and any resolved version ceiling other than 2. So a merged environment,
-# an operator override or a copied overlay block cannot reintroduce the seeds in silence even if the
-# co-activation guard were ever removed.
+# classpath:db/migration/schema, and any resolved version ceiling other than FlywayConfig.PRODUCTION_TARGET,
+# which is the highest version that location delivers and is declared as `target` below. So a merged
+# environment, an operator override or a copied overlay block cannot reintroduce the seeds in silence even if
+# the co-activation guard were ever removed.
 #
 # And because no configuration control can reach a database that was ALREADY seeded before this
 # process existed, com.carddemo.config.ProductionSeedRejectionCallback refuses a production start-up
@@ -326,14 +327,14 @@ spring:
   # left to be inferred from the numbers above. The one schema script after the indexes carries a DOTTED
   # version precisely so that it does: 2 < 2.2 < 3, so a pin at 2.2 stops below the first seed whatever
   # the location list says. THE NUMBERING RULE IS THEREFORE BINDING ON EVERY FUTURE SCHEMA SCRIPT: it
-  # takes the next free dotted version below 3, never a whole number above the seeds. An earlier revision
-  # numbered such a script 5, on the reasoning that the applied seed versions could not be renumbered,
-  # and three controls broke on that at once - this ceiling stopped excluding the seeds arithmetically,
-  # ProductionSeedRejectionCallback read a correctly-migrated production database as seeded because its
-  # rule is "at or above 3", and adding the seed location to a schema-only database left 3 and 4 pending
-  # BELOW an applied 5, which Flyway refuses as out-of-order. Version 2.1 is absent from the sequence and
-  # the gap is deliberate: a sign-on attempt ledger held it and was withdrawn with the throttle it served,
-  # and a withdrawn version is never reused. What keeps a seed out of THIS profile is therefore checked
+  # takes the next free dotted version below 3, never a whole number above the seeds. NUMBERING SUCH A
+  # SCRIPT ABOVE THE SEEDS - on the reasoning that the applied seed versions cannot be renumbered -
+  # breaks three controls at once: this ceiling stops excluding the seeds arithmetically,
+  # ProductionSeedRejectionCallback reads a correctly-migrated production database as seeded because its
+  # rule is "at or above 3", and adding the seed location to a schema-only database leaves 3 and 4
+  # pending BELOW the applied higher version, which Flyway refuses as out-of-order. Version 2.1 is
+  # absent from the sequence and the gap is deliberate: that number is retired with the sign-on attempt
+  # ledger and the throttle it served, and a retired version is never reused.
   # four ways: the location list below, matched by EQUALITY; this ceiling, by number; FlywayConfigTest,
   # which asserts which directory each delivered script sits in and that no schema version sorts above a
   # seed version, so either mistake fails the build; and ProductionSeedRejectionCallback, which refuses a
@@ -544,8 +545,8 @@ spring:
   # paid emulator tier nor an activation value for one has any place in this file - emulation is a
   # local concern only.
   #
-  # AND DECLARING NONE IS NOT THE SAME AS FORBIDDING ONE, which is what an earlier revision of this
-  # block treated as equivalent. This document cannot see the environment: an override supplied as
+  # AND DECLARING NONE IS NOT THE SAME AS FORBIDDING ONE, and the two must never be treated as
+  # equivalent. This document cannot see the environment: an override supplied as
   # SPRING_CLOUD_AWS_ENDPOINT, SPRING_CLOUD_AWS_S3_ENDPOINT, SPRING_CLOUD_AWS_SQS_ENDPOINT or
   # SPRING_CLOUD_AWS_SNS_ENDPOINT - or on the command line, or by a co-activated overlay - binds
   # perfectly well for a key no document mentions, and every client then addresses whatever host it
@@ -794,9 +795,9 @@ server:
 # interval cannot resolve a single job run. It is published, NOT opened: `config/SecurityConfig`
 # permits exactly two management paths without a credential, the health probe and the Prometheus
 # scrape, and authenticates every other management sub-path explicitly before its catch-all. So
-# reaching /actuator/metrics here requires a token, which is the distinction an earlier revision of
-# this file missed when it left the endpoint out for safety and thereby left the baseline with no
-# surface to be read from.
+# reaching /actuator/metrics here requires a token, and that distinction is what makes leaving the
+# endpoint out "for safety" the wrong trade: it would leave the mandated performance baseline with no
+# surface to be read from while closing nothing the credential does not already close.
 #
 # THE HEALTH PROBE ANSWERS WITH AN AGGREGATE STATUS AND NO COMPONENT DETAIL. Component detail is
 # genuinely useful - it is how a failed migration or an unreachable database surfaces in the probe body
@@ -971,8 +972,8 @@ logging:
 # suffix the queue service demands is the whole of the derivation. It is also the name the legacy CICS
 # transient-data queue carried, which is why this one resource of the four is legacy-named while the
 # bucket, the message group and the topic are module-namespaced: the plan names a value for the queue
-# and for none of the others. An earlier revision renamed this one to a module-namespaced form and
-# asserted the plan mandated that form; it does not, so the prescribed name stands.
+# and for none of the others. A module-namespaced form is not available for this one resource and no
+# reading of the plan mandates one, so the prescribed name stands.
 # See docs/decision-log.md DL-092.
 #
 # The frozen operator message emitted when a submission fails is unaffected by any of this: it names
@@ -1216,44 +1217,50 @@ carddemo:
     # credential in the repository, and this one is presented on every scrape.
     #
     # AND IT MUST BE LONG ENOUGH TO BE UNGUESSABLE, WHICH IS A SEPARATE REQUIREMENT FROM BEING SUPPLIED.
-    # An earlier revision required only that this variable be set: the start-up check refused an absent,
-    # unresolved or blank value and accepted everything else, so a ONE-CHARACTER token started production
-    # and then fell to a few hundred guesses. Nothing else in the model catches that. There is no sign-on
+    # PRESENCE ALONE IS NOT ENOUGH: a check that refuses only an absent, unresolved or blank value accepts
+    # everything else, so a ONE-CHARACTER token starts production and then falls to a few hundred guesses.
+    # Nothing else in the model catches that.
     # behind this credential, no account, no lockout and no attempt counter - deliberately, because a
     # collector is not a user - so being unguessable is its whole defence, and the constant-time
     # comparison that protects it from a timing side channel does nothing for a value short enough to
-    # enumerate. ProductionConfigurationValidator now refuses fewer than THIRTY-TWO characters after
-    # stripping, and reports the length it found without echoing the value.
+    # enumerate. ProductionConfigurationValidator refuses fewer than THIRTY-TWO characters after
+    # stripping, and states the REQUIREMENT it applied rather than the length it measured - a measurement
+    # of a live credential is part of that credential once it reaches a log.
     #
-    # GENERATE IT, NEVER CHOOSE IT. `openssl rand -hex 16` or `openssl rand -base64 24` each produce a
-    # value exactly at the floor. The rule is a proxy for unpredictability rather than a measure of it -
-    # thirty-two repetitions of one letter would pass it - which is why the generator is named here
-    # instead of being left to improvisation. Rotating it is a restart with a new value; nothing stores
-    # it, and no request or log ever carries it back.
+    # GENERATE IT, NEVER CHOOSE IT, AND GENERATE IT FROM A WIDE ALPHABET. `openssl rand -base64 24`
+    # produces exactly thirty-two characters over a 64-symbol alphabet and satisfies both rules below.
+    # `openssl rand -hex 16` is the same length and is NOT a substitute: hexadecimal has sixteen symbols
+    # in total, so clearing the sixteen-distinct-character rule requires every one of them to appear,
+    # which happens for roughly seven values in a hundred - the other ninety-three are refused at
+    # start-up. Any generator over an alphabet of at least thirty-two symbols is equally acceptable,
+    # including a password manager's. The length rule is a proxy for unpredictability rather than a
+    # measure of it - thirty-two repetitions of one letter would satisfy it - which is why the generator
+    # is named here instead of being left to improvisation. Rotating it is a restart with a new value;
+    # nothing stores it, and no request or log ever carries it back.
     #
     # THE PROBES STAY ANONYMOUS AND THAT IS DELIBERATE. Their bodies are a status word - health detail
     # and components are withheld under this profile - and the container's own probe presents no
     # credential. What is closed here is the shape of the workload, which is a different kind of answer
     # from whether the process is alive.
     #
-    # PRESENCE IS NOT THE WHOLE CHECK ANY MORE, for the same reason it is not enough for the collector
-    # address above. Review found this credential accepted on the strength of being non-blank, which made
-    # a single character a valid production credential for the surface described in this comment - and a
-    # long-lived one, because it is presented on every scrape and there is nothing to rotate it against.
-    # config/ProductionConfigurationValidator#validateManagementCredentialQuality now holds the supplied
+    # PRESENCE IS NOT THE WHOLE CHECK, for the same reason it is not enough for the collector address
+    # above. A credential accepted on the strength of being non-blank makes a single character a valid
+    # production credential for the surface described in this comment - and a long-lived one, because it
+    # is presented on every scrape and there is nothing to rotate it against.
+    # config/ProductionConfigurationValidator#validateManagementCredentialQuality holds the supplied
     # value to three rules and refuses the start-up before any bean is created if it breaks one: at least
     # 32 bytes, which is the same floor this module applies to its signing material and the point at which
     # guessing becomes arithmetic; at least 16 distinct characters, so a value of the required length built
-    # from a couple of repeated symbols is refused; and none of a short list of words that only appear in
-    # values somebody typed, which catches the credential left as the example. The refusal names the rule
-    # and never repeats the value - this is a live credential for the surface that publishes this
-    # deployment's metrics, and a refusal that echoed it would write a working credential into the log of
-    # the deployment that rejected it.
+    # from a couple of repeated symbols - or drawn from an alphabet as narrow as hexadecimal - is refused;
+    # and none of a short list of words that only appear in values somebody typed, which catches the
+    # credential left as the example. The refusal names the rule and never repeats or measures the value -
+    # this is a live credential for the surface that publishes this deployment's metrics, and a refusal
+    # that echoed it would write a working credential into the log of the deployment that rejected it.
     #
-    # GENERATE IT, DO NOT COMPOSE IT. Thirty-two bytes from a cryptographic source rendered as text is the
-    # intended shape, for example the output of a password manager's generator or of a system random
-    # source. Nothing here measures entropy or claims the value is random: randomness is not a property of
-    # a string, and a check that pretended otherwise would refuse legitimate credentials while passing
+    # GENERATE IT, DO NOT COMPOSE IT. Thirty-two characters from a cryptographic source over an alphabet
+    # of at least thirty-two symbols is the intended shape - base64 output, or a password manager's
+    # generator. Nothing here measures entropy or claims the value is random: randomness is not a property
+    # of a string, and a check that pretended otherwise would refuse legitimate credentials while passing
     # crafted ones. What is guaranteed is that a value which obviously was not generated does not start.
     #
     # ROTATION IS AN OPERATIONAL PROCEDURE AND THIS IS ITS STATED EXPECTATION. Replace this variable and

@@ -76,10 +76,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * refusal, because it is the difference between a job that ends and a job that
  * fails.</p>
  *
- * <p>Provenance: legacy sources read at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text
- * is reproduced here.</p>
+ * <p>No legacy source text is reproduced here.</p>
  */
 @DisplayName("AbendService - the CEE3ABD batch abort and the CICS online abend")
 class AbendServiceBaselineTest {

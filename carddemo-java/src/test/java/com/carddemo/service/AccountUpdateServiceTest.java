@@ -87,12 +87,9 @@ import static org.mockito.Mockito.when;
  *
  * <h2>Provenance and why this suite is load-bearing</h2>
  *
- * <p>Legacy authority {@code app/cbl/COACTUPC.cbl}, read at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The member is 4,236 lines once its carriage
- * returns are stripped - it is CRLF-encoded, so any count taken from it without stripping measures
- * nothing - and it is the single largest translation in the migration at 16.1% of the estate's
- * paragraph total.
+ * <p>The member is 4,236 lines once its carriage returns are stripped - it is CRLF-encoded, so any count
+ * taken from it without stripping measures nothing - and it is the single largest translation in the
+ * migration at 16.1% of the estate's paragraph total.
  *
  * <p>The paragraph figure is <strong>85</strong>, and it is the member's {@code PROCEDURE DIVISION}
  * paragraph count. That is what the action plan records, what the traceability matrix carries 85 rows
@@ -1439,8 +1436,8 @@ class AccountUpdateServiceTest {
                     .creditLimit("2500.00")
                     .build());
 
-            // The protection used to be a rejection: absence was not a stand-in, so it survived, read as a
-            // change to blank, and three mandatory edits refused the turn. The protection is now direct -
+            // // A rejection is not the protection: absence that is not a stand-in survives, reads as a change to
+            // // blank, and three mandatory edits refuse the turn. The protection is direct -
             // the submission's regulated positions are replaced by what the record holds before any edit
             // sees them - so the identifier cannot be blanked and the operator is not told they got
             // something wrong. The credit limit they did change goes through.
@@ -4116,8 +4113,8 @@ class AccountUpdateServiceTest {
         void theUnitCountIsTheOneTheMatrixCarries() {
             // Read, not written down. The figure is taken from the matrix three independent ways - the
             // census subtotal, the member section's own declaration and the rows citing the member - and
-            // the reader fails if those three disagree. An earlier revision asserted 3 + 85 == 88 over
-            // constants this file authored itself, which could not fail and did not measure anything.
+            // // the reader fails if those three disagree. Asserting 3 + 85 == 88 over constants this file
+            // // authored itself could not fail and would measure nothing.
             assertThat(TraceabilityMatrixCensus.unitsOf(LEGACY_MEMBER))
                     .as("the frozen model is 528 program paragraphs plus 16 procedural-copybook "
                             + "paragraphs; a member that reports more than the matrix carries has "

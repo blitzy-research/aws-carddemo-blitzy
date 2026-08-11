@@ -82,9 +82,8 @@ import org.springframework.web.bind.annotation.RestController;
  * half of the same fix is proved by the order assertion against the framework's default security-filter
  * order, which is the position Boot itself registers the chain at.
  *
- * <p>Provenance: legacy estate checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The body ceiling has no legacy
- * antecedent: a 3270 field was fixed-width by construction and no caller could send more than a screen.
+ * <p>The body ceiling has no legacy antecedent: a 3270 field was fixed-width by construction and no caller
+ * could send more than a screen.
  */
 @SpringBootTest(classes = RequestBodyLimitObservabilityIT.ObservedWebTier.class,
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,

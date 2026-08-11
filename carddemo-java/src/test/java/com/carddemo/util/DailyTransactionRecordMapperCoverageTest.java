@@ -68,9 +68,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * <p>A pure in-process unit test: no application context, no database, no container, no mocking
  * framework and no reflection.</p>
  *
- * <p>Provenance: part of the migration of the AWS CardDemo z/OS application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("DailyTransactionRecordMapper - the 350-byte daily-transaction record")
 class DailyTransactionRecordMapperCoverageTest {

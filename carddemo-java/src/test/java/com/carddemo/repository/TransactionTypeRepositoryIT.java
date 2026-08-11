@@ -87,8 +87,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>Where the server comes from, and what this class deliberately does not declare</h2>
  * The server is owned by {@link AbstractPostgresIT}, which starts one PostgreSQL 16 instance for the
- * whole run, migrates it to the head of {@code classpath:db/migration} so both seed scripts are applied,
- * and publishes its address so a context-booting subclass inherits it. Honouring that contract, this
+ * whole run and migrates it from both delivered locations - {@code classpath:db/migration/schema} and
+ * {@code classpath:db/migration/seed}, never their shared parent - to the head, so both seed scripts are
+ * applied, and publishes its address so a context-booting subclass inherits it. Honouring that contract, this
  * class declares no container, no container extension, no data-source property source of its own and no
  * context-dirtying annotation. It declares only its own {@code @SpringBootTest} - naming an explicit
  * slice rather than scanning, so no unrelated configuration on the test class path is harvested into it -
@@ -99,12 +100,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a named primary-key constraint with its own backing index, and constraint catalogues that can be
  * interrogated for what is <em>not</em> there are all properties of PostgreSQL specifically.
  *
- * <p><strong>Provenance.</strong> This test has no legacy antecedent - the legacy estate carries no test
- * harness of any kind. The members cited above are read-only reference material at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability matrix header only, so nothing here asserts it against an individual member, and no
- * legacy source text is reproduced in this file.
+ * <p>This test has no legacy antecedent - the legacy estate carries no test harness of any kind.
  *
  * @see TransactionTypeRepository
  * @see TransactionType

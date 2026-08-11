@@ -286,16 +286,6 @@ import org.slf4j.LoggerFactory;
  * step timer is read for presence and shape only. The one row this specification writes is removed again
  * whatever the outcome, because the server is shared with every other integration specification in the
  * run.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, legacy member {@code app/cbl/CBTRN01C.cbl}. That
- * stamp is a matrix-header provenance string and is deliberately never asserted per member, because it is
- * not universal across the estate. The legacy tree is cited and never transcribed - no program,
- * job-control, screen-map, copybook or resource-definition statement text appears here - and nothing reads
- * that tree at run time: every fixture is read from this module's own test class path. No user-specified
- * rules govern this file; the project's rules document reports that none were provided, so the work is
- * held to the enterprise standards the specification substitutes for them, and where faithful translation
- * and idiomatic Java diverge, faithful wins.
  */
 @SpringBootTest(classes = DailyTransactionReadJobConfigIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

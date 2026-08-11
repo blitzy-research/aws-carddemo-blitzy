@@ -36,17 +36,12 @@ import java.util.List;
  * cascade of the four legacy programs applies the rest. {@code api.UserContractAdapter} is the only place
  * the two are converted.
  *
- * <p><strong>Widths are not enforced here, and that is the legacy behaviour rather than an omission.</strong>
- * A 3270 field transmits whatever the operator typed, so a blank or part-typed identifier is a value this
- * type must be able to carry: the legacy programs answer it with a field-level screen message rather than
- * refusing the transmission. Exact width is enforced where a short value could do damage -
- * {@code com.carddemo.domain.UserSecurity} refuses anything but eight characters before an insert or an
- * update, and {@code V1__create_schema.sql} carries the same rule as a check constraint.
- *
- * <p>Provenance: {@code app/cbl/COUSR00C.cbl}, {@code COUSR01C.cbl}, {@code COUSR02C.cbl},
- * {@code COUSR03C.cbl} and their four mapsets, read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook or program text is transcribed.
+ * <p><strong>Widths are not enforced here, and that is the legacy behaviour rather than an
+ * omission.</strong> A 3270 field transmits whatever the operator typed, so a blank or part-typed
+ * identifier is a value this type must be able to carry: the legacy programs answer it with a field-level
+ * screen message rather than refusing the transmission. Exact width is enforced where a short value could
+ * do damage - {@code com.carddemo.domain.UserSecurity} refuses anything but eight characters before an
+ * insert or an update, and {@code V1__create_schema.sql} carries the same rule as a check constraint.
  *
  * @param userId the eight-character user-identifier item of the add, update and delete maps
  * @param searchUserId the eight-character browse start key of the list map, where a blank value is

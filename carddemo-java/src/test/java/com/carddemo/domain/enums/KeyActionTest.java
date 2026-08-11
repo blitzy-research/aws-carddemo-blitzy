@@ -93,10 +93,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * with their numeric redefinitions &mdash; belong to the screen work-area transfer object rather than
  * here, and the eight commented-out declarations in the same copybook are inactive text that describes
  * no behaviour. None of them is modelled, named or asserted.
- *
- * <p>Every fact asserted here was read from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.
  */
 @DisplayName("KeyAction :: the sixteen attention identifiers of the five-character work-area field")
 class KeyActionTest {

@@ -68,10 +68,6 @@ import org.springframework.stereotype.Component;
  * singleton is safe for unsynchronised concurrent use and the published lists cannot be modified by a
  * caller.
  *
- * <p>Provenance: {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy}, read as read-only
- * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 @Component

@@ -60,9 +60,9 @@ import org.springframework.web.bind.annotation.RestController;
  * <p><strong>Why the framework calls sit below this class rather than in it.</strong> Launching a job is
  * an operation, not a transport concern, so the registry, the operator and the metadata reader are named
  * by the service layer and this class names the service. That is the module's ordinary dependency
- * direction, and it is now the only one this class has: an earlier revision imported the nine job
- * configuration classes to read their stable names, which reached from the API tier into the batch tier
- * across a boundary the layering does not open. The nine names are declared once in
+ * direction, and it is the only one this class has: importing the nine job configuration classes to read
+ * their stable names would reach from the API tier into the batch tier across a boundary the layering
+ * does not open. The nine names are declared once in
  * {@link BatchJobCatalog}, which both tiers are permitted to read, so nothing is repeated as a literal
  * and nothing depends upward. What stays here is what belongs to a transport boundary: the routes, the
  * body shape, the error contract, the metrics and the log.
@@ -187,13 +187,6 @@ import org.springframework.web.bind.annotation.RestController;
  * an execution identifier, never a parameter, never an identity and never an exception text - so the
  * label set stays bounded however many requests arrive.
  *
- * <p>Provenance: the eighteen transaction and program definitions of {@code app/csd/CARDDEMO.CSD} and the
- * sign-on program {@code app/cbl/COSGN00C.cbl}, which between them establish that batch control is not a
- * transaction and that an identity carries one of two user types; read as read-only reference at commit
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No resource definition, job control statement or
- * program text is transcribed.
- *
  * <p>Stateless and immutable: final class, final fields, no mutable static state. The bound parameter map
  * is read once, handed to the service and never retained, published or shared, so instances are safe for
  * unsynchronised concurrent use.
@@ -209,9 +202,9 @@ public final class BatchJobController {
      * to the administrative authority.
      *
      * <p>Read from {@link ApiRoutePaths} rather than written here, exactly as every other controller of
-     * this package reads its own address from it. The literal used to be spelled out in this file, which
-     * made this the one route in the module with two independent spellings - one the mapping used and one
-     * the security chain used - and the direction that drift fails in is the dangerous one: a mapping moved
+     * this package reads its own address from it. Spelling the literal out in this file would make this the
+     * one route in the module with two independent spellings - one the mapping used and one the security
+     * chain used - and the direction that drift fails in is the dangerous one: a mapping moved
      * out from under the gated prefix would still answer requests, but would answer them under the chain's
      * closing rule and therefore to any signed-on caller. With one authority the mapping and the rule
      * cannot name different addresses at all.
@@ -434,23 +427,26 @@ public final class BatchJobController {
      *
      * <p><strong>Nothing is added to the parameters and nothing unknown is passed on, and a repeat starts a
      * second run on purpose.</strong> This boundary appends no timestamp, no unique value and no run
-     * counter, and because a name outside the job's schema is refused rather than forwarded, a caller cannot
-     * manufacture a distinguishing parameter either. The one identifying value that separates one launch
-     * from the next is minted on the server, below the service, by the shared parameter incrementer every
-     * job configuration attaches - so the same name with the same values starts a second, distinct instance
-     * rather than being answered out of the framework's metadata. That is the faithful reading: a job member
-     * resubmitted with an identical parameter set simply ran again on the estate, and refusing the second
-     * submission would be a behavioural regression presented as an idempotency guarantee. What is refused is
-     * an <em>overlapping</em> run of the same job. Which values each accepted parameter must carry is still
-     * decided by the job's own validator during the launch and is deliberately not restated here; this
-     * boundary decides only which names exist and that a value is printable, comma-free single-byte text
-     * within {@link #MAX_PARAMETER_VALUE_LENGTH}. See {@code docs/decision-log.md} entry DL-310.
+     * counter, and because a name outside the job's schema is refused rather than forwarded, a caller
+     * cannot manufacture a distinguishing parameter either. The one identifying value that separates one
+     * launch from the next is minted on the server, below the service, by the shared parameter incrementer
+     * every job configuration attaches - so the same name with the same values starts a second, distinct
+     * instance rather than being answered out of the framework's metadata. That is the faithful reading: a
+     * job member resubmitted with an identical parameter set simply ran again on the estate, and refusing
+     * the second submission would be a behavioural regression presented as an idempotency guarantee. What
+     * is refused is an <em>overlapping</em> run of the same job. Which values each accepted parameter must
+     * carry is still decided by the job's own validator during the launch and is deliberately not restated
+     * here; this boundary decides only which names exist and that a value is printable, comma-free
+     * single-byte text within {@link #MAX_PARAMETER_VALUE_LENGTH}. See {@code docs/decision-log.md} entry DL-310.
      *
      * @param jobName       the stable job name, which must be one of {@link #LAUNCHABLE_JOB_NAMES}
-     * @param jobParameters the parameters to launch with, bound from the request's query parameters; each
-     *                      name must appear in {@link #ACCEPTED_JOB_PARAMETER_NAMES} for the addressed job
-     *                      and each value is carried through unchanged once screened. An absent or empty
-     *                      map launches the job with no parameters at all
+     * @param launchRequest the request body, a {@link BatchJobLaunchRequest} whose four components are the
+     *                      only parameter names this boundary will forward - the interest-run parameter
+     *                      date, the report window's two bounds and the file-probe mode. Every component
+     *                      is optional; each one present is carried through unchanged once screened, and
+     *                      each must appear in {@link #ACCEPTED_JOB_PARAMETER_NAMES} for the addressed
+     *                      job. The body itself is optional too: a request with no body at all, or one
+     *                      whose components are all absent, launches the job with no parameters
      * @return {@code 200} carrying the identifier of the execution that was started and the stable job
      *         name; the run is normally still in progress when this is written
      * @throws RecordNotFoundException if the name is outside the closed inventory
@@ -484,9 +480,12 @@ public final class BatchJobController {
                         + "the stable job name it was started under. The run is normally still in "
                         + "progress, so the execution surface is where its outcome is read."),
         @ApiResponse(responseCode = "400",
-                description = "A parameter name is not one this job reads, a value was refused on its "
-                        + "shape, the job refused the parameters supplied, or this job has already been "
-                        + "run with them."),
+                description = "One of four refusals: a parameter name is not one this job reads; a "
+                        + "value was refused on its shape; the job's own validator rejected the "
+                        + "parameters; or an execution of this job is already active. Resubmitting the "
+                        + "same parameters after a run has completed is NOT refused - it starts a "
+                        + "second, distinct instance. A failure to allocate a distinct run identity is "
+                        + "also reported here and is answered by submitting again."),
         @ApiResponse(responseCode = "401",
                 description = "No credential was presented, or the one presented did not verify."),
         @ApiResponse(responseCode = "403",
@@ -504,11 +503,11 @@ public final class BatchJobController {
      * The launch itself, shared by the mapped handler above and exercised directly by its unit tests.
      *
      * <p>Not a request handler: it carries no mapping, so it publishes no operation and binds no request.
-     * It used to carry a copy of the operation description and the parameter-binding annotations, both of
-     * which were inert - the framework maps only annotated <em>mapped</em> methods and the interface
-     * description is generated only from those - so the richer of the two descriptions was the one that
-     * was never published. That description now sits on the mapped handler, which is what a reader of the
-     * interface actually receives, and this method carries none.
+     * It must not acquire an operation description or parameter-binding annotations either. The framework
+     * maps only annotated <em>mapped</em> methods and generates the published interface description from
+     * those alone, so anything declared here would be inert - and a second description competing with the
+     * mapped handler's is a description a reader of the interface never receives. The published one lives
+     * on the mapped handler above; this method carries none.
      *
      * @param  jobName       the stable job name, already screened by the caller
      * @param  jobParameters the parameters to launch with, already screened by the caller
@@ -635,10 +634,10 @@ public final class BatchJobController {
      * Projects the typed transport request onto the service's neutral name/value boundary.
      *
      * <p>The four names come from {@link BatchJobCatalog}, which is the same authority the screening a few
-     * lines above reads and the same one each job's validator reads. They were spelled out here as literals,
-     * which put a fifth independent copy of each name in the module: a name changed in the catalogue would
-     * have left this projection quietly emitting the old spelling, and the screening - reading the
-     * catalogue - would then have refused the parameter the typed body had just supplied.
+     * lines above reads and the same one each job's validator reads. They were spelled out here as
+     * literals, which put a fifth independent copy of each name in the module: a name changed in the
+     * catalogue would have left this projection quietly emitting the old spelling, and the screening -
+     * reading the catalogue - would then have refused the parameter the typed body had just supplied.
      *
      * @param request typed request, or {@code null} for a launch with no parameters
      * @return only supplied parameter names and their unmodified values

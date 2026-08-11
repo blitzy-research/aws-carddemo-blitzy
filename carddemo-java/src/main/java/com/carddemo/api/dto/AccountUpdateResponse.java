@@ -31,11 +31,6 @@ import jakarta.validation.constraints.Size;
  * state derives from {@code app/cpy/COCOM01Y.cpy}; the per-field error semantics derive from the
  * decoration macro {@code app/cpy/CSSETATY.cpy}, whose executable body is lines 18 to 27.
  *
- * <p>Provenance: repository checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No statement, picture
- * clause or other source text is transcribed anywhere in this file; every claim below is a line
- * citation into the read-only legacy tree.
- *
  * <h2>What the map declares, and what this response carries</h2>
  *
  * <p>The symbolic map declares <strong>54</strong> field families, and its input and output
@@ -78,16 +73,14 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>The five monetary components</h2>
  *
- * <p>Credit limit, cash credit limit, current balance, current cycle credit and current cycle
- * debit are 15-character screen fields whose record counterparts are the five signed zoned
- * decimals with ten integer digits and two decimal places declared in {@code CVACT01Y.cpy}
- * (lines 7, 8, 9, 13 and 14). They are declared {@link BigDecimal} - never a binary
- * floating-point type, never a primitive, never a preformatted string. The estate carries no
- * rounding clause on any arithmetic statement, so every legacy store into a two-decimal field
- * truncates toward zero, and that truncation is applied in exactly one place,
+ * <p>Credit limit, cash credit limit, current balance, current cycle credit and current cycle debit are
+ * 15-character screen fields whose record counterparts are the five signed zoned decimals with ten
+ * integer digits and two decimal places declared in {@code CVACT01Y.cpy} (lines 7, 8, 9, 13 and 14).
+ * They are declared {@link BigDecimal}, never a binary floating-point type and never a preformatted
+ * string. The estate carries no rounding clause on any arithmetic statement, so every legacy store into
+ * a two-decimal field truncates toward zero, and that truncation is applied in exactly one place,
  * {@code com.carddemo.util.ZonedDecimalCodec} (decision log entry D-02). This file performs no
- * arithmetic, no scaling, no rounding, no negation and no formatting, and it declares no edited
- * presentation mask.
+ * arithmetic, scaling, rounding or formatting.
  *
  * <p><strong>The shape those five values must have is published, and it is checked.</strong>
  * Ten integer digits and exactly two decimal places is the whole of the numeric contract, and a
@@ -263,16 +256,14 @@ import jakarta.validation.constraints.Size;
  * integrity-protected value that a client can return and cannot read, forge or edit. Nothing
  * about the records can be recovered from it.
  *
- * <p><strong>This remains a data carrier and performs no business logic.</strong> It does not
- * mint the token, does not verify it, does not compare images, does not detect change and holds
- * no record image, digest, sequence number or row-revision counter of any kind - the token is one
- * opaque string, and every mechanism behind it belongs to the service. For context only: the
- * estate's single rollback sits on the customer-rewrite failure arm at {@code COACTUPC} lines
- * 4095 to 4103, with the rollback itself at 4099 to 4101, while the account-rewrite failure arm
- * at 4076 to 4081 issues none - an asymmetry preserved in the update service, not here. When the
- * service finds that a record moved it raises the dedicated failure carrier from
- * {@code com.carddemo.exception}, which this file does not and may not import; the response
- * simply carries whatever resulting text reaches the summary slot.
+ * <p><strong>This remains a data carrier and performs no business logic.</strong> It neither mints nor
+ * verifies the token, compares no images, detects no change, and holds no record image, digest,
+ * sequence number or row-revision counter: the token is one opaque string and every mechanism behind it
+ * belongs to the service. The estate's asymmetric rollback - present on the customer-rewrite failure
+ * arm at {@code COACTUPC} lines 4095 to 4103 and absent from the account-rewrite arm at 4076 to 4081 -
+ * is preserved in the update service, not here. When the service finds that a record moved it raises
+ * the dedicated failure carrier from {@code com.carddemo.exception}, which this file does not and may
+ * not import; the response simply carries whatever text reaches the summary slot.
  *
  * <h2>Validation policy</h2>
  *

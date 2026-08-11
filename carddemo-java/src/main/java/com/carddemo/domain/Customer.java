@@ -165,12 +165,6 @@ import jakarta.persistence.Table;
  * <p>Instances are mutable through their mutators because the persistence provider requires
  * property access to a managed entity. Equality is defined on the identifier alone, so an instance
  * remains stable in a hash-based collection across a flush that changes a non-key attribute.
- *
- * <p><strong>Provenance.</strong> Translated from the read-only legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which appears in the trailer comment of
- * the source copybook. No legacy source text is reproduced in this module; members, field names,
- * widths, offsets and codes are cited by reference only.
  */
 @Entity
 @Table(name = "customer")
@@ -233,8 +227,8 @@ public class Customer {
     private String addrLine3;
 
     /**
-     * Membership of the permitted state codes, and of the permitted state-and-postal-prefix combinations, is
-     * checked by the validation-lookup service against externalized reference data, not here.
+     * Membership of the permitted state codes, and of the permitted state-and-postal-prefix combinations,
+     * is checked by the validation-lookup service against externalized reference data, not here.
      */
     @Column(name = "addr_state_cd", length = 2, nullable = false)
     private String addrStateCd;
@@ -305,9 +299,9 @@ public class Customer {
      * readily as ciphertext. The guard is this boundary. As with the national identifier, this entity
      * neither encrypts nor decrypts - it refuses. Every write path passes through
      * {@link #screenProtectedValueEnvelope(String, String)}, so only a value carrying the envelope
-     * shape can be stored, and twenty cleartext characters do not satisfy it. The reference-data seed therefore
-     * carries a sealed envelope for every row rather than the cleartext the record holds, which is
-     * what lets a mandatory protected column be seeded at all.
+     * shape can be stored, and twenty cleartext characters do not satisfy it. The reference-data seed
+     * therefore carries a sealed envelope for every row rather than the cleartext the record holds, which
+     * is what lets a mandatory protected column be seeded at all.
      *
      * <p>Absence remains representable in memory, because a record image read at a boundary may not
      * carry a protected value yet and the mapper renders an absent identifier as the record's twenty
@@ -678,9 +672,9 @@ public class Customer {
      * screening rather than for requiring, because a reader who took it to mean "this value is genuinely
      * protected" would be relying on a guarantee it does not give.
      *
-     * <p>The rejection message never contains the offending value, since that value is regulated data and an
-     * exception message is easily logged or returned; only the attribute name and the failing condition are
-     * named.
+     * <p>The rejection message never contains the offending value, since that value is regulated data and
+     * an exception message is easily logged or returned; only the attribute name and the failing condition
+     * are named.
      *
      * <p>{@code null} is returned unchanged, and it is admitted for both guarded attributes rather than
      * for one. Absence has to be representable in memory for either, because a record image read at a

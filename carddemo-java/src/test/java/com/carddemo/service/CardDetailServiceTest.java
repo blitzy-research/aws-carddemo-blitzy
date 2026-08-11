@@ -70,13 +70,10 @@ import static org.mockito.Mockito.when;
 /**
  * Unit tests for {@link CardDetailService}, the card-detail transaction {@code CCDL}.
  *
- * <p>The class under test is the migrated form of {@code app/cbl/COCRDSLC.cbl}, 887 lines, read at
- * checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} with upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). It resolves one card and presents it, or
- * explains why it could not. The screen work area comes from {@code app/cpy/CVCRD01Y.cpy}, the
- * attention-key store from {@code app/cpy/CSSTRPFY.cpy}, and the 150-byte card layout from
- * {@code app/cpy/CVACT02Y.cpy}. No legacy source text appears in this file; only widths, offsets,
- * counts, member names and contract literals, which are metadata.
+ * <p>It resolves one card and presents it, or explains why it could not. The screen work area comes from
+ * {@code app/cpy/CVCRD01Y.cpy} , the attention-key store from {@code app/cpy/CSSTRPFY.cpy} , and the
+ * 150-byte card layout from {@code app/cpy/CVACT02Y.cpy} . No legacy source text appears in this file; only
+ * widths, offsets, counts, member names and contract literals, which are metadata.
  *
  * <h2>Thirty-four paragraph units, and what is deliberately not counted among them</h2>
  *
@@ -98,8 +95,8 @@ import static org.mockito.Mockito.when;
  * the copybook and its exit at line 80 - are units of the <em>copybook</em>, which the matrix gives a
  * section and two rows of its own. That copybook is included by five members, so counting its two
  * paragraphs against each of them would report ten units for two and the frozen total would no longer be
- * 544. This suite previously published 37 by adding all three to its own count; the behaviour those three
- * carry is still asserted below, under the copybook they belong to.
+ * 544. Adding all three to this suite's own count publishes 37, and must not; the behaviour those three
+ * carry is asserted below, under the copybook they belong to.
  *
  * <h2>The oracle is independent of the code it judges</h2>
  *
@@ -147,10 +144,6 @@ import static org.mockito.Mockito.when;
  * are exercised here directly through the package-private seams the production class documents,
  * because they are translated and must therefore be judged, and driving them through a turn is
  * impossible by design.
- *
- * <p>A surefire unit test: every collaborator is a mock, so no container starts, no connection opens,
- * no port binds and no clock moves. No user-specified rules were supplied for this engagement, so the
- * work is held to enterprise-standard best practice instead.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("CardDetailService - the CCDL card-detail transaction of COCRDSLC")
@@ -2115,8 +2108,8 @@ class CardDetailServiceTest {
                 + "section rather than a second time here")
         void theUnitCountIsTheOneTheMatrixCarries() {
             // Read, not written down: the figure is taken from the matrix's census subtotal, its section
-            // declaration and its rows, which must agree. An earlier revision asserted 34 + 1 + 2 == 37
-            // over constants this file authored, which could not fail and re-counted a shared copybook.
+            // // declaration and its rows, which must agree. Asserting 34 + 1 + 2 == 37 over constants this file
+            // // authored could not fail and would re-count a shared copybook.
             assertAll(
                     () -> assertThat(TraceabilityMatrixCensus.unitsOf(LEGACY_MEMBER))
                             .isEqualTo(OWN_PARAGRAPH_LABEL_COUNT),

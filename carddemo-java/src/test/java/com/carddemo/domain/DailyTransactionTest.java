@@ -30,10 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit test for {@link DailyTransaction}, the 350-byte daily-transaction record that is staged from a
  * sequential dataset and consumed as the primary input of the posting run.
  *
- * <p>Provenance of every legacy fact asserted below: repository checkout
- * 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp CardDemo_v1.0-15-g27d6c6f-68
- * (2022-07-19). The stamp is recorded here as a header string only; it is never asserted against a
- * source member, because it is not carried uniformly by every artefact in the estate.
+ * <p>The stamp is recorded here as a header string only; it is never asserted against a source member,
+ * because it is not carried uniformly by every artefact in the estate.
  *
  * <h2>The independent oracle this suite asserts against</h2>
  *

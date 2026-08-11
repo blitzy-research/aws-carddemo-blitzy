@@ -79,8 +79,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * later attempt to move the bound into the constructor fails in this file rather than silently changing
  * what the type can represent.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("PageMetadata - the declarative bounds on caller-supplied paging state")
 class PageMetadataBoundaryTest {

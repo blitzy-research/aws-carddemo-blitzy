@@ -55,18 +55,15 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  *
  * <h2>Where the expected values come from</h2>
  *
- * <p>Every width, count, ordering rule and message text asserted below was read from the legacy
- * members that own the screen &mdash; the program {@code app/cbl/COTRN00C.cbl}, its symbolic map
- * {@code app/cpy-bms/COTRN00.CPY}, the mapset {@code app/bms/COTRN00.bms} and the transaction record
- * layout {@code app/cpy/CVTRA05Y.cpy} &mdash; and is restated here as an independent oracle. No
- * production component is used to compute an expected value: the module's zoned-decimal codec, its
- * record mappers and its formatters are all absent from this file by design, because a test that asked
- * the implementation what the answer should be would agree with the implementation whatever it did.
- * The checkout the figures were read from is commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, and the members carry the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} of 2022-07-19. Those identifiers belong in the traceability
- * matrix header and in prose such as this; they are deliberately not declared as a constant, because
- * the stamp is not uniform across the estate and a constant would imply that it is.
+ * <p>Every width, count, ordering rule and message text asserted below was read from the legacy members
+ * that own the screen &mdash; the program {@code app/cbl/COTRN00C.cbl} , its symbolic map
+ * {@code app/cpy-bms/COTRN00.CPY} , the mapset {@code app/bms/COTRN00.bms} and the transaction record
+ * layout {@code app/cpy/CVTRA05Y.cpy} &mdash; and is restated here as an independent oracle. No production
+ * component is used to compute an expected value: the module's zoned-decimal codec, its record mappers and
+ * its formatters are all absent from this file by design, because a test that asked the implementation what
+ * the answer should be would agree with the implementation whatever it did. Those identifiers belong in the
+ * traceability matrix header and in prose such as this; they are deliberately not declared as a constant,
+ * because the stamp is not uniform across the estate and a constant would imply that it is.
  *
  * <h2>Why the assertions are phrased without run-time type inspection</h2>
  *
@@ -757,9 +754,9 @@ class TransactionListResponseTest {
 
             // The cap is proved to read that constant rather than a private copy by the refusal test
             // below, which names the published figure in the message. What this test adds is that no
-            // private copy exists to read: an earlier revision declared a duplicate depth constant on
-            // this body, and the duplication was the stated reason a later revision removed the cap
-            // altogether, so singularity is what stops the same argument being available again.
+            // // private copy exists to read. A DUPLICATE DEPTH CONSTANT ON THIS BODY is exactly the duplication
+            // // that makes "remove the cap altogether" an available argument, so singularity is what keeps that
+            // // argument off the table.
             assertThat(Arrays.stream(TransactionListResponse.class.getDeclaredFields())
                             .filter(field -> Modifier.isStatic(field.getModifiers()))
                             .filter(field -> !field.isSynthetic())

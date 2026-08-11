@@ -84,10 +84,8 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       legacy antecedent: indexed and sequential records are fixed length by construction.</li>
  * </ul>
  *
- * <h2>Provenance</h2>
- * Legacy checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec; upstream release stamp
- * CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19). These are provenance strings for the reader only: no
- * assertion in this file expects either of them on any member.
+ * <p>These are provenance strings for the reader only: no assertion in this file expects either of them on
+ * any member.
  *
  * @see CardRecordMapper
  * @see Card

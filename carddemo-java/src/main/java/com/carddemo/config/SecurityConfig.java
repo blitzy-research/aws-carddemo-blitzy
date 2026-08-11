@@ -97,9 +97,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * program. {@link TransactionRoute} carries one entry per registered transaction - its four-character
  * transaction identifier, the eight-character program bound to it, the line its definition begins on, and
  * the entitlement this module requires of a caller who reaches it. The table is immutable, is not assembled
- * at run time, and the authorization rules below are <em>derived</em> from it rather than restating it, so a
- * reclassified entry changes what the chain answers instead of producing a comment that disagrees with the
- * rule beside it.
+ * at run time, and the authorization rules below are <em>derived</em> from it rather than restating it, so
+ * a reclassified entry changes what the chain answers instead of producing a comment that disagrees with
+ * the rule beside it.
  *
  * <p><strong>Exactly five of the eighteen are administrative</strong> - the administrative menu and the
  * four transactions that list, add, update and delete a sign-on record. Every other transaction is
@@ -175,11 +175,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       the operator credential described below still collects, so the performance gate is unaffected - and
  *       what closes is collection by a client that presents nothing.</li>
  *   <li><strong>Application chain.</strong> The interface description, <strong>and only where the running
- *       profile publishes it.</strong> The permit is conditional on the same switch that decides whether the
- *       document is served at all. The shared baseline and production leave it unpublished; the local
+ *       profile publishes it.</strong> The permit is conditional on the same switch that decides whether
+ * the       document is served at all. The shared baseline and production leave it unpublished; the local
  *       overlay publishes it.</li>
- *   <li><strong>Application chain.</strong> The sign-on route, because it is the route that issues tokens: a
- *       token-issuing route that required a token could never be reached, and no other route could be
+ *   <li><strong>Application chain.</strong> The sign-on route, because it is the route that issues tokens:
+ * a       token-issuing route that required a token could never be reached, and no other route could be
  *       reached either. It is named by {@link #SIGN_ON_PATH} so the exemption is a single reviewable rule
  *       rather than a pattern that happens to match.</li>
  * </ul>
@@ -188,9 +188,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *
  * <p><strong>Every management endpoint other than the three probe paths and the conditional scrape permit
  * requires the {@link #MANAGEMENT_AUTHORITY} authority</strong> - the metrics endpoints, the exposition
- * endpoint where a profile has not opened it, the build description, the per-component health paths, and the
- * environment, configuration-property, bean, migration, request-mapping and logger endpoints that only the
- * local overlay publishes. The authority is carried by exactly one identity, established by
+ * endpoint where a profile has not opened it, the build description, the per-component health paths, and
+ * the environment, configuration-property, bean, migration, request-mapping and logger endpoints that only
+ * the local overlay publishes. The authority is carried by exactly one identity, established by
  * {@code ManagementTokenAuthenticationFilter} from {@value #MANAGEMENT_TOKEN_PROPERTY} and by nothing else.
  *
  * <p><strong>No sign-on token can carry it, and that is the point.</strong> The application chain's bearer
@@ -202,13 +202,13 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *
  * <p><strong>Absent configuration is the closed state, not the open one.</strong> Where
  * {@value #MANAGEMENT_TOKEN_PROPERTY} resolves to blank, the chain's catch-all is {@code denyAll()} rather
- * than an authority rule no caller could satisfy - the same outcome, said in a way that cannot be widened by
- * a later edit. Production must therefore supply the credential, and
- * {@link ProductionConfigurationValidator} refuses the start if it is missing, so the surface can be neither
- * accidentally open nor accidentally unreachable. Ordering the permits before the catch-all means widening
- * the published endpoint set in a profile can never widen the anonymous set: a newly published endpoint
- * falls to the catch-all the moment it appears. There is no blanket permit for the management base path
- * anywhere.
+ * than an authority rule no caller could satisfy - the same outcome, said in a way that cannot be widened
+ * by a later edit. Production must therefore supply the credential, and
+ * {@link ProductionConfigurationValidator} refuses the start if it is missing, so the surface can be
+ * neither accidentally open nor accidentally unreachable. Ordering the permits before the catch-all means
+ * widening the published endpoint set in a profile can never widen the anonymous set: a newly published
+ * endpoint falls to the catch-all the moment it appears. There is no blanket permit for the management base
+ * path anywhere.
  *
  * <p><strong>The framework's generated-user path is removed rather than left dormant.</strong> Declaring
  * an {@link AuthenticationManager} bean withdraws the auto-configured in-memory user, and with it the
@@ -359,16 +359,16 @@ public class SecurityConfig {
      * rather than admitted because nobody remembered to exclude it. That is the whole difference between a
      * deny-list and an allow-list, and it is the direction a security rule must fail in.
      *
-     * <p><strong>What this root now carries is a refusal, and the grants name addresses.</strong> The
-     * positive rule used to be written over this root and everything beneath it, which admitted either
-     * sign-on authority to every address under it - including every address no controller serves. That
-     * left the dispatcher's not-found answer as the only thing distinguishing a real route from an
-     * invented one, and it pre-admitted whatever was mapped beneath the root next. The chain now grants
-     * the eleven ordinary addresses of {@link ApiRoutePaths#ORDINARY_ROUTE_PATHS} one rule each and closes
-     * this root with {@code denyAll}, so the grant is exactly as wide as the delivered surface and
-     * anything else beneath the root is refused.
+     * <p><strong>What this root carries is a refusal, and the grants name addresses.</strong> A positive
+     * rule written over this root and everything beneath it would admit either sign-on authority to every
+     * address under it - including every address no controller serves. That leaves the dispatcher's
+     * not-found answer as the only thing distinguishing a real route from an invented one, and it
+     * pre-admits whatever is mapped beneath the root next. The chain grants the eleven ordinary addresses
+     * of {@link ApiRoutePaths#ORDINARY_ROUTE_PATHS} one rule each and closes this root with
+     * {@code denyAll}, so the grant is exactly as wide as the delivered surface and anything else beneath
+     * the root is refused.
      *
-     * <p>The root is therefore still load-bearing, and for a stronger reason than before: it is what turns
+     * <p>The root is therefore load-bearing in its own right: it is what turns
      * a forgotten classification into an unreachable route rather than an open one. It spans the sign-on
      * route, {@link #ADMIN_PATH_PREFIX} and {@link #BATCH_CONTROL_PATH_PREFIX} as well, which is harmless
      * because rule order decides - every narrower rule is registered ahead of the refusal, so the refusal
@@ -487,9 +487,9 @@ public class SecurityConfig {
      * {@link #ADMIN_PATH_PREFIX}.</strong> That table is the census of the eighteen transaction definitions
      * the estate's resource definitions actually register, and starting a batch job is not one of them:
      * batch work reached the estate through job submission, never through a transaction, so inventing a
-     * nineteenth entry would misreport the census that the same table's start-up log line publishes. Folding
-     * the path under the administrative prefix would be the same misreport by a different route, because
-     * that prefix exists to carry the five administrative transactions and its documentation says so.</p>
+     * nineteenth entry would misreport the census that the same table's start-up log line publishes.
+     * Folding the path under the administrative prefix would be the same misreport by a different route,
+     * because that prefix exists to carry the five administrative transactions and its documentation says so.</p>
      *
      * <p>The entitlement is nevertheless identical - {@link JwtTokenProvider#ADMIN_AUTHORITY} - and for a
      * stronger reason than the user-maintenance transactions have. Launching the posting, accrual,
@@ -512,10 +512,9 @@ public class SecurityConfig {
      * The pattern the chain's closing refusal covers: everything beneath the API root.
      *
      * <p>Assembled from {@link #API_PATH_PREFIX} rather than written out, so the refusal cannot cover a
-     * different root from the one the controllers bind beneath. It used to carry the ordinary grant, and
-     * carrying a grant over a whole region is what made that grant wider than the delivered surface; see
-     * that constant for the reasoning, and {@link ApiRoutePaths#ORDINARY_ROUTE_PATHS} for the addresses
-     * the grant now names instead.
+     * different root from the one the controllers bind beneath. It carries a refusal and not the ordinary
+     * grant, because carrying a grant over a whole region is what makes that grant wider than the
+     * delivered surface; see that constant for the reasoning, and
      */
     private static final String BUSINESS_SURFACE_PATTERN = API_PATH_PREFIX + ANY_DESCENDANT;
 
@@ -549,13 +548,12 @@ public class SecurityConfig {
      * <h2>Why a third authority exists</h2>
      *
      * <p>This module grants exactly two authorities from a sign-on, because the legacy estate declares
-     * exactly two user types - and neither of them is an operator. The management surface was previously
-     * gated on bare {@code authenticated()}, which every signed-on cardholder satisfies, so any ordinary
-     * application user could read per-endpoint request counts and latency distributions, per-batch-step
-     * record counts, connection-pool saturation, and JVM heap, thread and garbage-collection internals.
-     * That set is enough to profile transaction volume, infer business activity from the batch counts and
-     * time an attack, and none of it is anything a cardholder's session needs.
-     *
+     * exactly two user types - and neither of them is an operator. Gating the management surface on bare
+     * {@code authenticated()} would admit every signed-on cardholder, so any ordinary application user
+     * could read per-endpoint request counts and latency distributions, per-batch-step record counts,
+     * connection-pool saturation, and JVM heap, thread and garbage-collection internals. That set is
+     * enough to profile transaction volume, infer business activity from the batch counts and time an
+     * attack, and none of it is anything a cardholder's session needs.
      * <p>So the fix is not a stricter role on the existing tokens, it is a <em>different kind of
      * identity</em>. A collector is not a user of this application: it holds no account, signs on through
      * no screen, and appears nowhere in the legacy user records. Granting it one of the two authorities
@@ -589,10 +587,13 @@ public class SecurityConfig {
      * one-character token satisfied every check this module made and then fell to a few hundred
      * guesses - CWE-521, reachable in production with nothing else misconfigured.
      *
-     * <p>Generate one, never choose one: {@code openssl rand -hex 16} or
-     * {@code openssl rand -base64 24}, either of which produces a value at the floor. A length rule is a
-     * proxy for unpredictability and not a measure of it - thirty-two repetitions of one letter would
-     * pass - which is why the generator is named here rather than left to be improvised.
+     * <p>Generate one, never choose one: {@code openssl rand -base64 24} produces a value at the floor
+     * over a 64-symbol alphabet, which is what also satisfies
+     * {@link ProductionConfigurationValidator#MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS}. A hexadecimal
+     * value of the same width is long enough and usually fails that second rule, because hexadecimal has
+     * only sixteen symbols in total. A length rule is a proxy for unpredictability and not a measure of it
+     * - thirty-two repetitions of one letter would satisfy it - which is why both the generator and its
+     * alphabet are named here rather than left to be improvised.
      *
      * <p>No floor is imposed outside production. The local and test overlays carry a committed
      * development literal so the profiles work on a fresh clone, and the shared baseline binds this
@@ -1142,12 +1143,11 @@ public class SecurityConfig {
                     // surface that re-runs posting, accrual and statement generation would be reachable by
                     // nobody, and with a weaker one it would be reachable by any signed-on caller.
                     //
-                    // ONE rule, installed once. The descendant half of it used to be installed a second
-                    // time further down under the name BATCH_CONTROL_PATH_PATTERN, with the identical
-                    // authority. A duplicate that agrees is dead weight; a duplicate that stops agreeing
-                    // is two answers to a question that must have one, and the reader has no way to know
-                    // which one the chain applies. The descendant pattern is now named from the published
-                    // constant so there is one spelling of it as well as one rule.
+                    // ONE rule, installed once. The descendant half of it must not be installed a second
+                    // time further down under a second name with the identical authority. A duplicate that agrees is dead
+                    // weight; a duplicate that stops agreeing is two answers to a question that must have one, and the
+                    // reader has no way to know which one the chain applies. The descendant pattern is named from the
+                    // published constant so there is one spelling of it as well as one rule.
                     requests.requestMatchers(matcher(BATCH_OPERATIONS_PATH_PREFIX),
                                     matcher(BATCH_CONTROL_PATH_PATTERN))
                             .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
@@ -1231,9 +1231,9 @@ public class SecurityConfig {
         }
 
         // Names only what THIS chain decides. The management surface has its own chain and its own
-        // start-up line, and an earlier revision of this message listed the health probe and the scrape
-        // endpoint here - which was accurate when this chain carried those rules and became a second,
-        // stale description of them the moment it did not.
+        // start-up line, and this message must not list the health probe or the scrape endpoint: they are
+        // accurate only while this chain carries those rules, and become a second, stale description of them
+        // the moment it does not.
         LOG.info("HTTP security configured: the anonymous surface is the sign-on route{}; {} named "
                         + "ordinary addresses require one of the two sign-on authorities {} or {} by name, "
                         + "rather than merely an established identity; the administrative prefix {} and the "
@@ -1395,10 +1395,10 @@ public class SecurityConfig {
      * claimed, which is worse than no rule because it reads as though something were being enforced.</p>
      *
      * <p><strong>The ordinary entitlement is the one case where the addresses do exist and are claimed, so
-     * it names them.</strong> It used to be enforced by one rule over the API root, which was broader than
-     * the delivered surface: it admitted an address no controller serves and pre-admitted whatever was
-     * mapped beneath the root next. It now carries the eleven ordinary addresses themselves, and the chain
-     * closes with a refusal over the root, so breadth is no longer the price of not forgetting a route -
+     * it names them.</strong> Enforcing it by one rule over the API root would be broader than the
+     * delivered surface: such a rule admits an address no controller serves and pre-admits whatever is
+     * mapped beneath the root next. It carries the eleven ordinary addresses themselves, and the chain
+     * closes with a refusal over the root, so breadth is not the price of not forgetting a route -
      * forgetting one makes it unreachable rather than open, and the delivered-surface oracle fails the
      * build when the two disagree.</p>
      *
@@ -1470,12 +1470,12 @@ public class SecurityConfig {
          * an enumeration constant here cannot drift from the address a controller binds or from the rule
          * the chain installs.</p>
          *
-         * <p>This used to be a single {@code String}, and before that a string permitted to be empty
-         * meaning "no dedicated rule, answered by the closing catch-all". The empty case went when the
-         * ordinary entitlement was first given a rule of its own; the singular went when that rule became
-         * the eleven ordinary addresses rather than the region containing them. An entitlement enforced by
-         * several rules is the arrangement, so the field is the arrangement's shape and not a
-         * simplification a reader has to unpick.</p>
+         * This field is plural because an entitlement enforced by several rules is the arrangement, and the
+         * field is the arrangement's shape rather than a simplification a reader has to unpick. A single
+         * {@code String} could not express it, and a {@code String} permitted to be empty - meaning "no
+         * dedicated rule, answered by the closing catch-all" - could not express the ordinary entitlement
+         * at all, because that entitlement carries the eleven ordinary addresses rather than the region
+         * containing them.</p>
          */
         private final List<String> enforcementPatterns;
 
@@ -2025,9 +2025,9 @@ public class SecurityConfig {
         /**
          * Consecutive refusals since the last established presentation.
          *
-         * <p>One counter for the whole surface rather than one per caller: the credential is a single shared
-         * secret, so a per-caller breakdown would be unbounded state keyed by an unauthenticated header and
-         * would say nothing the total does not.
+         * <p>One counter for the whole surface rather than one per caller: the credential is a single
+         * shared secret, so a per-caller breakdown would be unbounded state keyed by an unauthenticated
+         * header and would say nothing the total does not.
          */
         private final AtomicLong consecutiveRefusals = new AtomicLong();
 

@@ -251,10 +251,17 @@ public final class ProductionConfigurationValidator {
      * How many distinct characters a production management credential must contain.
      *
      * <p>Length alone does not make a shared secret unguessable: a credential of the required length made
-     * of one repeated character has the search space of that character. This floor is deliberately far
-     * below what random material of the required length yields - thirty-two random printable bytes hold
-     * close to thirty distinct values - so it refuses a hand-typed pattern without ever refusing a
-     * generated credential.
+     * of one repeated character has the search space of that character. This floor refuses that shape.
+     *
+     * <p><strong>The floor is only comfortably clear of generated material when the generator draws from a
+     * wide alphabet, so the alphabet is part of the requirement rather than an aside.</strong> Thirty-two
+     * characters drawn from the 64-symbol base64 alphabet carry about twenty-five distinct symbols and fall
+     * below sixteen with probability on the order of one in ten million. Thirty-two characters of
+     * <em>hexadecimal</em> draw from sixteen symbols in total, so clearing this floor requires every one of
+     * them to appear, which happens for roughly seven values in a hundred - a hex value of the required
+     * length is therefore refused far more often than it is accepted. That is why
+     * {@code application-prod.yml} names a base64 generator and states the hexadecimal case explicitly
+     * instead of leaving a deployer to discover it by being refused.
      */
     static final int MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS = 16;
 
@@ -294,14 +301,14 @@ public final class ProductionConfigurationValidator {
      * - and then falls to at most a few hundred guesses. That is CWE-521, weak password requirements,
      * and it was reachable in production with no other misconfiguration.
      *
-     * <p><strong>Thirty-two characters</strong> is the floor because that is the width of the two
-     * generators a deployment would reasonably use - {@code openssl rand -hex 16} produces exactly 32
-     * characters, {@code openssl rand -base64 24} produces 32 - and it is stated in characters rather
-     * than in bits because characters are what the value arrives as. It is a floor on LENGTH and
-     * therefore a proxy for unpredictability rather than a measure of it: thirty-two repetitions of one
-     * letter passes, which no rule of this kind can prevent. Refusing what is provably too short is the
-     * part that can be enforced mechanically, and the paragraph at
-     * {@code application-prod.yml}'s head names the generators for the part that cannot.
+     * <p><strong>Thirty-two characters</strong> is the floor because that is the width
+     * {@code openssl rand -base64 24} produces, and it is stated in characters rather than in bits
+     * because characters are what the value arrives as. It is a floor on LENGTH alone and therefore a
+     * proxy for unpredictability rather than a measure of it: thirty-two repetitions of one letter
+     * satisfies it, which is why {@link #MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS} accompanies it.
+     * Meeting this length with a narrow alphabet is not sufficient - a 32-character hexadecimal value is
+     * long enough here and is then usually refused by the distinctness rule - so the generator named in
+     * {@code application-prod.yml} is a base64 one and the two rules have to be read together.
      *
      * @see #MINIMUM_LENGTH_BY_KEY
      */
@@ -397,7 +404,7 @@ public final class ProductionConfigurationValidator {
      *
      * <p><strong>Production may declare none of them, and the difference between "declares none" and
      * "may declare none" is this list.</strong> The production profile document happens to declare no
-     * endpoint key, and an earlier revision treated that as the control. A document cannot see the
+     * endpoint key, and that fact is not the control. A document cannot see the
      * environment: an override supplied as {@code SPRING_CLOUD_AWS_SQS_ENDPOINT}, as a command-line
      * property, or by a co-activated overlay binds perfectly well for a key no document mentions, and
      * every client then addresses whatever host it names.
@@ -1086,8 +1093,8 @@ public final class ProductionConfigurationValidator {
      *
      * <ol>
      *   <li><strong>The scheme must be {@code https}.</strong> This is what "authenticated TLS" reduces to
-     *       in a configuration check: the exporter's client verifies the collector's certificate against the
-     *       platform trust store, so the address names a host that can prove it is that host. Client
+     *       in a configuration check: the exporter's client verifies the collector's certificate against
+     * the       platform trust store, so the address names a host that can prove it is that host. Client
      *       certificate authentication would be stronger still and is <em>not</em> asserted here, because
      *       the framework's OTLP tracing properties expose no client key material and inventing a second
      *       transport to carry it would put the export decision back into this module - see the recorded
@@ -1451,23 +1458,24 @@ public final class ProductionConfigurationValidator {
      *
      * <p>Length is necessary and not sufficient, so two shape rules accompany it. A credential must contain
      * at least {@link #MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS} distinct characters, which refuses a
-     * long run of one symbol while never approaching what generated material produces. And it must not
-     * contain one of a short list of words that only appear in values a person typed - the credential left
-     * as the example is the failure this catches, and it is the common one.
+     * long run of one symbol and, as that constant records, also refuses most values drawn from an
+     * alphabet as narrow as hexadecimal - so the generator and the rule have to be chosen together. And it
+     * must not contain one of a short list of words that only appear in values a person typed - the
+     * credential left as the example is the failure this catches, and it is the common one.
      *
      * <h2>What this check deliberately does not attempt</h2>
      *
-     * <p>It does not measure entropy and does not claim the value is random. Randomness is not a property of
-     * a string, and a check that pretended otherwise would refuse legitimate credentials while passing
+     * <p>It does not measure entropy and does not claim the value is random. Randomness is not a property
+     * of a string, and a check that pretended otherwise would refuse legitimate credentials while passing
      * crafted ones. What it guarantees is that a credential which is obviously not random is refused before
      * a single bean is created, and the rotation expectation is documented where the variable is.
      *
-     * <p>An absent value is not reported here. {@link #validateRequiredSettings} already reports it, and one
-     * missing variable producing two messages teaches a deployer to fix one of them and stop reading.
+     * <p>An absent value is not reported here. {@link #validateRequiredSettings} already reports it, and
+     * one missing variable producing two messages teaches a deployer to fix one of them and stop reading.
      *
-     * <p>It also does not describe the value it rejected. Each fault names the rule and not the finding: the
-     * word list is refused by size rather than by naming the match, and every measurement - the byte count,
-     * the distinct-character count and the length applied by
+     * <p>It also does not describe the value it rejected. Each fault names the rule and not the finding:
+     * the word list is refused by size rather than by naming the match, and every measurement - the byte
+     * count, the distinct-character count and the length applied by
      * {@link #validateRequiredSettings} - is reported as the requirement rather than as the actual. A
      * property of a credential is part of a credential once it reaches a log. Recorded as
      * {@code docs/decision-log.md} DL-348.
@@ -1528,9 +1536,9 @@ public final class ProductionConfigurationValidator {
     /**
      * Composes the management credential refusal.
      *
-     * <p>The configured value is never repeated, for a reason narrower than the general one: this value is a
-     * live credential for the surface that publishes this deployment's metrics, so a refusal that echoed it
-     * would write a working credential into the log of the deployment that rejected it, where it would
+     * <p>The configured value is never repeated, for a reason narrower than the general one: this value is
+     * a live credential for the surface that publishes this deployment's metrics, so a refusal that echoed
+     * it would write a working credential into the log of the deployment that rejected it, where it would
      * outlive the correction. The rule that was broken is named instead, which is what a deployer needs.
      *
      * <p><strong>No property of the value is repeated either, which is the stronger discipline and the
@@ -1538,8 +1546,8 @@ public final class ProductionConfigurationValidator {
      * the dictionary-word fault named the word it had found, which is a substring of the credential and
      * therefore part of the credential; and the length fault named the number of characters supplied, which
      * is the search space a guesser needs. Both are now stated as requirements alone. Neither withholding
-     * costs a deployer anything - they have the value in front of them - and each removes something a reader
-     * of the log gains. Recorded as {@code docs/decision-log.md} DL-348.
+     * costs a deployer anything - they have the value in front of them - and each removes something a
+     * reader of the log gains. Recorded as {@code docs/decision-log.md} DL-348.
      *
      * @param  faults one line per broken rule
      * @return the message the refusal carries
@@ -1678,7 +1686,12 @@ public final class ProductionConfigurationValidator {
                     + "requires; its actual length is deliberately not reported. It is presented as a "
                     + "bearer token on the management surface, with no sign-on and no attempt limit "
                     + "behind it, so its only defence is that it cannot be guessed. Generate one with "
-                    + "`openssl rand -hex 16` or `openssl rand -base64 24`";
+                    + "`openssl rand -base64 24`, which yields " + minimumLength + " characters over a "
+                    + "64-symbol alphabet and so also satisfies the "
+                    + MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS + "-distinct-character rule; a "
+                    + minimumLength + "-character hexadecimal value is long enough but usually is not, "
+                    + "because hexadecimal has only " + MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS
+                    + " symbols in total";
         }
         return null;
     }

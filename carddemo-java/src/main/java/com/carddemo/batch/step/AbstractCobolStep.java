@@ -104,10 +104,6 @@ import org.springframework.batch.repeat.RepeatStatus;
  * three immutable collaborators supplied at construction and every per-execution value is a local
  * variable, so a concrete step is safe to register as a singleton.
  *
- * <p>Translated from the estate at commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19); the legacy source is cited, never quoted,
- * and is never read at run time.
- *
  * @param <R> the record type the concrete step's read paragraph delivers
  */
 public abstract class AbstractCobolStep<R> implements Tasklet {

@@ -148,12 +148,8 @@ import com.carddemo.support.AbstractPostgresIT;
  *
  * <p>Provenance: this test has no legacy antecedent - the legacy estate carries no test harness of any
  * kind. The application it starts replaces an estate with no single process to start: online work was
- * reached through the transaction table of the CICS resource definition {@code app/csd/CARDDEMO.CSD}
- * and batch work by submitting job streams. Legacy checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability matrix header only; it is not carried by every legacy member, so nothing here asserts it
- * against one.</p>
+ * reached through the transaction table of the CICS resource definition {@code app/csd/CARDDEMO.CSD} and
+ * batch work by submitting job streams.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @ContextConfiguration(initializers = CardDemoApplicationIT.ProductionOnlyClasspath.class)

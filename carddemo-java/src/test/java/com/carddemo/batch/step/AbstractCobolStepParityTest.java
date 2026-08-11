@@ -511,7 +511,7 @@ class AbstractCobolStepParityTest {
      * {@code '10'} to end of file — and the latter only for a read. Every other code in the raw
      * vocabulary, including the qualified successes {@code '01'}, {@code '02'}, {@code '04'} and
      * {@code '05'} and the qualified at-end {@code '12'}, normalises to the terminal error state,
-     * because the legacy {@code ELSE MOVE 12 TO APPL-RESULT} has no other arm. Widening the
+     * because the legacy catch-all arm normalises to 12 and there is no other arm. Widening the
      * all-clear to cover the qualified successes would be a plausible improvement and a behavioural
      * change, so this class pins the narrow rule.
      */

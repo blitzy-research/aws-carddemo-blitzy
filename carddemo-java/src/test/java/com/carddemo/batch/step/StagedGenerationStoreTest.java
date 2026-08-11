@@ -1080,8 +1080,8 @@ class StagedGenerationStoreTest {
 
             // The immediate path publishes at the end of the producing step rather than at the end of
             // the job, so it has no later listener to compensate for it: the compensation is its own or
-            // it does not happen. An earlier revision asserted in a comment that "a failed upload
-            // uploaded nothing" and so did nothing here, which left exactly this object behind.
+            // // it does not happen. Asserting in a comment that "a failed upload uploaded nothing" and therefore
+            // // doing nothing here leaves exactly this object behind.
             assertThat(versionsByKey)
                     .as("the ambiguous object is gone, so the step that failed published nothing")
                     .doesNotContainKey(key);

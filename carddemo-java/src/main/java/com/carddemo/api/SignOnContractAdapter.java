@@ -49,8 +49,9 @@ import org.springframework.stereotype.Component;
  * this is the one turn that establishes identity, so identity here is derived and never accepted.
  *
  * <p><strong>The two region identifiers are configured, because the screen always carried them.</strong>
- * The program assigns them on every send - {@code EXEC CICS ASSIGN APPLID} at line 199 and
- * {@code ASSIGN SYSID} at line 203, each straight into the map's own output item - so an operator saw
+ * The program obtains the application identifier and the system identifier from the transaction manager on
+ * every send and places each straight into the map's own output item [app/cbl/COSGN00C.cbl:L199, L203], so
+ * an operator saw
  * which application and which system had served the screen on every one of the six screens this
  * transaction can present. They are not diagnostics and not optional: they are two of the fifteen
  * components of a frozen contract, and publishing them permanently absent left a client unable to tell
@@ -63,12 +64,6 @@ import org.springframework.stereotype.Component;
  *
  * <p>The two region identifiers are configuration, and the provenance of each default is recorded as
  * decision {@code DL-330} in {@code docs/decision-log.md}.
- *
- * <p>Provenance: {@code app/cbl/COSGN00C.cbl}, whose first-entry screen at lines 80 to 83 and screen
- * writes at lines 88, 93, 121, 126, 244, 250 and 255 are the outcomes mapped below, read as read-only
- * reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
  *
  * @since 1.0.0
  */

@@ -57,15 +57,14 @@ import org.springframework.web.bind.annotation.RestController;
  * owns that screen, projects the returned turn onto the published response contract, and records how
  * long the turn took. Each endpoint delegates exactly once.
  *
- * <p><strong>What this class deliberately does not do.</strong> It resolves no row selector, walks no
- * browse, orders no page, validates no field, looks up no account or card, parses no amount and no
- * date, allocates no transaction identifier, copies no previous transaction, writes nothing, retains
- * nothing between calls and composes no message text. Every one of those lives in
- * {@link TransactionListService}, {@link TransactionViewService} or {@link TransactionAddService},
- * which is what lets all three be exercised without a servlet and what stops this class from becoming a
- * second, divergent copy of the screen rules. No message literal is declared here at all: the texts
- * belong to the services and to the response contracts, and duplicating one would create two sources
- * for a text that an operator matches on.
+ * <p><strong>What this class deliberately does not do.</strong> Row-selector resolution, browse walking,
+ * page ordering, field validation, account and card lookup, amount and date parsing, identifier
+ * allocation, copy-forward, writing and message composition all live in
+ * {@link TransactionListService}, {@link TransactionViewService} or {@link TransactionAddService}, which
+ * is what lets all three be exercised without a servlet and what stops this class becoming a second,
+ * divergent copy of the screen rules. Nothing is retained between calls. No message literal is declared
+ * here at all: the texts belong to the services and to the response contracts, and duplicating one would
+ * create two sources for a text an operator matches on.
  *
  * <p><strong>Why every outcome answers {@code 200}.</strong> Each outcome the three screens can reach -
  * including every rejection, the not-found report, the invalid-selection report, the end-of-browse
@@ -118,13 +117,6 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Stateless apart from the injected collaborators, holding no mutable field and exposing no mutable
  * collection, so the singleton is safe for unsynchronised concurrent use.
- *
- * <p>Provenance: {@code app/cbl/COTRN00C.cbl}, {@code app/cbl/COTRN01C.cbl},
- * {@code app/cbl/COTRN02C.cbl} and {@code app/csd/CARDDEMO.CSD}, whose transaction definitions bind
- * {@code CT00}, {@code CT01} and {@code CT02} to those three programs, read as read-only reference at
- * commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement, map declaration or
- * picture clause is transcribed.
  *
  * @since 1.0.0
  */

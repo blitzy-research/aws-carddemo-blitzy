@@ -96,12 +96,8 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  * it. Both are stronger than reading an annotation, because they check the behaviour a client
  * actually meets.
  *
- * <p>Provenance for every citation, width and count below: repository checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which is the stamp this member carries in
- * its own trailer comment at line 571. No COBOL, screen-map or job-control source text appears
- * anywhere in this file: the legacy estate is cited by member name, line number, field width and
- * contract text only.
+ * <p>No COBOL, screen-map or job-control source text appears anywhere in this file: the legacy estate is
+ * cited by member name, line number, field width and contract text only.
  */
 @DisplayName("BillPaymentResponse :: response contract of legacy bill-payment transaction CB00")
 class BillPaymentResponseTest {

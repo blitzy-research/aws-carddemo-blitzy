@@ -235,12 +235,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * eight character widths, immutability and identifier resolution - is asserted once in
  * {@code SecurityConfigRouteTableTest}; this file asserts the partition contract the chain's rules are
  * actually derived from, and the two are complementary rather than duplicates.</p>
- *
- * <p><strong>Standards.</strong> The project's rules document states that no user rules were provided, which
- * was confirmed by reading it in full; that absence lowers nothing, and the work is held instead to the
- * enterprise standards the plan substitutes. No latency, throughput, capacity or availability figure is
- * asserted anywhere in this file, and none is implied: the hashing cost factor is a resistance parameter,
- * not a service level, and it is never timed.</p>
  */
 @DisplayName("Request authorization: what the filter chain actually answers, asserted by real status")
 class SecurityConfigTest {
@@ -298,11 +292,11 @@ class SecurityConfigTest {
     /**
      * An ordinary protected business route, and one this module actually delivers.
      *
-     * <p><strong>It has to be a delivered address now, and it did not used to be.</strong> This constant
-     * was {@code /api/accounts/00000000001} - a plausible-looking address no controller has ever mapped -
-     * and every assertion below that admitted an ordinary identity to it was, without saying so, asserting
-     * that a signed-on caller reached whatever lay beneath the API root. That is exactly the over-grant the
-     * chain has since closed: the ordinary rules name the eleven delivered addresses and everything else
+     * <p><strong>It has to be a delivered address.</strong> A constant such as
+     * {@code /api/accounts/00000000001} - a plausible-looking address no controller maps - would make
+     * every assertion below that admits an ordinary identity to it assert, without saying so, that a
+     * signed-on caller reaches whatever lies beneath the API root. That is exactly the over-grant the
+     * chain closes: the ordinary rules name the eleven delivered addresses and everything else
      * beneath the root is refused. The invented address is kept, one constant below, as the probe that
      * proves the refusal.
      */
@@ -3155,12 +3149,12 @@ class SecurityConfigTest {
      *
      * <h2>Why this group exists</h2>
      *
-     * <p>Review found the operator credential accepted on the strength of being non-blank, compared without
-     * limit, and - the part this group asserts - <strong>refused in total silence</strong>. No meter moved
-     * and nothing was logged, so a deployment being probed for its management credential was
-     * indistinguishable from a deployment nobody had touched. The credential reaches every metrics
-     * endpoint and every exposition scrape, so that silence was the difference between noticing an attempt
-     * and never knowing one happened.
+     * <p>An operator credential accepted on the strength of being non-blank, compared without limit,
+     * and - the part this group asserts - <strong>refused in total silence</strong> moves no meter and
+     * logs nothing, so a deployment being probed for its management credential is indistinguishable from
+     * a deployment nobody has touched. The credential reaches every metrics endpoint and every exposition
+     * scrape, so that silence is the difference between noticing an attempt and never knowing one
+     * happened.
      *
      * <p>Three outcomes are counted, on three series with no caller-derived tag: a credential that matched,
      * one that did not, and one presented at a surface with no identity configured at all. A sustained run

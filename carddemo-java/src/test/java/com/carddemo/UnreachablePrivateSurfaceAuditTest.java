@@ -38,25 +38,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * own file reaches.
  *
  * <p><strong>Why this file exists.</strong> A private method is visible to one file, so that one file is
- * the whole of its reachability question and the question is answerable by reading. Review found three
- * such methods in the delivered module and the cost of each was documentation rather than bytes. One
- * materialised a list of deduplication identifiers that the live sibling walks and discards, so a reader
- * comparing the two would look for the caller that needed the list. One derived a submission identity
- * that was <em>deterministic for a date range</em> and carried a javadoc stating that the date-only
- * submission overload used it for retries - which had stopped being true when that overload moved to a
- * nonce, so the paragraph described a design the code had left, and two further paragraphs elsewhere in
- * the same class repeated the claim. One answered whether a browse delivered a record, from a time before
- * the four evaluations over that type became multi-label {@code case NORMAL, DUPLICATE} arms. None of the
- * three could fail, and that is the point: unreachable code cannot be wrong about behaviour, only about
- * intent, and a maintainer has no way to tell an intentionally general helper from a withdrawn one except
- * by finding the caller. This audit removes the question.
+ * the whole of its reachability question and the question is answerable by reading. An unreached one
+ * cannot fail, and that is precisely the problem: unreachable code cannot be wrong about behaviour, only
+ * about intent, so it costs documentation rather than bytes. A maintainer has no way to tell an
+ * intentionally general helper from a withdrawn one except by finding the caller, and a javadoc on an
+ * uncalled method goes on describing a design the rest of the file has left. This audit removes the
+ * question.
  *
- * <p><strong>Why the rule is a rule rather than a review habit.</strong> All three survived a full
- * checkpoint with a passing build, a passing coverage floor and a zero-warning compile, because no
- * mechanism in the module asks the question. {@code javac} has no lint for it - {@code -Xlint:all} says
- * nothing about an unused private method - the coverage floor is satisfied by the other ninety-nine
- * percent of a large class, and a reviewer reading a four-thousand-line service does not hold every
- * private name in mind. A file-scoped reachability check does, at unit-tier cost, with no container.
+ * <p><strong>Why the rule is a rule rather than a review habit.</strong> Nothing else in the module asks
+ * it. {@code javac} has no lint for an unused private method, not even under {@code -Xlint:all}; the
+ * coverage floor is satisfied by the other ninety-nine percent of a large class; and a reviewer reading a
+ * four-thousand-line service does not hold every private name in mind. A file-scoped reachability check
+ * does, at unit-tier cost, with no container.
  *
  * <p><strong>The check is deliberately sound rather than complete.</strong> It counts a name as reached
  * if the file calls it or references it as a method reference, and it does not compare argument counts.
@@ -88,9 +81,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Decision log DL-314 records the three methods, the two documentation paragraphs they anchored, and
  * why the surface they belonged to is documented rather than reduced.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * @since 1.0.0
  */

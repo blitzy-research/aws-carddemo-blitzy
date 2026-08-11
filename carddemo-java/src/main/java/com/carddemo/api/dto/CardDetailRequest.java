@@ -24,11 +24,10 @@ import jakarta.validation.constraints.Size;
  * Immutable card-detail request &mdash; the transmitted half of the single-card display screen that
  * legacy transaction {@code CCDL} presented from {@code app/cbl/COCRDSLC.cbl}.
  *
- * <p><strong>Provenance.</strong> Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The field contract is
- * the input group of the generated symbolic map {@code app/cpy-bms/COCRDSL.CPY}, declared at line 17,
- * with the 24&nbsp;&times;&nbsp;80 layout authority at {@code app/bms/COCRDSL.bms}. No COBOL source is
- * copied into this module; every citation is a reference into the read-only legacy tree.
+ * <p>The field contract is the input group of the generated symbolic map {@code app/cpy-bms/COCRDSL.CPY},
+ * declared at line 17, with the 24&nbsp;&times;&nbsp;80 layout authority
+ * at {@code app/bms/COCRDSL.bms}. No COBOL source is copied into this module; every citation is a
+ * reference into the read-only legacy tree.
  *
  * <p><strong>Why this screen submits a body where it once took a request line.</strong> The turn changes
  * nothing and would be a natural fetch, but two of the values it carries must not travel in a request

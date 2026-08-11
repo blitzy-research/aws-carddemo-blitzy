@@ -37,27 +37,20 @@ import java.util.List;
  * feeds is {@code app/cpy/CVTRA05Y.cpy}, a 350-byte layout whose amount field is a two-decimal
  * zoned quantity.
  *
- * <p>Provenance for this translation: repository commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which is the trailer recorded at
- * {@code app/cbl/COTRN02C.cbl} line 782. No statement, picture clause or other text of the legacy
- * source is reproduced anywhere in this file; the legacy estate is cited by path and line only.
- * The operator-visible message texts declared further down are the single exception, and they are
- * not source text at all &mdash; they are the external interface contract this response has to
- * reproduce character for character.
+ * <p>No statement, picture clause or other text of the legacy source is reproduced anywhere in this
+ * file; the legacy estate is cited by path and line only. The operator-visible message texts
+ * declared further down are the single exception, and they are not source text at all &mdash; they
+ * are the external interface contract this response has to reproduce character for character.
  *
  * <h2>What this type does not do</h2>
  *
- * <p>This is a data-transfer type and nothing else. It generates no identifier, assembles no
- * message, parses no date, validates no field, resolves no route, performs no lookup, applies no
- * rounding and reaches no database. Every one of those responsibilities belongs to the service
- * that populates this response. The type also models no 3270 artefact: the per-field length,
- * modified-data and attribute sub-items that {@code COTRN2AI} and {@code COTRN2AO} carry beside
- * every one of the twenty-one screen items, the twelve-byte terminal-buffer prefix each group
- * opens with, the field positions, the highlighting the map declares over the message line at
- * {@code app/bms/COTRN02.bms} lines 293 to 296, and the two attribute values the program writes
- * over the message line at {@code app/cbl/COTRN02C.cbl} line 727 are all rendering mechanisms of
- * a terminal that no longer exists. None of them appears here in any form.
+ * <p>This is a data-transfer type: every identifier, message, date, validation, route, lookup and
+ * rounding decision belongs to the service that populates it. It also models no 3270 artefact - the
+ * per-field length, modified-data and attribute sub-items that {@code COTRN2AI} and {@code COTRN2AO}
+ * carry beside each of the twenty-one screen items, the twelve-byte terminal-buffer prefix each group
+ * opens with, the field positions, the message-line highlighting at {@code app/bms/COTRN02.bms} lines
+ * 293 to 296 and the two attribute values written over the message line at
+ * {@code app/cbl/COTRN02C.cbl} line 727 are rendering mechanisms of a terminal that no longer exists.
  *
  * <h2>The success path deliberately returns blank echoed values</h2>
  *

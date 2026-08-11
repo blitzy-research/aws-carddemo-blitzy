@@ -403,8 +403,9 @@
        validation reads the application's log to confirm that every delivered migration was applied and
        that the schema reached its highest delivered version before anything else about a run is
        believed. At this level the migration tool announces each migration as it applies it, by version
-       and description, which covers all four of V1__create_schema, V2__create_indexes,
-       V3__seed_reference_data and V4__seed_user_security, and the two seed scripts additionally
+       and description, which covers every delivered script - V1__create_schema, V2__create_indexes and
+       V2_2__add_protected_value_invariants from the schema location, then V3__seed_reference_data and
+       V4__seed_user_security from the seed location - and the two seed scripts additionally
        announce themselves by name and report what they seeded. Silencing this category would break
        that check and would also hide a start-up that stopped short of the seeds. Every overlay keeps
        it here for the same reason. -->

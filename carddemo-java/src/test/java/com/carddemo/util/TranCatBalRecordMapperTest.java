@@ -99,12 +99,10 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * copybook itself mixes the two spellings, both are transcribed exactly, and neither is harmonised:
  * regularising either one would change a mapping that is validated against the migrated schema.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Layout authority is copybook
- * {@code app/cpy/CVTRA01Y.cpy}; the record width and the seventeen-byte key at offset zero are
- * independently attested by the cluster definition in {@code app/jcl/TCATBALF.jcl}. No legacy source
- * line is transcribed anywhere in this file - only widths, offsets, counts, field names and contract
- * literals, which are metadata rather than source.
+ * <p>Layout authority is copybook {@code app/cpy/CVTRA01Y.cpy} ; the record width and the seventeen-byte
+ * key at offset zero are independently attested by the cluster definition in {@code app/jcl/TCATBALF.jcl} .
+ * No legacy source line is transcribed anywhere in this file - only widths, offsets, counts, field names
+ * and contract literals, which are metadata rather than source.
  *
  * @see TranCatBalRecordMapper
  * @see TransactionCategoryBalance

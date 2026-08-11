@@ -45,16 +45,12 @@ import org.springframework.web.bind.annotation.RestController;
  * {@link ReportContractAdapter}, hands it to {@link ReportRequestService} exactly once, projects the turn
  * back onto the published contract, and records how long the turn took. That is the whole of it.
  *
- * <p><strong>What this class deliberately does not do, and why the list is worth stating.</strong> It
- * resolves no report period, derives no month-to-date or year-to-date range, parses and reformats no date,
- * evaluates no confirmation character, authors no message text, assembles no job image, names no queue,
- * publishes no message and launches no job. Every one of those lives behind
- * {@link ReportRequestService} - which owns the ordered evaluation, the two-level date acceptance test and
- * the confirmation gate - or behind the queue bridge and card builder it injects. The reason is not
- * tidiness: the legacy program's behaviour is measured by parity fixtures that exercise the service, so a
- * fragment of it re-implemented here would be a second copy that no parity fixture measures and that could
- * drift away from the one that does. A controller with a rule in it is how an externally observable
- * contract quietly acquires two answers.
+ * <p><strong>Where the rules live.</strong> Period resolution, month-to-date and year-to-date range
+ * derivation, date parsing and reformatting, the confirmation gate and the ordered evaluation all belong
+ * to {@link ReportRequestService}; job-image assembly and queue publication belong to the card builder
+ * and queue bridge it injects. None of it is duplicated here, because the legacy program's behaviour is
+ * measured by parity fixtures that exercise the service, so a fragment re-implemented in the controller
+ * would be a second copy that no fixture measures and that could drift away from the one that does.
  *
  * <p><strong>Why the response status is always {@code 200}.</strong> Every outcome the screen can reach is
  * a screen the legacy program successfully composed and sent: the acknowledgement, the confirmation
@@ -85,13 +81,11 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><strong>There is no retry, idempotency or deadline protocol on this operation.</strong> The screen it
  * reproduces defines none, and the transient data queue behind it was defined with append disposition and
- * no notion of identity, so every confirmed submission is a submission of its own and publishes its own
- * card stream - including a second submission of a period an earlier turn already requested, which the
- * legacy region answered by appending the cards and running the job again. The deduplication identifier the
- * target queue requires is minted inside the bridge with a nonce and is never exposed, so no header is read
- * and none is returned; a caller that sends one anyway is answered exactly as one that does not. No state
- * is held here, no field is added to the screen DTO, and there is no session, redirect or server-side
- * dispatch.
+ * no notion of identity, so every confirmed submission publishes its own card stream - including a repeat
+ * of a period an earlier turn already requested, which the legacy region answered by appending the cards
+ * and running the job again. The deduplication identifier the target queue requires is minted inside the
+ * bridge with a nonce and never exposed, so no header is read and none is returned; a caller that sends
+ * one anyway is answered exactly as one that does not.
  *
  * <p><strong>Nothing is logged here.</strong> The service already records the turn's shape - route,
  * resolved period, cards published and error state - and everything this class additionally holds is
@@ -104,13 +98,6 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>That there is no retry, idempotency or deadline protocol on this operation is recorded as decision
  * {@code DL-322} in {@code docs/decision-log.md}.
- *
- * <p>Provenance: {@code app/cbl/CORPT00C.cbl}, its symbolic map {@code app/cpy-bms/CORPT00.CPY} and mapset
- * {@code app/bms/CORPT00.bms}, and the {@code CR00} transaction definition at
- * {@code app/csd/CARDDEMO.CSD} line 409 which binds it to program {@code CORPT00C}; read as read-only
- * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement, screen declaration or job
- * card is transcribed.
  *
  * @since 1.0.0
  */
@@ -127,8 +114,8 @@ public class ReportController {
      * and the security chain grants this exact address on that classification - so a path beneath the
      * administrative prefix would gate the report screen to administrators, a path named among the
      * anonymous surfaces would open it to callers with no credential at all, and a path the chain does
-     * not name at all would be refused to everybody. It also shadows neither the management base path nor the interface-description
-     * path, both of which the chain treats separately.
+     * not name at all would be refused to everybody. It also shadows neither the management base path nor
+     * the interface-description path, both of which the chain treats separately.
      */
     public static final String REPORT_REQUEST_PATH = ApiRoutePaths.REPORT_REQUEST_PATH;
 
@@ -259,10 +246,10 @@ public class ReportController {
      * here. Resolution is the inverse of the single mapping the security layer applies when it grants the
      * authority, so two independent copies of it could drift apart and leave one route reading a type
      * another route would not - which is precisely the divergence a single authenticated boundary exists to
-     * prevent. Nothing is inferred from an absence: an identity that carries neither declared authority - an
-     * anonymous caller, or this handler driven without a security chain - resolves to {@code null} and the
-     * response then asserts no identity rather than a guessed one. The security chain grants exactly one of
-     * the two for a verified credential, so a caller that reached this route resolves to that one.
+     * prevent. Nothing is inferred from an absence: an identity that carries neither declared authority -
+     * an anonymous caller, or this handler driven without a security chain - resolves to {@code null} and
+     * the response then asserts no identity rather than a guessed one. The security chain grants exactly
+     * one of the two for a verified credential, so a caller that reached this route resolves to that one.
      *
      * @param authentication the established identity, which may be {@code null}
      * @return the user type the credential carries, or {@code null} when no known authority is present

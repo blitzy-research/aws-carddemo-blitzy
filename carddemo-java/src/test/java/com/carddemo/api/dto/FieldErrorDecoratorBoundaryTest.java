@@ -54,10 +54,7 @@ import org.junit.jupiter.params.provider.EnumSource;
  * every earlier entry in order and that the earlier one is left untouched, because a mutable
  * shortcut would pass an order assertion while quietly sharing state between two validation passes.
  *
- * <p>Provenance: the legacy authority is {@code app/cpy/CSSETATY.cpy}, expanded at
- * {@code app/cbl/COACTUPC.cbl} lines 3208 to 3432, at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("FieldErrorDecorator - the CSSETATY macro collapsed into one accumulator")
 class FieldErrorDecoratorBoundaryTest {

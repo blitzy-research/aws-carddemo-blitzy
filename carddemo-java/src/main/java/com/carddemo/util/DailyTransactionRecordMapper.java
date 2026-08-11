@@ -309,13 +309,13 @@ public final class DailyTransactionRecordMapper {
     /**
      * Maps one reader's record onto an entity and records the image it was mapped from.
      *
-     * <p>The image is retained on the entity because the reject dataset echoes it. The legacy write is
-     * {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA} [app/cbl/CBTRN02C.cbl:L447] - the record area the
-     * READ filled - so the leading 350 bytes of a reject record are the input bytes and not a rendering of
-     * the decoded fields. Decoding is lossy in one place that matters: a negatively signed all-zero
-     * zoned-decimal amount and a positively signed one decode to the same value, so a render cannot know
-     * which sign byte the input carried. Capturing the image here, at the one point where it is still in
-     * hand, is what removes the guess. Recorded as {@code DL-295}.
+     * <p>The image is retained on the entity because the reject dataset echoes it. The legacy write copies
+     * the daily-transaction record area - what the preceding read filled - into the reject record's leading
+     * segment [app/cbl/CBTRN02C.cbl:L447], so the leading 350 bytes of a reject record are the input bytes
+     * and not a rendering of the decoded fields. Decoding is lossy in one place that matters: a negatively
+     * signed all-zero zoned-decimal amount and a positively signed one decode to the same value, so a
+     * render cannot know which sign byte the input carried. Capturing the image here, at the one point
+     * where it is still in hand, is what removes the guess. Recorded as {@code DL-295}.
      *
      * <p>Every {@link FixedWidthFieldReader} factory owns a private copy of exactly its record's bytes, so
      * {@code image()} is this record's 350 characters even when the reader was positioned inside a larger

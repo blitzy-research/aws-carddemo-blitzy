@@ -89,10 +89,6 @@ import org.springframework.web.bind.annotation.RestController;
  * under test, and the two unannotated components are named by their contract property names rather
  * than read from any annotation, so a constraint quietly added to either would not be able to make
  * these assertions pass.
- *
- * <p>Provenance: legacy estate at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, read as read-only
- * reference.
  */
 @DisplayName("Transport control characters :: refused where the value arrives, not where it is written")
 class TransportControlCharacterRefusalTest {

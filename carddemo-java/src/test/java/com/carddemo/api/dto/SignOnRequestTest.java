@@ -141,17 +141,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * to call, and a call to one would not compile. Nothing here introspects the class, walks
  * its members or reads its annotations by any dynamic mechanism.</p>
  *
- * <p>No user-specified rules exist for this project, so this class is held to
- * enterprise-standard practice instead: a hermetic and deterministic test, a zero-warning
- * compile under all lint categories promoted to errors, no dynamic type introspection, no
- * wall-clock or random input, and expectations derived independently of the code under
- * test.</p>
- *
- * <p>Provenance of the translated source: legacy checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source text is reproduced
- * here; only member names, field names, paragraph counts, widths, byte offsets, line numbers
- * and item counts are cited.</p>
+ * <p>No COBOL source text is reproduced here; only member names, field names, paragraph counts, widths,
+ * byte offsets, line numbers and item counts are cited.</p>
  *
  * @see SignOnRequest
  */

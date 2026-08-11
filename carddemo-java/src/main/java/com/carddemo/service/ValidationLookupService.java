@@ -297,8 +297,8 @@ public final class ValidationLookupService {
      *
      * <p>Translated from the fourth and final stage of {@code EDIT-AREA-CODE} at
      * {@code app/cbl/COACTUPC.cbl} line 2246, where lines 2296 to 2298 move the trimmed field into the
-     * three-byte work item and the following statement tests {@code VALID-GENERAL-PURP-CODE}. On failure the
-     * legacy program raises the general input-error flag and the area-code not-OK flag and composes
+     * three-byte work item and the following statement tests {@code VALID-GENERAL-PURP-CODE}. On failure
+     * the legacy program raises the general input-error flag and the area-code not-OK flag and composes
      * {@code ": Not valid North America general purpose area code"} &mdash; with no trailing full stop
      * &mdash; at line 2306. Composing that message and setting those flags belong to the caller that owns
      * the phone cascade.
@@ -372,17 +372,17 @@ public final class ValidationLookupService {
     /**
      * Tests a two-character state code against the 56-member table.
      *
-     * <p>Translated from {@code 1270-EDIT-US-STATE-CD} at {@code app/cbl/COACTUPC.cbl} line 2493, whose exit
-     * paragraph is at line 2511. The legacy paragraph is a single flat membership test and nothing more: it
-     * moves the address state-code field, itself declared {@code PIC X(02)} at line 807, straight into the
-     * {@code PIC X(2)} work item and tests {@code VALID-US-STATE-CODE}. <strong>There is no trim, no numeric
-     * check and no blank pre-check</strong>, and because the sending and receiving items have the same
-     * declared width the move neither truncates nor pads. This method reproduces exactly that, applying no
-     * normalisation of any kind to the supplied value.</p>
+     * <p>Translated from {@code 1270-EDIT-US-STATE-CD} at {@code app/cbl/COACTUPC.cbl} line 2493, whose
+     * exit paragraph is at line 2511. The legacy paragraph is a single flat membership test and nothing
+     * more: it moves the address state-code field, itself declared {@code PIC X(02)} at line 807, straight
+     * into the {@code PIC X(2)} work item and tests {@code VALID-US-STATE-CODE}. <strong>There is no trim,
+     * no numeric check and no blank pre-check</strong>, and because the sending and receiving items have
+     * the same declared width the move neither truncates nor pads. This method reproduces exactly that,
+     * applying no normalisation of any kind to the supplied value.</p>
      *
-     * <p>On failure the legacy program raises the general input-error flag and the state not-OK flag &mdash;
-     * that flag only &mdash; and composes the message {@code ": is not a valid state code"} at line 2503,
-     * with no trailing full stop. Flag state and message composition belong to the caller.</p>
+     * <p>On failure the legacy program raises the general input-error flag and the state not-OK flag
+     * &mdash; that flag only &mdash; and composes the message {@code ": is not a valid state code"} at line
+     * 2503, with no trailing full stop. Flag state and message composition belong to the caller.</p>
      *
      * @param stateCode the candidate state, district or territory code, tested exactly as supplied
      * @return {@code true} if the value is one of the 56 codes, {@code false} otherwise, including when
@@ -399,12 +399,12 @@ public final class ValidationLookupService {
      * Tests a four-character state-plus-ZIP key against the 240-member table.
      *
      * <p>Translated from the membership test in {@code 1280-EDIT-US-STATE-ZIP-CD} at
-     * {@code app/cbl/COACTUPC.cbl} line 2536, whose exit paragraph is at line 2558. Lines 2537 to 2540 build
-     * the key by concatenating, delimited by size and therefore purely positionally, the two-character
-     * address state code with the first two characters of the ten-character address ZIP code, giving exactly
-     * four characters that fill the {@code PIC X(4)} sub-field. <strong>There is no trim.</strong> The
-     * remaining three ZIP digits live in a separate sub-field at copybook line 1314 and take no part in the
-     * test. The caller assembles the key and passes it already concatenated.
+     * {@code app/cbl/COACTUPC.cbl} line 2536, whose exit paragraph is at line 2558. Lines 2537 to 2540
+     * build the key by concatenating, delimited by size and therefore purely positionally, the
+     * two-character address state code with the first two characters of the ten-character address ZIP code,
+     * giving exactly four characters that fill the {@code PIC X(4)} sub-field. <strong>There is no
+     * trim.</strong> The remaining three ZIP digits live in a separate sub-field at copybook line 1314 and
+     * take no part in the test. The caller assembles the key and passes it already concatenated.
      *
      * <p>This method does <strong>not</strong> cross-check the leading two characters against the 56-code
      * state table. Six of the 62 prefixes that appear here &mdash; {@code AA}, {@code AE}, {@code AP},
@@ -488,9 +488,9 @@ public final class ValidationLookupService {
      * Unicode whitespace character &mdash; so this method strips the space character and nothing else.
      *
      * <p><strong>The move left-justifies into three bytes.</strong> A shorter value is space-filled and a
-     * longer value is truncated on the right. Space-filling has no observable effect because no value in any
-     * of the three tables contains a space, but truncation does: a longer key is tested on its first three
-     * characters, exactly as the mainframe tests it. From the estate's only call site the field being
+     * longer value is truncated on the right. Space-filling has no observable effect because no value in
+     * any of the three tables contains a space, but truncation does: a longer key is tested on its first
+     * three characters, exactly as the mainframe tests it. From the estate's only call site the field being
      * trimmed is itself {@code PIC X(3)} at line 87, so truncation is unreachable there; the semantics are
      * preserved so the behaviour is correct for any caller rather than only for the one the legacy code
      * happened to have. This is work-item normalisation on a three-byte COBOL field, not offset slicing of
@@ -563,8 +563,8 @@ public final class ValidationLookupService {
      *
      * <p>An extra array is rejected as firmly as a missing one. The 490-member table is derived from these
      * two subsets precisely so that no third declaration of the same values can exist, and a resource that
-     * grew a third array would silently reintroduce the three-way consistency hazard that deriving the union
-     * exists to remove.</p>
+     * grew a third array would silently reintroduce the three-way consistency hazard that deriving the
+     * union exists to remove.</p>
      *
      * @param areaCodeArrays the bound area-code resource
      * @throws IllegalStateException if the set of array names is anything other than the two expected names
@@ -604,9 +604,9 @@ public final class ValidationLookupService {
      *
      * <p>Four independent properties are checked, in an order chosen so that each check can assume the
      * previous one held: no element is {@code null}; every element has exactly the width the COBOL
-     * {@code PIC} clause declares, which is what makes the level-88 condition satisfiable at all; no element
-     * is duplicated, detected by comparing the list length with the resulting set size; and the set size
-     * equals the cardinality measured from the copybook.</p>
+     * {@code PIC} clause declares, which is what makes the level-88 condition satisfiable at all; no
+     * element is duplicated, detected by comparing the list length with the resulting set size; and the set
+     * size equals the cardinality measured from the copybook.</p>
      *
      * <p>No value is trimmed, case-folded, normalised, re-sorted or re-ordered. Every value stays the
      * {@code String} the resource declared, so a leading zero could never be coerced away.</p>

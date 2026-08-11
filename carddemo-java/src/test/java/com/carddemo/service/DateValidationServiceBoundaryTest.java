@@ -76,10 +76,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * would still measure the right width. Control bytes are deliberately still accepted,
  * because the cascade's own blank test at {@code app/cpy/CSUTLDPY.cpy} line 30 treats a
  * null-filled field as unsupplied and must keep seeing it.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("DateValidationService: the copybook cascade and the callable date subprogram")
 class DateValidationServiceBoundaryTest {

@@ -67,8 +67,8 @@ import java.util.Objects;
  * a message's own prose is not an echo; a substituted value is.
  *
  * <p><strong>The seventeen line groups.</strong>
- * <pre>{@code
- *  #   Group       Source          Component widths (every row sums to exactly 80)
+ * <pre>{@code #
+ *   Group       Source          Component widths (every row sums to exactly 80)
  * --   ----------  --------------  ---------------------------------------------------------------
  *  1   ST-LINE0    L86-L89         31 asterisk + 18 text 'START OF STATEMENT' + 31 asterisk
  *  2   ST-LINE1    L90-L92         75 ST-NAME + 5 space
@@ -118,8 +118,8 @@ import java.util.Objects;
  * must not be collapsed out of the emitted sequence.
  *
  * <p><strong>The two numeric-edited masks.</strong>
- * <pre>{@code
- * Mask  PIC         Width  Zero suppression                    Used by
+ * <pre>{@code Mask
+ *  PIC         Width  Zero suppression                    Used by
  * ----  ---------   -----  ----------------------------------  --------------------------
  * A     9(9).99-       13  NO  - leading zeros are printed     ST-CURR-BAL     (L113)
  * B     Z(9).99-       13  YES - leading zeros become spaces   ST-TRANAMT      (L137)
@@ -160,55 +160,35 @@ import java.util.Objects;
  * {@value #REQUIRED_AMOUNT_SCALE} with {@code RoundingMode.DOWN} applied upstream by the zoned-decimal
  * codec and the computing service, and <strong>this class never rounds and never performs arithmetic on
  * a value</strong>: it stores one into the mask and formats it. One rejection follows, and it is a
- * divergence from the legacy silent {@code MOVE} recorded in the decision log rather than justified
+ * divergence from the legacy silent re-scale recorded in the decision log rather than justified
  * here: a value at any other scale is rejected and never re-scaled, per decision D-05, because
  * re-scaling would place a second rounding policy alongside the estate-wide truncation policy that the
  * total absence of {@code ROUNDED} clauses in the source mandates.
  *
  * <p><strong>Magnitude, by contrast, is not a rejection.</strong> An integer part exceeding nine digits
  * is <em>stored</em> into the mask's nine positions, keeping the low-order nine and the operational
- * sign, because that is precisely what the legacy {@code MOVE} does when it places the
- * ten-integer-digit account balance of {@code app/cpy/CVACT01Y.cpy} into the nine-integer-digit
- * {@code ST-CURR-BAL} mask at {@code app/cbl/CBSTM03A.CBL} line 484. Refusing it instead would make a
+ * sign, because that is precisely what the legacy store does when it places the ten-integer-digit
+ * account balance of {@code app/cpy/CVACT01Y.cpy} into the nine-integer-digit {@code ST-CURR-BAL} mask
+ * at {@code app/cbl/CBSTM03A.CBL} line 484. Refusing it instead would make a
  * balance the legacy prints unprintable here, which is a behavioural regression rather than a safeguard.
  * The store is {@link ZonedDecimalCodec#storeInto(BigDecimal, int, int, String)}'s, so the module holds
  * one such rule and this class still holds no rounding policy of its own.
  *
- * <p><strong>Character field semantics: truncate and pad.</strong> A supplied character value longer
- * than its field is truncated to the field width and a shorter one padded on the right with ASCII
- * spaces - never zeros, nulls or tabs. That matches a COBOL {@code MOVE} into a {@code PIC X(n)} field
- * and is genuinely the legacy behaviour rather than a convenience: the generator moves a 100-byte
- * transaction description into the 49-byte detail field of ST-LINE14, so the tail is lost on the
- * mainframe too. Both truncation and padding are measured in encoded bytes using
- * {@link StandardCharsets#US_ASCII} explicitly, never in {@code String} characters and never against
- * the platform default charset.
- *
- * <p><strong>The currency symbol is inconsistent, and the inconsistency is preserved.</strong>
- * ST-LINE14 and ST-LINE14A each carry a literal dollar sign immediately before their amount field;
- * ST-LINE8, the current-balance line, carries none. That inconsistency is in the source: no currency
- * symbol is added to the balance line and none is removed from the transaction lines.
- *
- * <p>An integer part exceeding nine digits is stored into the mask's nine positions rather than
- * refused: a COBOL {@code MOVE} truncates on the left, and the legacy program does exactly that when it
- * moves a ten-integer-digit account balance into this nine-integer-digit mask. The store keeps the
- * low-order nine digits and the operational sign and is taken by the zoned-decimal codec, so the rule
- * is stated once for the whole module.</p>
- *
  * <h2>Character field semantics: truncate and pad</h2>
  *
- * <p>A supplied character value longer than its field is truncated to the field width, and a shorter
- * value is padded on the right with ASCII spaces -- never zeros, nulls or tabs. That matches a COBOL
- * {@code MOVE} into a {@code PIC X(n)} field, and it is genuinely the legacy behaviour rather than a
- * convenience: the generator moves a 100-byte transaction description into the 49-byte detail field
- * of ST-LINE14, so the tail is lost on the mainframe too. Both truncation and padding are measured
- * in encoded bytes using {@link StandardCharsets#US_ASCII} explicitly, never in {@code String}
- * characters and never against the platform default charset.</p>
+ * <p>A supplied character value longer than its field is truncated to the field width and a shorter one
+ * padded on the right with ASCII spaces - never zeros, nulls or tabs. That matches a legacy store into a
+ * {@code PIC X(n)} field and is genuinely the legacy behaviour rather than a convenience: the generator
+ * places a 100-byte transaction description into the 49-byte detail field of ST-LINE14, so the tail is
+ * lost on the mainframe too. Both truncation and padding are measured in encoded bytes using
+ * {@link StandardCharsets#US_ASCII} explicitly, never in {@code String} characters and never against the
+ * platform default charset.
  *
  * <h2>The currency symbol is inconsistent, and the inconsistency is preserved</h2>
  *
- * <p>ST-LINE14 and ST-LINE14A each carry a literal dollar sign immediately before their amount
- * field. ST-LINE8, the current-balance line, carries none. That inconsistency is in the source. No
- * currency symbol is added to the balance line and none is removed from the transaction lines.</p>
+ * <p>ST-LINE14 and ST-LINE14A each carry a literal dollar sign immediately before their amount field;
+ * ST-LINE8, the current-balance line, carries none. That inconsistency is in the source: no currency
+ * symbol is added to the balance line and none is removed from the transaction lines.
  *
  * <h2>Related context, implemented elsewhere</h2>
  *
@@ -232,41 +212,6 @@ import java.util.Objects;
  *   <li>The statement text output has no page-break logic. Page sizing and line counting belong to
  *       the transaction report path, which is a different output format at a different width.</li>
  * </ul>
- *
- * <h2>Decisions recorded for the migration decision log</h2>
- *
- * <ol>
- *   <li>The two banners have different splits, 31 / 18 / 31 and 32 / 16 / 32, because their texts
- *       differ in length by two. Both are declared explicitly rather than centred by computation,
- *       and neither is corrected toward the other.</li>
- *   <li>Two distinct 13-character trailing-minus masks exist in the statement text:
- *       {@code 9(9).99-} without zero suppression for the current balance, and {@code Z(9).99-} with
- *       zero suppression for the transaction amount and the total. They are not interchangeable.</li>
- *   <li>Four distinct numeric-edited masks exist across the two output formats: the two
- *       13-character trailing-minus masks without commas here, and two 15-character leading-sign
- *       comma-grouped masks in the report copybook. Selecting the wrong one is a silent byte-parity
- *       failure.</li>
- *   <li>No locale-sensitive or default formatting is used. Both masks are rendered explicitly from
- *       the unscaled digits, because a locale could introduce a comma, a different decimal separator
- *       or a different minus glyph.</li>
- *   <li>This class never scales and never rounds. Values arrive at scale
- *       {@value #REQUIRED_AMOUNT_SCALE} with {@code RoundingMode.DOWN} already applied, and a value
- *       at another scale is rejected rather than silently re-scaled, so a truncation-policy
- *       violation cannot hide here. The estate contains zero {@code ROUNDED} clauses.</li>
- *   <li>An integer part exceeding nine digits is stored into the mask's nine integer positions, which
- *       is COBOL {@code MOVE} semantics into an edited field: the low-order digits and the operational
- *       sign survive and the rest is dropped. The store is the zoned-decimal codec's.</li>
- *   <li>The dollar sign is present on the transaction and total lines and absent on the
- *       current-balance line. The inconsistency is in the source and is preserved.</li>
- *   <li>The {@value #STATEMENT_RECORD_LENGTH}-byte image carries no line terminator even though the
- *       COBOL source file has CRLF endings. Record separation is the writer's concern in the batch
- *       layer.</li>
- *   <li>A templating engine is forbidden. The lines are literal constants at fixed widths, because
- *       byte-identical output cannot survive an engine's whitespace and ordering variability.</li>
- *   <li>{@code [app/jcl/CREASTMT.JCL]} declares the same data-definition name with a record length of
- *       eighty and of one hundred in consecutive steps; resolved to 80 for the text stream and 100
- *       for the HTML stream, matching the two record declarations.</li>
- * </ol>
  *
  * <h2>Thread safety</h2>
  *
@@ -1117,9 +1062,9 @@ public final class StatementTextTemplates {
      * into the trailing position.</p>
      *
      * <p>The value is first <em>stored</em> into the mask's own geometry through the zoned-decimal
-     * codec, which is what a COBOL {@code MOVE} into an edited field does: nine integer positions and
-     * two fractional ones are kept together with the operational sign, and any high-order digit that
-     * will not fit is dropped. Nothing is rejected for magnitude.</p>
+     * codec, which is what a legacy store into an edited field does: nine integer positions and two
+     * fractional ones are kept together with the operational sign, and any high-order digit that will
+     * not fit is dropped. Nothing is rejected for magnitude.</p>
      *
      * @param amount              the value to render
      * @param suppressLeadingZeros {@code true} for mask B, {@code false} for mask A
@@ -1194,7 +1139,7 @@ public final class StatementTextTemplates {
     }
 
     /**
-     * Moves a character value into a fixed-width field, reproducing a COBOL {@code MOVE} into a
+     * Places a character value into a fixed-width field, reproducing a legacy store into a
      * {@code PIC X(n)} field: truncate on the right when the value is too long, pad on the right
      * with ASCII spaces when it is too short.
      *

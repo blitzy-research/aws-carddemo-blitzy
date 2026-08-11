@@ -95,13 +95,11 @@ import org.junit.jupiter.api.Test;
  * exactly - so a formatter that started escaping, masking or normalising a byte would fail this class
  * on the very records that make byte parity observable.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The emitting program is
- * {@code app/cbl/CBSTM03A.CBL}, whose file description declares the record as a hundred-byte
- * alphanumeric image; the job stream {@code app/jcl/CREASTMT.JCL} declares the same data definition at
- * eighty bytes in its delete step and at one hundred in the step that actually runs the program, and
- * one hundred is what the program writes. No legacy source line is transcribed here - only widths,
- * offsets, counts and emitted output literals, which are contract rather than source.
+ * <p>The emitting program is {@code app/cbl/CBSTM03A.CBL} , whose file description declares the record as a
+ * hundred-byte alphanumeric image; the job stream {@code app/jcl/CREASTMT.JCL} declares the same data
+ * definition at eighty bytes in its delete step and at one hundred in the step that actually runs the
+ * program, and one hundred is what the program writes. No legacy source line is transcribed here - only
+ * widths, offsets, counts and emitted output literals, which are contract rather than source.
  */
 @DisplayName("Expected-output fixtures: the 100-byte HTML statement oracle, executed")
 final class ExpectedHtmlStatementFixtureContractTest {

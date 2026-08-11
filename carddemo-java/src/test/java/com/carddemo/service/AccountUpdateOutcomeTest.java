@@ -38,10 +38,6 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * re-scaling an amount is a rounding decision and the module makes that decision in exactly one place. The
  * finding list is normalised so a caller never distinguishes "no findings" from "no list". And the rendering
  * discloses control state only, because forty-nine of the components are account and customer values.
- *
- * <p>Provenance: {@code app/cbl/COACTUPC.cbl}, {@code app/cpy-bms/COACTUP.CPY} and the five
- * {@code PIC S9(10)V99} fields of {@code app/cpy/CVACT01Y.cpy}, read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
  */
 @DisplayName("AccountUpdateOutcome :: the settled account-update turn the transaction produces")
 class AccountUpdateOutcomeTest {

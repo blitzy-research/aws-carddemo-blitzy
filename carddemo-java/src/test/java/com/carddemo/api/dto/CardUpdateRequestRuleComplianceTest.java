@@ -47,10 +47,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for {@link CardUpdateRequest}, the request body of legacy transaction {@code CCUP}
  * implemented by {@code app/cbl/COCRDUPC.cbl} over screen {@code app/cpy-bms/COCRDUP.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>The expiry day is deliberately unbounded, and that is the point of this class.</strong>
  * Six of the nine components carry a declared width taken from the screen field; the expiry day does
  * not. The legacy screen has no expiry-day field - the card record's expiry date is held as a month and

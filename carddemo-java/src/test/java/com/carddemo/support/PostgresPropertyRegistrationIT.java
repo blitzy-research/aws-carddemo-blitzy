@@ -41,9 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The first half is that no property file declares a database address for the test profile. If one
  * did, and it were reachable, a test that forgot to extend {@link AbstractPostgresIT} would connect to
  * whatever that address named - in practice the developer's own compose stack - and would pass while
- * exercising the wrong database. That is not a hypothetical: an earlier revision of the profile
- * defaulted the address, user and password to the development stack for the sake of always having
- * something to bind.</p>
+ * exercising the wrong database. That is exactly what defaulting the address, user and password to the
+ * development stack, for the sake of always having something to bind, would produce.</p>
  *
  * <p>The second half is that a test which <em>does</em> extend this class must still be able to boot a
  * context. Removing the file-declared address alone would leave a context with no address at all, so
@@ -62,8 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * container.
  *
  * <p>Provenance: this test has no legacy antecedent - the legacy estate carries no test harness of any
- * kind. Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * kind.
  */
 @DisplayName("The database container's address is published to a context, and declared nowhere else")
 class PostgresPropertyRegistrationIT extends AbstractPostgresIT {

@@ -69,12 +69,10 @@ import com.carddemo.util.ZonedDecimalCodec;
 
 /**
  * The transaction-category-balance listing, translated from the legacy job stream
- * {@code app/jcl/PRTCATBL.jcl} at commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The stream draws on the
- * cataloged unload wrapper {@code app/proc/REPROC.prc} with its control member
- * {@code app/ctl/REPROCT.ctl}, and on the generation-group base declared in
- * {@code app/jcl/DEFGDGB.jcl}. Every figure below was measured by direct read of those members; no
- * statement text from any of them is reproduced here.
+ * {@code app/jcl/PRTCATBL.jcl}. The stream draws on the cataloged unload wrapper
+ * {@code app/proc/REPROC.prc} with its control member {@code app/ctl/REPROCT.ctl}, and on the
+ * generation-group base declared in {@code app/jcl/DEFGDGB.jcl}. Every figure below was measured by
+ * direct read of those members; no statement text from any of them is reproduced here.
  *
  * <h2>Two corrections to the planning material, both established by measurement</h2>
  *
@@ -100,15 +98,14 @@ import com.carddemo.util.ZonedDecimalCodec;
  * posting program reference the category-balance resource at all, and both do so transactionally rather
  * than as a listing driver. No application program lists the category balance sequentially.
  *
- * <p><strong>Both corrections have since been made at their source, and an earlier revision of this
- * paragraph said they would not be.</strong> It recorded the findings and then declined to act on them -
- * "no file outside this one is edited to record them, and in particular the service layer is not
- * 'fixed'" - which left the module holding a documented untruth: a service method whose execution banner
- * named a member that reads a different file. Documenting a defect is not a substitute for correcting it
- * when the correction is inside the same migration. {@link FileMaintenanceService} now translates
- * {@code CBACT03C} as the cross-reference reader it is, and the category-balance pass it exposes cites
- * this job stream's own unload step instead of a program. Both corrections are recorded in
- * {@code docs/decision-log.md} as well.
+ * <p><strong>Both corrections are made at their source rather than only recorded here.</strong>
+ * Recording a finding and then declining to act on it - "no file outside this one is edited to record
+ * them, and in particular the service layer is not 'fixed'" - would leave the module holding a
+ * documented untruth: a service method whose execution banner names a member that reads a different
+ * file. Documenting a defect is not a substitute for correcting it when the correction is inside the
+ * same migration. {@link FileMaintenanceService} translates {@code CBACT03C} as the cross-reference
+ * reader it is, and the category-balance pass it exposes cites this job stream's own unload step
+ * instead of a program. Both corrections are recorded in {@code docs/decision-log.md} as well.
  *
  * <p><strong>How {@link FileMaintenanceService} is used.</strong> It owns the shared sequential-read and
  * two-level file-status discipline that every sequential listing in this estate follows, and this job is

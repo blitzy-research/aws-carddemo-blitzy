@@ -36,10 +36,8 @@ import org.junit.jupiter.api.Test;
  * Unit test for {@link TransactionCategory}, the 60-byte transaction-category reference row, and for
  * its two-part 6-byte composite key {@link TransactionCategoryId}.
  *
- * <p><strong>Provenance.</strong> Legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). That stamp is recorded here
- * as documentation only and is never asserted against a source member, because it is not universal
- * across the estate.
+ * <p>That stamp is recorded here as documentation only and is never asserted against a source member,
+ * because it is not universal across the estate.
  *
  * <p><strong>Independent oracle.</strong> Every expected value in this suite was hand-derived from the
  * legacy copybook {@code CVTRA04Y}, from the {@code TRANCATG} cluster definition, and from the seeded

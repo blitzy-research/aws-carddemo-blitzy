@@ -48,13 +48,11 @@ import com.carddemo.util.StatementWorkRecordMapper;
  * The statement feature's file-handling subprogram, translated one paragraph at a time from
  * {@code [app/cbl/CBSTM03B.CBL]} - 230 lines, 14 paragraphs, four files, six declared operations.
  *
- * <p>Legacy provenance: AWS CardDemo z/OS estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The authority member carries the estate's rare
- * uppercase {@code .CBL} extension and CRLF line endings; it and {@code [app/cbl/CBSTM03A.CBL]} are the
- * only two such members and together they are the whole statement-generation feature. No COBOL text is
- * transcribed anywhere in this module - member names, paragraph names, line numbers, DD names, field
- * names, widths and raw status codes are cited, and nothing else.
+ * <p>The authority member carries the estate's rare uppercase {@code .CBL} extension and CRLF line
+ * endings; it and {@code [app/cbl/CBSTM03A.CBL]} are the only two such members and together they
+ * are the whole statement-generation feature. No COBOL text is transcribed anywhere in this module
+ * - member names, paragraph names, line numbers, DD names, field names, widths and raw status codes
+ * are cited, and nothing else.
  *
  * <p><strong>This class replaces 13 static call sites.</strong> Every one of them is a
  * call of CBSTM03B over the shared linkage area inside {@code [app/cbl/CBSTM03A.CBL]}, at L351, L377, L401,
@@ -115,12 +113,11 @@ import com.carddemo.util.StatementWorkRecordMapper;
  *
  * <h2>What this class deliberately does not do</h2>
  *
- * <p>It raises no abend and throws nothing on a bad status; it composes no statement text and no HTML;
- * it runs no state machine; it performs no decimal arithmetic; it issues no native query; and it performs
- * no fixed-width slicing of its own - record layout knowledge lives in {@code com.carddemo.util}, and
- * every width, justification and truncation semantic below is delegated there. The MVS control-block
- * addressing constructs of the statement generator are not migrated anywhere in this module and have no
- * counterpart in {@code [app/cbl/CBSTM03B.CBL]} to begin with.
+ * <p>It raises no abend, composes no statement text or markup, runs no state machine, performs no
+ * decimal arithmetic and does no fixed-width slicing of its own - record layout knowledge lives in
+ * {@code com.carddemo.util}, and every width, justification and truncation semantic below is delegated
+ * there. The statement generator's MVS control-block addressing constructs are migrated nowhere in this
+ * module and have no counterpart in {@code [app/cbl/CBSTM03B.CBL]} to begin with.
  */
 @Service
 public final class StatementDataAccessService {
@@ -1179,8 +1176,8 @@ public final class StatementDataAccessService {
     }
 
     /**
-     * The transaction-file read into the linkage payload at {@code [app/cbl/CBSTM03B.CBL:L141]} - the sequential
-     * read of the transaction file.
+     * The transaction-file read into the linkage payload at {@code [app/cbl/CBSTM03B.CBL:L141]} - the
+     * sequential read of the transaction file.
      *
      * <p>The statement job's first two steps have already sorted and projected the transaction input.
      * One frozen projected record is requested at the position the parameter object carries; exhausting
@@ -1204,8 +1201,8 @@ public final class StatementDataAccessService {
     }
 
     /**
-     * The cross-reference-file read into the linkage payload at {@code [app/cbl/CBSTM03B.CBL:L165]} - the sequential
-     * read of the card cross-reference file.
+     * The cross-reference-file read into the linkage payload at {@code [app/cbl/CBSTM03B.CBL:L165]} - the
+     * sequential read of the card cross-reference file.
      *
      * <p>Ordered by the record key the file declares, which for this file is the card number alone. The
      * payload receives the complete 50-byte cross-reference record image, trailing filler included, so the

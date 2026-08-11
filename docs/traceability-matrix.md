@@ -1245,9 +1245,9 @@ properties therefore hold, each a way the page could otherwise go silently wrong
   driver never routes to are the ones a row count cannot vouch for, so they are marked `¶` and carry a
   stronger obligation: the named test must declare the method by name. There are **sixteen** such rows,
   spread across **four** members — `COACTUPC` 6, `COCRDLIC` 4, `COCRDSLC` 4 and `COACTVWC` 2 — and every
-  one of the sixteen is asserted individually. An earlier reading of this list recorded six rows and
-  attributed all of them to `COACTUPC`, which was the largest member's subtotal mistaken for the whole
-  census; the marker legend above has carried sixteen throughout. Count them yourself:
+  one of the sixteen is asserted individually. Sixteen is the whole census across four members, not any
+  one member's subtotal - `COACTUPC`'s six is the largest of the four and is easy to mistake for the
+  total. Count them yourself:
 
   ```bash
   grep -E '^\| *app/(cbl|cpy)/' docs/traceability-matrix.md | grep -c '¶'      # 16

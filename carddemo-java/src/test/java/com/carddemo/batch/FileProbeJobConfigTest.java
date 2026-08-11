@@ -75,12 +75,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * The contract of the collapsed file-probe job: one job, one step, four measured modes, ascending order,
  * a mode that fails rather than defaults, and a cross-reference binding that is not the category balance.
  *
- * <p>Every figure asserted here was measured from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19: the four members
- * {@code app/jcl/READACCT.jcl}, {@code app/jcl/READCARD.jcl}, {@code app/jcl/READCUST.jcl} and
- * {@code app/jcl/READXREF.jcl}, and the four programs they name.
- *
  * <p>The real parameter validator is used rather than a stand-in, because the launch boundary is part of
  * the contract under test: a job that accepted a mode it cannot probe would be a defect this file has to
  * catch. Everything else is a stand-in, so a failure here names the job configuration rather than a

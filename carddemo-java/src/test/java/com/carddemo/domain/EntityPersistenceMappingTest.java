@@ -107,13 +107,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * constraint column order, so it is invisible at start-up. It is asserted here in both forms - set
  * equality, and the order divergence itself - so that the difference is documented instead of
  * silently discovered later by someone tuning a prefix scan.
- *
- * <h2>Provenance</h2>
- *
- * <p>Layout widths are cited from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose members carry the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here;
- * member names, field names, widths and codes are cited only.
  */
 @DisplayName("Entity persistence mapping: the provider's mapping against the shipped migration")
 final class EntityPersistenceMappingTest {

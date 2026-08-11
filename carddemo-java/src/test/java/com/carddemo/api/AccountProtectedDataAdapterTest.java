@@ -102,9 +102,6 @@ import org.junit.jupiter.params.provider.EnumSource;
  * <p>A pure unit test: no Spring context, no connection, no container. The cipher is real and keyed from
  * a non-production fixture key.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 @DisplayName("AccountProtectedDataAdapter :: the account screens' regulated-data boundary")
@@ -975,10 +972,10 @@ final class AccountProtectedDataAdapterTest {
          *
          * <ul>
          *   <li><strong>The update screen</strong> is assembled by
-         *   {@code AccountUpdateContractAdapter}. It used to be assembled by {@code AccountUpdateService}
-         *   itself, and moved here when the upward package edges were closed: the service now returns the
-         *   service-owned {@code AccountUpdateOutcome} and the adapter copies it component for component
-         *   onto the transport record. That relocation narrowed this licence rather than widening it. The
+         *   {@code AccountUpdateContractAdapter} and not by {@code AccountUpdateService} itself, because the
+         *   upward package edges are closed: the service returns the service-owned
+         *   {@code AccountUpdateOutcome} and the adapter copies it component for component onto the transport
+         *   record. That placement narrows this licence rather than widening it. The
          *   parity reason recorded on the entitlement table above still belongs to the service - it must
          *   read the stored values, and it holds no authenticated principal to build a truthful
          *   authorization from, so the cleartext the legacy screen published still originates there - but

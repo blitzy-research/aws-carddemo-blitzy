@@ -86,9 +86,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * needs no reset. Parent rows for the six foreign keys are the seeded ones, which is why the fixtures below
  * name seeded keys rather than inventing parents.
  *
- * <p>Provenance: the record widths and picture classes are those of the copybooks under {@code app/cpy},
- * read as read-only reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source line is transcribed.
+ * <p>No COBOL source line is transcribed.
  */
 @DisplayName("Schema guards, proven by refusal: single-byte text, nine key shapes, protected values")
 final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
@@ -258,9 +256,9 @@ final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
                         "phone_num_2", padded("(555)7654321", 15),
                         // Both regulated identifiers carry a correctly shaped envelope, and cust_ssn
                         // is listed rather than left to default to NULL so the nest below can perturb it.
-                        // An earlier revision of this fixture wrote a two-colon value of thirty-eight
-                        // characters, which is not an envelope by the codec's own rule and which the
-                        // schema accepted because nothing yet required one.
+                        // // A two-colon value of thirty-eight characters is NOT an envelope by the
+                        // // codec's own rule, and the schema would accept one if nothing required
+                        // // otherwise.
                         "cust_ssn", PROTECTED_ENVELOPE,
                         "govt_issued_id", PROTECTED_ENVELOPE,
                         "cust_dob", "1980-01-01",

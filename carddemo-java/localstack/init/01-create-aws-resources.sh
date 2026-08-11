@@ -41,16 +41,12 @@
 # was defined errors-ignored, so the stack would start cleanly and come up short at the first submission
 # with nothing in the start-up log naming the cause.
 #
-# THE KEY PATHS BELOW ARE THE ONES THE APPLICATION BINDS, and a test holds this table to them. Two of
-# them named nothing until this checkpoint: the settings type renamed the bucket key and the queue key,
-# every overlay followed, and this table did not. The superseded spellings are deliberately NOT repeated
-# here - they are recorded in docs/decision-log.md - because a plausible key path written anywhere in
-# this repository is a path a reader will grep for, and finding it in a comment is what made the stale
-# table convincing in the first place. The two current spellings are one line further down each.
-#
-# The values were right throughout, so nothing failed and nothing could - a comment binds no property -
-# which is exactly why the table is now asserted rather than maintained by hand: an operator reading it
-# to find out which variable to set was being sent to a key no profile declares.
+# THE KEY PATHS BELOW ARE THE ONES THE APPLICATION BINDS, and a test holds this table to them rather
+# than a maintainer holding it by hand. A comment binds no property, so a stale key path here fails
+# nothing and simply sends an operator looking for the variable to set to a key no profile declares.
+# Superseded spellings are deliberately never repeated in this file - they are recorded in
+# docs/decision-log.md - because a plausible key path written anywhere in this repository is a path a
+# reader will grep for, and finding one in a comment is what makes a stale table convincing.
 #
 #   carddemo-batch-staging       object-store bucket        -> carddemo.aws.s3.batch-staging-bucket
 #   JOBS.fifo                    submission queue           -> carddemo.aws.sqs.job-queue

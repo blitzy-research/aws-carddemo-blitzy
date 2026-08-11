@@ -105,10 +105,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * introspection count of zero - and because a test that reads an annotation rather than exercising it
  * proves only that a symbol was written down, not that anything enforces it.
  *
- * <p>Provenance for every width, line number and citation above: repository checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The estate under {@code app/} is read-only
- * reference and no source text from it is reproduced.
+ * <p>The estate under {@code app/} is read-only reference and no source text from it is reproduced.
  */
 @DisplayName("UserRequest :: the shared inbound contract of the user-administration transactions")
 class UserRequestTest {

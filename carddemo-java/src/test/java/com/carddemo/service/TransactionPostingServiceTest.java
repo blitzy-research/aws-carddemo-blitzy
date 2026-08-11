@@ -87,13 +87,11 @@ import static org.mockito.Mockito.when;
 /**
  * Unit tests for {@link TransactionPostingService}, the daily-transaction posting program.
  *
- * <p>The class under test translates {@code app/cbl/CBTRN02C.cbl} - 731 lines and 27 procedure
- * units as measured. It validates each landing record through an order-dependent reject cascade,
- * posts the survivors onto the category balance, the account and the transaction file, and hands
- * every rejected record on for a 430-byte reject record to be written. Provenance: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here;
- * widths, offsets, paragraph names, reason codes and contract literals are metadata.
+ * <p>The class under test translates {@code app/cbl/CBTRN02C.cbl} - 731 lines and 27 procedure units as
+ * measured. It validates each landing record through an order-dependent reject cascade, posts the survivors
+ * onto the category balance, the account and the transaction file, and hands every rejected record on for a
+ * 430-byte reject record to be written. No legacy source text is transcribed here; widths, offsets,
+ * paragraph names, reason codes and contract literals are metadata.
  *
  * <h2>The eight properties these tests exist to defend</h2>
  * <ol>
@@ -165,37 +163,9 @@ import static org.mockito.Mockito.when;
  * {@code 22} or {@code 35}.
  *
  * <h2>Procedure-unit coverage: 27 units, each traceable to a test</h2>
- * <table>
- *   <caption>Legacy procedure unit to covering test group</caption>
- *   <tr><th>Unit</th><th>Covered by</th></tr>
- *   <tr><td>{@code PROCEDURE DIVISION} mainline, 193-234</td><td>{@code TheRunSummary}</td></tr>
- *   <tr><td>{@code 0000-DALYTRAN-OPEN}, 236-252</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 0100-TRANFILE-OPEN}, 254-270</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 0200-XREFFILE-OPEN}, 273-289</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 0300-DALYREJS-OPEN}, 291-307</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 0400-ACCTFILE-OPEN}, 309-325</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 0500-TCATBALF-OPEN}, 327-343</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 1000-DALYTRAN-GET-NEXT}, 345-369</td><td>{@code TheReadParagraph}</td></tr>
- *   <tr><td>{@code 1500-VALIDATE-TRAN}, 370-378</td><td>{@code TheValidationCascade}</td></tr>
- *   <tr><td>{@code 1500-A-LOOKUP-XREF}, 380-392</td><td>{@code TheCrossReferenceLookup}</td></tr>
- *   <tr><td>{@code 1500-B-LOOKUP-ACCT}, 393-422</td><td>{@code TheRejectCascadeGuards}</td></tr>
- *   <tr><td>{@code 2000-POST-TRANSACTION}, 424-444</td><td>{@code ThePostingStageOrder}</td></tr>
- *   <tr><td>{@code 2500-WRITE-REJECT-REC}, 446-465</td><td>{@code TheRejectRecordContract}</td></tr>
- *   <tr><td>{@code 2700-UPDATE-TCATBAL}, 467-501</td><td>{@code TheCategoryBalanceStage}</td></tr>
- *   <tr><td>{@code 2700-A-CREATE-TCATBAL-REC}, 503-524</td><td>{@code TheCategoryBalanceStage}</td></tr>
- *   <tr><td>{@code 2700-B-UPDATE-TCATBAL-REC}, 526-542</td><td>{@code TheCategoryBalanceStage}</td></tr>
- *   <tr><td>{@code 2800-UPDATE-ACCOUNT-REC}, 545-560</td><td>{@code TheAccountStage}</td></tr>
- *   <tr><td>{@code 2900-WRITE-TRANSACTION-FILE}, 562-579</td><td>{@code ThePostingStageOrder}</td></tr>
- *   <tr><td>{@code 9000-DALYTRAN-CLOSE}, 582-598</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 9100-TRANFILE-CLOSE}, 600-616</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 9200-XREFFILE-CLOSE}, 619-635</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 9300-DALYREJS-CLOSE}, 637-653</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 9400-ACCTFILE-CLOSE}, 655-671</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code 9500-TCATBALF-CLOSE}, 674-690</td><td>{@code TheSixOpensAndSixCloses}</td></tr>
- *   <tr><td>{@code Z-GET-DB2-FORMAT-TIMESTAMP}, 692-705</td><td>{@code TheTwoTimestamps}</td></tr>
- *   <tr><td>{@code 9999-ABEND-PROGRAM}, 707-711</td><td>{@code TheAbendPath}</td></tr>
- *   <tr><td>{@code 9910-DISPLAY-IO-STATUS}, 714-727</td><td>{@code TheStatusDisplay}</td></tr>
- * </table>
+ *
+ * <p>Each of the 27 procedure units is named in the test group that exercises it. The unit-to-test
+ * inventory is held once in {@code docs/traceability-matrix.md} and is not restated here.
  */
 @DisplayName("Transaction posting service: the daily-transaction posting program, 27 units")
 @ExtendWith(MockitoExtension.class)

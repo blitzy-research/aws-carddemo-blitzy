@@ -72,11 +72,9 @@ import static org.mockito.Mockito.when;
  * subprogram translated from {@code [app/cbl/CBSTM03B.CBL]} - 230 lines, 14 paragraphs, four files,
  * six declared operation codes and one shared parameter object.
  *
- * <p>Legacy provenance: AWS CardDemo z/OS estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL, JCL, copybook or map source line is
- * transcribed here: member names, paragraph names, line numbers, DD names, field names, declared widths
- * and raw two-character status codes are cited as metadata, and nothing else.
+ * <p>No COBOL, JCL, copybook or map source line is transcribed here: member names, paragraph names, line
+ * numbers, DD names, field names, declared widths and raw two-character status codes are cited as metadata,
+ * and nothing else.
  *
  * <h2>The fourteen paragraph units this class covers</h2>
  *

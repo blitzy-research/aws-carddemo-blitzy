@@ -72,10 +72,6 @@ import org.junit.jupiter.api.Test;
  * statement at all; no trimming, since trailing spaces are contractual; no reflective access, which
  * would undermine the very reason the eleven record mappers are written by hand; and no container,
  * application context, database, network or file access, this being a pure in-process unit test.
- *
- * <p>Provenance, recorded as a plain string and never asserted on a member: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("transaction-type record mapper: the 60-byte reference layout with a bare two-byte key")
 class TranTypeRecordMapperTest {

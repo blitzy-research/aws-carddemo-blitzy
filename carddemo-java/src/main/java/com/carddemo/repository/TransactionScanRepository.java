@@ -8,11 +8,11 @@
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
  */
 package com.carddemo.repository;
 
@@ -23,37 +23,34 @@ import org.springframework.data.repository.Repository;
 
 /**
  * Bounded ordered-read view of the transaction master, kept separate from the
- * {@link TransactionRepository} write-and-lock contract.
+ * {@link TransactionRepository} write-and-lock contract. Both the batch archive scan and the online
+ * transaction-list browse read through it, because they are the same access pattern - an ordered walk of
+ * the primary key - and one contract keeps one statement of the ordering rather than two that could
+ * drift apart.
  *
  * <p>This interface extends the marker {@link Repository} rather than a store interface, so the four
- * reads below are its whole surface: there is no {@code findAll()}, no {@code deleteAll()} and no
- * offset {@code Pageable} anywhere on it. Every read is ordered on the primary key and bounded by an
- * explicit {@link Limit}, which is what makes the callers' cost independent of how large the table
- * grows.
+ * reads below are its whole surface: there is no {@code findAll()}, no {@code deleteAll()} and no offset
+ * {@code Pageable} anywhere on it. Every read is ordered on the primary key and bounded by an explicit
+ * {@link Limit}, which is what makes the callers' cost independent of how large the table grows.
  *
  * <p><strong>Two directions, each in an inclusive and an exclusive form, and the pairing is the
- * point.</strong> The legacy browse verbs are a positioning command followed by record-at-a-time
- * reads: the positioning command is greater-or-equal (or less-or-equal, read backwards) and the first
- * read after it returns the record positioned on, while every read after that moves strictly past the
- * last record handed out. The inclusive forms therefore serve the open, and the exclusive forms serve
- * the continuation. Collapsing the pair would either repeat the boundary row on every refill or skip
- * the row the browse positioned on.
+ * point.</strong> The legacy browse verbs are a positioning command followed by record-at-a-time reads:
+ * the positioning command is greater-or-equal (or less-or-equal, read backwards) and the first read
+ * after it returns the record positioned on, while every read after that moves strictly past the last
+ * record handed out. The inclusive forms therefore serve the open and the exclusive forms the
+ * continuation; collapsing the pair would either repeat the boundary row on every refill or skip the row
+ * the browse positioned on.
  *
  * <p><strong>Why keyset and never an offset page.</strong> An offset page recounts and discards every
- * earlier row on each fetch, so a walk deep into the table costs more the further it goes; and it is
- * not stable, because a row inserted or removed between two fetches shifts the window and a row is
- * delivered twice or missed. The legacy browse has neither problem: it retains a transaction
- * identifier and repositions on that value. Reading by key is the faithful translation as well as the
- * bounded one, and it is the reason no method here accepts a page number.
+ * earlier row on each fetch and is not stable, because a row inserted or removed between two fetches
+ * shifts the window and a row is delivered twice or missed. The legacy browse retains a transaction
+ * identifier and repositions on that value, so reading by key is the faithful translation as well as the
+ * bounded one - and it is why no method here accepts a page number.
  *
- * <p>Both the batch archive scan and the online transaction-list browse read through this interface.
- * They are the same access pattern - an ordered walk of the primary key - and giving them one contract
- * keeps a single statement of the ordering rather than two that could drift apart.
- *
- * <p>Ordering is the store's, on a column whose stored values are sixteen zero-padded digit
- * characters, so character order and numeric order coincide. That is a precondition on the data, not
- * a property of the column: it is the same precondition {@link TransactionRepository#findMaxId()}
- * depends on, and every writer in this module preserves it.
+ * <p>Ordering is the store's, on a column whose stored values are sixteen zero-padded digit characters,
+ * so character order and numeric order coincide. That is a precondition on the data rather than a
+ * property of the column - the same precondition {@link TransactionRepository#findMaxId()} depends on -
+ * and every writer in this module preserves it.
  */
 public interface TransactionScanRepository extends Repository<Transaction, String> {
 

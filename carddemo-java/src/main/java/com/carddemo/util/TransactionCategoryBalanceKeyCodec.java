@@ -50,14 +50,6 @@ import java.util.Objects;
  * repository's after-key predicate compares the three parts it is given; taking whatever the image
  * holds beyond the type code keeps a caller free to hand back a value the store produced without this
  * class deciding it was too long.
- *
- * <h2>Provenance</h2>
- *
- * <p>Field order and widths are read from {@code app/cpy/CVTRA01Y.cpy} through
- * {@link TranCatBalRecordMapper}, at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text
- * is copied here; widths and offsets are metadata describing where the mapping came from.
- *
  * @see TranCatBalRecordMapper
  * @since 1.0.0
  */

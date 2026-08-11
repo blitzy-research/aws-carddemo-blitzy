@@ -85,11 +85,6 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  * a faithful pipe but would let a defect in the substituted slots pass unnoticed, because both sides
  * of the comparison would carry it. The three cards that carry the four slots are therefore also
  * asserted against hand-written images assembled here from independent literals.
- *
- * <p>Provenance: {@code app/cbl/CORPT00C.cbl} lines 84 to 125 and 462 to 535, and
- * {@code app/csd/CARDDEMO.CSD}, taken from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("job-submission bridge, verified against a real first-in-first-out queue")
 class JobSubmissionServiceIT extends AbstractLocalStackIT {
@@ -118,12 +113,11 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
      * A well-formed queue name that names no queue on the emulator, used to reach the ignore-on-error
      * path through a genuine queue-service refusal with no fault injected.
      *
-     * <p>This constant used to be a name carrying embedded spaces, because the messaging library's
-     * default for an unresolvable queue is to create it, and a name the queue service refused
-     * outright was the shortest way to a failed write. That is no longer available and the change is
-     * an improvement rather than a loss: the producer now holds its configured destination to the
+     * <p>A name carrying embedded spaces is not available for this purpose, though the messaging library's
+     * default for an unresolvable queue is to create it and a name the queue service refuses outright would
+     * be the shortest way to a failed write. The producer holds its configured destination to the
      * same naming contract the bootstrap script applies, so a name with a space cannot be configured
-     * at all and can no longer be absorbed into the tolerated failure path. The refusal is obtained
+     * at all and cannot be absorbed into the tolerated failure path. The refusal is obtained
      * instead from the queue service, by publishing through a template whose queue-not-found strategy
      * is refusal rather than creation - which is also how the shipped configuration behaves.</p>
      *

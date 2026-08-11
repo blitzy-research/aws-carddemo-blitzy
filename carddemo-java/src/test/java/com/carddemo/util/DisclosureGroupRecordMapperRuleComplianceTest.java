@@ -48,10 +48,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * {@code DIS-GROUP-RECORD} declared by {@code app/cpy/CVTRA02Y.cpy} onto {@link DisclosureGroup}
  * and back.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>This is the interest-rate lookup, so its decode is on the interest path.</strong>
  * {@code app/cbl/CBACT04C.cbl} reads this record to obtain {@code DIS-INT-RATE}, a
  * {@code PIC S9(04)V99} zoned decimal held in six bytes, and then computes

@@ -46,9 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  * the client sent. Sign-on is the turn that establishes identity, so there is no inbound identity here to
  * echo; this test pins that there is no path by which one could appear.
  *
- * <p>Provenance: {@code app/cbl/COSGN00C.cbl}, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("SignOnContractAdapter :: a decision becomes the screen's own text")
 class SignOnContractAdapterTest {

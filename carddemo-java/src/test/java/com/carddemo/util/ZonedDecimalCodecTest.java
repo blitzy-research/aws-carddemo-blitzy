@@ -102,11 +102,8 @@ import org.junit.jupiter.params.provider.CsvSource;
  * the codec so that no other class can introduce a second rounding policy. This file proves all
  * five; it does not edit the decision log.</p>
  *
- * <p>Provenance: the legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Field lengths, byte offsets, scales, sign
- * codes and measured code frequencies cross the boundary into this file; no line of COBOL, job
- * control or copybook source does.</p>
+ * <p>Field lengths, byte offsets, scales, sign codes and measured code frequencies cross the boundary into
+ * this file; no line of COBOL, job control or copybook source does.</p>
  */
 @DisplayName("ZonedDecimalCodec :: zoned decimal to BigDecimal and back, byte for byte")
 class ZonedDecimalCodecTest {

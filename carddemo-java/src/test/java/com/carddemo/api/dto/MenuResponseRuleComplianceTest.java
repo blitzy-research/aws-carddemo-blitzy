@@ -47,11 +47,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * {@code CA00} - the user main menu implemented by {@code app/cbl/COMEN01C.cbl} and the administrative
  * menu implemented by {@code app/cbl/COADM01C.cbl}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The two option catalogues are the ten entries
- * of {@code app/cpy/COMEN02Y.cpy} and the four of {@code app/cpy/COADM02Y.cpy}; the widths are those of
- * the corresponding screen fields.
+ * <p>The two option catalogues are the ten entries of {@code app/cpy/COMEN02Y.cpy} and the four of
+ * {@code app/cpy/COADM02Y.cpy} ; the widths are those of the corresponding screen fields.
  *
  * <p><strong>The eighth user option is the one to watch.</strong> The user catalogue's eighth entry
  * carries a commented-out alternative label marking it administrator-only, and that label is inactive in

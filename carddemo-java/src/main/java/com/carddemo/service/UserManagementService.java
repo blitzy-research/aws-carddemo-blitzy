@@ -166,12 +166,9 @@ import com.carddemo.util.FailureDiagnostics;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, the stamp appearing in the trailer of each
- * of the four members and of {@code app/cpy/CSUSR01Y.cpy} at L25. The legacy tree under
- * {@code app/} is read-only reference material that nothing here reads at run time: only member
- * names, transaction identifiers, paragraph names, line numbers, field names, widths, offsets and
- * the exact message texts cross into this module.</p>
+ * <p>The legacy tree under {@code app/} is read-only reference material that nothing here reads at
+ * run time: only member names, transaction identifiers, paragraph names, line numbers, field names,
+ * widths, offsets and the exact message texts cross into this module.</p>
  *
  * <p>The screen turns are deliberately non-transactional. Add, update and delete enter
  * {@link OnlineTransactionBoundary} only for their repository write unit, so a persistence failure
@@ -1021,7 +1018,7 @@ public final class UserManagementService {
         state.sendEraseFlag = SendEraseFlag.YES;
         // L105-L106 blank WS-MESSAGE and the error line of the output map.
         state.message = null;
-        // L108: MOVE -1 TO USRIDINL, placing the cursor on the identifier field.
+        // L108 places the cursor on the identifier field.
         state.focusFieldId = FIELD_LIST_USER_ID;
 
         final ScreenNavigationState inbound = request.navigationContext();
@@ -1109,9 +1106,9 @@ public final class UserManagementService {
         // L218-L222: a blank identifier field positions at a low-value key, otherwise at the field.
         final String searchUserId = asKeyedAtTheTerminal(request.searchUserId());
         final BrowseAnchor anchor = isBlank(searchUserId) ? BrowseAnchor.LOW_VALUES : BrowseAnchor.KEY;
-        // L224: MOVE -1 TO USRIDINL.
+        // L224 places the cursor on the identifier field.
         state.focusFieldId = FIELD_LIST_USER_ID;
-        // L227: MOVE 0 TO CDEMO-CU00-PAGE-NUM, then L228 walks forward.
+        // L227 resets the page number to zero, then L228 walks forward.
         state.pageNumber = 0;
         processPageForward(browse, state, anchor, searchUserId, KeyAction.ENTER);
         // L230-L232: the identifier field is blanked only when the walk raised no error.
@@ -1138,7 +1135,7 @@ public final class UserManagementService {
         final BrowseAnchor anchor = isBlank(firstOnPage) ? BrowseAnchor.LOW_VALUES : BrowseAnchor.KEY;
         // L245 sets the next-page-yes condition.
         state.nextPageFlag = NextPageFlag.YES;
-        // L246: MOVE -1 TO USRIDINL.
+        // L246 places the cursor on the identifier field.
         state.focusFieldId = FIELD_LIST_USER_ID;
         final SequentialBrowse browse = new SequentialBrowse(userSecurityRepository);
         state.pageNumber = pageNumberOf(browse, state, probeAnchor(browse, state, anchor, firstOnPage));
@@ -1185,7 +1182,7 @@ public final class UserManagementService {
     private void processPf8Key(final UserCommand request, final TurnState state) {
         final String lastOnPage = request.lastUserIdOnPage();
         final BrowseAnchor anchor = isBlank(lastOnPage) ? BrowseAnchor.HIGH_VALUES : BrowseAnchor.KEY;
-        // L268: MOVE -1 TO USRIDINL.
+        // L268 places the cursor on the identifier field.
         state.focusFieldId = FIELD_LIST_USER_ID;
         final SequentialBrowse browse = new SequentialBrowse(userSecurityRepository);
         final Optional<UserSecurityRepository.AdminEntry> anchorRow =
@@ -1259,7 +1256,7 @@ public final class UserManagementService {
                 initializeUserData(state, slot);
             }
         }
-        // L298-L306: MOVE 1 TO WS-IDX, then fill upward until the slot count is exceeded.
+        // L298-L306 start at the first slot and fill upward until the slot count is exceeded.
         int slot = 1;
         while (slot <= USER_LIST_PAGE_SIZE && !state.eofFlag.isEof() && !state.errorFlag.isOn()) {
             final Optional<UserSecurityRepository.AdminEntry> row =
@@ -1331,7 +1328,7 @@ public final class UserManagementService {
                 initializeUserData(state, slot);
             }
         }
-        // L352-L360: MOVE 10 TO WS-IDX, then fill downward until the slot number falls below one.
+        // L352-L360 start at the last slot and fill downward until the slot number falls below one.
         int slot = USER_LIST_PAGE_SIZE;
         while (slot >= 1 && !state.eofFlag.isEof() && !state.errorFlag.isOn()) {
             final Optional<UserSecurityRepository.AdminEntry> row =
@@ -2398,8 +2395,8 @@ public final class UserManagementService {
         // L210-L212: WHEN OTHER places the cursor on the given-name field and continues.
         state.focusFieldId = FIELD_FIRST_NAME;
 
-        // L215-L243 are ONE unit of work, because in the region they are one. The read at L217 is an
-        // EXEC CICS READ ... UPDATE, which holds the record exclusively until the rewrite at L237
+        // L215-L243 are ONE unit of work, because in the region they are one. The read at L217 is a
+        // read for update, which holds the record exclusively until the rewrite at L237
         // happens or the task ends, so no other administrator can change the four fields between the
         // comparison and the write. Reading in one unit and writing in a later one would compare against
         // a record that the write then overwrites blind - a lost update the operator is never told
@@ -2852,7 +2849,7 @@ public final class UserManagementService {
      * oddity rather than corrected here.
      *
      * <p><strong>The two are also ONE unit of work, because in the region they are one.</strong> The
-     * read at L190 is an {@code EXEC CICS READ ... UPDATE} and the delete at L191 names no record
+     * read at L190 is a read for update and the delete at L191 names no record
      * identifier at all, so the only record it can remove is the one that read is holding. Reading in
      * one unit and deleting by key in a later one would remove a row that another administrator had
      * changed in between - the operator having confirmed a record that no longer exists in that form,
@@ -2958,11 +2955,11 @@ public final class UserManagementService {
      * not-found arm - which is what an empty result is - raises the flag, emits the not-found text and
      * places the cursor on the identifier field. The default arm emits the lookup-failure text.
      *
-     * <p>As on the update screen, the source performs this paragraph from two places with one read-for-update
-     * statement: the enter-key load at L161, which only displays the record, and the confirming path at
-     * L190, whose delete verb names no record and can therefore only remove the record this read holds.
-     * A hold taken on the load path is released when that task returns, so only the second call site
-     * depends on it; the two forms differ in nothing else and share this arm evaluation. See
+     * <p>As on the update screen, the source performs this paragraph from two places with one
+     * read-for-update statement: the enter-key load at L161, which only displays the record, and the
+     * confirming path at L190, whose delete verb names no record and can therefore only remove the record
+     * this read holds. A hold taken on the load path is released when that task returns, so only the second
+     * call site depends on it; the two forms differ in nothing else and share this arm evaluation. See
      * {@link #readUserSecFileForDeleteHolding(TurnState)}.
      *
      * @param state the turn being assembled

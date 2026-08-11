@@ -89,15 +89,12 @@ import com.carddemo.support.OrderedTransactionScan;
  * What the transaction report job configuration publishes, and what its own documentation commits it
  * to.
  *
- * <p>The subject is the translation of the job member {@code app/jcl/TRANREPT.jcl} and its cataloged
- * form {@code app/proc/TRANREPT.prc} at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Five facts measured
- * from that member are asserted here because getting any of them wrong compiles cleanly and fails only
- * at the byte level: the member declares <strong>three</strong> steps under only two distinct names, it
- * declares <strong>no</strong> condition-code dependency on any of them, its ordering key is the card
- * number typed <strong>zoned decimal</strong> where the statement job types the very same bytes as
- * character, its record-inclusion predicate is <strong>inclusive at both ends</strong>, and its report
- * record length is <strong>{@value ReportLineFormatter#REPORT_RECORD_WIDTH}</strong> bytes.
+ * <p>Five facts measured from that member are asserted here because getting any of them wrong compiles
+ * cleanly and fails only at the byte level: the member declares <strong>three</strong> steps under only two
+ * distinct names, it declares <strong>no</strong> condition-code dependency on any of them, its ordering
+ * key is the card number typed <strong>zoned decimal</strong> where the statement job types the very same
+ * bytes as character, its record-inclusion predicate is <strong>inclusive at both ends</strong>, and its
+ * report record length is <strong> {@value ReportLineFormatter#REPORT_RECORD_WIDTH} </strong> bytes.
  *
  * <p><strong>Fixture note.</strong> Every one of the 300 records in the estate's own daily
  * transaction sample carries the same processing date and the same timestamp, so that sample

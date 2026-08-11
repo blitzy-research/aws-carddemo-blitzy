@@ -119,7 +119,6 @@ import java.util.Objects;
  * context or the batch chunk that owns them and are never shared across threads or held in a static
  * cache. No caching layer exists in the legacy system and none is introduced here.
  *
- *
  * @see TransactionCategoryId
  */
 @Entity

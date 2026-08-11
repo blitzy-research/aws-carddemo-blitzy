@@ -182,40 +182,31 @@ import java.util.Objects;
  *
  * <h2>There is no report-name substitution slot</h2>
  *
- * <p>A ten-byte report-name work field exists in the program at
- * {@code [app/cbl/CORPT00C.cbl:L58]}, but it is used only to compose screen messages. No card
- * contains a report-name placeholder, and the job name on card 1 is a fixed literal. The job name
- * is therefore never derived, never parameterised and never templatised.
+ * <p>A ten-byte report-name work field exists in the program at {@code [app/cbl/CORPT00C.cbl:L58]}, but it
+ * composes screen messages only. No card contains a report-name placeholder and the job name on card 1 is
+ * a fixed literal, so the job name is never derived, parameterised or templatised.
  *
- * <p><strong>Card details that are easy to "correct" by mistake.</strong> On card 1 the message class
- * is the digit <strong>zero</strong>, not the letter O, and the card ends with a
- * <strong>trailing comma</strong> that is a JCL continuation marker joining the job card to the
- * notify card, so it is content and is retained. Card 2 spells the system-user symbol correctly; a
- * different member of the estate carries a transposed spelling of that symbol, and that typo belongs
- * to the other member and must never be imported here.
+ * <p><strong>Card details that are easy to "correct" by mistake.</strong> On card 1 the message class is
+ * the digit <strong>zero</strong>, not the letter O, and the card ends with a <strong>trailing comma</strong>
+ * that is a JCL continuation marker joining the job card to the notify card, so it is content and is
+ * retained. Card 2 spells the system-user symbol correctly; a different member of the estate carries a
+ * transposed spelling of that symbol, and that typo belongs to the other member and must never be
+ * imported here.
  *
- * <p>This is the single most likely defect in a naive translation, so the submission loop at
- * {@code [app/cbl/CORPT00C.cbl:L496-L508]} was traced statement by statement. The driver clears
- * its end-of-loop flag, then enters a subscript-varying loop whose terminating
- * condition is evaluated at the <em>top</em> of each iteration. Inside the body the current card
- * is moved to the write buffer and, when that card is the sentinel, the terminating flag is set.
- * The queue write is then performed at {@code [app/cbl/CORPT00C.cbl:L507]}, which is
- * <em>after</em> the flag has been set and still inside the same iteration. Because the loop tests
- * before it iterates rather than after, the flag set during the seventeenth iteration cannot
- * suppress the write that follows it in that same iteration.
+ * <p><strong>The sentinel card is written, and that is the single most likely defect in a naive
+ * translation.</strong> The submission loop at {@code [app/cbl/CORPT00C.cbl:L496-L508]} evaluates its
+ * terminating condition at the <em>top</em> of each iteration, and the queue write at
+ * {@code [app/cbl/CORPT00C.cbl:L507]} happens after the terminating flag has been set and still inside the
+ * same iteration - so the flag set during the seventeenth iteration cannot suppress the write that
+ * follows it there.
  *
- * <p><strong>The onward queue contract, implemented elsewhere.</strong> The target queue is defined at
- * {@code [app/csd/CARDDEMO.CSD]} as an extra-partition, output-only, initially-opened queue with four
- * attributes that bind the transport, all four implemented by
- * {@code com.carddemo.service.JobSubmissionService} and never here: a fixed record size of eighty
- * becomes an eighty-character fixed-width payload per message, so exactly one card per message; a
- * fixed record format becomes the invariant that no message is trimmed, wrapped or
- * newline-terminated; a modify disposition becomes append semantics, one message per card in the
- * order this builder returns them, preserved by message-group ordering; and an ignore error option
- * becomes a non-blocking publish whose failure path logs and continues rather than aborting the
- * caller (decision D-36). Accordingly this class has no queue client, no messaging or cloud
- * dependency, no publish method, no retry, no failure-message text, no confirmation gate and no
- * reporting-period logic. It receives two dates and asks no questions.
+ * <p><strong>The onward queue contract is implemented elsewhere.</strong> The target queue is defined at
+ * {@code [app/csd/CARDDEMO.CSD]} as an extra-partition, output-only, initially-opened queue, and all four
+ * of its transport-binding attributes - fixed record size, fixed record format, modify disposition and
+ * ignore error option - are implemented by {@code com.carddemo.service.JobSubmissionService} and never
+ * here (decision D-36). This class therefore has no queue client, messaging dependency, publish method,
+ * retry, failure text, confirmation gate or reporting-period logic: it receives two dates and asks no
+ * questions.
  *
  * <p><strong>Cross references.</strong> Cards 9 and 10 restate the sort-symbol specification that the
  * cataloged procedure declares at {@code [app/proc/TRANREPT.prc]}; cards 8 through 12 override that

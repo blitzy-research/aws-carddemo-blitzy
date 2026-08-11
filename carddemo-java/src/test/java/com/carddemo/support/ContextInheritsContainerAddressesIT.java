@@ -86,8 +86,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * be observed any other way.</p>
  *
  * <p>Provenance: this test has no legacy antecedent - the legacy estate carries no test harness of any
- * kind. Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * kind.
  */
 @SpringBootTest(classes = ContextInheritsContainerAddressesIT.BareContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE)

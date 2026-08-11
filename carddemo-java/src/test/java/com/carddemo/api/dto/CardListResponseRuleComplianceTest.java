@@ -48,10 +48,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Unit tests for {@link CardListResponse}, the response body of legacy transaction {@code CCLI}
  * implemented by {@code app/cbl/COCRDLIC.cbl} over screen {@code app/cpy-bms/COCRDLI.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Nine operator messages, reproduced character for character.</strong> The legacy screen's
  * messages are upper case, and two of them carry punctuation that a tidying hand would remove - a comma
  * with no following space in the two filter messages, and a full stop that only the not-found message

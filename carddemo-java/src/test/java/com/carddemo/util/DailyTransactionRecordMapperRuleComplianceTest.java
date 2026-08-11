@@ -73,9 +73,8 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * consequence that matters most at the field boundary: {@code 999999999.999} encodes cleanly under
  * truncation and would overflow the eleven-byte field under half-even rounding.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). Layout authority
- * {@code app/cpy/CVTRA06Y.cpy}; amount width authority {@code app/cpy/CVTRA06Y.cpy:L14}.</p>
+ * <p>Layout authority {@code app/cpy/CVTRA06Y.cpy} ; amount width authority
+ * {@code app/cpy/CVTRA06Y.cpy:L14} .</p>
  */
 @DisplayName("DailyTransactionRecordMapper — the 350-byte CVTRA06Y daily-transaction record")
 class DailyTransactionRecordMapperRuleComplianceTest {

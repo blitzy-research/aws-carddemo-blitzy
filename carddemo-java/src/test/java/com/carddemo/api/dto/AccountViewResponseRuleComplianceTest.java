@@ -49,10 +49,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for {@link AccountViewResponse}, the response body of legacy transaction {@code CAVW}
  * implemented by {@code app/cbl/COACTVWC.cbl} over screen {@code app/cpy-bms/COACTVW.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Why the component order is asserted.</strong> The declared order is not alphabetical and
  * not grouped by entity - it is the field order of the 3270 map, which interleaves account and customer
  * fields down the screen and places the credit limit before the expiration date. Sorting the components

@@ -95,8 +95,7 @@ import com.carddemo.domain.enums.ReportPeriod;
  * omissions, and that a multiply-marked payload is accepted - so no tie-break and no default can be
  * smuggled in at the boundary.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("ReportRequest - the CR00 inbound contract")
 class ReportRequestSecurityTest {
@@ -190,7 +189,7 @@ class ReportRequestSecurityTest {
             List.of("monthlySelection", "yearlySelection", "customSelection");
 
     /**
-     * The collapsed period component an earlier revision published in place of the three positions,
+     * The collapsed period component that must never be published in place of the three positions,
      * asserted absent because supplying a resolved report type would move the program's own ordered
      * first-match-wins decision onto the caller.
      */

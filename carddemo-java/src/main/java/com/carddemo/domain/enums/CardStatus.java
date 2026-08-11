@@ -68,8 +68,8 @@ import java.util.Optional;
  * constant would be a value the estate never produces. Callers needing a boolean compose the two
  * members, so an absent or unrecognised code answers {@code false}:
  *
- * <pre>{@code
- * boolean active = CardStatus.fromCode(card.getActiveStatus())
+ * <pre>{@code boolean
+ * active = CardStatus.fromCode(card.getActiveStatus())
  *                            .map(CardStatus::isActive)
  *                            .orElse(false);
  * }</pre>

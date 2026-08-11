@@ -117,21 +117,17 @@ import java.util.List;
  * program answers a row and which role gates it. {@code com.carddemo.service.MenuService} is the one
  * component that may read both owners, and narrowing a catalog row to a screen projection is its work.
  *
- * <p><strong>No behaviour lives here.</strong> This type does not normalise the operator's entry
- * &mdash; the legacy blank-to-zero fill, applied to the right-justified two-character work field
- * declared at {@code app/cbl/COADM01C.cbl} lines 45 to 46 and applied at
- * {@code app/cbl/COADM01C.cbl} line 123, and mirrored at exactly those lines of
- * {@code app/cbl/COMEN01C.cbl}, belongs to the menu service and its string utilities. It does not
- * range-check the entry against the option count, and it does not test whether an option names a
- * placeholder program: that test is made at {@code app/cbl/COADM01C.cbl} line 138 and at
- * {@code app/cbl/COMEN01C.cbl} line 146, and both programs make it only after the count comparison
- * has passed. It does not evaluate the user-type gate, does not assemble any message and does not
- * resolve or execute a route. It reads nothing from disk, parses no fixed-width record and never
- * reads a legacy source artefact at run time. It holds no route table, no route enumeration and no
- * dispatch method: {@link #nextRoute()} is an opaque declarative string that the navigation service
- * chooses and the client acts on, because the estate's twenty-five program-to-program transfers and
- * nineteen re-arming returns all become route values in a response body rather than server-side
- * forwarding.
+ * <p><strong>No behaviour lives here.</strong> The legacy blank-to-zero fill, applied to the
+ * right-justified two-character work field declared at {@code app/cbl/COADM01C.cbl} lines 45 to 46 and
+ * applied at line 123 - mirrored at exactly those lines of {@code app/cbl/COMEN01C.cbl} - belongs to the
+ * menu service and its string utilities. Nor does this type range-check the entry against the option
+ * count or test whether an option names a placeholder program: that test is made at
+ * {@code app/cbl/COADM01C.cbl} line 138 and {@code app/cbl/COMEN01C.cbl} line 146, and both programs make
+ * it only after the count comparison has passed. The user-type gate, message assembly and route
+ * resolution all live elsewhere, and nothing here reads a legacy artefact at run time.
+ * {@link #nextRoute()} is an opaque declarative string the navigation service chooses and the client acts
+ * on, because the estate's twenty-five program-to-program transfers and nineteen re-arming returns all
+ * become route values in a response body rather than server-side forwarding.
  *
  * <p><strong>Screen presentation is not modelled.</strong> The legacy screens carry field lengths,
  * attribute bytes, cursor placement, terminal highlighting and a twelve-byte terminal-area prefix.
@@ -180,21 +176,12 @@ import java.util.List;
  * legitimate screen state that this contract would otherwise have to carry. Enforcing the figures here
  * is what makes a partially-rendered or dual-menu payload unrepresentable rather than merely unusual.
  *
- * <p><strong>Provenance.</strong> Every citation above resolves against commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} of the legacy repository, which is read-only
- * reference material: no COBOL statement, picture clause or table declaration is transcribed into
- * this file, and only external contract text is reproduced. The release stamps embedded in the two
- * option copybooks differ and are recorded as they stand rather than reconciled:
- * {@code app/cpy/COMEN02Y.cpy} line 94 carries {@code CardDemo_v1.0-15-g27d6c6f-68} dated
- * 2022-07-19 23:15:58 CDT, the estate-wide stamp also carried by {@code app/cpy/COTTL01Y.cpy},
- * {@code app/cpy/CSMSG01Y.cpy}, {@code app/cpy/COCOM01Y.cpy}, {@code app/cbl/COMEN01C.cbl} and
- * {@code app/cbl/COADM01C.cbl}, while {@code app/cpy/COADM02Y.cpy} line 50 carries
- * {@code CardDemo_v1.0-26-g42273c1-79} dated 2022-07-20 16:59:12 CDT. Two further observations
- * complete the audit trail for the screen artefacts cited above: the two mapset definitions
- * {@code app/bms/COMEN01.bms} and {@code app/bms/COADM01.bms} carry a third and later stamp,
- * {@code CardDemo_v1.0-70-g193b394-123} dated 2022-08-22, at line 166 of each; and the two generated
- * symbolic maps {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} carry no stamp
- * at all, being compiler output rather than hand-maintained source.
+ * <p>Two further observations complete the audit trail for the screen artefacts cited above: the
+ * two mapset definitions {@code app/bms/COMEN01.bms} and {@code app/bms/COADM01.bms} carry a third
+ * and later stamp, {@code CardDemo_v1.0-70-g193b394-123} dated 2022-08-22, at line 166 of each; and
+ * the two generated symbolic maps {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY}
+ * carry no stamp at all, being compiler output rather than hand-maintained
+ * source.
  *
  * <p><strong>Recorded source anomaly.</strong> Both option copybooks open with an identical line-2
  * comment naming the administrative menu, yet the group declared at line 19 of

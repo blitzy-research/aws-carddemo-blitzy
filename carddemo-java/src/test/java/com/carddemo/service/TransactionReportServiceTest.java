@@ -74,12 +74,6 @@ import static org.mockito.Mockito.when;
 /**
  * Surefire unit suite for {@link TransactionReportService}, the Java translation of the batch
  * transaction detail report program {@code app/cbl/CBTRN03C.cbl}.
- *
- * <h2>Provenance</h2>
- *
- * <p>Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p>The authority is <strong>649 lines</strong> long. Its {@code PROCEDURE DIVISION} carries
  * <strong>26 named paragraph labels</strong>, which is the member's contribution: the action plan records
  * 26 and {@code docs/traceability-matrix.md} carries <strong>exactly 26 rows</strong> for it, one per
@@ -91,50 +85,11 @@ import static org.mockito.Mockito.when;
  * is named that way so a reader does not read it as a mapped paragraph. The count itself is read from the
  * matrix in {@code TheMatrixContribution} rather than restated here.
  *
- * <h2>Paragraph unit coverage map</h2>
+ * <h2>Paragraph unit coverage</h2>
  *
- * <p>The unnamed driving body is listed first, unnumbered, because it is covered but is not a unit. The
- * numbered entries are the member's 26 labels.
- *
- * <ul>
- *   <li>the unnamed driving body, lines 160-217 - {@code TheDrivingBody} - covered, not a unit</li>
- * </ul>
- *
- * <ol>
- *   <li>{@code 0550-DATEPARM-READ}, line 220 - {@code TheInclusiveDateBounds},
- *       {@code NullAndBoundaryInput}</li>
- *   <li>{@code 1000-TRANFILE-GET-NEXT}, line 248 - {@code TheFrozenOrderedInput}</li>
- *   <li>{@code 1100-WRITE-TRANSACTION-REPORT}, line 274 - {@code ThePaginationArithmetic}</li>
- *   <li>{@code 1110-WRITE-PAGE-TOTALS}, line 293 - {@code TheAccumulationChain}</li>
- *   <li>{@code 1120-WRITE-ACCOUNT-TOTALS}, line 306 - {@code TheAccumulationChain},
- *       {@code TheReproducedLegacyDefects}</li>
- *   <li>{@code 1110-WRITE-GRAND-TOTALS}, line 318 - {@code TheAccumulationChain}</li>
- *   <li>{@code 1120-WRITE-HEADERS}, line 324 - {@code TheHeaderBlock}</li>
- *   <li>{@code 1111-WRITE-REPORT-REC}, line 343, the single writer - {@code TheSingleWriter}</li>
- *   <li>{@code 1120-WRITE-DETAIL}, line 361 - {@code TheRecordWidthContract},
- *       {@code TheTwoAmountMasks}</li>
- *   <li>{@code 0000-TRANFILE-OPEN}, line 376 - {@code TheDrivingBody}</li>
- *   <li>{@code 0100-REPTFILE-OPEN}, line 394 - {@code TheDrivingBody}</li>
- *   <li>{@code 0200-CARDXREF-OPEN}, line 412 - {@code TheDrivingBody}</li>
- *   <li>{@code 0300-TRANTYPE-OPEN}, line 430 - {@code TheDrivingBody}</li>
- *   <li>{@code 0400-TRANCATG-OPEN}, line 448 - {@code TheDrivingBody}</li>
- *   <li>{@code 0500-DATEPARM-OPEN}, line 466 - {@code TheDrivingBody}</li>
- *   <li>{@code 1500-A-LOOKUP-XREF}, line 484 - {@code TheReferenceLookupAbends},
- *       {@code TheLookupKeyShapes}</li>
- *   <li>{@code 1500-B-LOOKUP-TRANTYPE}, line 494 - {@code TheReferenceLookupAbends},
- *       {@code TheLookupKeyShapes}</li>
- *   <li>{@code 1500-C-LOOKUP-TRANCATG}, line 504 - {@code TheReferenceLookupAbends},
- *       {@code TheLookupKeyShapes}</li>
- *   <li>{@code 9000-TRANFILE-CLOSE}, line 514 - {@code TheDrivingBody}</li>
- *   <li>{@code 9100-REPTFILE-CLOSE}, line 532 - {@code TheDrivingBody}</li>
- *   <li>{@code 9200-CARDXREF-CLOSE}, line 551 - {@code TheDrivingBody}</li>
- *   <li>{@code 9300-TRANTYPE-CLOSE}, line 569 - {@code TheDrivingBody}</li>
- *   <li>{@code 9400-TRANCATG-CLOSE}, line 587 - {@code TheDrivingBody}</li>
- *   <li>{@code 9500-DATEPARM-CLOSE}, line 605 - {@code TheDrivingBody}</li>
- *   <li>{@code 9999-ABEND-PROGRAM}, line 626, whose abort call sits at line 630 -
- *       {@code TheReferenceLookupAbends}</li>
- *   <li>{@code 9910-DISPLAY-IO-STATUS}, line 633 - {@code TheFileStatusLevels}</li>
- * </ol>
+ * <p>The member has 26 labels, each named in the test that exercises it, plus an unnamed driving body at
+ * lines 160-217 which is covered by {@code TheDrivingBody} but is <em>not</em> a unit and owes no matrix
+ * row. The row-per-paragraph inventory is held once in {@code docs/traceability-matrix.md}.
  *
  * <h2>What this suite pins, and why each assertion can fail</h2>
  *

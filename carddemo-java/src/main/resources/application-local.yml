@@ -19,11 +19,9 @@
 #   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local \
 #       -Dspring-boot.run.arguments=--server.address=127.0.0.1
 #
-# NO SERVICE IS BEHIND A COMPOSE PROFILE. An earlier revision of this header listed a second command,
-# `docker compose --profile observability up -d`, as the one that "adds prometheus + grafana". No
-# service in docker-compose.yml declares `profiles:`, so that flag selected nothing: both forms brought
-# up the identical stack. The line is removed rather than made real, because gating the observability
-# services would leave the short command with no scrape target and no dashboard.
+# NO SERVICE IS BEHIND A COMPOSE PROFILE, so the one command above brings up the whole stack. No service
+# in docker-compose.yml declares `profiles:`, and none may: gating the observability services would leave
+# the short command with no scrape target and no dashboard.
 #
 # The profile supports both execution forms: a host-launched JVM uses the loopback-published defaults,
 # while the Compose app service supplies container DNS names and fixed internal ports through the same
@@ -609,17 +607,11 @@ carddemo:
     # lost.
     #
     # THERE IS NO SUPPORTED WAY TO PUBLISH THIS PROFILE BEYOND THIS MACHINE, and the honest reason is
-    # that rotating this one value would not make such a deployment safe. An earlier revision of this
-    # file, of docker-compose.yml and of carddemo-java/README.md documented a widening procedure that
-    # paired a wide bind with generated values for CARDDEMO_JWT_SECRET, POSTGRES_PASSWORD and
-    # GRAFANA_ADMIN_PASSWORD, and it did not hold: the app service's environment block never passed
-    # CARDDEMO_JWT_SECRET or CARDDEMO_MANAGEMENT_TOKEN into the container at all, so the generated
-    # signing secret sat in the operator's shell while the container went on minting and accepting
-    # tokens under the literal below - and the procedure read as though the exposure had been paid
-    # for. Even with the forwarding corrected, the deployment would still answer over cleartext HTTP,
-    # would still accept the ten seeded sign-on identities whose password the estate README documents,
-    # and would still sit beside a LocalStack endpoint, a Prometheus, a Grafana and a Jaeger that
-    # authenticate nobody.
+    # that replacing this one value would not make such a deployment safe. Generated secrets do not
+    # change the other four premises: the deployment answers over cleartext HTTP, it accepts the ten
+    # seeded sign-on identities whose password the estate README documents, and it sits beside a
+    # LocalStack endpoint, a Prometheus, a Grafana and a Jaeger that authenticate nobody. A widening
+    # procedure would therefore read as though the exposure had been paid for when it had not.
     #
     # SO THE ANSWER IS A TUNNEL OR A PRODUCTION DEPLOYMENT, NOT A REPLACED FIXTURE.
     # `ssh -L 8080:127.0.0.1:8080 <host>` reaches a loopback-bound process over an encrypted,

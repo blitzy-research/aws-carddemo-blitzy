@@ -43,14 +43,12 @@ rows of earlier runs; nothing is transcribed twice, because runs of the same job
 same host already make the point the table exists to make.
 
 **Where a standing figure moves, it moves because the tree moved, and the older figure is not kept beside
-it.** Earlier runs of earlier revisions measured smaller source, test, line and branch totals, because the
-remediations of this checkpoint added production code and the tests that cover it. Those earlier figures are
-not reconciled with this page and are not meant to be: **every standing figure here is this tree's, and the
-build reconciles it against the run you just took** rather than against a frozen historical one, so a figure
-that has moved because the tree moved is a build failure until this page is corrected. What the recorded run
-below supplies is the material only a particular run can supply — its timings, its quoted transcript, and
-the first three rows of the Gate 3 table. Earlier runs survive only as further dated rows there, which is
-where a per-run measurement belongs. The one thing that never moves is the shape of the claim — zero compiler diagnostics, no failing
+it.** Source, test, line and branch totals change whenever production code and the tests covering it change,
+and a superseded total is not reconciled with this page and is not meant to be: **every standing figure here
+is this tree's, and the build reconciles it against the run you just took** rather than against a frozen
+historical one, so a figure that has moved because the tree moved is a build failure until this page is
+corrected. What a recorded run supplies is the material only a particular run can supply — its timings, its
+quoted transcript, and its rows of the Gate 3 table, which is where a per-run measurement belongs. The one thing that never moves is the shape of the claim — zero compiler diagnostics, no failing
 test, byte-equal goldens, merged line coverage above the floor, and nothing unsuppressed at or above the
 vulnerability threshold.
 
@@ -81,8 +79,8 @@ reason and no other. The unit tier has no such base class, which is why its sour
 count are both 449 — and why that equality is what tells `e2e/GateVerificationTest` a run was unscoped
 rather than narrowed.
 
-**Where any other figure in this repository comes from.** A repository-setup narrative recorded a different
-pair of test counts from a run at an earlier revision on different container availability. It is not
+**Where any other figure in this repository comes from.** A narrative elsewhere may quote a different
+pair of test counts, taken from a different run under different container availability. Such a figure is not
 reconciled with this page and is not meant to be: **the authoritative source for a test count is the report
 directory of a named run at a named revision**, which is what the tables below quote and cite. Where a figure
 elsewhere disagrees, prefer the one carrying a revision.
@@ -279,9 +277,9 @@ Java 25 runtime, and it does need one otherwise. On the recorded run that toolch
 `/usr/lib/jvm/temurin-25`; if a host's default `java` is older or is a JRE, install a Java 25 JDK and point
 `JAVA_HOME` at it — never lower `<release>`, which would change what the module is.
 
-**Every Compose service starts with the stack, because no service is behind a Compose profile.** An
-earlier revision of this page brought the stack up with `--profile observability`. No service in
-`docker-compose.yml` declares `profiles:`, so that flag selected nothing and Prometheus, Grafana and
+**Every Compose service starts with the stack, because no service is behind a Compose profile.** Bringing
+the stack up with `--profile observability` is therefore wrong: no service in
+`docker-compose.yml` declares `profiles:`, so that flag selects nothing and Prometheus, Grafana and
 Jaeger started either way — the command worked, but for a reason other than the one it stated. The flag is
 removed rather than implemented: putting the observability services behind a real profile would mean a
 reader who ran the short command got a stack with no scrape target and no dashboard, and would discover it
@@ -373,9 +371,9 @@ each one is the correction of a different past error on this page.
 | --- | ---: | --- | --- |
 | Category-balance report line | 40 | 32 content bytes and exactly 8 trailing blanks, `RECFM=FB` | `fixtures/expected/category-balance-report.txt` |
 
-**This width is the one an earlier revision of this page recorded as having no golden at all.** The
+**This width is the one most easily left without a golden.** The
 category-balance report the `PRTCATBL` job stream produces is 40 bytes per line, declared by that stream as
-`SORTOUT DCB=(LRECL=40)`, and for a while it had an implementation and no committed expectation. Its fixture
+`SORTOUT DCB=(LRECL=40)`, and an implementation with no committed expectation is the state to guard against. Its fixture
 now holds 53 separator-free 40-byte records: one per delivered category-balance row, plus the three rows the
 test adds beyond the fifty and one it rewrites in place. It was authored from the reprojection at lines 53–56
 of the job stream and from the delivered `tcatbal.txt` fixture, and it is **the verdict** for this width,
@@ -495,8 +493,8 @@ the identical compiler configuration, the identical JDK and the whole production
 rather than an aspiration; it is not the measurement above, and the figures above come from the recorded
 run.
 
-**Suppressed warnings: measured over both source trees, and the measured count is zero.** This paragraph
-used to say the figure was "counted under Gate 6", and that was the wrong place to look. Gate 6's audit is
+**Suppressed warnings: measured over both source trees, and the measured count is zero.** Reading the
+figure as "counted under Gate 6" is the wrong place to look. Gate 6's audit is
 scoped to `carddemo-java/src/main/java/**`, and that scoping is deliberate and correct *for Gate 6* — but
 Gate 2 is a different requirement with a different reach. It asks for a build that emits no warning **and
 hides none**, and `@SuppressWarnings` hides one identically wherever it is written: a test source is
@@ -664,10 +662,10 @@ relabelled here rather than dropped, so a row that was once "the recorded run" s
 rows 10 to 12 are the run carried before those, taken on 2026-08-10; rows 13 to 21 are three further full
 runs taken on 2026-08-09 and separated by the run label inside the machine column — "earlier revision",
 "earlier run" and "repeat run"; rows 22 to 27 are two earlier runs on 2026-08-08 whose machine descriptions
-differ. The first nine rows now share a date and differ only by the label beside the host, which is the whole
-point: an earlier revision of this page grouped "the first nine rows" as one day's work, and a reader who
-trusted the date column alone would today read three runs of three different revisions as one. The date does
-not identify a run; the label beside the host is what does.
+differ. The first nine rows share a date and differ only by the label beside the host, which is the whole
+point: grouping "the first nine rows" as one day's work would read three runs of three different revisions
+as one for anybody who trusted the date column alone. The date does not identify a run; the label beside
+the host is what does.
 
 The 2026-08-09 group is the clearest illustration on this page of what these figures are and are not: the
 same job at the same volume on the same machine posted the same 300 records in **2,577 ms, 2,545 ms and
@@ -1147,8 +1145,8 @@ result this gate wants. Command 2 produces exactly six lines, which is the budge
 raised from five to six with the site that filled it, as a recorded decision rather than silently —
 and they are enumerated below. Command 3b produces **no output**, and command 4 produces **twelve** lines
 over both trees and **none** over the production tree alone — the two figures that together say what the
-twelve are. Each stated expectation above is the output reproduced here; an earlier revision of this page
-told a reader to expect no output from commands 3 and 4 while publishing, a few lines further down, the one
+twelve are. Each stated expectation above is the output reproduced here; telling a reader to expect no output from
+commands 3 and 4 while publishing, a few lines further down, the one
 line and the twelve lines they actually return. The comment beside a command and the output beneath it are
 the same claim made twice, and a reader who tries the command reads the comment first.
 
@@ -1216,16 +1214,16 @@ here rather than left to look like a contradiction:
 
 ```text
 service/PostgresJobSubmissionCoordinator.java:226     (ConnectionCallback<Void>)
-batch/step/AdvisoryGenerationPublicationLock.java:135 (ConnectionCallback<Void>)
+batch/step/AdvisoryGenerationPublicationLock.java:132 (ConnectionCallback<Void>)
 batch/BatchLaunchCoordinator.java:711                 (ConnectionCallback<JobExecution>)
 repository/TransactionInsertRepositoryImpl.java:94    (PreparedStatementCallback<Void>)
-config/FlywayConfig.java:758                          (ConnectionCallback<Void>)
+config/FlywayConfig.java:740                          (ConnectionCallback<Void>)
 ```
 
 The file-and-line of each is derived by `config/DocumentedSourceCountsTest` from the production tree rather
-than transcribed, because a published line number is the most perishable figure on this page: three of those
-above moved when their enclosing classes gained code, and a stale line number sends a reader to the wrong
-statement while every count on the page stays correct. DL-340.
+than transcribed, because a published line number is the most perishable figure on this page: it is
+falsified by any edit above it, and a stale line number sends a reader to the wrong statement while every
+count on the page stays correct. DL-340.
 
 Every one is a lambda cast to a functional interface, present only to select between overloads of the same
 `execute` method. Each is checked at compile time, none narrows a wildcard or a type variable, and none
@@ -1388,8 +1386,8 @@ What it reports, over the whole published set, in the recorded run:
 | `.github/workflows/carddemo-java-ci.yml` | 1 | **0** | A container variable name, and the value it is given is the throwaway local one, not this |
 | **this page**, and every other published page | 0 | **0** | Not present in any form |
 
-**Three value occurrences in total, across two files.** An earlier revision of this section reported three as
-well but distributed them differently — two of the three were attributed to pages that carry only setting
+**Three value occurrences in total, across two files.** The distribution matters as much as the total: a
+count of three that attributes two of them to pages that carry only setting
 names, and one of the estate README's two was missed. Both errors came from counting raw hits and reasoning
 about them in prose, which is precisely why the classification is now a script whose output is printed above.
 
@@ -1495,8 +1493,8 @@ as measured evidence rather than as standing fact, and the revision that produce
 into the evidence bundle that same run wrote — see [DL-315](decision-log.md) and the durable-artefact table.
 
 The figures below are **read out of the runners' own XML**, not counted by hand. That distinction is the
-point of this subsection: an earlier revision published 26,235 unit and 1,601 integration tests, and by the
-time it was read the tree had moved underneath it — the numbers were a transcription of a run nobody could
+point of this subsection: publishing 26,235 unit and 1,601 integration tests by hand leaves the figure behind
+as soon as the tree moves underneath it — such numbers are a transcription of a run nobody can
 still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
 
 The suite behind those figures is the whole estate rather than a sample: the unit tier runs 27,001 test
@@ -1512,8 +1510,8 @@ sentence counts the classes the tier's inclusion rules select **in this source t
 nested classes rolled into their outer class's file, and because an abstract support base class is selected by
 name and executed as part of its subclasses rather than on its own. The first figure is a property of the tree
 and is asserted by `config/DocumentedSourceCountsTest`; the second is a property of a run and is reconciled
-against the run's own XML by the workflow. Correcting either one to the other would break both checks, and an
-earlier attempt at exactly that is what prompted this paragraph.
+against the run's own XML by the workflow. Correcting either one to the other would break both checks, which
+is why this paragraph states the distinction rather than leaving it to be inferred.
 
 | Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -1593,7 +1591,7 @@ drift apart. The same discovery is what added the supplemental golden-backed wid
 The `File I/O` row above names three alternate indexes. All three have a non-unique B-tree equivalent in
 `V2`, and all three have a repository finder that is measured against that index. **None of the three is
 reached by a production call path**, and that is stated plainly here because it is the kind of claim a
-reader audits and because an earlier revision of this page asserted the opposite for two of them:
+reader audits and because the opposite is easy to assert for two of them:
 
 | Alternate index | B-tree equivalent in `V2` | Finder that declares it | Reached by a production call path |
 | --- | --- | --- | --- |
@@ -1630,9 +1628,9 @@ place, `TransactionRepository.exclusiveUpperBoundOf`, so every caller states the
 terms the legacy inclusion condition states it in. The lower bound is left bare for the same reason, and the
 twenty-six-blank "not yet processed" sentinel is excluded by the lower bound alone.
 
-**The superseded form is retained as a measured counter-example, not as documentation of what ships.** An
-earlier revision wrapped the upper bound in a ten-character prefix, which cannot be an index condition and
-was applied to rows the server had already read.
+**The superseded form is retained as a measured counter-example, not as documentation of what ships.**
+Wrapping the upper bound in a ten-character prefix cannot be an index condition and
+is applied to rows the server has already read.
 `TransactionRepositoryIT.theSupersededPrefixFormLeavesItsUpperBoundAsAFilter` reproduces it and shows it
 selecting **exactly the same rows in the same order** as the shipped form while leaving a `Filter:` line in
 its plan. That equivalence of results is precisely why a review of results rather than of plans passed it,

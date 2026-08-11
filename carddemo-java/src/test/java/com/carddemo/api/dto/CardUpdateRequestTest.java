@@ -123,11 +123,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * terminal buffer, and left entirely unconstrained. The update surface is genuinely wider than the
  * detail surface here, and the tests below pin that asymmetry from both directions.
  *
- * <p>Provenance of every width, line citation and measured literal length used below: repository
- * checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. This mapset carries a later stamp of its own,
- * which is why the pair is cited here as documentation and is never embedded as a constant. No COBOL,
- * screen-map or job-control source line is reproduced anywhere in this file.
+ * <p>This mapset carries a later stamp of its own, which is why the pair is cited here as documentation and
+ * is never embedded as a constant. No COBOL, screen-map or job-control source line is reproduced anywhere
+ * in this file.
  */
 @DisplayName("CardUpdateRequest :: card-update request contract of legacy transaction CCUP")
 class CardUpdateRequestTest {

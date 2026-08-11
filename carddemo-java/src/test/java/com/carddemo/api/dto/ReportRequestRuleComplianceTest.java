@@ -47,10 +47,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for {@link ReportRequest}, the request body of legacy transaction {@code CR00} implemented
  * by {@code app/cbl/CORPT00C.cbl} over screen {@code app/cpy-bms/CORPT00.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Two date triples, not two dates.</strong> The legacy screen collects a start and an end
  * date as six separate fields - month, day and year for each - because a 3270 map has no date field
  * type. The request reproduces that shape rather than folding each triple into a single date, so that a
@@ -63,9 +59,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * line 66 and {@code CUSTOMI} at line 72 - and {@code CORPT00C} tests them in the fixed order
  * monthly, yearly, custom at lines 214, 240 and 256, acting on the first non-blank one and falling to
  * its catch-all at line 437 when none is marked. All three are carried as three separately markable
- * one-character components. An earlier revision collapsed them into a single enumerated component, on
- * the grounds that the positions are mutually exclusive and that a multiply-marked state should be
- * unrepresentable; neither premise holds. Three independently markable fields mean a submission
+ * one-character components. COLLAPSING THEM INTO A SINGLE ENUMERATED COMPONENT - on the grounds that
+ * the positions are mutually exclusive and that a multiply-marked state should be unrepresentable -
+ * rests on two premises, neither of which holds. Three independently markable fields mean a submission
  * carrying two or three marks is a state the 3270 screen can actually produce, and the program does
  * not treat it as an error - it resolves it by that fixed order. A single value cannot express
  * "monthly and custom were both marked", so it cannot reproduce the resolution either: it forces the
@@ -173,7 +169,7 @@ class ReportRequestRuleComplianceTest {
             List.of("monthlySelection", "yearlySelection", "customSelection");
 
     /**
-     * The collapsed property an earlier revision published in place of the three positions, asserted
+     * The collapsed property that must never be published in place of the three positions, asserted
      * absent because a derived report type on the inbound contract relocates the program's own
      * first-match-wins resolution onto the caller.
      */
@@ -664,10 +660,10 @@ class ReportRequestRuleComplianceTest {
                     .as("and the ordered evaluation resolves that submission to the operator range")
                     .isSameAs(ReportPeriod.CUSTOM);
 
-            // An earlier revision accepted a derived period on the request instead of the three
-            // markers, which is what made the contract narrower than the screen. A payload naming one
-            // now binds nothing: it is tolerated as an unknown property rather than refused, so a
-            // client written against the earlier shape is not broken with a message the legacy screen
+            // // Accepting a derived period on the request instead of the three markers is what would make the
+            // // contract narrower than the screen. A payload naming one binds nothing: it is tolerated as an
+            // // unknown property rather than refused, so a client written against that shape is not broken with a
+            // // message the legacy screen
             // never emits - it simply submits nothing, which the service reports as the unmarked state.
             final ReportRequest fromRemovedPeriod =
                     mapper.readValue("{\"reportPeriod\":\"CUSTOM\"}", ReportRequest.class);

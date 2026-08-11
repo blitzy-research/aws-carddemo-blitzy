@@ -39,9 +39,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
  * registered rather than at registration time, so a caller observes exactly what the Spring TestContext
  * Framework would observe.</p>
  *
- * <p>Provenance: this support type has no legacy antecedent - the legacy estate carries no test harness
- * of any kind. Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * <p>Provenance: this support type has no legacy antecedent - the legacy estate carries no test harness of
+ * any kind.
  */
 public final class RecordingPropertyRegistry implements DynamicPropertyRegistry {
 

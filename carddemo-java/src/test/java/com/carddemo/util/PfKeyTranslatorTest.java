@@ -41,11 +41,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * attention-key identifier to a {@link KeyAction}, and the one place in this module where a
  * 28-input dispatch collapses onto 16 outcomes.
  *
- * <p><strong>Provenance.</strong> The behaviour asserted here was read out of the legacy estate at
- * checkout commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose members carry the
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Those two strings
- * are recorded as provenance only. Nothing in this file asserts a stamp on any member, because the
- * stamp is not uniform across the estate: most members carry it, a few carry later stamps, the
+ * <p>Those two strings are recorded as provenance only. Nothing in this file asserts a stamp on any member,
+ * because the stamp is not uniform across the estate: most members carry it, a few carry later stamps, the
  * screen-map definitions differ, and a number of members carry none at all.
  *
  * <p><strong>What is under test, and what is deliberately not.</strong> This file exercises the

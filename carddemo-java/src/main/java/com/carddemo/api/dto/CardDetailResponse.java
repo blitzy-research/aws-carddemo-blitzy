@@ -23,12 +23,11 @@ import java.util.List;
  * Immutable card-detail response &mdash; the REST-era form of the single-card display screen that
  * legacy transaction {@code CCDL} presented from {@code app/cbl/COCRDSLC.cbl} (887 lines).
  *
- * <p><strong>Provenance.</strong> Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The field contract is
- * the generated symbolic map {@code app/cpy-bms/COCRDSL.CPY}, whose input group is declared at line 17
- * and whose output redefinition is declared at line 109; the 24&nbsp;&times;&nbsp;80 layout authority
- * is {@code app/bms/COCRDSL.bms}. No COBOL source is copied into this module; every citation below is
- * a reference to a line in the read-only legacy tree.
+ * <p>The field contract is the generated symbolic map {@code app/cpy-bms/COCRDSL.CPY}, whose input
+ * group is declared at line 17 and whose output redefinition is declared at line 109; the
+ * 24&nbsp;&times;&nbsp;80 layout authority is {@code app/bms/COCRDSL.bms}. No COBOL source is
+ * copied into this module; every citation below is a reference to a line in the read-only legacy
+ * tree.
  *
  * <p><strong>Fifteen value families, fourteen of them modelled.</strong> The symbolic map declares
  * fifteen named field families. Each family contributes a value item on the input side and a

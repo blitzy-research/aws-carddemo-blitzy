@@ -140,10 +140,6 @@ import static org.assertj.core.api.Assertions.tuple;
  * nor the marker character written over a blank field's displayed value has a REST counterpart, so
  * only the two states they signified are asserted, and their absence from the payload is asserted
  * as well.
- *
- * <p>Provenance: behaviour cited, never transcribed, from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("FieldErrorDecorator — the parameterised CSSETATY macro as one accumulator")
 class FieldErrorDecoratorTest {
@@ -169,8 +165,7 @@ class FieldErrorDecoratorTest {
     private static final String GOLDEN_DIGEST_ALGORITHM = "SHA-256";
 
     /**
-     * Pinned digest of the decorated-field fixture. Recomputed from
-     * {@code app/cbl/COACTUPC.cbl} at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
+     * Pinned digest of the decorated-field fixture, recomputed from {@code app/cbl/COACTUPC.cbl}.
      */
     private static final String GOLDEN_DECORATED_DIGEST =
             "ea41070312572e2efc87aec7db0d017aa6e366a9ec5996afb90dcbeb22de8407";

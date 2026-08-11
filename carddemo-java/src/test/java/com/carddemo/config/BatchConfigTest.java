@@ -1285,10 +1285,10 @@ public final class BatchConfigTest {
         @DisplayName("a publication that throws fails the job AND discards the local generations it "
                 + "orphaned, before the failed terminal event leaves the process")
         void aFailedPublicationDiscardsTheLocalGenerationsItOrphaned() throws IOException {
-            // The gap this closes: the discard used to be reached only from the arm taken when the
-            // execution ARRIVED here already non-COMPLETED. A completed job whose publication threw was
-            // downgraded to FAILED further down, past that branch, and returned - leaving a completed
-            // local generation on disk, readable, and resolvable by name to anything that asked the store
+            // // The gap this closes: a discard reached only from the arm taken when the execution ARRIVES here
+            // // already non-COMPLETED misses a completed job whose publication threw, which is downgraded to
+            // // FAILED further down, past that branch, and returns - leaving a completed
+            // // local generation on disk, readable, and resolvable by name to anything that asked the store
             // for the current local generation of its base. See docs/decision-log.md entry DL-290.
             final StagedGenerationStore store = mock();
             final JobCompletionEventPublisher publisher = mock();

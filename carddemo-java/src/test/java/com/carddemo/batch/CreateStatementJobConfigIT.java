@@ -106,14 +106,10 @@ import org.springframework.test.context.DynamicPropertySource;
  * Container-backed verification of {@link CreateStatementJobConfig} against a real PostgreSQL 16
  * server, driven as the last link of the batch pipeline rather than in isolation.
  *
- * <p>Provenance of every legacy figure cited below: checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability-matrix header only - it is not carried uniformly by the estate's members, so nothing
- * here asserts it against one. No job-stream, program, copybook or resource-definition source line
- * is transcribed anywhere in this file: the estate is cited by step name, data-definition name,
- * program name, width, offset, count, status code and key geometry, plus the handful of contract
- * literals that appear byte for byte in the produced output.
+ * <p>No job-stream, program, copybook or resource-definition source line is transcribed anywhere in this
+ * file: the estate is cited by step name, data-definition name, program name, width, offset, count, status
+ * code and key geometry, plus the handful of contract literals that appear byte for byte in the produced
+ * output.
  *
  * <h2>What this class owns, and what it deliberately does not</h2>
  * The sibling unit test already pins the published constants, the reprojection arithmetic, the

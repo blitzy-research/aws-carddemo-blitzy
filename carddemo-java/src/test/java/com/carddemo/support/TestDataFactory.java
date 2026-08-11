@@ -67,15 +67,24 @@ import com.carddemo.util.DailyTransactionRecordMapper;
  * legacy record layouts, plus the small number of deliberately constructed fixtures that the seeded
  * data cannot supply.
  *
- * <p><strong>THE INDEPENDENT-ORACLE MANDATE.</strong> Nothing here delegates to a production
- * formatter, a production fixed-width assembler, the production zoned-decimal codec, or any of the
- * eleven production record-image mappers. Every fixed-width image below is assembled from the
+ * <p><strong>THE INDEPENDENT-ORACLE MANDATE.</strong> No <em>image builder</em> here delegates to a
+ * production formatter, a production fixed-width assembler, the production zoned-decimal codec, or any
+ * of the eleven production record-image mappers. Every fixed-width image below is assembled from the
  * verified widths and offsets using plain string arithmetic, and the overpunched-sign encoding is
  * implemented from first principles in {@link #encodeZonedDecimal(BigDecimal, int)}. The reason is
  * not tidiness: if this class encoded a signed amount by calling the same codec the system under
  * test uses, a codec defect would produce a matching input and a matching expectation, and the
  * byte-equivalence gate would pass while the system was wrong. An oracle that shares an
  * implementation with the thing it measures is not an oracle.</p>
+ *
+ * <p><strong>The mandate has exactly one carve-out, and it is named here so the mandate above can be
+ * read as literally true.</strong> {@link #withRecordProvenance(DailyTransaction)} renders a record
+ * through {@code DailyTransactionRecordMapper} to give an entity built field by field the input image
+ * that a record read from a resource carries. It is a provenance helper and never an expectation: it
+ * produces the <em>subject</em> of a test, not the value a test compares against. It is therefore
+ * forbidden in any test whose subject is the record bytes themselves - such a test builds its record
+ * from an explicit image instead - and no other member of this class may call a production mapper,
+ * codec or formatter for any purpose.</p>
  *
  * <p><strong>WHAT THIS CLASS EXPOSES.</strong> Two clearly separated capability families:</p>
  * <ol>
@@ -125,12 +134,6 @@ import com.carddemo.util.DailyTransactionRecordMapper;
  * only property that distinguishes a correct shipped digest from a merely well-formed one. See
  * {@link #fixtureCredentialWindow()}, which states the whole contract and the measurement that makes
  * the distinction load-bearing rather than pedantic.</p>
- *
- * <p><strong>PROVENANCE.</strong> The layouts, offsets, filler characters and record censuses
- * recorded here were verified against the checkout at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. The upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} of 2022-07-19 is a matrix-header provenance string only: it is
- * not carried by every legacy member, so nothing here asserts it against one.</p>
  *
  * @see AbstractPostgresIT for the shared migrated server, the pinned clock and the pinned window
  * @see SeededRecordFixture for reading a newline-delimited fixture record-by-record
@@ -2340,6 +2343,12 @@ public final class TestDataFactory {
      * builds its record from an explicit image instead, with
      * {@code DailyTransactionRecordMapper.fromRecord}.
      *
+     * <p><strong>This is the one member of this class that calls a production mapper, and the class-level
+     * independent-oracle mandate names it as its single carve-out.</strong> What keeps the carve-out sound
+     * is that the rendered image is the test's subject and never its expectation, so a mapper defect
+     * cannot make an expectation agree with the system that produced it. Using this helper in a test whose
+     * subject is the record bytes would break that property and is forbidden.
+     *
      * @param  record the record to give provenance to; must not be {@code null}
      * @return the same record, now carrying its own rendered image
      */
@@ -3839,10 +3848,10 @@ public final class TestDataFactory {
      * from a hand transcription of the legacy source rather than from the shipped enumeration.
      *
      * <h4>Why these come from an oracle and not from the module's enumeration</h4>
-     * They used to be collected from {@code RejectReason.values()}. That made this list agree with the
-     * module by construction: a wrong code in the enumeration would have produced a wrong code in the
+     * COLLECTING THEM FROM {@code RejectReason.values()} would make this list agree with the
+     * module by construction: a wrong code in the enumeration would produce a wrong code in the
      * fixture and a wrong code in the expectation at the same time, and every comparison between them
-     * would still have passed. They now come from {@link LegacyRejectReasons#CODES}, which imports
+     * would still pass. They come from {@link LegacyRejectReasons#CODES}, which imports
      * nothing from the shipped types, and the shipped enumeration is asserted AGAINST that table in
      * {@code RejectReasonOracleTest} - the direction that establishes the contract. A second, independently
      * written transcription of the same five sites, {@link LegacyRejectReason}, is held to the legacy
@@ -4016,10 +4025,10 @@ public final class TestDataFactory {
     // thirty bytes, never a trimmed or semantic comparison, so a stray blank or a wrong sign byte
     // fails rather than passing unnoticed.
     //
-    // The SAME argument applies to the two values inside the trailer, and it did not used to be
-    // honoured. The four digits and the seventy-six characters were read out of the shipped
-    // RejectReason enumeration, so the assembled expectation agreed with the implementation by
-    // construction and a wrong code produced a wrong file and a passing test. Both values now come
+    // // The SAME argument applies to the two values inside the trailer. Reading the four digits and the
+    // // seventy-six characters out of the shipped RejectReason enumeration would make the assembled
+    // // expectation agree with the implementation by construction, so a wrong code would produce a wrong
+    // // file and a passing test. Both values come
     // from LegacyRejectReasons, a hand transcription of the legacy source that imports nothing from
     // the shipped types; the enumeration is asserted against that table in RejectReasonOracleTest.
     // =============================================================================================

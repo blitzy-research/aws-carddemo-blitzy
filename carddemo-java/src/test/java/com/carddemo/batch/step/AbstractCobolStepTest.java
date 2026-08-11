@@ -83,20 +83,11 @@ import static org.mockito.Mockito.mockingDetails;
  * {@code CBSTM03B.CBL} even though those two are a dispatcher and its data-access helper rather than a
  * read loop. Ten batch programs in total, one skeleton.
  *
- * <h2>Provenance</h2>
- *
- * <p>Matrix-header provenance for this file: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
- * <p>That stamp is deliberately recorded once, here, as a header string and nothing more. It is
- * <strong>not universal</strong> across the estate: seventy-eight legacy members carry it, three carry
- * later stamps, all seventeen screen definitions differ from it and twenty-five members carry no stamp
- * at all. It may therefore never become a per-member assertion, in this file or any other, because such
- * an assertion would fail for a third of the estate while appearing to prove provenance. No COBOL, job
- * control, screen definition, copybook or resource definition text is transcribed anywhere below: the
- * legacy is cited by member, paragraph, field, condition name, line number, width and status code, and
- * its statements are described rather than quoted. Nothing here reads the legacy tree at runtime.
+ * <p><strong>The release stamp may never become a per-member assertion.</strong> It is not universal
+ * across the estate: seventy-eight legacy members carry it, three carry later stamps, all seventeen
+ * screen definitions differ from it and twenty-five members carry none at all, so such an assertion
+ * would fail for a third of the estate while appearing to prove provenance. Nothing here reads the
+ * legacy tree at runtime.
  *
  * <h2>What is asserted, and why it is asserted in two levels</h2>
  *

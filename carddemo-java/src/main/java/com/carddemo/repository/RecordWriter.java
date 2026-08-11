@@ -103,12 +103,8 @@ import org.springframework.transaction.annotation.Transactional;
  * no statement text, so it adds nothing to the raw-SQL count; it resolves no name at runtime and reads no
  * annotation, so it adds nothing to the reflection count. Both counts remain zero.
  *
- * <h2>Provenance</h2>
- *
- * <p>Legacy estate read at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The verbs reproduced here are the
- * {@code WRITE}, {@code REWRITE} and {@code DELETE} of the estate's file sections; no legacy source text
- * is reproduced.
+ * <p>The verbs reproduced here are the {@code WRITE}, {@code REWRITE} and {@code DELETE} of the
+ * estate's file sections.
  */
 @Repository
 public class RecordWriter {

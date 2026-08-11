@@ -39,9 +39,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  *
  * <p>The reject reason code and its description leave the system positionally, in the eighty-byte trailer of a
  * four-hundred-and-thirty byte record that a downstream consumer reads by offset. Every expectation about
- * those bytes was previously built by READING {@link RejectReason} - {@code reason.getReasonCode()} and
- * {@code reason.getDescription()} - so the comparison was the implementation against itself. A code recorded
- * as 104 would have produced an expectation of 104 and a passing test over a wrong file. Two of the five
+ * those bytes must NOT be built by READING {@link RejectReason} - {@code reason.getReasonCode()} and
+ * {@code reason.getDescription()} - because that makes the comparison the implementation against itself.
+ * A code recorded as 104 would produce an expectation of 104 and a passing test over a wrong file. Two of the five
  * reasons carry the SAME description under DIFFERENT codes, which is precisely the pairing a self-referential
  * expectation cannot police: transposing those two codes changes the emitted bytes and changes no expectation.
  *
@@ -53,9 +53,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <p>Recorded as DL-279 in {@code docs/decision-log.md}, including the three mutations this
  * comparison was confirmed to fail under.
  *
- * <p>Provenance: {@code app/cbl/CBTRN02C.cbl}, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("Reject reasons: the shipped enumeration against a hand-transcribed oracle")
 final class RejectReasonOracleTest {

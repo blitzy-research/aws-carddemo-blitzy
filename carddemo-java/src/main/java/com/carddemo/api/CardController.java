@@ -66,14 +66,12 @@ import org.springframework.web.bind.annotation.RestController;
  * REST surface of the three card screens: {@code CCLI} card list, {@code CCDL} card detail and
  * {@code CCUP} card update.
  *
- * <p><strong>What this class does and does not do.</strong> Each operation binds one request, hands it
- * to the one service that owns that screen, projects the returned turn onto the published response
- * contract and records how long the turn took. It holds no rule of its own. There is no filter test
- * here, no cursor arithmetic, no selector parsing, no page assembly, no record lookup, no field
- * validation, no before-image comparison, no persistence and no field decoration - every one of those
- * lives in {@link CardListService}, {@link CardDetailService} or {@link CardUpdateService}, which is
- * what lets all three be exercised without a servlet and what keeps this class from becoming a second,
- * divergent copy of the card rules.
+ * <p><strong>What this class does.</strong> Each operation binds one request, hands it to the one
+ * service that owns that screen, projects the returned turn onto the published response contract and
+ * records how long the turn took. Every rule - filtering, selector parsing, paging, lookup, validation,
+ * before-image comparison and decoration - lives in {@link CardListService},
+ * {@link CardDetailService} or {@link CardUpdateService}, which is what lets all three be exercised
+ * without a servlet and keeps this class from becoming a second, divergent copy of the card rules.
  *
  * <p><strong>Three screens and exactly three operations.</strong> {@code app/csd/CARDDEMO.CSD} binds
  * {@code CCDL} to {@code COCRDSLC} at line 347, {@code CCLI} to {@code COCRDLIC} at line 357 and
@@ -157,12 +155,7 @@ import org.springframework.web.bind.annotation.RestController;
  * between calls and no mutable collection published, so the singleton is safe for unsynchronised
  * concurrent use.
  *
- * <p>Provenance: {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl},
- * {@code app/cbl/COCRDUPC.cbl}, the three symbolic maps under {@code app/cpy-bms}, the three mapsets
- * under {@code app/bms} and {@code app/csd/CARDDEMO.CSD}, all read as read-only reference at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Cited by name, width and line number only; no
- * legacy source statement is reproduced.
+ * <p>Cited by name, width and line number only; no legacy source statement is reproduced.
  *
  * @since 1.0.0
  */
@@ -531,11 +524,10 @@ public class CardController {
      * The turn itself, shared by the mapped handler above and exercised directly by its unit tests.
      *
      * <p>Not a request handler: it carries no mapping, so it publishes no operation and binds no request.
-     * It used to carry a copy of the operation description and a full set of parameter-binding
-     * annotations, all of which were inert - the framework maps only annotated <em>mapped</em> methods and
-     * the interface description is generated only from those - which meant the richer of the two
-     * descriptions was the one that was never published. That description now sits on the mapped handler
-     * and this method carries none.
+     * It carries no copy of the operation description and no parameter-binding annotations, because such a
+     * copy would be inert - the framework maps only annotated <em>mapped</em> methods and the interface
+     * description is generated only from those - so the richer of the two descriptions would be the one
+     * that was never published. The description sits on the mapped handler and this method carries none.
      *
      * @param  accountIdFilter   the account the operator typed, or {@code null}
      * @param  cardNumberFilter  the card the operator typed, or {@code null}
@@ -728,12 +720,12 @@ public class CardController {
      *
      * <p>The conversion itself is the shared positional one. What is deliberate here is the guard in front
      * of it. The list and detail screens ask only whether the state they were handed is absent <em>or</em>
-     * all-blank and treat the two identically, so handing them the empty carrier in place of nothing changes
-     * no outcome. The update screen does not: its reset condition is the analogue of {@code EIBCALEN IS
-     * EQUAL TO 0}, which asks whether a communication area arrived at all, and it answers differently for a
-     * turn that echoed nothing than for one that echoed an all-blank record. Filling the absence in would
-     * turn the first turn of a conversation into a continuation of one, losing the first-entry gate the
-     * reset raises and with it the fetch the screen performs on entry.
+     * all-blank and treat the two identically, so handing them the empty carrier in place of nothing
+     * changes no outcome. The update screen does not: its reset condition is the analogue of {@code
+     * EIBCALEN IS EQUAL TO 0}, which asks whether a communication area arrived at all, and it answers
+     * differently for a turn that echoed nothing than for one that echoed an all-blank record. Filling the
+     * absence in would turn the first turn of a conversation into a continuation of one, losing the
+     * first-entry gate the reset raises and with it the fetch the screen performs on entry.
      *
      * @param context the record the client echoed, which may be {@code null}
      * @param authentication the established identity the echoed state is reconciled against

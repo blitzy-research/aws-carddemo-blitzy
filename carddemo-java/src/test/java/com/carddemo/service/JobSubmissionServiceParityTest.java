@@ -690,7 +690,7 @@ class JobSubmissionServiceParityTest {
         @Test
         @DisplayName("a space-padded date slot is refused, while a valid request receives a whitespace-free identity")
         void aSpacePaddedDateSlotIsRefusedAndTheMintedIdentityCarriesNoWhitespace() {
-            // Two properties are asserted together because they used to be one. A deduplication
+            // // Two properties are asserted together because one alone is not enough. A deduplication
             // identifier may hold no whitespace, so the minting condenses what it is given -
             // that condensation is retained and asserted on a well-formed submission below. But a
             // space-padded slot is no longer something that can arrive: the slot occupies ten columns of

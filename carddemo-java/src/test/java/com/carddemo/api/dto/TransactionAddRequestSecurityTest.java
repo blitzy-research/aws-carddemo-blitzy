@@ -64,10 +64,10 @@ import com.carddemo.domain.enums.KeyAction;
  * add screen is the one screen an operator retries, so a rejected submission is exactly the submission
  * most likely to be rendered.</p>
  *
- * <p>An earlier revision of the contract recorded that the generated rendering should stand, reasoning
- * that the legacy design applies no field-level protection to these values anyway. That reasoning is
- * rejected here and the rejection is what these tests hold in place: the absence of encryption at rest is
- * a separate documented gap, and it is not a licence to widen the gap by copying the same values into
+ * <p>THE GENERATED RENDERING MAY NOT BE LEFT TO STAND on the reasoning that the legacy design applies
+ * no field-level protection to these values anyway. That reasoning is rejected here and the rejection
+ * is what these tests hold in place: the absence of encryption at rest is a separate documented gap,
+ * and it is not a licence to widen the gap by copying the same values into
  * every diagnostic sink. The response this request is answered by already withholds the identical eight
  * components, so leaving the request open would also have made the two halves of one screen disagree.</p>
  *
@@ -83,8 +83,7 @@ import com.carddemo.domain.enums.KeyAction;
  * program's to run: the boundary measures width and nothing else, so a blank, a wrong shape and an
  * out-of-vocabulary code all transport intact rather than being refused here.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("TransactionAddRequest - the CT02 inbound contract")
 class TransactionAddRequestSecurityTest {

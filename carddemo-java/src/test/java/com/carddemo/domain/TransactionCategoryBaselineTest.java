@@ -64,10 +64,6 @@ import com.carddemo.domain.id.TransactionCategoryId;
  * <p><strong>Expectations are derived, never echoed.</strong> Every width, offset, key and description
  * below is a literal typed out in this source, taken from the copybook layout, the cluster definition and
  * the measured content of the seeded reference file. No line of legacy source is transcribed.
- *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("TransactionCategory - the entity form of the 60-byte transaction-category record")
 class TransactionCategoryBaselineTest {

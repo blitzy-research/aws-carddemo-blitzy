@@ -68,8 +68,8 @@ import java.util.Objects;
 public class CardCrossReference {
 
     /**
-     * Width of the card number in characters: 16, declared by the copybook as sixteen alphanumeric characters
-     * at offset 0.
+     * Width of the card number in characters: 16, declared by the copybook as sixteen alphanumeric
+     * characters at offset 0.
      *
      * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
      * than two copies of it.
@@ -86,8 +86,8 @@ public class CardCrossReference {
     static final int XREF_CUST_ID_WIDTH = 9;
 
     /**
-     * Width of the account identifier in characters: 11, declared by the copybook as eleven digits at offset
-     * 25.
+     * Width of the account identifier in characters: 11, declared by the copybook as eleven digits at
+     * offset 25.
      *
      * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
      * than two copies of it.
@@ -269,8 +269,8 @@ public class CardCrossReference {
     }
 
     /**
-     * Refuses any of the three identifiers that is not exactly the width its record layout declares, and the
-     * two numeric ones that carry a character outside the ASCII digits, immediately before the row is
+     * Refuses any of the three identifiers that is not exactly the width its record layout declares, and
+     * the two numeric ones that carry a character outside the ASCII digits, immediately before the row is
      * inserted or updated.
      *
      * <p><strong>Why a width rule belongs here at all.</strong> All three fields are slices of a

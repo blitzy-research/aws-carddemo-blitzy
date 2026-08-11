@@ -50,16 +50,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <h2>Why this class exists</h2>
  *
- * <p>The five delivered migrations ship from <strong>two sibling locations whose shared parent holds
- * no script at all</strong>. {@value #SCHEMA_LOCATION} carries {@code V1__create_schema.sql},
- * {@code V2__create_indexes.sql} and
- * {@code V2_2__add_protected_value_invariants.sql};
- * {@value #SEED_LOCATION} carries {@code V3__seed_reference_data.sql}
- * and {@code V4__seed_user_security.sql}; and {@value #SHARED_PARENT_LOCATION} carries neither, which
- * is what makes the arrangement work. The file names are unchanged, because each is a load-bearing
- * Flyway log token that a bring-up check reads out of the history table, and both directories remain
- * inside the module plan's own {@code db/migration/**.sql} delivery pattern, whose {@code **}
- * anticipates nesting.
+ * <p>The five delivered migrations ship from <strong>two sibling locations whose shared parent holds no
+ * script at all</strong>. {@value #SCHEMA_LOCATION} carries {@code V1__create_schema.sql},
+ * {@code V2__create_indexes.sql} and {@code V2_2__add_protected_value_invariants.sql};
+ * {@value #SEED_LOCATION} carries {@code V3__seed_reference_data.sql} and
+ * {@code V4__seed_user_security.sql}; and {@value #SHARED_PARENT_LOCATION} carries neither, which is what
+ * makes the arrangement work. The file names are unchanged, because each is a load-bearing Flyway log
+ * token that a bring-up check reads out of the history table, and both directories remain inside the
+ * module plan's own {@code db/migration/**.sql} delivery pattern, whose {@code **} anticipates nesting.
  *
  * <p><strong>The primary separation is the LOCATION LIST, and a location a profile never lists is not a
  * value an operator can widen.</strong> Production resolves {@value #SCHEMA_LOCATION} and nothing else,
@@ -70,17 +68,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * statement made, though: production additionally pins its ceiling at {@value #PRODUCTION_TARGET}, so a
  * seed-numbered script would be excluded by its number even if some other location ever presented one.
  *
- * <p><strong>Why the shared parent must stay empty, and why two earlier attempts at this split were
- * withdrawn.</strong> A Flyway location is scanned <em>recursively</em>, so a profile that resolves the
- * parent reaches every child and the boundary becomes notional. Both earlier attempts moved only the
- * seeds down and left {@code V1} and {@code V2} in the parent, so the parent had to stay resolvable and
- * the separation could not hold - and the conclusion drawn was that the location mechanism itself was
- * unusable. What the premise actually supports is that the <em>schema</em> scripts must move down too.
- * They have, the parent is empty, and {@link #resolveLocations(Collection, Collection)} refuses the
- * parent under every profile - not only because it would reach the seeds, but because Flyway records a
- * script name relative to its location, so resolving the parent would write
- * {@code schema/V1__create_schema.sql} into the history where the bring-up check expects
- * {@code V1__create_schema.sql}.
+ * <p><strong>Why the shared parent must stay empty.</strong> A Flyway location is scanned
+ * <em>recursively</em>, so a profile that resolves the parent reaches every child and the boundary becomes
+ * notional - which is why the schema scripts moved down as well as the seeds, and why
+ * {@link #resolveLocations(Collection, Collection)} refuses the parent under every profile. There is a
+ * second reason it must be refused: Flyway records a script name relative to its location, so resolving
+ * the parent would write {@code schema/V1__create_schema.sql} into the history where the bring-up check
+ * expects {@code V1__create_schema.sql}.
  *
  * <p>The two seeds are what the separation exists for. The sign-on seed inserts ten known identities,
  * five of them administrative, whose stored credentials are all digests of one well-known value; the
@@ -89,15 +83,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * credential incident and a privacy incident respectively.
  *
  * <p><strong>Production also carries a version ceiling, and the two mechanisms are deliberately kept
- * together.</strong> {@code spring.flyway.target} is pinned at {@value #PRODUCTION_TARGET}, which is the
- * highest version {@value #SCHEMA_LOCATION} delivers, and {@link #resolveTarget(Collection, String)}
- * refuses any other production value. The objection once raised against a pin - that a number freezes the
- * schema, so the day a schema script numbered above the pin shipped a production migration would stop
- * below it and still report success - is real, and it is answered by making the pin <em>checked</em> rather than by
- * removing it: {@code FlywayConfigTest} asserts {@value #PRODUCTION_TARGET} against the versions the
- * schema location actually carries, so a schema script added above the pin fails the build instead of
- * being silently skipped at run time. That is the property the previous arrangement lacked, and it is
- * what makes a ceiling safe to hold.
+ * together.</strong> {@code spring.flyway.target} is pinned at {@value #PRODUCTION_TARGET}, the highest
+ * version {@value #SCHEMA_LOCATION} delivers, and {@link #resolveTarget(Collection, String)} refuses any
+ * other production value. A pin on its own would freeze the schema - the day a schema script numbered
+ * above it shipped, a production migration would stop below it and still report success - so the pin is
+ * <em>checked</em> rather than merely written down: {@code FlywayConfigTest} asserts
+ * {@value #PRODUCTION_TARGET} against the versions the schema location actually carries, so a schema
+ * script added above the pin fails the build instead of being silently skipped at run time.
  *
  * <p><strong>Three independent controls hold the separation.</strong> The <em>location list</em> decides
  * what is resolved: {@link #resolveLocations(Collection, Collection)} pins production to
@@ -129,17 +121,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * seeding profiles rather than being published from here, so that this package declares no dependency on
  * the service package.
  *
- * <p><strong>One point of history, recorded so the arrangement is not undone a fourth time.</strong> The
- * split has now been introduced three times. Twice it was withdrawn because the parent stayed reachable,
- * and the withdrawal reasoning was correct about recursion and wrong about the remedy. The third time it
- * was withdrawn in favour of the version pin alone, on the ground that the delivered artefacts were flat
- * and the migration specifications forbade a child directory - which is true of those specifications and
- * cannot be reconciled with the plan's own structural decision that this class resolve the seeds
- * <em>from profile-scoped locations</em>. The named structural decision governs over a path listing, so
- * the split stands. What was wrong on the fourth pass was the opposite over-correction: the pin was
- * <em>forbidden</em> as well, which discarded a working second control because its failure mode had not
- * been closed. The failure mode is closed by asserting the pin against the delivered scripts, so both
- * controls are held and neither is asked to do the other's work.
+ * <p><strong>The nested split is a named structural decision and governs over a flat path listing.</strong>
+ * The plan requires this class to resolve the seeds <em>from profile-scoped locations</em>, so the two
+ * sibling directories stand even though the migration specifications elsewhere list flat paths. Both
+ * controls are held rather than one: the ceiling is safe because it is asserted against the delivered
+ * scripts, and neither control is asked to do the other's work.
  *
  * <h2>Gap one: the profile list is a list, and a list can hold both</h2>
  *
@@ -183,11 +169,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * re-applies that pin: a <em>higher</em> value, {@value #ALL_RESOLVED_VERSIONS_TARGET} among them, would
  * apply whatever a resolved location happened to carry above the delivered schema, and a <em>lower</em>
  * one stops before the indexes or the constraints are created and leaves an
- * under-migrated schema behind a migration that reported success. The pin cannot silently under-migrate a future release either, because
- * it is asserted against the versions {@value #SCHEMA_LOCATION} delivers rather than merely written down.
- * When local or test is active it <strong>lifts</strong> a ceiling that would stop short of version
- * {@value #FIRST_SEED_VERSION}, because a fixture-bearing profile that stopped at the schema would
- * migrate no fixtures. With neither active the bound value is returned unchanged.
+ * under-migrated schema behind a migration that reported success. The pin cannot silently under-migrate a
+ * future release either, because it is asserted against the versions {@value #SCHEMA_LOCATION} delivers
+ * rather than merely written down. When local or test is active it <strong>lifts</strong> a ceiling that
+ * would stop short of version {@value #FIRST_SEED_VERSION}, because a fixture-bearing profile that stopped
+ * at the schema would migrate no fixtures. With neither active the bound value is returned unchanged.
  *
  * <p>Both resolutions fire on the <em>merged, bound</em> configuration rather than on any one
  * document, so an inherited value, an operator override on the command line and a co-activated
@@ -305,14 +291,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * resolves, and by being numbered above the pin.
  *
  * <p>Provenance: this configuration has no single legacy antecedent, because the separation it
- * enforces is one the legacy estate had no equivalent of - there, a provisioning job stream that was
- * simply never submitted was the whole of the protection. The artefacts it stands over are the ten
- * provisioning job streams named above and the in-stream sign-on identities at
- * {@code app/jcl/DUSRSECJ.jcl} lines 35-44, read from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Those identities are cited by position and
- * by count alone: no job-stream text, no dataset-utility control statement and above all no
- * credential value carried by them appears anywhere in this file.
+ * enforces is one the legacy estate had no equivalent of - there, a provisioning job stream that
+ * was simply never submitted was the whole of the protection. Those identities are cited by
+ * position and by count alone: no job-stream text, no dataset-utility control statement and above
+ * all no credential value carried by them appears anywhere in this file.
  */
 @Configuration(proxyBeanMethods = false)
 public final class FlywayConfig {
@@ -403,15 +385,15 @@ public final class FlywayConfig {
      * So a pin of 2.2 declines a seed-numbered script wherever it came from, and a future seed numbered 5
      * or 6 is declined by number as well as by directory.
      *
-     * <p>An earlier revision numbered a schema script 5, above the seeds, on the reasoning that the seed
-     * versions were already applied and a dotted version below them would be out-of-order against any
-     * database already holding 3 and 4. That reasoning was measured and found wrong on three counts, each
-     * worse than the one it was avoiding. It broke this arithmetic, leaving the pin at 5 with the seeds
-     * beneath it. It broke {@link ProductionSeedRejectionCallback}, which reads seed contamination off the
-     * history as a successful row at or above version {@value #FIRST_SEED_VERSION} - a test a schema script
-     * numbered 5 satisfies, so a correctly migrated production database refused to start, reporting seed
-     * data it did not hold. And it broke the arrangement this module actually ships: a database migrated
-     * production-shaped and later resolving the seed location too would find 3 and 4 pending BELOW an
+     * <p>NUMBERING A SCHEMA SCRIPT ABOVE THE SEEDS IS PROHIBITED, and the reasoning that argues for it -
+     * the seed versions are already applied, so a dotted version below them would be out-of-order against
+     * any database already holding 3 and 4 - is wrong on three counts, each worse than the one it avoids.
+     * It breaks this arithmetic, leaving the pin above the seeds rather than beneath them. It breaks
+     * {@link ProductionSeedRejectionCallback}, which reads seed contamination off the history as a
+     * successful row at or above version {@value #FIRST_SEED_VERSION} - a test a schema script numbered 5
+     * satisfies, so a correctly migrated production database would refuse to start, reporting seed data it
+     * does not hold. And it breaks the arrangement this module ships: a database migrated production-shaped
+     * and later resolving the seed location too would find 3 and 4 pending BELOW an
      * applied 5, which the tool refuses as out-of-order. See {@code docs/decision-log.md} DL-343.
      *
      * <p>The seed separation is therefore carried by both controls again, and by two more besides:
@@ -421,20 +403,20 @@ public final class FlywayConfig {
      * {@link ProductionSeedRejectionCallback} refuses a production start-up against a database that
      * actually holds seeded content, which is checked against the data rather than against a filename.
      *
-     * <p><strong>Why a pin is held here at all, when the location list already separates the seeds.</strong>
-     * The two controls constrain different things and neither substitutes for the other. The location list
-     * says where scripts may come from and says nothing about versions; the pin says how far a resolved
-     * list may be applied and says nothing about directories. Held together, a seed script is excluded
-     * twice - by its directory and by its number - and a look-alike location that somehow presented a
-     * seed-numbered script would still not have it applied.
+     * <p><strong>Why a pin is held here at all, when the location list already separates the
+     * seeds.</strong> The two controls constrain different things and neither substitutes for the other.
+     * The location list says where scripts may come from and says nothing about versions; the pin says how
+     * far a resolved list may be applied and says nothing about directories. Held together, a seed script
+     * is excluded twice - by its directory and by its number - and a look-alike location that somehow
+     * presented a seed-numbered script would still not have it applied.
      *
      * <p><strong>Why holding a pin is safe here, when the objection to one was sound.</strong> A number
      * written down and never checked does freeze the schema: the day a further schema script shipped above
      * it, a production migration would stop below that script, apply nothing, and report success - which is
-     * exactly what would have happened to the invariants script had this constant stayed at 2. That failure mode is
-     * closed by checking the number rather than by deleting it - {@code FlywayConfigTest} asserts this
-     * constant against the versions {@value #SCHEMA_LOCATION} actually carries, so a schema script added
-     * above the pin fails the build at the point it is added. Raising the schema and raising this
+     * exactly what would have happened to the invariants script had this constant stayed at 2. That failure
+     * mode is closed by checking the number rather than by deleting it - {@code FlywayConfigTest} asserts
+     * this constant against the versions {@value #SCHEMA_LOCATION} actually carries, so a schema script
+     * added above the pin fails the build at the point it is added. Raising the schema and raising this
      * constant are therefore one commit, enforced, rather than two commits, hoped for.
      *
      * <p>Held as a constant so the value this class requires and the value the shared baseline and the
@@ -600,13 +582,13 @@ public final class FlywayConfig {
      * schema reached its highest delivered version, and a production start-up wants the same two facts for
      * the same reason. Nothing in it is profile-specific and nothing in it inspects data.
      *
-     * <p>It exists because that evidence used to be read out of the migration tool's own log text, and the
-     * category that carries the tool's opening announcement is now held above the level it speaks at: those
-     * three lines name the JDBC URL, the driver and the database type, so they publish the host, the port,
-     * the database name and the exact server and driver versions of the estate into the stream that leaves
-     * the process. The lines the validation depends on come from a different category and survive that
-     * raise, but depending on a third party's message text at all is a dependency a library upgrade can
-     * break in silence. {@link MigrationVersionRecordCallback} removes it. See
+     * <p>It exists so that evidence is not read out of the migration tool's own log text. The category that
+     * carries the tool's opening announcement is held above the level it speaks at: those three lines name
+     * the JDBC URL, the driver and the database type, so they would publish the host, the port, the
+     * database name and the exact server and driver versions of the estate into the stream that leaves the
+     * process. The lines a text-scraping validation would depend on come from a different category and
+     * survive that raise, but depending on a third party's message text at all is a dependency a library
+     * upgrade can break in silence. This callback removes it. See
      * {@code docs/decision-log.md} entry DL-311.
      *
      * @return the migration-lifecycle callback that records the versions this start-up applied

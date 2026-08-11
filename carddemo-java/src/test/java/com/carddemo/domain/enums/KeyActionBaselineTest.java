@@ -50,10 +50,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * out in this source; no expectation is produced by calling the type under test, and the two
  * collection expectations are built from independently typed literals rather than from the members.
  *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Cited as provenance only and never asserted
- * against a member.
+ * <p>Cited as provenance only and never asserted against a member.
  */
 @DisplayName("KeyAction - the 5-byte attention identifier of the screen work area")
 class KeyActionBaselineTest {

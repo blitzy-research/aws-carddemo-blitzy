@@ -87,8 +87,7 @@ import com.carddemo.support.SensitiveValues;
  * type, cross one canonical constructor; blanks are real data in a fixed-width estate, and each of the
  * four screens runs its own differently ordered emptiness cascade over exactly what the client sent.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("UserRequest - the CU00 to CU03 inbound contract")
 class UserRequestSecurityTest {

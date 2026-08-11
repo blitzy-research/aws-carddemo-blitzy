@@ -39,11 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit test for {@link DisclosureGroup}, the 50-byte disclosure-group interest-rate row, together
  * with its 16-byte three-part composite key {@link DisclosureGroupId}.
  *
- * <p><strong>Provenance.</strong> The behaviour pinned here was derived from the legacy CardDemo
- * mainframe estate at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). Those identifiers are recorded
- * here as documentation only. No test below asserts a release stamp on a source member, because the
- * stamp is not carried uniformly across the estate.
+ * <p>Those identifiers are recorded here as documentation only. No test below asserts a release stamp on a
+ * source member, because the stamp is not carried uniformly across the estate.
  *
  * <p><strong>What this suite is for.</strong> Two facts about this record make it the most
  * parity-critical row in the domain package, and both fail silently rather than loudly:

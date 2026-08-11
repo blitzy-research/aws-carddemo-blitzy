@@ -59,9 +59,9 @@ import org.junit.jupiter.api.Test;
  * discloses the deployment's filesystem layout to everyone who can read centralised logging or the
  * persisted step-failure record.
  *
- * <p>Review found both halves applied in some classes and absent in others, which is the failure mode a
- * policy that lives only in prose always has. Stating it as an executable rule is what makes it hold for
- * the next class as well as for the ones that were corrected.
+ * <p>Both halves applied in some classes and absent in others is the failure mode a policy that lives
+ * only in prose always has. Stating it as an executable rule is what makes it hold for the next class
+ * as well as for the ones already written.
  *
  * <h2>What the rules are, exactly</h2>
  *

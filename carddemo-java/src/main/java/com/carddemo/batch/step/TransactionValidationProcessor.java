@@ -54,8 +54,8 @@ import org.springframework.batch.item.ItemProcessor;
  * and expiration tests, the three persistence stages, the reject-code precedence and the timestamp
  * regeneration - lives in {@link TransactionPostingService}, which is the module's translation of the
  * whole legacy member, owns the durable boundary of each of its three stores and documents every parity
- * rule that governs it. No lookup, no limit test, no balance arithmetic, no persistence and no ordering rule is
- * restated here: a business rule that exists twice is a business rule that is enforced once and
+ * rule that governs it. No lookup, no limit test, no balance arithmetic, no persistence and no ordering
+ * rule is restated here: a business rule that exists twice is a business rule that is enforced once and
  * audited nowhere. The paragraph-level inventory for the member is in
  * {@code docs/traceability-matrix.md}.
  *
@@ -140,11 +140,6 @@ import org.springframework.batch.item.ItemProcessor;
  * run counters are not fields either: they are read from the step execution the framework already
  * maintains per execution, so a restart cannot inherit a previous run's totals. One instance is
  * therefore safely shared for every record of every execution.
- *
- * <p>Provenance: translated from the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy program, its copybooks and its job
- * stream are cited, never transcribed, and are never read at run time.
  *
  * @see TransactionPostingService
  * @see RejectRecordWriter

@@ -121,10 +121,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
  *
  * <p>Why the seam is legitimate, and why the byte-parity gate is not weakened to carry these two
  * arms, are recorded as DL-279 in {@code docs/decision-log.md}.
- *
- * <p>Provenance: {@code app/cbl/CBTRN02C.cbl}, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @SpringBootTest(classes = RejectReasonArmsIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

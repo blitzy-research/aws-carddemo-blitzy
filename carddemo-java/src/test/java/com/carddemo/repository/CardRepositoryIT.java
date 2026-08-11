@@ -171,19 +171,7 @@ import com.carddemo.support.TestDataFactory;
  * isolation and the migrated table carries a version counter. That is a deliberate strict improvement
  * over the baseline rather than a change in behaviour, and it is recorded as such.
  *
- * <p>Rules: {@code review_rules} reports that no user-specified rules were provided for this project,
- * confirmed by a complete read. No file enters scope by rule, and the absence is not treated as licence
- * to lower the standard - the module's enterprise standards apply instead, which is why this class
- * declares no server of its own, mocks no store, pins every fixture and leaves the shared server
- * exactly as it found it.
- *
- * <p>Provenance: behaviour is that of {@code app/cpy/CVACT02Y.cpy}, {@code app/jcl/CARDFILE.jcl},
- * {@code app/csd/CARDDEMO.CSD}, {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl},
- * {@code app/cbl/COCRDUPC.cbl}, {@code app/cbl/COACTUPC.cbl}, {@code app/cbl/COACTVWC.cbl} and
- * {@code app/cbl/CBACT02C.cbl}, with seeded volumes measured from {@code app/data/ASCII/carddata.txt};
- * all read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source statement is transcribed.
+ * <p>No legacy source statement is transcribed.
  *
  * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
  *
@@ -708,9 +696,9 @@ final class CardRepositoryIT extends AbstractPostgresIT {
                         .isEqualTo(deliveredCard);
 
                 // ★ THE ORDER IS THE PATH'S. A read of a NONUNIQUEKEY path yields duplicates in
-                // ascending base-key order, and the base key of this cluster is the card number. An
-                // earlier revision declared no ordering term at all, so the rows arrived in whatever
-                // order the plan produced - which also left a row bound with no referent, because "the
+                // // ascending base-key order, and the base key of this cluster is the card number. DECLARING
+                // // NO ORDERING TERM AT ALL leaves the rows arriving in whatever order the plan produces - which
+                // // also leaves a row bound with no referent, because "the
                 // first n" means nothing without an order. Asserted as an ORDERED list. DL-296.
                 final List<String> ownedKeys = owned.stream().map(Card::getCardNum).toList();
                 assertThat(ownedKeys)

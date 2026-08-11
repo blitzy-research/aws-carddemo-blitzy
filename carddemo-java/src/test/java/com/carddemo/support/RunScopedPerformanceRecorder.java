@@ -82,9 +82,6 @@ import java.util.concurrent.Callable;
  * content depend on the hardware of whoever last ran the suite. The figures are written to
  * {@code target/gate-evidence/} instead, in the shape {@code docs/gate-evidence.md} carries, to be copied
  * across with the machine and the date named beside them.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 public final class RunScopedPerformanceRecorder {
 

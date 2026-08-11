@@ -69,11 +69,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * three the advice declares. And the advice, handed the exception the provider actually threw, answers
  * {@code 409} with the verbatim legacy record-changed text and discloses nothing about the entity.
  *
- * <p>Provenance: the stale-record condition and its message are those of the account and card update
- * paths, {@code app/cbl/COACTUPC.cbl} and {@code app/cbl/COCRDUPC.cbl}, whose before-and-after image
- * comparison this entity's version attribute replaces; read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("A real @Version conflict: what the provider raises, and what the boundary answers")
 final class ProviderOptimisticLockConflictIT extends AbstractPostgresIT {

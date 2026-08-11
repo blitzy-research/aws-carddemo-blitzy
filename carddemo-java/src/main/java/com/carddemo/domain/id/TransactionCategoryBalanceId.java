@@ -27,11 +27,11 @@ import java.util.Objects;
  * the {@code @Id} markers and every column mapping live on the owning entity, which leaves this
  * type a plain serializable value object with no persistence-provider coupling.
  *
- * <p><strong>Legacy provenance.</strong> Derived from copybook {@code CVTRA01Y} of the AWS CardDemo mainframe estate, which describes
- * a 50-byte transaction-category-balance record whose leading key group occupies 17 bytes starting
- * at offset 0. That layout is corroborated twice over: the {@code TCATBALF} VSAM KSDS definition
- * declares {@code KEYS(17 0)} and {@code RECORDSIZE(50 50)} over an indexed cluster, and the file
- * description in batch program {@code CBACT04C} splits the same 50-byte image into a 17-byte key
+ * <p><strong>Legacy provenance.</strong> Derived from copybook {@code CVTRA01Y} of the AWS CardDemo
+ * mainframe estate, which describes a 50-byte transaction-category-balance record whose leading key group
+ * occupies 17 bytes starting at offset 0. That layout is corroborated twice over: the {@code TCATBALF} VSAM
+ * KSDS definition declares {@code KEYS(17 0)} and {@code RECORDSIZE(50 50)} over an indexed cluster, and
+ * the file description in batch program {@code CBACT04C} splits the same 50-byte image into a 17-byte key
  * group followed by a 33-byte data area.
  *
  * <p>Because the key sits at offset 0 it <em>is</em> the leading substring of the record image, so
@@ -48,24 +48,24 @@ import java.util.Objects;
  * the 11-byte category balance at offset 17 is a non-key attribute of the entity, and the 22-byte
  * trailing filler at offset 28 is not persisted at all.
  *
- * <p><strong>The {@code TRAN-CAT-KEY} name collision.</strong> Copybook {@code CVTRA01Y} and copybook {@code CVTRA04Y} both name their key group
- * {@code TRAN-CAT-KEY}, yet the two keys are entirely unrelated. This key is 17 bytes wide and
- * leads with the account identifier; the transaction-category key described by {@code CVTRA04Y} is
- * 6 bytes wide, is declared with {@code KEYS(6 0)}, carries no account identifier at all and uses
- * different field names. The 6-byte key is therefore <em>not</em> a prefix of this key, the two are
- * backed by different tables, and they are modelled as two deliberately unrelated Java types that
+ * <p><strong>The {@code TRAN-CAT-KEY} name collision.</strong> Copybook {@code CVTRA01Y} and copybook
+ * {@code CVTRA04Y} both name their key group {@code TRAN-CAT-KEY}, yet the two keys are entirely unrelated.
+ * This key is 17 bytes wide and leads with the account identifier; the transaction-category key described
+ * by {@code CVTRA04Y} is 6 bytes wide, is declared with {@code KEYS(6 0)}, carries no account identifier at
+ * all and uses different field names. The 6-byte key is therefore <em>not</em> a prefix of this key, the
+ * two are backed by different tables, and they are modelled as two deliberately unrelated Java types that
  * share no supertype beyond {@link Object}.
  *
  * <p>The shared legacy group name is a source-level coincidence and must never be taken as licence to
  * merge, reuse, subclass or cross-reference the two key definitions. Decision log entry D-37 records
  * the collision so the distinction remains auditable.
  *
- * <p><strong>Why every component is a {@code String}.</strong> Two of the three components are digit-only fields in the legacy layout, yet all three are
- * modelled as {@link String} and stored in bounded {@code VARCHAR} columns, because their external
- * text representation is contractual rather than incidental. Leading zeros and exact field widths
- * carry meaning: a category code of {@code 0005} must remain four characters and must never
- * collapse to {@code 5}, and an account identifier of {@code 00000000001} must remain eleven
- * characters. Modelling either component as a numeric type would silently discard that padding.
+ * <p><strong>Why every component is a {@code String}.</strong> Two of the three components are digit-only
+ * fields in the legacy layout, yet all three are modelled as {@link String} and stored in bounded {@code
+ * VARCHAR} columns, because their external text representation is contractual rather than incidental.
+ * Leading zeros and exact field widths carry meaning: a category code of {@code 0005} must remain four
+ * characters and must never collapse to {@code 5}, and an account identifier of {@code 00000000001} must
+ * remain eleven characters. Modelling either component as a numeric type would silently discard that padding.
  *
  * <p>For the same reason nothing in this class trims, pads, folds case or otherwise normalises a
  * component value &mdash; not the constructors, not the accessors, and above all not

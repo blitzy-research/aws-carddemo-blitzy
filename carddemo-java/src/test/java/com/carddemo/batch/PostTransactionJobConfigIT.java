@@ -228,13 +228,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *       position by position.</li>
  * </ul>
  *
- * <p>Provenance: the legacy posting job member, the posting program, the generation-group definition
- * and the record layouts, read as reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability matrix header only: it is not carried by every legacy member, so nothing here asserts
- * it against one. No legacy source text is transcribed in this file; the estate is cited by step
- * name, data-definition name, program name, width, offset, count and reject code alone.
+ * <p>No legacy source text is transcribed in this file; the estate is cited by step name, data-definition
+ * name, program name, width, offset, count and reject code alone.
  */
 @SpringBootTest(classes = PostTransactionJobConfigIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -1234,9 +1229,9 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
      * The four-digit zero-filled form of one reason code, taken from the transcription of the legacy
      * source rather than from the shipped constant that was passed in.
      *
-     * <p>This helper used to read {@code reason.getReasonCode()}, which made every comparison built on it
-     * a comparison of the implementation against itself: a code recorded wrongly in the enumeration
-     * produced a wrongly-agreeing expectation and a passing test over a file no consumer could read. It now
+     * <p>READING {@code reason.getReasonCode()} HERE would make every comparison built on it a comparison
+     * of the implementation against itself: a code recorded wrongly in the enumeration would produce a
+     * wrongly-agreeing expectation and a passing test over a file no consumer could read. It instead
      * names the constant and asks {@link LegacyRejectReasons} which four digits the legacy source moves at
      * the site that constant stands for, so a drift in the enumeration changes the produced field without
      * moving the expectation.

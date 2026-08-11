@@ -50,9 +50,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * positional, so their order is the row order they were marked in. And the page of rows must not be
  * re-ordered, because a backward page arrives in the order the legacy screen presented after filling its
  * rows downward from the last slot.
- *
- * <p>Provenance: {@code app/cbl/COUSR00C.cbl} through {@code COUSR03C.cbl} and their four mapsets, read as
- * read-only reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
  */
 @DisplayName("UserContractAdapter :: the one crossing between the user wire contract and the service-owned "
         + "pair")

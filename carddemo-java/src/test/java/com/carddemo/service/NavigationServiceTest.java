@@ -95,9 +95,7 @@ import com.carddemo.service.NavigationService.Routes;
  * proves the absence of a forwarding path from the delivered type's own shape rather than from a
  * stand-in, and from the state a caller echoes back being unchanged by every rule in turn.
  *
- * <p><strong>Provenance.</strong> Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Legacy behaviour is
- * described and cited by member and line; no legacy source statement is reproduced.
+ * <p>Legacy behaviour is described and cited by member and line; no legacy source statement is reproduced.
  */
 @DisplayName("NavigationService: every legacy transfer of control becomes a route constant returned "
         + "to the client, and never a server-side forward")
@@ -209,9 +207,9 @@ final class NavigationServiceTest {
      * Asserts that the service holds nothing it could hand control to, which is the only form in which
      * "no server-side forwarding" is a statement about this class rather than about a stand-in.
      *
-     * <p>An earlier revision made this claim with a hand-authored interface, mocked and then asserted to
-     * record no interaction. That assertion could not fail: the double was handed to nobody, so no
-     * implementation of this service &mdash; forwarding or not &mdash; could ever have interacted with
+     * <p>MAKING THIS CLAIM WITH A HAND-AUTHORED INTERFACE, mocked and then asserted to record no
+     * interaction, is an assertion that cannot fail: the double is handed to nobody, so no
+     * implementation of this service &mdash; forwarding or not &mdash; could ever interact with
      * it. What actually carries the claim is the service's own shape. A transfer of control needs
      * something to transfer to, and a screen message needs a catalogue to come from; both would arrive
      * as a constructor parameter or an instance field, because that is how this module supplies a
@@ -486,10 +484,10 @@ final class NavigationServiceTest {
             // IF NOT CDEMO-PGM-REENTER, as at [app/cbl/COBIL00C.cbl:L112]. Marking an empty state as a
             // first entry therefore changes nothing about it, and the stateless test must still fire.
             //
-            // An earlier revision of this rule carried the entry mode as a nullable value, which let an
-            // "unset" mode exist alongside first entry and re-entry. That third state has no legacy
-            // counterpart, and this assertion previously depended on it. ConversationState normalises a
-            // null entry mode to first entry in its compact constructor for exactly that reason.
+            // // CARRYING THE ENTRY MODE AS A NULLABLE VALUE would let an "unset" mode exist alongside first
+            // // entry and re-entry. That third state has no legacy counterpart, and an assertion depending on it
+            // // would depend on a state the estate does not have. ConversationState normalises a null entry mode
+            // // to first entry in its compact constructor for exactly that reason.
             assertThat(ConversationState.empty().withFirstEntry())
                     .as("marking an empty state as a first entry is the identity, because that is "
                             + "already what an empty state carries")

@@ -757,8 +757,8 @@ class UserManagementServiceTest {
      * <p>The repository is a <strong>closed</strong> interface: it extends the marker
      * {@code Repository} rather than {@code JpaRepository}, so the nine operations below are the
      * whole surface and there is no inherited operation to refuse. That is a stronger arrangement
-     * than the refusal list this fake used to carry, because an unbounded {@code findAll()} or a bulk
-     * delete is now a compilation failure at the call site rather than a test failure at run time.
+     * than a refusal list on this fake, because an unbounded {@code findAll()} or a bulk
+     * delete is a compilation failure at the call site rather than a test failure at run time.
      *
      * <p>Reads answer from a sorted map, so iteration order already is the ascending key order the
      * browse positions against, and each read applies exactly the bound and the limit the derived
@@ -1119,9 +1119,9 @@ class UserManagementServiceTest {
          * every item empty produces exactly one text, one cursor position and one decorated field - the
          * given name, because that clause is first.
          *
-         * <p>An earlier revision of this test asserted five entries, which is a screen the legacy cannot
-         * produce: it would decorate four fields the operator was never told about and would have to
-         * choose which of five texts to show on the single message line.</p>
+         * <p>ASSERTING FIVE ENTRIES describes a screen the legacy cannot produce: it would
+         * decorate four fields the operator was never told about and would have to choose which
+         * of five texts to show on the single message line.</p>
          */
         @Test
         @DisplayName("the first empty item is the only one reported, and it owns the summary and the "
@@ -1764,7 +1764,7 @@ class UserManagementServiceTest {
     // ==============================================================================================
     // One unit of work per maintenance step
     //
-    // Both maintenance transactions issue EXEC CICS READ ... UPDATE and then write in the SAME task:
+    // Both maintenance transactions read for update and then write in the SAME task:
     // COUSR02C L322-L331 before its rewrite at L360, and COUSR03C L269-L278 before its delete at L307 -
     // a delete that names no record identifier at all, so the only record it can remove is the one that
     // read is holding. Reading in one unit and writing in a later one lets another administrator change

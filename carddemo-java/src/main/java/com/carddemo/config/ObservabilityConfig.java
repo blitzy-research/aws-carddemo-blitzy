@@ -120,10 +120,10 @@ import org.springframework.context.annotation.Configuration;
  * <p><strong>What "owning" the registry and the trace export means here, since a sibling class defers to
  * this one for both.</strong> It means this is the single place the registry is customised and the export
  * posture is recorded &mdash; not that either bean is declared here. Declaring them is precisely what would
- * break them: a second registry would shadow the exposition endpoint, and an exporter declared by hand would
- * take the export decision away from the condition that reads the property a profile sets. Ownership is
- * therefore exercised by composing with the auto-configuration and by writing down, once and in one place,
- * what may not be changed.
+ * break them: a second registry would shadow the exposition endpoint, and an exporter declared by hand
+ * would take the export decision away from the condition that reads the property a profile sets. Ownership
+ * is therefore exercised by composing with the auto-configuration and by writing down, once and in one
+ * place, what may not be changed.
  *
  * <h2>An absent trace collector must not fail anything</h2>
  *
@@ -160,21 +160,19 @@ import org.springframework.context.annotation.Configuration;
  * <p><strong>No batch-step instrumentation from here.</strong> Step timing belongs to the tier that runs
  * the steps: {@code com.carddemo.batch.step} owns the shared step template and each processor and writer
  * times its own work against the same registry, while the job and step observations come from the
- * auto-configured observation registry. All this tier owes them is the registry, which is already a bean, so
- * no additional bean is required. Reaching into the batch packages from a configuration class would also
+ * auto-configured observation registry. All this tier owes them is the registry, which is already a bean,
+ * so no additional bean is required. Reaching into the batch packages from a configuration class would also
  * invert the layer direction: configuration wires <em>into</em> the other layers and is never depended upon
  * by them.
  *
- * <p><strong>No filter writing correlation identifiers into the diagnostic context.</strong> An earlier
- * design described exactly that, and it is superseded on three independent grounds. The delivered encoder
- * exports the diagnostic context through an allow list naming the two tracing identifiers and nothing else,
- * so a third key would be dropped silently rather than published. A delivered test asserts that no class
- * under the production tree writes to the diagnostic context at all, which is what makes the allow list a
- * guarantee rather than a hope. And the identifiers do not need to be written by application code in the
- * first place: the tracing bridge places them there for the active span, which is the mechanism that keeps
- * working when export is switched off. Application code writing to the diagnostic context is therefore not
- * merely unnecessary here, it is prohibited.
- *
+ * <p><strong>No filter writing correlation identifiers into the diagnostic context</strong>, and
+ * application code may not write to it either, on three independent grounds. The delivered encoder exports
+ * the diagnostic context through an allow list naming the two tracing identifiers and nothing else, so a
+ * third key would be dropped silently rather than published. A delivered test asserts that no class under
+ * the production tree writes to the diagnostic context at all, which is what makes the allow list a
+ * guarantee rather than a hope. And the identifiers need no application code to place them: the tracing
+ * bridge does it for the active span, which is the mechanism that keeps working when export is switched
+ * off.
  * <p><strong>Exactly one meter filter, and it exists to stop a meter being dropped.</strong> Nothing here
  * denies or re-buckets a meter: a filter that dropped a series would empty a dashboard panel and starve
  * the baseline of the very measurements it is being taken to establish, and one that re-bucketed a series
@@ -192,10 +190,6 @@ import org.springframework.context.annotation.Configuration;
  * <p>Final, with one field: a string read from configuration when the context is built and never
  * reassigned. There is no mutable static state, nothing is cached, and the customizer bean holds no
  * per-request or per-job state, so one instance serves every registry without synchronisation.
- *
- * <p>Provenance: legacy estate checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Traceability to the estate is by
- * citation only; no legacy source text is reproduced here.
  *
  * @since 1.0.0
  */
@@ -314,8 +308,8 @@ public final class ObservabilityConfig {
      * <p><strong>Why the observation-derived meter is the one renamed.</strong> The dashboard provisioned
      * with this module reads {@code spring_batch_job_active_seconds} and
      * {@code spring_batch_job_active_name}, which are the framework meter's. Renaming that one would
-     * break the panel; renaming the newcomer costs nothing and recovers a dimension that was previously
-     * discarded. The rename is keyed on the presence of the observation's own tag, so the framework's
+     * break the panel; renaming the newcomer costs nothing and recovers a dimension the framework meter
+     * discards. The rename is keyed on the presence of the observation's own tag, so the framework's
      * meter is never touched however many times a job runs.
      *
      * <p>Only the identifier is mapped. No meter is denied, no distribution statistic is configured and
@@ -342,8 +336,8 @@ public final class ObservabilityConfig {
      * Tags every meter in every registry with the name of the service that produced it.
      *
      * <p>A customizer rather than a registry: the auto-configuration consults this bean when it builds the
-     * registry, so the exposition, the endpoint and the auto-configured meter bindings all survive. Declaring
-     * a registry here instead would replace them.</p>
+     * registry, so the exposition, the endpoint and the auto-configured meter bindings all survive.
+     * Declaring a registry here instead would replace them.</p>
      *
      * <p><strong>It is deliberately idempotent with configuration.</strong> {@code application.yml} pins a
      * common tag under the same key, bound to the same property, so on a running deployment this customizer

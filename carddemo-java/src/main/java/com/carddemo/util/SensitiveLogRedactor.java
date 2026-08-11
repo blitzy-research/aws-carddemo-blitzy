@@ -48,11 +48,6 @@ import java.util.HexFormat;
  * {@value #REDACTED} marker alone. The hexadecimal token contains only lower-case ASCII digits and
  * letters, so a caller-controlled value cannot inject whitespace, delimiters or control bytes into a
  * structured log record.
- *
- * <p>This class has no legacy antecedent. It is the security boundary that replaces legacy console
- * displays which wrote raw account, card, customer, transaction and user values. Legacy estate read
- * at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; no legacy source text is reproduced here.
  */
 public final class SensitiveLogRedactor {
 

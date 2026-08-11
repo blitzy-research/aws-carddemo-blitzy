@@ -55,12 +55,6 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <h2>Provenance</h2>
  *
- * <p>Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The stamp is a provenance anchor for the
- * migration as a whole and is carried by a measured subset of the estate rather than by every
- * member, so it identifies the delivery this translation was taken from and is never a per-member
- * assertion.
- *
  * <p>The primary authority is {@code app/cbl/CBTRN03C.cbl}, <strong>649 lines</strong>. Its
  * {@code PROCEDURE DIVISION} holds <strong>26 named paragraph labels</strong>, and
  * <strong>26</strong> is this member's contribution to the traceability matrix: the action plan records
@@ -72,17 +66,6 @@ import com.carddemo.util.ZonedDecimalCodec;
  * owes none: it is reproduced here as a <strong>Java driver helper</strong>, the private procedure-division
  * driver the two public entry points delegate to, and it is called out that way so a reader does not
  * mistake it for a twenty-seventh mapped paragraph. It is fully translated and fully covered.
- *
- * <p>Key line sites in the authority, cited so a reviewer can find each behaviour at its origin:
- * the 133-character report record at <strong>85</strong>; the eighty-character date-parameter
- * record at <strong>88</strong>; the twenty-one-byte date-parameter layout at
- * <strong>122-125</strong>; the page size of 20 at <strong>131</strong>; the three accumulators at
- * <strong>135-137</strong>; the inclusive date filter at <strong>173-174</strong>; the
- * {@code NEXT SENTENCE} trap at <strong>173-178</strong> whose enclosing loop terminator is at
- * <strong>206</strong>; the card-number break test at <strong>282</strong>; the detail
- * accumulation at <strong>287-288</strong>; the grand-total feed at <strong>297</strong>; the
- * four-record header block at <strong>324-341</strong>; the single writer at
- * <strong>343-359</strong>; and the abend call at <strong>630</strong>.
  *
  * <p>Record authorities, with the byte width each contributes: {@code app/cpy/CVTRA05Y.cpy}, the
  * transaction record, <strong>350 bytes</strong>; {@code app/cpy/CVTRA03Y.cpy}, the transaction
@@ -554,9 +537,9 @@ public class TransactionReportService {
      *       the page total is what feeds the grand total - in the grand total as well.</li>
      * </ol>
      *
-     * <p>The duplicate accumulation is preserved because byte parity with the legacy report is the contract,
-     * and it is raised as a decision-log entry so that a reviewer can see it was found rather than
-     * missed. When no record was read at all there is no stale record to re-add: the legacy would
+     * <p>The duplicate accumulation is preserved because byte parity with the legacy report is the
+     * contract, and it is raised as a decision-log entry so that a reviewer can see it was found rather
+     * than missed. When no record was read at all there is no stale record to re-add: the legacy would
      * add the contents of a working-storage field that has no value clause, which is not a defined
      * value, so the target adds nothing. That single divergence is forced by the absence of
      * undefined behaviour in Java and is recorded with the anomaly.
@@ -1160,9 +1143,9 @@ public class TransactionReportService {
      * cards the run will ask about. One {@code findAllById} over that set replaces one keyed read per
      * distinct card, which is the shape a report over a large window degenerated into.
      *
-     * <p>The lookahead reads the run's own frozen sequence and consumes nothing: the records it inspects are
-     * held in the run's bounded buffer and are served from it when the driving loop reaches them. The buffer
-     * is the only lookahead in the design; nothing re-reads the generation and nothing seeks backwards.
+     * <p>The lookahead reads the run's own frozen sequence and consumes nothing: the records it inspects
+     * are held in the run's bounded buffer and are served from it when the driving loop reaches them. The
+     * buffer is the only lookahead in the design; nothing re-reads the generation and nothing seeks backwards.
      *
      * <p><strong>Absence is not memoized and abends are not moved.</strong> Only rows the cluster actually
      * holds are recorded, so a card the cluster does not hold still falls through to the keyed read on the
@@ -1699,9 +1682,9 @@ public class TransactionReportService {
         /**
          * Records read ahead of the one in hand, at most {@value #CROSS_REFERENCE_LOOKAHEAD} of them.
          *
-         * <p>The buffer is the run's read position, not a cache: a record enters it when it is read from the
-         * frozen source and leaves it when the driving loop is given it. Its only additional purpose is to
-         * let a reference read resolve the cards the run is about to need in one round trip.
+         * <p>The buffer is the run's read position, not a cache: a record enters it when it is read from
+         * the frozen source and leaves it when the driving loop is given it. Its only additional purpose is
+         * to let a reference read resolve the cards the run is about to need in one round trip.
          */
         private final Deque<Transaction> lookahead = new ArrayDeque<>();
 
@@ -1866,8 +1849,8 @@ public class TransactionReportService {
          * empty.
          *
          * <p>The buffer is what makes a batched reference read possible without a second pass over the
-         * generation: the records it holds are the ones the driving loop is about to be given, so their card
-         * numbers are the cards the next reference reads will ask for. It holds at most
+         * generation: the records it holds are the ones the driving loop is about to be given, so their
+         * card numbers are the cards the next reference reads will ask for. It holds at most
          * {@value #CROSS_REFERENCE_LOOKAHEAD} records, so the working set is bounded whatever the window
          * admits, and the sequence it serves is byte for byte the sequence the source produced.
          *

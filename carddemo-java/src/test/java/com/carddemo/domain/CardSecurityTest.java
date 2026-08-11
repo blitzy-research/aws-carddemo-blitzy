@@ -71,8 +71,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>No number below belongs to a real card: the primary account numbers are documentation test values
  * that no issuer routes, and the verification codes are invented.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("Card - the 150-byte CVACT02Y card record")
 class CardSecurityTest {

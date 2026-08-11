@@ -62,10 +62,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The no-argument constructor is therefore exercised here from the same package it is
  * declared in, and the resulting all-null key is asserted to behave coherently rather
  * than to throw.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("DisclosureGroupId: the sixteen-byte composite key of the disclosure-group record")
 class DisclosureGroupIdBoundaryTest {

@@ -52,10 +52,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * connection, reads no file and performs no introspection. Every expected value is a literal typed
  * out in this source; no expectation is produced by calling the type under test.
  *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Cited as provenance only and never asserted
- * against a member.
+ * <p>Cited as provenance only and never asserted against a member.
  */
 @DisplayName("RejectReason - the five reject codes of the 430-byte reject record trailer")
 class RejectReasonBaselineTest {

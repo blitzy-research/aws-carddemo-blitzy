@@ -478,9 +478,9 @@ public final class GlobalExceptionHandler {
      * that performed the operation logged it before raising the failure, and this handler adds only
      * the boundary record.
      *
-     * <p><strong>The failure object itself is not handed to the logger.</strong> An earlier revision
-     * passed it, on the reasoning that the context already composed by the carrier should be preserved
-     * rather than re-derived. It is preserved - the carrier already logged it, at the site that holds
+     * <p><strong>The failure object itself is not handed to the logger.</strong> Passing it - on the
+     * reasoning that the context already composed by the carrier should be preserved rather than
+     * re-derived - is not available. It is preserved: the carrier already logged it, at the site that holds
      * the raw status - and passing the object here would add nothing to that record while publishing
      * the one part of it this module did not author: the message of the failure and of every cause
      * beneath it. Beneath a file-operation failure is a data-access failure and beneath that a driver

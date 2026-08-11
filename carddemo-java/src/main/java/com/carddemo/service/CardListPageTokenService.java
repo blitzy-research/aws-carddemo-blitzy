@@ -72,10 +72,6 @@ import org.springframework.stereotype.Service;
  *
  * <p>Recorded as decision {@code DL-325} in {@code docs/decision-log.md}.
  *
- * <p>Provenance: {@code app/cbl/COCRDLIC.cbl} lines 250 to 260, 520 to 569 and 604 to 619, read as
- * read-only reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source text is transcribed.
- *
  * @since 1.0.0
  */
 @Service

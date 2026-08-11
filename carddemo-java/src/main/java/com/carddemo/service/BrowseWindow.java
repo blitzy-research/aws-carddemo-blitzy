@@ -54,11 +54,6 @@ import java.util.Objects;
  * <p>Deeply immutable: every component is a scalar or a {@code String}, so an instance is safe for
  * unsynchronised concurrent use.
  *
- * <p>Provenance: {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COUSR00C.cbl} and
- * {@code app/cbl/COTRN00C.cbl}, read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No program text is transcribed.
- *
  * @param pageSize the number of screen rows the assembled page carries
  * @param previousCursorKey the key of the first row, from which a backward browse restarts, or
  *        {@code null} when no page precedes this one

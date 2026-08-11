@@ -188,13 +188,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * job decodes it with, a codec defect would produce a matching input and a matching expectation and the
  * comparison would pass while the system was wrong.
  *
- * <p>Provenance: the interest job member, the interest program, the balance, disclosure, transaction,
- * account and cross-reference record layouts, the delivered sample data and the generation-group
- * definition, at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability-matrix header only - it is not carried by every legacy member, so nothing here asserts it
- * against one. No legacy source line is transcribed: the estate is cited by step name, definition name,
- * program name, record width, offset, count, status code and contract literal only.
+ * <p>No legacy source line is transcribed: the estate is cited by step name, definition name, program name,
+ * record width, offset, count, status code and contract literal only.
  */
 @SpringBootTest(classes = InterestCalculationJobConfigIT.PipelineContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

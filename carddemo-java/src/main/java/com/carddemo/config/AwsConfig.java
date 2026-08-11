@@ -515,9 +515,9 @@ public class AwsConfig {
      * <p>The diagnostic below therefore states only what this class controls. Closing the SDK's own
      * chain is a deployment-posture question rather than a builder question, and it is enforced where
      * postures are enforced: {@link ProductionConfigurationValidator} refuses to start the production
-     * profile when any arm of that chain supplies a redirection. An earlier revision of this method
-     * logged that the client was "resolving the endpoint of region ..." with no such enforcement behind
-     * it, which asserted a posture the process was not holding.
+     * profile when any arm of that chain supplies a redirection. A diagnostic that logged the client as
+     * "resolving the endpoint of region ..." with no such enforcement behind it would assert a posture the
+     * process was not holding.
      *
      * <h2>Why the budgets and the strategy are applied here too</h2>
      *

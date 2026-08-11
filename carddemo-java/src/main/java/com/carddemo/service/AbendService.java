@@ -307,12 +307,12 @@ public final class AbendService {
      * Renders one field of the abend record so that a value this module did not author cannot change the
      * record's shape.
      *
-     * <h2>Why this is needed here and was not needed before</h2>
+     * <h2>Why the bound and the shape check are needed on this record</h2>
      *
-     * <p>Every value that reached this record used to be a literal or a two-character status from a closed
-     * set. That stopped being true when the navigation abend was routed through this record, because the
-     * culprit it names is a caller-supplied program nomination bounded to the legacy field width - the one
-     * value on the abend surface whose content a caller chooses.
+     * <p>Every other value that reaches this record is a literal or a two-character status from a closed
+     * set. The navigation abend is the exception, because the culprit it names is a caller-supplied program
+     * nomination bounded to the legacy field width - the one value on the abend surface whose content a
+     * caller chooses.
      *
      * <p>Two shapes are refused, and both are attacks on the reader rather than on this process. A value
      * containing a character that is not printable US-ASCII can end the record early and present its

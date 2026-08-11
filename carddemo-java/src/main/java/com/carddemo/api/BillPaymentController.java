@@ -47,12 +47,11 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><strong>What this class does.</strong> It receives one request, hands the four transmitted values
  * to {@link BillPaymentService}, records how long the turn took, and projects the returned value onto
- * the published response contract. That is the whole of it. There is no rule of its own here: no
- * emptiness test, no confirmation interpretation, no balance comparison, no account or cross-reference
- * lookup, no identifier minting, no timestamp construction, no arithmetic, no persistence and no
- * message text. Every one of those lives in the service, which is what lets the entire transaction be
- * exercised without a servlet and what keeps this class from becoming the place where a second,
- * divergent copy of the payment rules accumulates.
+ * the published response contract. Every rule - emptiness tests, confirmation interpretation, balance
+ * comparison, account and cross-reference lookup, identifier minting, timestamp construction,
+ * arithmetic, persistence and message text - lives in the service, which is what lets the entire
+ * transaction be exercised without a servlet and keeps this class from becoming the place where a
+ * second, divergent copy of the payment rules accumulates.
  *
  * <p><strong>Why the projection is here rather than in an adapter.</strong> Several sibling screens in
  * this package project through a dedicated adapter component, so the absence of one here invites the
@@ -88,19 +87,15 @@ import org.springframework.web.bind.annotation.RestController;
  * the client drives the conversation and each endpoint stays independently callable and independently
  * testable.
  *
- * <p><strong>Statelessness, and what that costs the caller.</strong> Nothing is retained between
- * requests: no session, no conversation store, no cached account, no partially assembled payment and
- * no server-side notion of which screen the operator is on. Everything the legacy carried in its
- * communication area arrives in the request and leaves in the response. Two consequences follow and
- * both are legacy behaviour rather than concessions. The confirmation character is not remembered, so
- * an affirmative answer must arrive on the very turn that settles - the service resets its own
- * confirmation flag at the head of each turn, exactly as the program does. And a caller that submits
- * the same request twice gets whatever the second submission is worth against the state the first one
- * left, which is the definition of idempotence the service's contract provides: the first affirmative
- * turn drives the balance to zero, so a replayed affirmative turn finds nothing to settle and is
- * refused by the non-positive-balance rule rather than settling twice. This class adds no
- * idempotency key, no request fingerprint, no replay cache and no retry, because inventing any of them
- * would change the observable contract.
+ * <p><strong>Statelessness, and what that costs the caller.</strong> Everything the legacy carried in
+ * its communication area arrives in the request and leaves in the response. Two consequences are legacy
+ * behaviour rather than concessions. The confirmation character is not remembered, so an affirmative
+ * answer must arrive on the very turn that settles - the service resets its own confirmation flag at the
+ * head of each turn, exactly as the program does. And a replayed affirmative turn is measured against the
+ * state the first one left: the first drives the balance to zero, so the replay finds nothing to settle
+ * and is refused by the non-positive-balance rule rather than settling twice. No idempotency key, request
+ * fingerprint, replay cache or retry is introduced, because any of them would change the observable
+ * contract.
  *
  * <p><strong>Authorization.</strong> The route is an online-data operator surface. Both user types the
  * estate declares retain access, because the sign-on program sends them into one of the two operator
@@ -122,13 +117,11 @@ import org.springframework.web.bind.annotation.RestController;
  * be interpolated safely, but it is not interpolated at all - a diagnostic that never receives a value
  * cannot disclose one however the value's owner is later changed.
  *
- * <p>Provenance: {@code app/cbl/COBIL00C.cbl}, its symbolic map {@code app/cpy-bms/COBIL00.CPY}, its
- * mapset {@code app/bms/COBIL00.bms} and the resource definition {@code app/csd/CARDDEMO.CSD}, whose
- * transaction definition binds {@code CB00} to the bill-payment program. All four are read-only
- * reference at checkout commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. They are cited by member name and line
- * number only; no COBOL statement, screen definition, picture clause or record offset is reproduced
- * here, and nothing under {@code app/} is read at run time.
+ * <p>Provenance: {@code app/cbl/COBIL00C.cbl}, its symbolic map {@code app/cpy-bms/COBIL00.CPY},
+ * its mapset {@code app/bms/COBIL00.bms} and the resource definition {@code app/csd/CARDDEMO.CSD},
+ * whose transaction definition binds {@code CB00} to the bill-payment program. They are cited by
+ * member name and line number only; no COBOL statement, screen definition, picture clause or record
+ * offset is reproduced here, and nothing under {@code app/} is read at run time.
  *
  * @since 1.0.0
  */
@@ -354,8 +347,8 @@ public class BillPaymentController {
      * named seed values a raising turn leaves in place, so the label set is bounded at five reachable
      * series and no request value can widen it.
      *
-     * <p>Every turn is recorded, including one that raised. The call sits in the caller's {@code
-     * finally} arm, so a conflict propagating out of the boundary still stops the sample, and the three
+     * <p>Every turn is recorded, including one that raised. The call sits in the caller's {@code finally}
+     * arm, so a conflict propagating out of the boundary still stops the sample, and the three
      * values seeded before the attempt - the failed outcome, the unresolved confirmation and a negative
      * settlement - are what it carries. That is the point of seeding them: the alternative is a timer
      * that silently omits precisely the turns an operator most wants to see.

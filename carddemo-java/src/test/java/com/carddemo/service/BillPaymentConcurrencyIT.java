@@ -117,10 +117,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * {@link #awaitAContenderWaitingOn}, and only then asserts non-entry. The observation is of a state the
  * contender is in rather than of an interval the test hoped was long enough.
  *
- * <p>Provenance: the rules are those of {@code app/cbl/COBIL00C.cbl} lines 154, 196 to 235, 343 and 377,
- * and the file attributes are those of {@code app/csd/CARDDEMO.CSD}, read as read-only reference at commit
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source line is transcribed.
+ * <p>No COBOL source line is transcribed.
  */
 @SpringBootTest(classes = BillPaymentConcurrencyIT.ConcurrencyContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

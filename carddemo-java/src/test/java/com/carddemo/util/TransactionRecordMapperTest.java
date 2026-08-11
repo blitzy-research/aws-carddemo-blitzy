@@ -162,14 +162,12 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *       layout's offset witness.</li>
  * </ol>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Layout authority is copybook
- * {@code app/cpy/CVTRA05Y.cpy}; the record width and primary key come from {@code app/jcl/TRANFILE.jcl};
- * the alternate-index key from {@code app/jcl/TRANIDX.jcl}; the two sort specifications from
- * {@code app/proc/TRANREPT.prc} and {@code app/jcl/CREASTMT.JCL}. Provenance is a header string only and is
- * never asserted on a member. No legacy source line is transcribed anywhere in this file - only widths,
- * offsets, counts, field names, cluster attributes, sort symbol names and contract literals, which are
- * metadata rather than source.
+ * <p>Layout authority is copybook {@code app/cpy/CVTRA05Y.cpy} ; the record width and primary key come from
+ * {@code app/jcl/TRANFILE.jcl} ; the alternate-index key from {@code app/jcl/TRANIDX.jcl} ; the two sort
+ * specifications from {@code app/proc/TRANREPT.prc} and {@code app/jcl/CREASTMT.JCL} . Provenance is a
+ * header string only and is never asserted on a member. No legacy source line is transcribed anywhere in
+ * this file - only widths, offsets, counts, field names, cluster attributes, sort symbol names and contract
+ * literals, which are metadata rather than source.
  *
  * @see TransactionRecordMapper
  * @see Transaction

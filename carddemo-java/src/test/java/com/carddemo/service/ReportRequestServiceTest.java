@@ -117,10 +117,8 @@ import ch.qos.logback.core.read.ListAppender;
  *       case and the one that carries a space before its three trailing dots.</li>
  * </ul>
  *
- * <p>Provenance: legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source line is
- * transcribed here; the card images, the widths, the offsets and the message texts are the external
- * contract this suite exists to pin, and they are declared as test constants.
+ * <p>No legacy source line is transcribed here; the card images, the widths, the offsets and the message
+ * texts are the external contract this suite exists to pin, and they are declared as test constants.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ReportRequestService - the CR00 report-request turn")

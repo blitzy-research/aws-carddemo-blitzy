@@ -78,16 +78,6 @@ import java.util.Objects;
  * method name and a line, all fixed at compile time and identical for every request, so no value of any
  * kind can travel through one. That is why a location can be published while a rendered stack trace -
  * which carries every message in the chain - still may not be handed to the logger.
- *
- * <h2>Provenance</h2>
- *
- * <p>This class has no legacy antecedent. The migrated estate's only diagnostic channel was the
- * console display statement, and a display statement wrote a literal and a named field rather than a
- * failure object, so there was no throwable to render and no message to withhold. What it preserves is
- * the <em>property</em> that channel had: a legacy diagnostic named the outcome and the status code and
- * never echoed the data that produced them. Legacy estate read at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; no legacy source text is reproduced here.
  */
 public final class FailureDiagnostics {
 

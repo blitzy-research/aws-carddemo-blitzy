@@ -32,7 +32,6 @@ import java.util.Objects;
  *
  * <h2>Verified layout - 60 bytes, of which 56 are mapped</h2>
  *
- *
  * <p><strong>Width arithmetic.</strong> The key is 2 + 4 = 6; the 50-byte description then brings
  * the mapped data to 6 + 50 = 56; the 4 filler bytes bring the stored record to 56 + 4 = 60. The
  * cluster definition corroborates both figures independently: the base cluster is defined
@@ -50,7 +49,6 @@ import java.util.Objects;
  * against 17 bytes for the category-balance group, which leads with an 11-byte account identifier
  * before its own type and category components [app/cpy/CVTRA01Y.cpy].
  *
- *
  * <p><strong>The 6-byte key is NOT a prefix of the 17-byte key</strong> - the 17-byte key leads with
  * an 11-byte account identifier that this key does not have at all [app/cpy/CVTRA01Y.cpy]. The two
  * type-and-category pairs sit at <strong>completely different offsets</strong>: here at 0 and 2,
@@ -65,8 +63,8 @@ import java.util.Objects;
  * <p>The transaction-<em>type</em> record [app/cpy/CVTRA03Y.cpy] is also exactly 60 bytes, but its
  * geometry differs:
  *
- * <pre>{@code
- * layout           composition     key                              description at  filler
+ * <pre>{@code layout
+ *           composition     key                              description at  filler
  * CVTRA04Y (here)  2 + 4 + 50 + 4  composite TRAN-CAT-KEY, 6 bytes  offset 6        4 bytes at 56
  * CVTRA03Y (type)  2 + 50 + 8      bare TRAN-TYPE, 2 bytes          offset 2        8 bytes at 52
  * }</pre>
@@ -135,27 +133,19 @@ import java.util.Objects;
  *
  * <h2>What this mapper deliberately does not do</h2>
  *
- * <ul>
- *   <li><strong>No enumeration.</strong> Neither code becomes a Java {@code enum} and no lookup,
- *       whitelist or membership check against the 18 seeded values exists. They are reference
- *       <em>data</em>, loaded by a seed migration and extensible by a later one; compiling them into
- *       a closed vocabulary would reject a row the legacy system accepts. Decision D-24 draws the
- *       same line for the codes that genuinely are enumerated.</li>
- *   <li><strong>No validation.</strong> Beyond the record width there is no check of any kind - not
- *       of digits, not of case, not of padding, and in particular not of the type code against the
- *       transaction-type table. No migration in any version declares a foreign key into or out of
- *       this table, so no referential assumption may be baked in here (decision D-38).</li>
- *   <li><strong>No normalisation.</strong> All three values are carried raw: no trimming, stripping,
- *       case folding, pad normalisation or truncation. Trailing spaces in the description are
- *       contractual and survive both directions.</li>
- *   <li><strong>No optimistic-lock column.</strong> The entity carries no {@code @Version} attribute,
- *       because this is read-only reference data that no online transaction updates; there is
- *       consequently nothing for this mapper to carry in either direction.</li>
- *   <li><strong>No persistence, logging or reflection.</strong> No repository, entity manager or
- *       transaction; no logger, and no console output. Fixed-width mapping is hand-written by
- *       explicit offset arithmetic precisely so that the module's reflection budget stays at zero
- *       (decision D-26).</li>
- * </ul>
+ * <p><strong>Neither code becomes a Java {@code enum}, and no membership check against the 18 seeded
+ * values exists.</strong> They are reference <em>data</em>, loaded by a seed migration and extensible
+ * by a later one; compiling them into a closed vocabulary would reject a row the legacy system accepts.
+ * Decision D-24 draws the same line for the codes that genuinely are enumerated. Beyond the record
+ * width there is no validation of any kind, and in particular none of the type code against the
+ * transaction-type table: no migration declares a foreign key into or out of this table, so no
+ * referential assumption may be baked in here (decision D-38).
+ *
+ * <p><strong>All three values are carried raw</strong> - no trimming, case folding, pad normalisation
+ * or truncation - because trailing spaces in the description are contractual and must survive both
+ * directions. The entity carries no {@code @Version} attribute either, being read-only reference data
+ * that no online transaction updates. Fixed-width mapping is hand-written by explicit offset arithmetic
+ * precisely so that the module's reflection budget stays at zero (decision D-26).
  *
  * <h2>Failure contract</h2>
  *
@@ -190,8 +180,8 @@ import java.util.Objects;
  *
  * <h2>Usage</h2>
  *
- * <pre>{@code
- * String image = fixtureRecord;          // 60 bytes, 0x0A terminator already stripped
+ * <pre>{@code String
+ * image = fixtureRecord;          // 60 bytes, 0x0A terminator already stripped
  * TransactionCategory row = TranCatRecordMapper.fromRecord(image);
  * row.getTranTypeCd();                   // "01"
  * row.getTranCatCd();                    // "0001", leading zeros intact
@@ -202,45 +192,6 @@ import java.util.Objects;
  * // the last FILLER_LENGTH characters are spaces here and ASCII zeros in the fixture.
  * TranCatRecordMapper.typeAndCategoryKeyImage(row);   // "010001", the 6-byte stored key
  * }</pre>
- *
- * <h2>Translation decisions this layout raises</h2>
- *
- * <p>Seven decisions govern this mapper, each recorded so that a later reader finds the reasoning
- * rather than rediscovering it. Five carry an identifier in the module's decision log and are cited
- * by it; the remaining two are stated here in full, and no identifier is invented for them rather
- * than risk colliding with one already in use.
- *
- * <ol>
- *   <li>{@code TRAN-CAT-KEY} is declared in two copybooks at two different widths, 6 bytes here and
- *       17 bytes in the category-balance layout, and the 6-byte key is not a prefix of the 17-byte
- *       one; the type-and-category pair sits at different offsets in each. No key constant, helper or
- *       identifier class is shared. The two cluster definitions attest both widths.
- *       Recorded as decision D-37.</li>
- *   <li>Two distinct 60-byte layouts coexist - this one at 2 + 4 + 50 + 4 and the transaction-type
- *       layout at 2 + 50 + 8 - so a length check cannot distinguish them. No content sniffing is
- *       attempted and the two mappers share no constant, offset or helper. <em>Stated here rather
- *       than by decision identifier.</em></li>
- *   <li>No enumeration is introduced for the 18 seeded category codes; they are reference data loaded
- *       by a seed migration, not a compile-time vocabulary. Consistent with decision D-24.</li>
- *   <li>The 50-byte description is narrowed to 29 characters by the report line while the sibling type
- *       description is narrowed to 15 - two different widths in one line - and both narrowings belong
- *       to {@link ReportLineFormatter}, never to this mapper. <em>Stated here rather than by
- *       decision identifier.</em></li>
- *   <li>Filler bytes are not uniform in the estate: this layout's fixture carries 4 ASCII-zero filler
- *       bytes while this mapper emits spaces, so round-trip assertions compare only
- *       {@code [0, 56)}; a whole-record comparison would fail on four bytes alone, which makes the
- *       failure subtle. Recorded as decision D-10 and anomaly 20.</li>
- *   <li>The schema declares no foreign key in any migration version, so this record's type code is
- *       not enforced against the transaction-type table and no referential assumption is baked in.
- *       Recorded as decision D-38.</li>
- *   <li>Malformed fixed-width input raises {@link IllegalArgumentException} rather than any exception
- *       type from the module's own package. Recorded as decisions D-08 and D-11.</li>
- * </ol>
- *
- * <p><strong>Provenance.</strong> Translated from the estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}. Legacy artefacts are cited, never
- * transcribed.
  *
  * @see TransactionCategory
  * @see FixedWidthFieldReader

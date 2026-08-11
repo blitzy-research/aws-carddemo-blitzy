@@ -122,7 +122,7 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
  *       idempotent.</li>
  *   <li><strong>{@code STEP10}</strong> at {@code app/jcl/TRANBKP.jcl:51}, gated, re-defining the
  *       cluster with its data and index components. <strong>The provisioning half is absorbed</strong>
- *       by the four flat migrations, so the gate is what carries across and it is applied to the
+ *       by the schema migrations, so the gate is what carries across and it is applied to the
  *       clear - re-provisioning is what made the master usable again. The re-definition corroborates
  *       the physical contract independently of the copybook: the key is 16 characters long at
  *       offset 0 and the record size is a fixed 350 bytes.</li>
@@ -225,14 +225,6 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
  * would delete messages a neighbouring specification depends on. The absence of any publication is
  * asserted from the configuration's own text instead, alongside the other postures that are textual
  * by nature.
- *
- * <p>Provenance: the legacy job member, its unload wrapper and control member, the generation-base
- * declarations, the transaction cluster definition, the transaction copybook and the online resource
- * definitions, read at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance
- * string for the traceability matrix header only - it is not carried by every legacy member, so
- * nothing here asserts it against one - and no legacy source line is reproduced anywhere in this
- * file.
  *
  * @since 1.0.0
  */

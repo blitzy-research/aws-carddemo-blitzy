@@ -85,9 +85,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  * <p>The end-to-end assertions that need a real server and the real migrations are in
  * {@code InterestCalculationJobIT}; this file deliberately needs neither.
  *
- * <p>Provenance: the legacy interest job member, the interest program and the generation-group
- * definitions at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here.
+ * <p>No legacy source text is transcribed here.
  */
 @DisplayName("InterestCalculationJobConfig - one named job, one named step, one guarded launch")
 class InterestCalculationJobConfigTest {

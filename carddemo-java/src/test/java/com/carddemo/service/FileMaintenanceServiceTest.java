@@ -129,60 +129,9 @@ import static org.mockito.Mockito.when;
  *
  * <h2>Traceability - all twenty-one paragraph units</h2>
  *
- * <table>
- *   <caption>Legacy paragraph unit to covering test method</caption>
- *   <tr><th>Member</th><th>Paragraph</th><th>Covering test</th></tr>
- *   <tr><td>CBACT01C</td><td>(unnamed mainline)</td>
- *       <td>{@code cbact01cMainlineReadsTheAccountClusterToEndOfFile}</td></tr>
- *   <tr><td>CBACT01C</td><td>0000-ACCTFILE-OPEN</td>
- *       <td>{@code cbact01cOpenAcctFileIsTheFirstBoundedPageAndAbendsWhenItFails}</td></tr>
- *   <tr><td>CBACT01C</td><td>1000-ACCTFILE-GET-NEXT</td>
- *       <td>{@code cbact01cAcctFileGetNextAcceptsEverySuccessfulReadExactlyOnce}</td></tr>
- *   <tr><td>CBACT01C</td><td>1100-DISPLAY-ACCT-RECORD</td>
- *       <td>{@code cbact01cDisplayAcctRecordEmitsOnlyTheStatusAndACorrelationToken}</td></tr>
- *   <tr><td>CBACT01C</td><td>9000-ACCTFILE-CLOSE</td>
- *       <td>{@code cbact01cCloseAcctFileRunsAfterTheLoopUnderItsOwnResourceName}</td></tr>
- *   <tr><td>CBACT01C</td><td>9999-ABEND-PROGRAM</td>
- *       <td>{@code theAbendCarriesTheMemberNameTheLiteralAndTheRawStatus}</td></tr>
- *   <tr><td>CBACT01C</td><td>9910-DISPLAY-IO-STATUS</td>
- *       <td>{@code theNumericArmZeroFillsTheFourCharacterField}</td></tr>
- *   <tr><td>CBACT02C</td><td>(unnamed mainline)</td>
- *       <td>{@code cbact02cMainlineReadsTheCardClusterToEndOfFile}</td></tr>
- *   <tr><td>CBACT02C</td><td>0000-CARDFILE-OPEN</td>
- *       <td>{@code cbact02cOpenCardFileAbendsUnderItsOwnOpenLiteral}</td></tr>
- *   <tr><td>CBACT02C</td><td>1000-CARDFILE-GET-NEXT</td>
- *       <td>{@code cbact02cCardFileGetNextEmitsOneImagePerRecordBecauseItsOwnDisplayIsCommentedOut}</td></tr>
- *   <tr><td>CBACT02C</td><td>9000-CARDFILE-CLOSE</td>
- *       <td>{@code cbact02cCloseCardFileRunsAfterTheLoopUnderItsOwnResourceName}</td></tr>
- *   <tr><td>CBACT02C</td><td>9999-ABEND-PROGRAM</td>
- *       <td>{@code cbact02cOpenCardFileAbendsUnderItsOwnOpenLiteral}</td></tr>
- *   <tr><td>CBACT02C</td><td>9910-DISPLAY-IO-STATUS</td>
- *       <td>{@code theImplementorDefinedArmRendersTheSecondBytesValue}</td></tr>
- *   <tr><td>CBACT03C</td><td>(unnamed mainline)</td>
- *       <td>{@code cbact03cMainlineReadsTheCrossReferenceClusterToEndOfFile}</td></tr>
- *   <tr><td>CBACT03C</td><td>0000-XREFFILE-OPEN</td>
- *       <td>{@code cbact03cOpenXrefFileAbendsUnderItsOwnOpenLiteral}</td></tr>
- *   <tr><td>CBACT03C</td><td>1000-XREFFILE-GET-NEXT</td>
- *       <td>{@code cbact03cXrefFileGetNextEmitsEachRecordTwiceExactlyAsTheMemberDoes}</td></tr>
- *   <tr><td>CBACT03C</td><td>9000-XREFFILE-CLOSE</td>
- *       <td>{@code cbact03cCloseXrefFileRunsAfterTheLoopUnderItsOwnResourceName}</td></tr>
- *   <tr><td>CBACT03C</td><td>9999-ABEND-PROGRAM</td>
- *       <td>{@code cbact03cOpenXrefFileAbendsUnderItsOwnOpenLiteral}</td></tr>
- *   <tr><td>CBACT03C</td><td>9910-DISPLAY-IO-STATUS</td>
- *       <td>{@code aStatusOutsideTheDeclaredVocabularyIsReportedRatherThanRejected}</td></tr>
- *   <tr><td>CBCUS01C</td><td>(unnamed mainline)</td>
- *       <td>{@code cbcus01cMainlineReadsTheCustomerClusterToEndOfFile}</td></tr>
- *   <tr><td>CBCUS01C</td><td>0000-CUSTFILE-OPEN</td>
- *       <td>{@code cbcus01cOpenCustFileAbendsUnderItsOwnOpenLiteral}</td></tr>
- *   <tr><td>CBCUS01C</td><td>1000-CUSTFILE-GET-NEXT</td>
- *       <td>{@code cbcus01cCustFileGetNextEmitsEachRecordTwiceAndRevealsNoPersonalField}</td></tr>
- *   <tr><td>CBCUS01C</td><td>9000-CUSTFILE-CLOSE</td>
- *       <td>{@code cbcus01cCloseCustFileRunsAfterTheLoopUnderItsOwnResourceName}</td></tr>
- *   <tr><td>CBCUS01C</td><td>Z-ABEND-PROGRAM</td>
- *       <td>{@code cbcus01cOpenCustFileAbendsUnderItsOwnOpenLiteral}</td></tr>
- *   <tr><td>CBCUS01C</td><td>Z-DISPLAY-IO-STATUS</td>
- *       <td>{@code anAbsentStatusAndAbsentContextRenderAsMarkersWithoutThrowing}</td></tr>
- * </table>
+ * <p>Every one of the twenty-one paragraph units of the four members is named in the test method that
+ * exercises it. The row-per-paragraph inventory, with the covering test of each, is held once in
+ * {@code docs/traceability-matrix.md} and is not restated here.
  *
  * <p>The table holds twenty-five rows for twenty-one paragraph units, and the arithmetic is worth
  * stating so a reader can check it. Twenty-one is the count of <em>named</em> paragraphs - six in the
@@ -192,10 +141,6 @@ import static org.mockito.Mockito.when;
  * owner apiece, so the abend row and the status-display row of the four members are covered by the
  * same tests; both legacy spellings of the customer member's two paragraphs are recorded above so the
  * mapping stays findable from either name.
- *
- * <p>Migrated from the AWS CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68}.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("FileMaintenanceService: four member readers, one job-step unload, one status model in "

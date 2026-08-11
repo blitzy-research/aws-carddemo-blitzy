@@ -120,14 +120,10 @@ import org.springframework.stereotype.Component;
  * customer identifier is ever logged, which is the same rule decision {@code DL-041} in
  * {@code docs/decision-log.md} applies to every rejection diagnostic in the module.
  *
- * <p>Provenance: the legacy record holds the government-issued identifier as twenty cleartext
- * characters at offset 288 of the 500-byte customer record and the national identifier as nine
- * cleartext digits at offset 279, per {@code app/cpy/CVCUS01Y.cpy} at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Protecting them at rest is a deliberate
- * divergence from the legacy design rather than a translation of it, recorded as decision
- * {@code DL-110} in {@code docs/decision-log.md}, which also records why this runs as a lifecycle
- * callback rather than as a fifth versioned migration. No legacy source text appears here.
+ * <p>Protecting them at rest is a deliberate divergence from the legacy design rather than a
+ * translation of it, recorded as decision {@code DL-110} in {@code docs/decision-log.md}, which
+ * also records why this runs as a lifecycle callback rather than as a fifth versioned migration. No
+ * legacy source text appears here.
  *
  * <h2>Why it registers itself, and why it lives in this package</h2>
  *

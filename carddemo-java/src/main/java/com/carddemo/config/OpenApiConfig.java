@@ -200,8 +200,8 @@ public final class OpenApiConfig {
     public static final String INTERNAL_SERVER_ERROR_RESPONSE = "InternalServerError";
 
     /**
-     * Licence name carried by the published document: the licence granted by the legacy estate, and the same
-     * licence whose header opens every source file of this module.
+     * Licence name carried by the published document: the licence granted by the legacy estate, and the
+     * same licence whose header opens every source file of this module.
      */
     public static final String LICENSE_NAME = "Apache License 2.0";
 
@@ -264,8 +264,8 @@ public final class OpenApiConfig {
      * what it does not do, so a reader cannot mistake a documented scheme for a granted permission.
      *
      * <p>The two addresses it names are interpolated from {@link SecurityConfig}'s constants rather than
-     * written out here, which is what keeps the published contract and the enforced rule identical: there is
-     * one home for each address, and a change to the rule is a change to this text. Assembled at class
+     * written out here, which is what keeps the published contract and the enforced rule identical: there
+     * is one home for each address, and a change to the rule is a change to this text. Assembled at class
      * initialisation rather than being a compile-time constant, which is unremarkable because it is only
      * ever read when the document is built.
      */
@@ -295,13 +295,13 @@ public final class OpenApiConfig {
     /**
      * Resolves the version that the published document will carry.
      *
-     * <p>The build-information bean exists only when the build publishes a build-information resource, which
-     * is why it is taken as a provider rather than as a required collaborator: its absence must not fail
-     * start-up. When it is present and carries a version, that version is published, so the document tracks
-     * the artefact actually running; otherwise {@link #MODULE_VERSION} is published. For a build of this
-     * module both paths yield the same coordinate version, so the served value is stable either way, and
-     * the build binds the goal that generates the resource, so the present path is the normal one rather
-     * than the exception; see {@code docs/decision-log.md} DL-091.
+     * <p>The build-information bean exists only when the build publishes a build-information resource,
+     * which is why it is taken as a provider rather than as a required collaborator: its absence must not
+     * fail start-up. When it is present and carries a version, that version is published, so the document
+     * tracks the artefact actually running; otherwise {@link #MODULE_VERSION} is published. For a build of
+     * this module both paths yield the same coordinate version, so the served value is stable either way,
+     * and the build binds the goal that generates the resource, so the present path is the normal one
+     * rather than the exception; see {@code docs/decision-log.md} DL-091.
      *
      * @param buildPropertiesProvider provider for the build-information bean, which need not be present
      * @param contractTypeRoster      the boundary's roster of published request and response families; must
@@ -320,11 +320,11 @@ public final class OpenApiConfig {
     }
 
     /**
-     * The single document-metadata bean that the interface-documentation library merges into the document it
-     * generates from the scanned controllers. It supplies the title, the description, the resolved version,
-     * the licence and the bearer security scheme, and applies that scheme as a document-wide requirement. It
-     * supplies no path, no server, no specification version and no example value; each of those is owned
-     * elsewhere, for the reasons recorded on this class.
+     * The single document-metadata bean that the interface-documentation library merges into the document
+     * it generates from the scanned controllers. It supplies the title, the description, the resolved
+     * version, the licence and the bearer security scheme, and applies that scheme as a document-wide
+     * requirement. It supplies no path, no server, no specification version and no example value; each of
+     * those is owned elsewhere, for the reasons recorded on this class.
      *
      * <p>It supplies the title, the description, the resolved version, the licence and the bearer security
      * scheme, and applies that scheme as a document-wide requirement. It supplies no path, no server, no
@@ -332,11 +332,11 @@ public final class OpenApiConfig {
      * recorded on this class.</p>
      *
      * <p><strong>It also publishes a named schema for every request and response contract.</strong> Each
-     * family the injected {@link ContractTypeRoster} names is converted to a schema and registered in the component
-     * section under its own name, together with every nested shape reachable from it. Without this the
-     * component section would carry the security scheme alone: a schema otherwise reaches the document only
-     * when a scanned controller operation references the type, so every contract this module declares would
-     * be absent from its own machine-readable description.</p>
+     * family the injected {@link ContractTypeRoster} names is converted to a schema and registered in the
+     * component section under its own name, together with every nested shape reachable from it. Without
+     * this the component section would carry the security scheme alone: a schema otherwise reaches the
+     * document only when a scanned controller operation references the type, so every contract this module
+     * declares would be absent from its own machine-readable description.</p>
      *
      * <p><strong>Registration is derivation, not authorship.</strong> The schemas are read from the types
      * by the conversion library, so each one's properties, widths, formats and access modes come from the
@@ -396,9 +396,9 @@ public final class OpenApiConfig {
     /**
      * Attaches to each served operation the reusable error responses that operation can actually reach.
      *
-     * <p><strong>What this replaces, and why the difference matters.</strong> An earlier revision added
-     * all six responses to every operation unconditionally. That published outcomes several routes cannot
-     * produce, and each false entry misleads in a specific way. Advertising {@code 401} and {@code 403}
+     * <p><strong>Why the attachment is conditional.</strong> Adding all six responses to every operation
+     * unconditionally would publish outcomes several routes cannot produce, and each false entry misleads
+     * in a specific way. Advertising {@code 401} and {@code 403}
      * on the anonymous sign-on route tells a caller a credential might be required to obtain one, which
      * inverts the route's whole purpose. Advertising {@code 404} on a screen route contradicts the
      * contract those routes are built to keep: the legacy screens answer an absent record with a message

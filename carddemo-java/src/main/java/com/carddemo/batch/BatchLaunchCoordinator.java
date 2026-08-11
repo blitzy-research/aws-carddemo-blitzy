@@ -656,9 +656,9 @@ public final class BatchLaunchCoordinator
      * One dispatched launch, carrying the reservation it belongs to.
      *
      * <p>A plain lambda would have been enough to run the work, and it is deliberately not used: the pool
-     * hands back the tasks a forcible stop discarded, and a lambda hands back nothing identifiable. Carrying
-     * the reservation and its identifiers on the task is what lets the drain above name the executions that
-     * never ran and fail them, rather than leaving rows recorded as started.
+     * hands back the tasks a forcible stop discarded, and a lambda hands back nothing identifiable.
+     * Carrying the reservation and its identifiers on the task is what lets the drain above name the
+     * executions that never ran and fail them, rather than leaving rows recorded as started.
      *
      * @param reserved    the reserved execution this task would have run
      * @param jobName     the job's registered name, for diagnostics

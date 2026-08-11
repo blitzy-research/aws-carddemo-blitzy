@@ -163,16 +163,13 @@ import java.util.Objects;
  *
  * <h2>This entity is a passive carrier; it computes nothing</h2>
  *
- * <p>Fixed-width offset arithmetic belongs exclusively to the transaction record mapper of the utility
- * layer, {@code com.carddemo.util.TransactionRecordMapper}, whose responsibility is to slice the byte
- * image at the offsets listed above, and zoned-decimal decoding belongs exclusively to
- * {@code com.carddemo.util.ZonedDecimalCodec}. Those are separate deliverables of the record-mapper
- * boundary and are <em>not necessarily present at this checkpoint</em>; the names above are therefore
- * plain code references rather than resolved links, so neither compilation nor documentation
- * generation here depends on them, and this class cites them only to say where that knowledge belongs.
- * This class holds column widths, never offsets, and performs no parsing, no scaling, no case folding,
- * no padding and no validation. The dependency direction is one-way: the utility layer produces
- * entities, so an entity never references the utility layer.
+ * <p>Fixed-width offset arithmetic belongs exclusively to
+ * {@code com.carddemo.util.TransactionRecordMapper} and zoned-decimal decoding to
+ * {@code com.carddemo.util.ZonedDecimalCodec}. Both are cited as plain code references rather than
+ * resolved links <em>deliberately</em>: the dependency direction is one-way - the utility layer produces
+ * entities, so an entity never references the utility layer, not even in its documentation. This class
+ * holds column widths, never offsets, and performs no parsing, scaling, case folding, padding or
+ * validation.
  *
  * <p>Values are stored verbatim, and constructors, accessors and mutators are plain assignments and
  * plain returns. Nothing here trims, pads or normalises, because two of these columns carry trailing
@@ -192,13 +189,6 @@ import java.util.Objects;
  * and customer masters, no sample file populates it: rows arrive only from the posting job, the
  * interest run and the online bill-payment path. A query against a freshly migrated database
  * legitimately returns nothing.
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the estate at commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. The
- * copybook's trailer records the upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68}, dated
- * 2022-07-19. The legacy tree is read-only reference: no source text from it is copied into this
- * module, so the traceability record cites member names, field names, widths, offsets and codes only.
  */
 @Entity
 @Table(name = "transaction")

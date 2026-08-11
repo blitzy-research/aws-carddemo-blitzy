@@ -82,32 +82,22 @@ import org.springframework.transaction.PlatformTransactionManager;
  * <p>Six consequences follow, and each is honoured literally rather than approximately.
  *
  * <ol>
- *   <li><strong>The program is translated in full.</strong> Its completeness is the whole reason it is in
- *       scope; an abbreviated translation would be a coverage gap dressed as a simplification. All 18
- *       paragraphs are carried across in {@link DailyTransactionReadService}, one method per paragraph.</li>
+ *   <li><strong>The program is translated in full</strong> - all 18 paragraphs, one method per paragraph,
+ *       in {@link DailyTransactionReadService}. Its completeness is the whole reason it is in scope.</li>
  *   <li><strong>There is no legacy job stream, so there is nothing to reproduce from one.</strong> No step
- *       name, no parameter string and no condition-code gate exists to be preserved. This job therefore
- *       declares <em>no</em> failure-ending flow transition, attaches <em>no</em> parameter validator, and
- *       takes <em>no</em> date or mode job parameter - the translated service resolves its own input and
- *       asks for neither. Nothing from {@link JobParameterValidators} is attached, because every contract
- *       that class carries comes from a job member, and this program has none.</li>
- *   <li><strong>The Java names are original, not inherited.</strong> {@link #JOB_NAME} and
- *       {@link #STEP_NAME} were chosen here. A reviewer looking for them in {@code app/jcl} will not find
- *       them, and that is not an oversight: there is no member to find them in.</li>
- *   <li><strong>It is absent from the default pipeline.</strong> This job is not chained from or into any
- *       other job, appears nowhere in the posting, interest, consolidation and statement sequence the
- *       end-to-end pipeline exercises, and is swept up by no composite flow. The estate has no master
- *       orchestrator - the order in which its jobs ran was an operational convention - and this file must
- *       not become the pretext for inventing one. Wiring this job would be feature expansion: it would
- *       cause work the legacy system never performed.</li>
- *   <li><strong>It is nonetheless fully launchable by test.</strong> It is an ordinary job bean under a
- *       stable, published name, so the framework's job registry holds it, the job operator can start it by
- *       name, and the batch test utilities can launch it directly. Defined-but-unwired means unwired, not
- *       unreachable.</li>
- *   <li><strong>Its traceability rows are marked honestly.</strong> All 18 paragraphs are genuinely
- *       translated <em>and</em> the job is unwired; both halves of that sentence belong in the record. This
- *       file states the finding and stops there - the traceability matrix, the decision log and the gate
- *       evidence are owned elsewhere and are not written or amended from here.</li>
+ *       name, parameter string or condition-code gate exists to be preserved, so this job takes no job
+ *       parameter, declares no failure-ending transition and attaches nothing from
+ *       {@link JobParameterValidators}; the translated service resolves its own input. {@link #JOB_NAME}
+ *       and {@link #STEP_NAME} were chosen here rather than inherited, so a reviewer will not find them
+ *       in {@code app/jcl}.</li>
+ *   <li><strong>It is absent from the default pipeline and must stay absent.</strong> The estate has no
+ *       master orchestrator - the order in which its jobs ran was an operational convention - so wiring
+ *       this job in would be feature expansion: it would cause work the legacy system never performed.</li>
+ *   <li><strong>It is nonetheless fully launchable by test</strong> - an ordinary job bean under a stable,
+ *       published name, held by the job registry. Defined-but-unwired means unwired, not unreachable.</li>
+ *   <li><strong>Its traceability rows are marked honestly:</strong> all 18 paragraphs are genuinely
+ *       translated <em>and</em> the job is unwired. The matrix, decision log and gate evidence are owned
+ *       elsewhere and are not amended from here.</li>
  * </ol>
  *
  * <p><strong>The 18 paragraphs, in the order they physically appear in the source</strong>, which is
@@ -216,24 +206,15 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <p><strong>Nothing fires when the context starts.</strong> A legacy batch job was submitted
  * deliberately; bringing an application up never triggered one. The shared configuration document disables
- * launch-on-start, and this class adds no start-up runner, no lifecycle participant, no initialising
- * callback, no event listener and no scheduled trigger, and names no job for anything to resolve. That
- * matters twice over here, because an auto-start would run the very job this file exists to keep unwired.
- * Execution is strictly sequential: no task executor, no partitioning, no multi-threaded step and no
- * parallel flow, and no tuning figure of any kind appears in this file or its comments - performance for
- * this implementation is measured and recorded, never asserted.
+ * launch-on-start and this class adds no start-up runner, lifecycle participant, initialising callback,
+ * event listener or scheduled trigger, which matters twice over here because an auto-start would run the
+ * very job this file exists to keep unwired. Execution is strictly sequential - no task executor, no
+ * partitioning, no multi-threaded step, no parallel flow - and no tuning figure appears anywhere in this
+ * file, because performance for this implementation is measured and recorded, never asserted.
  *
  * <p>Every step is timed on {@value #STEP_TIMER_NAME}, deliberately the same timer name and the same tag
  * keys the batch step template uses, so this program appears in one metric family beside the nine wired
  * ones at the metrics scrape endpoint rather than in a family of its own.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, legacy member {@code app/cbl/CBTRN01C.cbl}. The
- * legacy tree is cited and never transcribed: no program, job-control, utility-control or cataloged-
- * procedure statement text appears here, and nothing reads that tree at run time. No user-specified rules
- * govern this file - the project's rules document reports that none were provided - so the work is held to
- * the enterprise standards the specification substitutes for them, and where faithful translation and
- * idiomatic Java diverge, faithful wins and the divergence is recorded in the decision log.
  *
  * <p>Stateless and immutable: final, every collaborator injected through the one constructor, every field
  * final, no mutable static state and no per-execution state held on this bean. Item readers are stateful,
@@ -505,11 +486,11 @@ public final class DailyTransactionReadJobConfig {
     /**
      * The single step, whose tasklet is the whole program in one indivisible pass.
      *
-     * <p>One step rather than several, and a tasklet rather than a chunk-oriented reader and writer, because
-     * the member is one pass over one input that writes nothing: it opens six files, walks the
-     * daily-transaction input to end of file resolving each record's card number and account, closes the six
-     * and returns. A legacy batch program is not restartable part way through its file, so there is no chunk
-     * boundary to place and no commit interval to choose - and no such figure appears anywhere in this file.
+     * <p>One step rather than several, and a tasklet rather than a chunk-oriented reader and writer,
+     * because the member is one pass over one input that writes nothing: it opens six files, walks the
+     * daily-transaction input to end of file resolving each record's card number and account, closes the
+     * six and returns. A legacy batch program is not restartable part way through its file, so there is no
+     * chunk boundary to place and no commit interval to choose - and no such figure appears anywhere in this file.
      *
      * <p>Execution is strictly sequential. No task executor, no partitioning, no multi-threaded step and no
      * parallel flow is attached, because the read loop this step drives carries order-dependent state and
@@ -556,23 +537,23 @@ public final class DailyTransactionReadJobConfig {
      * Runs one complete extract pass, timed, and returns what it produced.
      *
      * <p>The eighteen paragraphs are the translated program's, not this method's: it resolves the ordered
-     * input and hands the pass to {@link DailyTransactionReadService}, which performs the six opens, the read
-     * loop with its own status normalisation, the two keyed lookups per record, the extra verification pass
-     * the member makes after end of file, the six closes and the abend path. Nothing about the read loop,
-     * the lookups or the status handling is reproduced here.
+     * input and hands the pass to {@link DailyTransactionReadService}, which performs the six opens, the
+     * read loop with its own status normalisation, the two keyed lookups per record, the extra verification
+     * pass the member makes after end of file, the six closes and the abend path. Nothing about the read
+     * loop, the lookups or the status handling is reproduced here.
      *
      * <p>The input is resolved one of two ways, and the pass itself is identical either way. When a
      * sequential dataset is staged for the daily-transaction input, its records are read through the reader
      * that owns the 350-byte layout and handed over in the dataset's own order, which is the order the
-     * legacy physical sequential read returned them in. When none is staged, the translated program resolves
-     * its own ordered scan, ascending by the record's business key, because the relational source imposes no
-     * order of its own and an unordered scan would make the diagnostic stream depend on the database rather
-     * than on the input.
+     * legacy physical sequential read returned them in. When none is staged, the translated program
+     * resolves its own ordered scan, ascending by the record's business key, because the relational source
+     * imposes no order of its own and an unordered scan would make the diagnostic stream depend on the
+     * database rather than on the input.
      *
      * <p>On failure the timer is stopped with the abended outcome and the failure is rethrown unchanged.
-     * Nothing is logged after the rethrow, and nothing is logged about the failure here at all: the site that
-     * decided to abend has already emitted its own diagnostic and the raw status, in that order, and adding a
-     * second report would break the ordering that the batch tier treats as a contract.
+     * Nothing is logged after the rethrow, and nothing is logged about the failure here at all: the site
+     * that decided to abend has already emitted its own diagnostic and the raw status, in that order, and
+     * adding a second report would break the ordering that the batch tier treats as a contract.
      *
      * @return the counts, the per-record outcomes and the terminal result value of the pass
      * @throws AbendException if a file operation reports a status the member treats as an error, after the
@@ -603,11 +584,11 @@ public final class DailyTransactionReadJobConfig {
     /**
      * Binds a reader over the staged {@value #DD_DALYTRAN} dataset, whose record is 350 encoded bytes.
      *
-     * <p>This is the one resource the member reads sequentially, and therefore the one reader this job wires
-     * into its step. Its layout is byte-for-byte identical to the posted-transaction layout that
+     * <p>This is the one resource the member reads sequentially, and therefore the one reader this job
+     * wires into its step. Its layout is byte-for-byte identical to the posted-transaction layout that
      * {@link #tranfileReader()} binds, which is exactly why the two are separate bindings over separate
-     * record types: substituting one for the other would parse every record successfully and attribute it to
-     * the wrong dataset, and the compiler is what refuses that here.
+     * record types: substituting one for the other would parse every record successfully and attribute it
+     * to the wrong dataset, and the compiler is what refuses that here.
      *
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
@@ -618,15 +599,15 @@ public final class DailyTransactionReadJobConfig {
     /**
      * Binds a reader over the staged {@value #DD_CUSTFILE} dataset, whose record is 500 encoded bytes.
      *
-     * <p>The member opens and closes this resource and <strong>never reads it</strong>, so this job reads no
-     * customer record through this reader. It is bound because the member names six resources and each is
-     * bound here at its verified width.
+     * <p>The member opens and closes this resource and <strong>never reads it</strong>, so this job reads
+     * no customer record through this reader. It is bound because the member names six resources and each
+     * is bound here at its verified width.
      *
      * <p>The sealing function is a parameter rather than a field of this configuration for the reason the
      * reader factory states on its own customer method: sealing the two regulated identifiers needs a key,
-     * and the key belongs to the layer that owns it. This configuration owns no key, so it takes the caller's
-     * function and passes it straight through rather than defaulting one - a defaulted sealer would be a
-     * silent decision to leave two regulated fields unprotected.
+     * and the key belongs to the layer that owns it. This configuration owns no key, so it takes the
+     * caller's function and passes it straight through rather than defaulting one - a defaulted sealer
+     * would be a silent decision to leave two regulated fields unprotected.
      *
      * @param regulatedFieldSealer the caller's sealing function, applied by the mapper to the two regulated
      *                             identifiers only; must not be {@code null}
@@ -645,8 +626,8 @@ public final class DailyTransactionReadJobConfig {
      *
      * <p>The member reads this resource, but by key rather than sequentially: it resolves one record per
      * daily-transaction record by that record's card number, which is the cross-reference's own identity. A
-     * keyed read is not a sequential scan, so the translated program performs it through its own gateway and
-     * this reader is not wired into the step.
+     * keyed read is not a sequential scan, so the translated program performs it through its own gateway
+     * and this reader is not wired into the step.
      *
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
@@ -657,8 +638,8 @@ public final class DailyTransactionReadJobConfig {
     /**
      * Binds a reader over the staged {@value #DD_CARDFILE} dataset, whose record is 150 encoded bytes.
      *
-     * <p>The member opens and closes this resource and never reads it; see {@link #custfileReader} for why it
-     * is bound all the same.
+     * <p>The member opens and closes this resource and never reads it; see {@link #custfileReader} for why
+     * it is bound all the same.
      *
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
@@ -671,8 +652,8 @@ public final class DailyTransactionReadJobConfig {
      *
      * <p>The member reads this resource by account identifier, taking the identifier from the record the
      * cross-reference resolved, and only for a card the cross-reference could resolve. As with the
-     * cross-reference, that is a keyed read the translated program performs through its own gateway, so this
-     * reader is not wired into the step.
+     * cross-reference, that is a keyed read the translated program performs through its own gateway, so
+     * this reader is not wired into the step.
      *
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
@@ -684,8 +665,8 @@ public final class DailyTransactionReadJobConfig {
      * Binds a reader over the staged {@value #DD_TRANFILE} dataset, whose record is 350 encoded bytes.
      *
      * <p>The member opens and closes this resource and never reads it. It is the posted-transaction master,
-     * <strong>not</strong> the daily-transaction input that {@link #dalytranReader()} binds, even though the
-     * two layouts are identical in width and shape; the two bindings are kept distinct for that reason.
+     * <strong>not</strong> the daily-transaction input that {@link #dalytranReader()} binds, even though
+     * the two layouts are identical in width and shape; the two bindings are kept distinct for that reason.
      *
      * @return a new reader over the staged dataset, or empty when no dataset is staged for this resource
      */
@@ -711,14 +692,14 @@ public final class DailyTransactionReadJobConfig {
      * Resolves the ordered daily-transaction input from a staged sequential dataset, when one is staged.
      *
      * <p>Reading the dataset into an ordered list is resolving the program's input and is not the program's
-     * read loop: the loop, the end-of-file flag, the status normalisation, the per-record verification and the
-     * abend all belong to the translated program, which accepts an ordered source precisely so that a step
-     * over a sequential dataset can supply the order the dataset itself holds.
+     * read loop: the loop, the end-of-file flag, the status normalisation, the per-record verification and
+     * the abend all belong to the translated program, which accepts an ordered source precisely so that a
+     * step over a sequential dataset can supply the order the dataset itself holds.
      *
      * @return the staged records in dataset order, or empty when no dataset is staged, in which case the
      *         translated program resolves its own ordered scan
-     * @throws AbendException if the staged dataset cannot be opened or read, after the diagnostic and the raw
-     *         status have been emitted
+     * @throws AbendException if the staged dataset cannot be opened or read, after the diagnostic and the
+     * raw         status have been emitted
      */
     private DailyTransactionReadResult readPass(final BooleanSupplier stopRequested) {
         final Optional<FlatFileItemReader<DailyTransaction>> reader = dalytranReader();
@@ -853,8 +834,8 @@ public final class DailyTransactionReadJobConfig {
      * Reads one record from a staged dataset, emitting the diagnostic and the raw status before abending on
      * failure.
      *
-     * <p>An abend already raised beneath this call is rethrown untouched, so a failure is diagnosed once and
-     * reported once.
+     * <p>An abend already raised beneath this call is rethrown untouched, so a failure is diagnosed once
+     * and reported once.
      *
      * @param reader the reader over the staged dataset
      * @return the next record, or {@code null} at end of the dataset
@@ -875,9 +856,9 @@ public final class DailyTransactionReadJobConfig {
      * Hands back the handle a staged dataset holds.
      *
      * <p>This is a runtime adaptation and not a translated paragraph: the member's own close family belongs
-     * to the translated program, and this must not become a second close sequence. It therefore normalises no
-     * status, emits no legacy diagnostic and never abends, and a failure here is reported by failure type
-     * alone so that no message from a lower layer is rendered into the log stream.
+     * to the translated program, and this must not become a second close sequence. It therefore normalises
+     * no status, emits no legacy diagnostic and never abends, and a failure here is reported by failure
+     * type alone so that no message from a lower layer is rendered into the log stream.
      *
      * @param reader the reader over the staged dataset
      */
@@ -899,9 +880,9 @@ public final class DailyTransactionReadJobConfig {
      * {@link AbendException#BATCH_ABEND_CODE}, taken from the exception's own constant, so the value the
      * member moves into its abend code is stated in one place in this module and restated in none.
      *
-     * <p>The failure that caused this is chained onto the abend but is never handed to the logging framework:
-     * beneath a file failure the chain's messages can carry the location it could not open, so the report
-     * names the failure's type and leaves its message to the exception a diagnosing reader already has.
+     * <p>The failure that caused this is chained onto the abend but is never handed to the logging
+     * framework: beneath a file failure the chain's messages can carry the location it could not open, so
+     * the report names the failure's type and leaves its message to the exception a diagnosing reader already has.
      *
      * <p>Every component of the context is composed from constants of this class, so the reason and the
      * operator message have fixed lengths well inside the legacy reason and message field widths and no
@@ -941,13 +922,13 @@ public final class DailyTransactionReadJobConfig {
      *
      * <p><strong>The property key travels with the location.</strong> All six of this job's logical
      * locations resolve through this one method, and a malformed simple name is refused by naming the
-     * property it came from - so the key has to be the caller's own. It used to be the daily-transaction
-     * key for every one of them, which meant a malformed customer, cross-reference, card, account or
-     * transaction location was reported against a property the operator had not set, sending them to the
-     * wrong line of their configuration.
-     * <p><strong>The local rung tests trust, not existence.</strong> It used to ask only whether
-     * something was there, which accepts a symbolic link and any entry type, and the resource that
-     * followed would then open whatever the link pointed at - so a local actor who can write the staging
+     * the property it came from - so the key has to be the caller's own. A single daily-transaction key for
+     * every one of them would report a malformed customer, cross-reference, card, account or transaction
+     * location against a property the operator had not set, sending them to the wrong line of their
+     * configuration.
+     * <p><strong>The local rung tests trust, not existence.</strong> Asking only whether something is
+     * there accepts a symbolic link and any entry type, and the resource that follows would then open
+     * whatever the link pointed at - so a local actor who can write the staging
      * root could have this job read a file of their choosing, and every subsequent step would treat its
      * contents as the day's transactions. The predicate applied instead is the one every other staged
      * rung in this package already uses, and it is the same rule stated once rather than a second

@@ -49,9 +49,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * back byte for byte, including one that is entirely spaces and one that keeps its leading zeros, because
  * a rule that padded or trimmed would invent or destroy an identity rather than report a defect.
  *
- * <p>Provenance: the widths asserted here are those of the read-only legacy copybooks under
- * {@code app/cpy} at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("Stored value rules: exact width, the digit class where it is contractual, and no repair")
 final class StoredValueRulesTest {

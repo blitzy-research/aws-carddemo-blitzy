@@ -108,12 +108,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy antecedents cited by the type under test: programs {@code app/cbl/COUSR00C.cbl},
- * {@code app/cbl/COUSR01C.cbl}, {@code app/cbl/COUSR02C.cbl} and {@code app/cbl/COUSR03C.cbl},
- * symbolic maps {@code app/cpy-bms/COUSR00.CPY} through {@code COUSR03.CPY} and record layout
- * {@code app/cpy/CSUSR01Y.cpy}. Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec};
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source
- * text is reproduced here.
+ * <p>Legacy antecedents cited by the type under test: programs {@code app/cbl/COUSR00C.cbl} ,
+ * {@code app/cbl/COUSR01C.cbl} , {@code app/cbl/COUSR02C.cbl} and {@code app/cbl/COUSR03C.cbl} , symbolic
+ * maps {@code app/cpy-bms/COUSR00.CPY} through {@code COUSR03.CPY} and record layout
+ * {@code app/cpy/CSUSR01Y.cpy} . No legacy source text is reproduced here.
  */
 @DisplayName("UserResponse :: response contract of legacy transactions CU00 through CU03")
 class UserResponseCoverageTest {
@@ -865,10 +863,10 @@ class UserResponseCoverageTest {
         /**
          * One constructor, so there is exactly one way to build this response.
          *
-         * <p>An earlier revision also carried a shorter compatibility constructor that defaulted the
-         * page snapshot to {@code null}. It has been removed: the snapshot is what a later row selection
-         * is resolved against, and a constructor that supplies it silently lets a screen publish rows
-         * with no snapshot to seal them, which is the omission a selector then cannot recover from. A
+         * <p>A SHORTER COMPATIBILITY CONSTRUCTOR THAT DEFAULTED THE PAGE SNAPSHOT to {@code null} is
+         * prohibited: the snapshot is what a later row selection is resolved against, and a constructor that
+         * supplies it silently lets a screen publish rows with no snapshot to seal them, which is the omission a
+         * selector then cannot recover from. A
          * caller that genuinely displays no rows now states its {@code null} at the call site, where a
          * reader can see the claim being made.</p>
          */

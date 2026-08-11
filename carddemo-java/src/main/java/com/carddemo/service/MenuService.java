@@ -38,8 +38,8 @@ import com.carddemo.util.CobolStringUtils;
  * The two CardDemo menu transactions: the main menu a regular user reaches after signing on, and the
  * menu an administrator reaches instead. Legacy authorities are {@code app/cbl/COMEN01C.cbl}
  * (transaction {@code CM00}, ten options) and {@code app/cbl/COADM01C.cbl} (transaction {@code CA00},
- * four options); both option tables arrive through the injected {@link MenuOptionSource} and this class owns
- * only the rules applied to them.
+ * four options); both option tables arrive through the injected {@link MenuOptionSource} and this class
+ * owns only the rules applied to them.
  *
  * <p><strong>Two entry points, deliberately not one.</strong> The two programs are almost identical
  * line for line and are still translated separately, because they read different catalogs, nominate

@@ -40,8 +40,8 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  * <p>Offsets are zero-based byte positions in the record image; lengths are encoded byte counts,
  * never character counts.
  *
- * <pre>{@code
- * #   COBOL field        PIC           offset  length  Java property
+ * <pre>{@code #
+ *   COBOL field        PIC           offset  length  Java property
  * -   TRAN-CAT-KEY       (group)            0      17  the @IdClass composite
  * 1     TRANCAT-ACCT-ID  9(11)              0      11  trancatAcctId  (String, @Id)
  * 2     TRANCAT-TYPE-CD  X(02)             11       2  trancatTypeCd  (String, @Id)
@@ -64,8 +64,8 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  * <p><strong>Two different copybooks declare a group named {@code TRAN-CAT-KEY}, and they are
  * different sizes:</strong>
  *
- * <pre>{@code
- * copybook                       TRAN-CAT-KEY composition                    width
+ * <pre>{@code copybook
+ *                       TRAN-CAT-KEY composition                    width
  * app/cpy/CVTRA01Y.cpy (here)    TRANCAT-ACCT-ID 9(11)                    17 bytes
  *                                + TRANCAT-TYPE-CD X(02)
  *                                + TRANCAT-CD      9(04)
@@ -93,8 +93,8 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  * <strong>11 encoded bytes</strong>, nine integer digits and two decimals, with no separate sign
  * byte. The sign is overpunched into the final digit byte:
  *
- * <pre>{@code
- * digit      0  1  2  3  4  5  6  7  8  9
+ * <pre>{@code digit
+ *      0  1  2  3  4  5  6  7  8  9
  * positive   {  A  B  C  D  E  F  G  H  I
  * negative   }  J  K  L  M  N  O  P  Q  R
  * }</pre>
@@ -241,8 +241,8 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  *
  * <h2>Usage</h2>
  *
- * <pre>{@code
- * // Decode one row of the fixture, terminator already stripped by the caller.
+ * <pre>{@code //
+ * Decode one row of the fixture, terminator already stripped by the caller.
  * TransactionCategoryBalance row = TranCatBalRecordMapper.fromRecord(image);
  * BigDecimal balance = row.getTranCatBal();          // 0.00, scale exactly 2
  *
@@ -254,36 +254,6 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  * // Address a row without materialising one.
  * TransactionCategoryBalanceId id = TranCatBalRecordMapper.keyFromRecord(image);
  * }</pre>
- *
- * <h2>Decisions recorded</h2>
- *
- * <ol>
- *   <li>{@code TRAN-CAT-KEY} is declared in two copybooks at two different widths, 17 bytes here and
- *       6 bytes in the transaction-category layout, and the 6-byte key is not a prefix of the
- *       17-byte one; the type-and-category pair sits at different offsets in each. No key constant,
- *       helper or identifier class is shared. {@code KEYS(17 0)} and {@code KEYS(6 0)} attest both
- *       widths. Decision D-37.</li>
- *   <li>Scale 2 with {@code RoundingMode.DOWN}, never {@code HALF_EVEN} or {@code HALF_UP}, because
- *       {@code ROUNDED} occurs zero times estate-wide. Applied by the codec, never here.
- *       Decision D-02.</li>
- *   <li>Column prefixing is inconsistent within this one record - key columns {@code trancat_*}
- *       against the balance column {@code tran_cat_bal} - and is inherited from the copybook and
- *       deliberately preserved rather than regularised. Decision D-37.</li>
- *   <li>Filler bytes are not uniform in the estate: this layout's fixture carries 22 ASCII-zero
- *       filler bytes while this mapper emits spaces, so round-trip assertions compare only
- *       {@code [0, 28)} and a whole-record comparison would fail on the filler alone.
- *       Decision D-10, anomaly 20.</li>
- *   <li>All 50 seeded balances are the positive-zero image, so the fixture exercises one of the
- *       twenty sign characters; full sign coverage comes from the daily-transaction fixture.
- *       <em>Stated here rather than by decision identifier.</em></li>
- *   <li>Malformed fixed-width input raises {@link IllegalArgumentException} rather than a
- *       {@code com.carddemo.exception} type. Decisions D-08 and D-11.</li>
- * </ol>
- *
- * <p><strong>Provenance.</strong> Translated from the estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}. Legacy artefacts are cited by path,
- * never transcribed: no COBOL, copybook or JCL source text is reproduced here.
  *
  * @see TransactionCategoryBalance
  * @see TransactionCategoryBalanceId

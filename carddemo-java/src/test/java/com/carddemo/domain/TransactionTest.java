@@ -54,13 +54,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * column names are verified against the schema. The two files are deliberately complementary: this one
  * would still pass if every column name were wrong, and that one would still pass if every accessor
  * returned a constant.
- *
- * <h2>Provenance</h2>
- *
- * <p>Widths, offsets and values are cited from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose members carry the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced; member
- * names, field names, widths, offsets and codes are cited only.
  */
 @DisplayName("Transaction - the 350-byte posted-transaction record written by the posting run")
 class TransactionTest {

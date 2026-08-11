@@ -92,33 +92,33 @@ import org.xml.sax.SAXException;
  * The integration sign-off, executed: Gate 4's named artefacts and the whole of Gate 8.
  *
  * <h2>Why this class exists</h2>
- * Gate 4 requires the validation artefacts to be specified <em>by name</em>, and Gate 8 requires a
- * checklist whose every line has a satisfying artefact. Prose can only ever <em>claim</em> to discharge
- * either one. This class is the audit instrument that discharges both in code: it asserts that the named
- * artefacts exist with the shapes that were measured, that the traceability matrix covers 100% of the
- * estate's procedure units, and that the provenance identifiers and the evidence documents are real
- * rather than asserted.
  *
- * <h2>The three properties that make this an audit rather than a formality</h2>
+ * <p>Gate 4 requires the validation artefacts to be specified <em>by name</em>, and Gate 8 requires a
+ * checklist whose every line has a satisfying artefact. Prose can only ever <em>claim</em> to discharge
+ * either one. This class discharges both in code: it asserts that the named artefacts exist with the
+ * shapes that were measured, that the traceability matrix covers 100% of the estate's procedure units,
+ * and that the provenance identifiers and the evidence documents are real rather than asserted.
+ *
+ * <h2>Three properties make this an audit rather than a formality</h2>
+ *
  * <ol>
  *   <li><strong>Nothing is skipped and nothing is assumed.</strong> There is no {@code @Disabled}, no
- *       {@code Assumptions}, and no conditional that turns a missing artefact into a pass. A skipped
- *       test and a passing test are indistinguishable in a build summary, which is precisely the failure
- *       mode a sign-off must not have. When an artefact is absent the failure names the
- *       <em>resolved absolute path</em> where it was expected, so the diagnostic reads as a work item.</li>
+ *       {@code Assumptions}, and no conditional that turns a missing artefact into a pass - a skipped
+ *       test and a passing test are indistinguishable in a build summary. When an artefact is absent the
+ *       failure names the <em>resolved absolute path</em> where it was expected.</li>
  *   <li><strong>Every shared figure is read from a published constant, never restated.</strong> Two
- *       assertions of one fact drift apart and the weaker one wins. Where a neighbouring suite already
- *       owns a fact, this class asserts it through the same {@link TestDataFactory} constant that suite
- *       reads, so the two cannot diverge: there is one source of truth and two readers of it.</li>
- *   <li><strong>No figure is regenerated from the code under test.</strong> The paragraph counts, the
- *       record geometries and the matrix row count are measurements of committed artefacts, compared
- *       against constants. Nothing here asks a mapper, a formatter or a template to produce the value it
- *       is then checked against.</li>
+ *       assertions of one fact drift apart and the weaker one wins, so where a neighbouring suite owns a
+ *       fact this class asserts it through the same {@link TestDataFactory} constant that suite reads.</li>
+ *   <li><strong>No figure is regenerated from the code under test.</strong> The paragraph counts, record
+ *       geometries and matrix row count are measurements of committed artefacts compared against
+ *       constants; nothing here asks a mapper, formatter or template to produce the value it is then
+ *       checked against.</li>
  * </ol>
  *
- * <h2>What this class asserts, and what it deliberately leaves to a narrower suite</h2>
- * The gate-level inventory is here. The record-level detail is not, and each neighbour is named so a
- * reader can follow the fact rather than find it restated:
+ * <h2>What a narrower suite owns</h2>
+ *
+ * <p>The gate-level inventory is here and the record-level detail is not:
+ *
  * <ul>
  *   <li>the input fixtures' digests against the legacy datasets belong to
  *       {@code support/FixtureContractTest};</li>
@@ -129,45 +129,35 @@ import org.xml.sax.SAXException;
  *   <li>Gate 5's sign-on texts and job-submission card image belong to
  *       {@link OnlineTransactionE2ETest};</li>
  *   <li>the lookup sets' <em>semantics</em> - which individual code is valid - belong to
- *       {@code service/ValidationLookupServiceTest}. Their <em>cardinalities</em> are a gate figure and
+ *       {@code service/ValidationLookupServiceTest}; their <em>cardinalities</em> are a gate figure and
  *       are asserted here.</li>
  * </ul>
  *
- * <h2>Two phase facts that shape what a gate can honestly assert here</h2>
- * This class runs in the integration tier, at {@code integration-test}. The vulnerability scan and the
- * coverage check are bound to {@code verify}, which is a <em>later</em> phase. Their reports therefore do
- * not exist while this class runs, and a test demanding them would fail every clean build for a reason
- * unrelated to either gate. So the enforcing <em>mechanism</em> is asserted unconditionally - the scan is
- * declared, bound to a phase an ordinary build reaches, not skipped, and configured to end the build on a
+ * <h2>Two phase facts shape what a gate can honestly assert here</h2>
+ *
+ * <p>This class runs in the integration tier at {@code integration-test}, while the vulnerability scan
+ * and the coverage check are bound to {@code verify} - a <em>later</em> phase. Their reports do not exist
+ * while this class runs, and a test demanding them would fail every clean build for a reason unrelated to
+ * either gate. So the enforcing <em>mechanism</em> is asserted unconditionally - the scan is declared,
+ * bound to a phase an ordinary build reaches, not skipped, and configured to end the build on a
  * qualifying score that no analyst determination covers - and any report a build has already produced is
- * read on both its unsuppressed and its suppressed side. What is never done is to infer a pass from an
- * absent report: the sign-off summary records the mechanism as the satisfying artefact and says so in as
- * many words.
+ * read on both its unsuppressed and its suppressed side. A pass is never inferred from an absent report:
+ * the sign-off summary records the mechanism as the satisfying artefact and says so in as many words.
  *
- * <p>That phrase "that no analyst determination covers" is the whole of the supply-chain gate's honesty,
- * and it is asserted rather than assumed. The threshold ends the build on an <em>unsuppressed</em>
- * qualifying finding, and this module carries exactly one determination - a high-severity match against
- * the embedded servlet container whose fixed releases are published on no line. So the claim is zero
- * unsuppressed critical or high findings <em>plus</em> one disclosed, scoped, self-expiring determination,
- * never "zero findings"; the determination's shape and scope are asserted here, and the withdrawn stronger
- * wording is asserted absent from both the build file and the manual so it cannot quietly return.
+ * <p>"That no analyst determination covers" is the whole of the supply-chain gate's honesty, and it is
+ * asserted rather than assumed. The threshold ends the build on an <em>unsuppressed</em> qualifying
+ * finding, and this module carries exactly one determination - a high-severity match against the embedded
+ * servlet container whose fixed releases are published on no line. The claim is therefore zero
+ * unsuppressed critical or high findings <em>plus</em> one disclosed, scoped, self-expiring
+ * determination, never "zero findings"; the determination's shape and scope are asserted here, and the
+ * withdrawn stronger wording is asserted absent from both the build file and the manual so it cannot
+ * quietly return.
  *
- * <h2>On user-specified rules</h2>
- * There are none. {@code review_rules} returns a single line stating that no rules were provided, read to
- * completion across three windows. That is a verified absence, not an unread document, and it is not
- * licence to lower the standard: the twelve substituted enterprise standards apply in full. Note also
- * what is <em>not</em> a rule, because this class documents the project's own requirements: the ten-row
- * construct-mapping table is a <strong>requirement</strong> and the eight gates are
- * <strong>acceptance criteria</strong>. Both bind, neither originates in the rules document, and neither
- * is retrievable from it.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, both read from
- * {@link TestDataFactory#VERIFIED_CHECKOUT_COMMIT} and {@link TestDataFactory#UPSTREAM_RELEASE_STAMP}.
- * That stamp is a matrix-header provenance string and nothing more - it is carried by 78 legacy members,
- * three carry a later stamp, the seventeen mapsets differ and twenty-five carry none, so no assertion
- * here applies it to a legacy member. Every figure below is a measurement of a committed artefact or a
- * count of a legacy one, which is metadata; no legacy source text is transcribed.
+ * <p>The provenance anchors are read from {@link TestDataFactory#VERIFIED_CHECKOUT_COMMIT} and
+ * {@link TestDataFactory#UPSTREAM_RELEASE_STAMP}. The stamp is a matrix-header provenance string and
+ * nothing more - it is carried by 78 legacy members, three carry a later stamp, the seventeen mapsets
+ * differ and twenty-five carry none - so no assertion here applies it to a legacy member. Every figure
+ * below is a measurement of a committed artefact or a count of a legacy one, which is metadata.
  */
 @SpringBootTest(classes = GateVerificationTest.GateContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -346,11 +336,11 @@ class GateVerificationTest extends AbstractPostgresIT {
      * silently change the marker distribution.
      *
      * <p>The distribution is asserted per member and not only in total, which is the part a total cannot
-     * do. The marker was previously declared to be six rows all belonging to the account-update member,
-     * and ten further rows across three other members carried the same property and no marker: the
-     * account-view long-text sender and its exit, both card-list diagnostic senders and their exits, and
-     * the card-detail account-keyed read and long-text sender with their exits. A bare total would have
-     * accepted moving a row from one member to another, which is exactly how a marker population drifts.
+     * do. DECLARING THE MARKER TO BE SIX ROWS ALL BELONGING TO THE ACCOUNT-UPDATE MEMBER would miss ten
+     * further rows across three other members that carry the same property: the account-view long-text
+     * sender and its exit, both card-list diagnostic senders and their exits, and the card-detail
+     * account-keyed read and long-text sender with their exits. A bare total would
+     * accept moving a row from one member to another, which is exactly how a marker population drifts.
      * Recorded as {@code DL-283} in {@code docs/decision-log.md}.
      */
     private static final Map<String, Integer> UNWIRED_PARAGRAPHS_BY_MEMBER = Map.of(
@@ -412,7 +402,7 @@ class GateVerificationTest extends AbstractPostgresIT {
      * guard at all, either because none was written or because one was deleted. A deleted suite turns
      * this row MISSING and names the criterion it belonged to.
      *
-     * <p>Keyed by criterion so the emitted narrative reads as the reviewer's own list rather than as a
+     * <p>Keyed by criterion so the emitted narrative reads as a list of criteria rather than as a
      * list of file names.
      */
     private static final Map<String, List<String>> FINAL_BOUNDARY_CRITERIA = Map.of(
@@ -446,8 +436,8 @@ class GateVerificationTest extends AbstractPostgresIT {
     /**
      * The line that says whether the emitted sign-off is the final statement of the build or an interim one.
      *
-     * <p>The emitted table was previously indistinguishable from a final sign-off, and a workflow step
-     * uploaded it as one. It is written at {@code integration-test}, which is earlier than the phase that
+     * <p>An emitted table indistinguishable from a final sign-off can be uploaded as one by a workflow
+     * step. It is written at {@code integration-test}, which is earlier than the phase that
      * produces the vulnerability report and the merged coverage report, so a table emitted there is
      * <em>structurally</em> unable to be final whenever a row depends on either. This line states which of
      * the two it is, in a fixed, greppable form, so a later step can discharge the interim rows against the
@@ -1244,18 +1234,17 @@ class GateVerificationTest extends AbstractPostgresIT {
      * The ten identifiers, both name fields and the role code are asserted from the fixture and from the
      * applied seed. The credential is asserted only by its properties.
      *
-     * <p>Four properties of the ten stored credentials are asserted, and the FIRST of them was once
-     * argued to be impossible here:
+     * <p>Four properties of the ten stored credentials are asserted, and the FIRST of them is the one most
+     * easily argued away:
      * <ul>
-     *   <li><strong>acceptance</strong> - each stored digest accepts the credential. This was previously
-     *       omitted, on the reasoning that a module which digests a credential should not hold it and
-     *       that the fixture's window therefore had to carry a synthetic stand-in no seeded digest could
-     *       accept. The consequence went unnoticed: with acceptance omitted, the remaining three
-     *       properties are ALL satisfied by a digest of any value whatsoever, so a wrong literal in the
-     *       fourth migration would have passed this gate while admitting nobody. That was measured, not
+     *   <li><strong>acceptance</strong> - each stored digest accepts the credential. OMITTING IT, on the
+     *       reasoning that a module which digests a credential should not hold it and that the fixture's
+     *       window therefore has to carry a synthetic stand-in no seeded digest can accept, leaves the
+     *       remaining three properties ALL satisfied by a digest of any value whatsoever, so a wrong literal
+     *       in the fourth migration would pass this gate while admitting nobody. That is measurable, not
      *       argued - perturbing the credential by a single character fails the acceptance assertion and
-     *       leaves every other assertion in this nest passing. The fixture now reproduces the delivered
-     *       provisioning records, and the credential still appears in no Java source, no method name and
+     *       leaves every other assertion in this nest passing. The fixture reproduces the delivered
+     *       provisioning records, and the credential appears in no Java source, no method name and
      *       no diagnostic in this module;</li>
      *   <li><strong>shape</strong> - each stored value is a digest of the required length, under a
      *       recognised version marker, at the module's cost factor;</li>
@@ -2375,15 +2364,12 @@ class GateVerificationTest extends AbstractPostgresIT {
         /**
          * Every covering test is a test a runner executes, and it is about the class the row names.
          *
-         * <h2>What "covering test exists" used to mean, and why that was not enough</h2>
+         * <h2>Why file existence is not enough</h2>
          *
-         * <p>The cell was validated with {@link Files#isRegularFile(Path, java.nio.file.LinkOption...)} and
-         * nothing else. A file satisfies that predicate while being zero bytes long, while declaring nothing
-         * but a package, and while having no connection whatever to the class the row maps onto - and this
-         * repository has held all three at once. A twelve-source census found eleven package-only
-         * compilation units and one zero-byte source under a name the unit runner matches, so the runner
-         * opened it and executed nothing. Any row naming such a file recorded coverage that could not
-         * exist, and the row-count check stayed green throughout.
+         * <p>A file can satisfy {@link Files#isRegularFile(Path, java.nio.file.LinkOption...)} while being
+         * zero bytes long, while declaring nothing but a package, and while having no connection to the class
+         * the row maps onto - so a row naming such a file records coverage that cannot exist while the
+         * row-count check stays green.
          *
          * <p>Four properties are asserted here, each catching a different way the cell can be true and
          * meaningless:
@@ -3278,17 +3264,15 @@ class GateVerificationTest extends AbstractPostgresIT {
          *
          * <h4>Why both trees, and why not a grep</h4>
          *
-         * <p>This assertion used to read the production tree only, by line containment, and reported zero.
-         * Both halves of that were weak. The scope was wrong for the gate being audited: Gate 2 requires a
-         * build with no warning and no suppressed warning, and a {@code @SuppressWarnings} in a test source
-         * hides a warning exactly as well as one in a production source - the test tree is the larger of
-         * the two and was entirely unaudited. Two suppressions were in fact sitting there, on a raw generic
-         * mock and on a cast that a correctly declared map made unnecessary. The production-only figure was
-         * zero and stayed zero the whole time they were there.
-         *
-         * <p>The measurement was wrong too. Line containment cannot tell an annotation from a mention of
-         * one, and this suite alone names the annotation in four string literals it asserts on. A grep that
-         * counted those would have to be tuned to ignore them, and a grep tuned to ignore its own findings
+         * <p>READING THE PRODUCTION TREE ONLY, BY LINE CONTAINMENT, IS TWICE TOO WEAK. The scope is wrong for
+         * the gate being audited: Gate 2 requires a build with no warning and no suppressed warning, and a
+         * {@code @SuppressWarnings} in a test source hides a warning exactly as well as one in a production
+         * source - the test tree is the larger of the two, so leaving it unaudited leaves the larger half
+         * unaudited. A suppression on a raw generic mock, or on a cast a correctly declared map makes
+         * unnecessary, sits in the test tree while a production-only figure reads zero throughout. And line
+         * containment is the wrong instrument as well as the wrong scope: it cannot tell an annotation
+         * from a mention of one, and this suite alone names the annotation in four string literals it
+         * asserts on. A grep that counted those would have to be tuned to ignore them, and a grep tuned to ignore its own findings
          * is not an audit. The count is therefore taken over
          * {@link JavaSourceCensus#codeOnlyLinesOf(Path)}, in which comments, literals and text blocks are
          * blanked and line numbers still address the file, so a real annotation is found with its site and
@@ -4064,8 +4048,8 @@ class GateVerificationTest extends AbstractPostgresIT {
          * <p><strong>Both halves of the report are read, and that is the point.</strong> Checking only the
          * ordinary findings array would let a suppressed high-severity entry sit behind a green row: the
          * scanner moves a suppressed finding out of {@code vulnerabilities} and into
-         * {@code suppressedVulnerabilities}, so a rule widened by one character would empty the array this
-         * test used to read and change nothing it used to assert. So the unsuppressed qualifying findings
+         * {@code suppressedVulnerabilities}, so a rule widened by one character would empty the array an
+         * ordinary read consults and change nothing such a read asserts. So the unsuppressed qualifying findings
          * must be none, and every suppressed qualifying finding must be the one determination this module
          * has examined, on an artifact inside its documented scope. Anything else - a second identifier, the
          * same identifier on a coordinate nobody looked at - fails here, which is what makes the sign-off
@@ -4325,7 +4309,7 @@ class GateVerificationTest extends AbstractPostgresIT {
      * and <em>recorded</em> a baseline, and inventing a threshold to test it against is expressly
      * forbidden.
      *
-     * <p>What that leaves is nonetheless checkable, and it is the part that was previously taken on trust:
+     * <p>What that leaves is nonetheless checkable, and it is the part a page cannot establish on its own:
      * a recorded baseline has to be a measurement rather than a heading. Each row is therefore required to
      * carry a concrete date, a named machine, a run label and four positive figures, and its published
      * rate has to agree with its own record count and elapsed time. A row whose rate does not follow from
@@ -4556,7 +4540,7 @@ class GateVerificationTest extends AbstractPostgresIT {
          *       replaces.</li>
          *   <li><strong>The corroborating evidence belongs to this build.</strong> Every generated file's
          *       provenance line must name the revision this run was told it is building. A build directory
-         *       is not guaranteed clean, and a leftover baseline from an earlier revision reconciles with
+         *       is not guaranteed clean, and a leftover baseline from another build reconciles with
          *       the page exactly as a fresh one does while corroborating nothing about the code in the tree
          *       now. A foreign file is reported as a polluted build directory rather than counted.</li>
          *   <li><strong>The gate is not fully signed off on the page alone.</strong> The state below is
@@ -4771,9 +4755,9 @@ class GateVerificationTest extends AbstractPostgresIT {
             // row's state therefore depends on the determination's scope as well as on the threshold: a
             // rule widened past one identifier on the named artefacts turns this row MISSING.
             // Three states, not two. This row's evidence is the report the scan writes at verify, which is
-            // later than this tier, so before the scan has run the row is PENDING and says so. It used to be
-            // published as PRESENT on the strength of the configured mechanism alone - a sign-off row
-            // asserting a clean supply chain against no scan at all. PENDING does not fail the sign-off;
+            // // later than this tier, so before the scan has run the row is PENDING and says so. PUBLISHING IT
+            // // AS PRESENT on the strength of the configured mechanism alone would be a sign-off row asserting a
+            // // clean supply chain against no scan at all. PENDING does not fail the sign-off;
             // MISSING does, and a stale or unclean report is MISSING.
             final EvidenceState supplyChainState = determinationIsScopedToOneExaminedFinding()
                     ? supplyChain.state()
@@ -6969,7 +6953,7 @@ class GateVerificationTest extends AbstractPostgresIT {
         final String expectedRevision = expectedBuildRevision();
         for (final GeneratedBaseline baseline : generatedPerformanceEvidence()) {
             // A generated file is corroboration only if THIS build wrote it. The build directory is not
-            // guaranteed clean - a developer running `verify` without `clean` inherits the previous run's
+            // // guaranteed clean - a developer running `verify` without `clean` inherits an earlier run's
             // files - and a leftover baseline reconciles against the page exactly as a fresh one does while
             // corroborating nothing about the code now in the tree. The stamp the recorder writes is what
             // tells them apart, so a file naming another revision is recorded as foreign rather than
@@ -7776,13 +7760,13 @@ class GateVerificationTest extends AbstractPostgresIT {
     /**
      * Counts the invocations of a method within one source, counting no declaration.
      *
-     * <h4>Why the declaration is excluded, and why it used to be counted</h4>
+     * <h4>Why the declaration is excluded from the count</h4>
      *
      * <p>This is the instrument that establishes the empty fee paragraph is still <em>invoked</em>, which is
-     * the whole of what stops the migration from quietly dropping a call the estate makes. An earlier form
-     * counted a line such as {@code private void computeFees() {} as an invocation, because it accepted any
-     * site whose prefix ended in {@code void} or {@code private}. The consequence was that deleting the real
-     * call site left the count at one and the assertion green: the check reported a call graph it had not
+     * the whole of what stops the migration from quietly dropping a call the estate makes. A rule that
+     * accepted any site whose prefix ended in {@code void} or {@code private} would count a line such as
+     * {@code private void computeFees() {} as an invocation, so deleting the real call site would leave the
+     * count at one and the assertion green: a check reporting a call graph it had not observed.
      * observed.
      *
      * <p>Two independent measures now exclude a declaration. The lines
@@ -7828,10 +7812,13 @@ class GateVerificationTest extends AbstractPostgresIT {
     /**
      * One line of the sign-off checklist.
      *
-     * @param item      the checklist item
-     * @param artefact  the artefact that satisfies it
-     * @param satisfied whether that artefact is actually present
-     * @param evidence  what the artefact shows
+     * @param item     the checklist item
+     * @param artefact the artefact that satisfies it
+     * @param state    what was found for that artefact: {@code MEASURED} when a current artefact was read
+     *                 and is published as {@code PRESENT}; {@code PENDING} when a later build phase
+     *                 produces it and it does not exist yet; {@code MISSING} when it should exist and does
+     *                 not, or exists and is not usable
+     * @param evidence what the artefact shows
      */
     private record ChecklistRow(String item, String artefact, EvidenceState state, String evidence) {
 
@@ -8034,7 +8021,7 @@ class GateVerificationTest extends AbstractPostgresIT {
      * Exercises the two external contracts this class can reach in process, and reports what it found.
      *
      * <h4>Why this is not a restatement of the end-to-end suite</h4>
-     * The sign-off row for interface contracts used to be a literal pass, on the strength of two named
+     * A literal pass on the interface-contract sign-off row, on the strength of two named
      * classes existing. Those classes are the right place for the contracts that need a bound port and a
      * live queue, and they are named in the artefact column - but a checklist row has to be the result of
      * something, so the two halves that need neither are exercised here through the shipped code: the
@@ -8333,7 +8320,7 @@ class GateVerificationTest extends AbstractPostgresIT {
      *
      * <p>Written to the build directory rather than to the documentation tree on purpose. A test that edited
      * a committed document would make the evidence a product of the run that is supposed to be audited by
-     * it; emitting it as build output keeps the recorded page a reviewed artefact and gives the reviewer the
+     * it; emitting it as build output keeps the recorded page a reviewed artefact and supplies the
      * exact text to carry across.
      *
      * @param  rows the checklist

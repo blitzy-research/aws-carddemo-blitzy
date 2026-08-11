@@ -97,8 +97,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * subset worth retaining. Tests below pin the marker, pin that no supplied value survives it, and
  * pin that nesting a populated navigation state discloses nothing either.
  *
- * <p>Provenance: checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
+ * <p>No legacy source text is reproduced.
  */
 @DisplayName("CardUpdateRequest :: card-update request contract of legacy transaction CCUP")
 class CardUpdateRequestCoverageTest {

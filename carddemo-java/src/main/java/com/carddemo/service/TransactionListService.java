@@ -42,12 +42,6 @@ import org.springframework.stereotype.Service;
  * {@code PROCEDURE DIVISION} paragraphs has a named method on this class and states its own paragraph
  * name and source line; {@code docs/traceability-matrix.md} carries the row-per-paragraph inventory.
  *
- * <p>Provenance. The legacy estate is read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here;
- * behaviour is cited by member name, paragraph name and line number so that a reviewer can hold the two
- * side by side.
- *
  * <h2>The two facts that decide whether this translation is correct</h2>
  *
  * <p><strong>The page is ten rows, and the figure comes from loop bounds rather than from a

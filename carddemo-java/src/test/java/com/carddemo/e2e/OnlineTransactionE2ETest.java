@@ -178,12 +178,11 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  * returns, and the request body is encoded straight out of that array into bytes so the value never
  * becomes a string this class holds.
  *
- * <p><strong>No sign-on here installs a digest of its own.</strong> It did not always: a digest of the
- * fixture's window used to be installed on the record first, because the fixture then carried a fabricated
- * window that no delivered digest could accept. Substituting the stored digest before authenticating meant
- * the one property that distinguishes a correct shipped digest from a merely well-formed one - that it
- * accepts the credential - was never exercised by a sign-on at all: a suite that installed its own digest
- * first would have passed unchanged had all ten frozen digests been wrong. The fixture now reproduces the
+ * <p><strong>No sign-on here installs a digest of its own.</strong> INSTALLING A DIGEST OF THE FIXTURE'S
+ * WINDOW ON THE RECORD FIRST - which a fixture carrying a fabricated window no delivered digest can
+ * accept would require - means the one property that distinguishes a correct shipped digest from a
+ * merely well-formed one, that it accepts the credential, is never exercised by a sign-on at all: such a
+ * suite would pass unchanged had all ten frozen digests been wrong. The fixture reproduces the
  * delivered provisioning records, so nothing is installed and nothing is substituted, and
  * {@link TheDeliveredIdentities#aSuccessfulSignOnVerifiesAgainstTheDeliveredDigest()} observes that the
  * stored digest is byte-identical before and after an admitted sign-on.
@@ -202,10 +201,9 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  * re-suffixing it or moving it out of this package would put it in the tier that has no emulator and no
  * server, where every assertion below would fail for a reason unrelated to any contract.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Card images, message texts, resource-definition
- * attribute names, record widths, field offsets and sort-symbol declarations are external contract, and
- * contract metadata is what this gate exists to verify; no legacy implementation line is transcribed.
+ * <p>Card images, message texts, resource-definition attribute names, record widths, field offsets and
+ * sort-symbol declarations are external contract, and contract metadata is what this gate exists to verify;
+ * no legacy implementation line is transcribed.
  *
  * <h2>Authorities, by member and line</h2>
  * Every fact asserted below is authorised by a named member at a named line in the read-only reference
@@ -2339,13 +2337,13 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
      * <strong>delivered</strong> credential digest.
      *
      * <h4>Nothing is installed, and that is the point</h4>
-     * A digest of the fixture's credential window used to be installed on the record before the request
-     * was sent. It had to be, because the fixture then carried a fabricated window that none of the ten
-     * delivered digests could accept - so every admitted sign-on in this class was authenticating against
-     * a digest this class had just written, and the ten digests the migration actually delivered were
-     * never exercised by any of them. The consequence was that the one property distinguishing a correct
-     * shipped digest from a merely well-formed one, that it accepts the credential, was never exercised
-     * end to end: a wrong literal in the seed migration would have left every test here green.
+     * INSTALLING A DIGEST OF THE FIXTURE'S CREDENTIAL WINDOW on the record before the request is sent is
+     * prohibited. A fixture carrying a fabricated window that none of the ten delivered digests can accept
+     * would require it - and then every admitted sign-on in this class would authenticate against a digest
+     * this class had just written, leaving the ten digests the migration delivers exercised by none of them.
+     * The one property distinguishing a correct shipped digest from a merely well-formed one, that it
+     * accepts the credential, would never be exercised end to end: a wrong literal in the seed migration
+     * would leave every test here green.
      *
      * <p>The fixture now reproduces the delivered provisioning records, so nothing is installed and
      * nothing is substituted, and the value presented is the one the legacy provisioning member

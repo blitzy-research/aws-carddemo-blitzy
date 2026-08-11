@@ -122,10 +122,8 @@ import com.carddemo.repository.TransactionRepository;
  * when the first is accepted and stop at one when it is not, and that count agreeing across the two
  * services is a property no single-service suite could state.
  *
- * <p>Provenance: legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source line is transcribed
- * here; the two codes and the rule that reads them are the contract this file pins, and they are
- * declared as test constants.
+ * <p>No legacy source line is transcribed here; the two codes and the rule that reads them are the contract
+ * this file pins, and they are declared as test constants.
  */
 @DisplayName("Date acceptance - the three copies of the severity and message-number test agree")
 final class DateAcceptancePredicateEquivalenceTest {

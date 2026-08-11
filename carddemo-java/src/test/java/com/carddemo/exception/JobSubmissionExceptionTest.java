@@ -130,14 +130,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>The legacy paragraph name is misspelled in the source: it reads {@code WIRTE-JOBSUB-TDQ}.
  * It is cited here exactly as written so the traceability row stays findable under the original
  * spelling. The misspelling is not propagated into any Java identifier.
- *
- * <h2>Provenance</h2>
- *
- * <p>Behaviour verified against the CardDemo mainframe estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced
- * here; the citations are references, not transcriptions. The one exception is the failure message
- * text, which is an external interface contract literal and is therefore required verbatim.
  */
 @DisplayName("JobSubmissionException")
 class JobSubmissionExceptionTest {

@@ -46,11 +46,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for {@link SignOnResponse}, the response body of legacy transaction {@code CC00}, the
  * sign-on screen implemented by {@code app/cbl/COSGN00C.cbl}.
  *
- * <p><strong>Provenance.</strong> Every width and every message literal asserted here was read from the
- * mainframe estate at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The five operator messages are the ones the
- * legacy program moves into its 80-character work field at {@code app/cbl/COSGN00C.cbl} lines 120, 125,
- * 242 to 243, 249 and 254.
+ * <p>The five operator messages are the ones the legacy program moves into its 80-character work field at
+ * {@code app/cbl/COSGN00C.cbl} lines 120, 125, 242 to 243, 249 and 254.
  *
  * <p><strong>Why the message literals are asserted character for character.</strong> They are an
  * external interface contract, not decoration: operators and downstream tooling match on the exact

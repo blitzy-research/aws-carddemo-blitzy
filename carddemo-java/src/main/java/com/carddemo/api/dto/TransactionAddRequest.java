@@ -34,11 +34,6 @@ import java.io.IOException;
  * Consumed by the transaction controller in the API layer and by the transaction-add service, which
  * owns every behavioural rule described below.
  *
- * <p>Provenance: repository commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Every line number cited here is a line
- * of the legacy member named beside it at that commit. No COBOL text is reproduced in this file; the
- * citations are pointers into a read-only reference tree that this migration never copies from.</p>
- *
  * <h2>What the map contributes, and what it deliberately omits</h2>
  *
  * <p>The symbolic map declares 21 field families. Fourteen of them are operator-editable input
@@ -451,11 +446,10 @@ public record TransactionAddRequest(
      * <p><strong>This aligns the request with the response it is answered by.</strong> The outbound
      * contract for this same transaction withholds exactly these eight components and retains exactly
      * this remainder, so the two halves of one screen's traffic no longer disagree about which of their
-     * shared values may be rendered. An earlier revision of this file recorded the opposite decision -
-     * that the generated rendering should stand because no field-level protection exists in the legacy
-     * design - and that reasoning does not survive scrutiny: the absence of encryption at rest is a
-     * separate, documented gap, and it is not a licence to widen the gap by rendering the same values
-     * into every diagnostic sink.
+     * shared values may be rendered. THE OPPOSITE DECISION IS NOT AVAILABLE - that the generated rendering
+     * should stand because no field-level protection exists in the legacy design - because that reasoning
+     * does not survive scrutiny: the absence of encryption at rest is a separate, documented gap, and it is
+     * not a licence to widen the gap by rendering the same values into every diagnostic sink.
      *
      * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its component
      * byte for byte, nothing is masked, shortened or re-encoded anywhere in this type, and

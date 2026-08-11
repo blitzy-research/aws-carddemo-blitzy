@@ -96,12 +96,6 @@ import org.springframework.core.io.Resource;
  * lengths, record counts and member names. Nothing under {@code app/} is opened at run time either: every
  * fixture this suite reads is the copy on the test classpath under {@code fixtures/input}, so the build
  * never depends on a tree the module does not ship.
- *
- * <h2>Provenance</h2>
- *
- * <p>Matrix header: commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>That stamp is not universal, and this suite therefore never asserts it per member.</strong>
  * Across the estate 78 members carry it, 3 carry later stamps, all 17 screen definitions carry something
  * different again, and 25 members carry no stamp at all. A per-member assertion would fail on more than a

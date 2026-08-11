@@ -85,10 +85,6 @@ import static org.mockito.Mockito.when;
  * job stream. The service therefore validates the card count, every card's width and character
  * set, the position of the terminating card and every derived identifier before publishing
  * anything, and the assertions below prove that a malformed stream sends nothing at all.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("JobSubmissionService: the online-to-batch job-submission bridge")
 class JobSubmissionServiceBoundaryTest {

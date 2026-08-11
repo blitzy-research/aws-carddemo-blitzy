@@ -94,10 +94,8 @@ import org.yaml.snakeyaml.Yaml;
  * resource-side half of DL-043, the queue's name is DL-045, and the publisher's ignore-on-error posture
  * is DL-044.
  *
- * <p><strong>Provenance.</strong> Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy queue's
- * resource-definition attribute names are cited as metadata; no legacy source statement is
- * reproduced.</p>
+ * <p>The legacy queue's resource-definition attribute names are cited as metadata; no legacy source
+ * statement is reproduced.</p>
  */
 @DisplayName("AWS bootstrap: three resources, their behavioural attributes, and seven files agreeing")
 final class LocalStackBootstrapContractTest {
@@ -316,10 +314,10 @@ final class LocalStackBootstrapContractTest {
                     .doesNotContain("object-lock")
                     .doesNotContain("VisibilityTimeout")
                     .doesNotContain("MessageRetentionPeriod");
-            // Default encryption was in the list above until this checkpoint, on the reasoning that
-            // versioning was the one setting the bucket needed. That reasoning was about generation
-            // semantics and said nothing about the objects themselves, every one of which carries
-            // account identifiers, card numbers or balances - so it is now provisioned rather than
+            // // Default encryption is NOT in the list above, and the reasoning that would put it there -
+            // // versioning being the one setting the bucket needs - is about generation
+            // // semantics and says nothing about the objects themselves, every one of which carries
+            // // account identifiers, card numbers or balances. It is provisioned rather than
             // withheld, and the claim here is narrowed to what remains true. Its presence is required
             // by theBucketIsGivenItsAccessPosture; DL-346 records the reversal.
         }
@@ -724,9 +722,9 @@ final class LocalStackBootstrapContractTest {
                 + "that already existed unhardened is hardened on the next run")
         void thePostureIsAppliedOutsideTheExistenceGuards() throws IOException {
             // The same reasoning as the versioning call, and for the same reason: a bucket or queue
-            // created by anything other than this script - a developer, an earlier revision of this
-            // file, a restored snapshot - would keep whatever posture it had forever if the calls sat
-            // inside the else branch.
+            // // created by anything other than this script - a developer, another tool, a restored snapshot -
+            // // would keep whatever posture it had forever if the calls sat
+            // // inside the else branch.
             final List<String> lines = executableLines();
             final int bucketGuardEnd = indexOfLineFrom(lines,
                     indexOfLineContaining(lines, "s3api create-bucket"), "fi");
@@ -1206,10 +1204,10 @@ final class LocalStackBootstrapContractTest {
             // of the address are environment-substituted with the canonical default, and the stack
             // definition maps the same variable onto the container's fixed edge port.
             //
-            // This expectation used to be the whole mapping, "${LOCALSTACK_PORT:-4566}:4566". That shape
-            // published the edge port on EVERY host interface, which handed a network peer an emulator
-            // holding this module's staged batch files and its job-submission queue. The mapping now
-            // carries a host address as well, so the assertion is written as the two properties it
+            // // "${LOCALSTACK_PORT:-4566}:4566" ALONE IS NOT THE WHOLE MAPPING. That shape
+            // // publishes the edge port on EVERY host interface, which hands a network peer an emulator
+            // // holding this module's staged batch files and its job-submission queue. The mapping
+            // // carries a host address as well, so the assertion is written as the two properties it
             // actually cares about - the port is still redirectable through the same variable, and the
             // binding is loopback by default - rather than as one literal that conflates them and goes
             // stale the moment either changes. LocalValidationStackExposureTest owns the binding rule for
@@ -1324,8 +1322,8 @@ final class LocalStackBootstrapContractTest {
                     .isEqualTo("region: " + REGION);
 
             // Every overlay's AWS-integration region derives from that one statement rather than
-            // restating the variable. A restatement is what let an earlier revision hold two
-            // independently editable copies of one fact.
+            // // restating the variable. A restatement is what would let two
+            // // independently editable copies of one fact exist.
             for (final String overlay : List.of(
                     "src/main/resources/application.yml",
                     "src/main/resources/application-local.yml",

@@ -609,7 +609,7 @@ html.presenting section.slide { min-height: 60vh; }
         <tr><th scope="row">3270 terminal interface over 17 mapsets</th><td>Spring MVC controllers and transport contracts</td><td>field widths, numeric typing, message text, page sizes</td></tr>
         <tr><th scope="row">A communication area carried between turns</th><td>signed claims plus an echoed navigation context</td><td>the pseudo-conversation, with no server-side session</td></tr>
         <tr><th scope="row">25 program-transfer dispatches, 19 re-arms</th><td>route constants returned in the response body</td><td>the dispatch graph; the client drives the next call</td></tr>
-        <tr><th scope="row">Ten keyed VSAM clusters, three alternate indexes</th><td>PostgreSQL 16, eleven tables, Flyway <code>V1</code> to <code>V4</code></td><td>record layouts to the byte; business keys, never surrogates</td></tr>
+        <tr><th scope="row">Ten keyed VSAM clusters, three alternate indexes</th><td>PostgreSQL 16, eleven tables, Flyway migrations in two profile-scoped locations</td><td>record layouts to the byte; business keys, never surrogates</td></tr>
         <tr><th scope="row">Sequential browse in both directions</th><td><code>Pageable</code> repository queries</td><td>page size <em>and</em> fill direction, which differ per screen</td></tr>
         <tr><th scope="row">29 job members</th><td>nine Spring Batch job configurations</td><td>step sequencing and the four condition-code gates</td></tr>
         <tr><th scope="row">One transient-data-queue write</th><td>an <strong>SQS FIFO</strong> queue publish</td><td>80-character fixed records, append order, ignore-on-error</td></tr>
@@ -688,7 +688,7 @@ html.presenting section.slide { min-height: 60vh; }
         <tr><th scope="row">Language and runtime</th><td>Java 25 LTS, Eclipse Temurin <strong>25.0.3+9</strong></td><td>compiles at <code>release 25</code> with all lint categories promoted to errors</td></tr>
         <tr><th scope="row">Framework</th><td>Spring Boot <strong>3.5.16</strong></td><td>web, data access, batch, security, validation and Actuator</td></tr>
         <tr><th scope="row">Build</th><td>Maven <strong>3.9.16</strong> through a committed wrapper</td><td>the wrapper is script-only, so the build is reproducible from a bare checkout</td></tr>
-        <tr><th scope="row">Persistence</th><td>Spring Data JPA over <strong>PostgreSQL 16</strong>, schema by Flyway</td><td>eleven tables and six forward-only migrations replace ten cluster definitions</td></tr>
+        <tr><th scope="row">Persistence</th><td>Spring Data JPA over <strong>PostgreSQL 16</strong>, schema by Flyway</td><td>eleven tables and forward-only migrations replace ten cluster definitions</td></tr>
         <tr><th scope="row">Orchestration</th><td>Spring Batch</td><td>nine job configurations replace the application job steps</td></tr>
         <tr><th scope="row">Cloud services</th><td>AWS <strong>S3</strong>, <strong>SQS FIFO</strong> and <strong>SNS</strong>, through Spring Cloud AWS <strong>3.4.2</strong></td><td>S3 stages batch files, the SQS FIFO queue carries the single online-to-batch bridge, SNS fans out completion</td></tr>
         <tr><th scope="row">Test tier</th><td>JUnit 5, Mockito, AssertJ, Testcontainers <strong>1.21.4</strong></td><td>unit, container-backed integration and end-to-end tiers</td></tr>
@@ -717,7 +717,7 @@ html.presenting section.slide { min-height: 60vh; }
       <tbody>
         <tr><th scope="row"><code>api</code>, <code>api.dto</code></th><td>service, domain, util, exception</td><td>controllers and the transport contracts derived from the symbolic maps</td></tr>
         <tr><th scope="row"><code>batch</code>, <code>batch.step</code></th><td>service, repository, domain, util, exception, config</td><td>nine job configurations and their step components over one shared template</td></tr>
-        <tr><th scope="row"><code>service</code></th><td>repository, domain, util, exception</td><td>thirty-eight classes: twenty-six translation-bearing, twelve support. The 544 procedure units resolve to <strong>twenty-two</strong> owning classes &mdash; twenty-one of those services, plus one utility class &mdash; one method each</td></tr>
+        <tr><th scope="row"><code>service</code></th><td>repository, domain, util, exception</td><td>thirty-seven <code>*Service</code> classes: twenty-six translation-bearing, eleven support, among sixty-three package files. The 544 procedure units resolve to <strong>twenty-two</strong> owning classes &mdash; twenty-one of those services, plus one utility class &mdash; one method each</td></tr>
         <tr><th scope="row"><code>repository</code></th><td>domain <strong>only</strong></td><td>eleven Spring Data interfaces; the three alternate indexes became finders and one declared range query</td></tr>
         <tr><th scope="row"><code>domain</code>, <code>domain.id</code>, <code>domain.enums</code></th><td>itself</td><td>entities at their verified widths, composite business keys, and nine enums drawn from 508 condition names</td></tr>
         <tr><th scope="row"><code>util</code>, <code>exception</code></th><td>domain, and nothing above</td><td>the zoned-decimal codec, <strong>twelve</strong> hand-written fixed-width mappers over eleven persisted record layouts, formatters and the failure types</td></tr>

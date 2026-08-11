@@ -213,16 +213,6 @@ import com.carddemo.domain.CardCrossReference;
  *     exception type, for the reason given under the failure contract above.</li>
  * </ol>
  *
- * <p><strong>Provenance.</strong> Translated from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. The copybook's trailer records the upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68}, dated 2022-07-19. Ten programs include this
- * copybook - the third-highest inclusion count of any data copybook in the estate, and a
- * consequence of this table being the resolution point for every card-to-account and
- * card-to-customer hop - with two further inclusions commented out at source and therefore not
- * counted. The legacy tree is read-only reference: no copybook, program or job-stream text is
- * reproduced here, so traceability is carried by citation of member names, field names, pictures,
- * widths, offsets and counts only.
- *
  * @see CardCrossReference
  * @see FixedWidthFieldReader
  */

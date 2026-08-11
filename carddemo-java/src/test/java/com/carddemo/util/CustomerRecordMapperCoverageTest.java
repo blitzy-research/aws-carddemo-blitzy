@@ -89,10 +89,8 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * module's shipped {@link SensitiveFieldCodec} under a real key and asserts the same byte-exact round
  * trip.
  *
- * <p>Provenance: checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Layout authority
- * {@code app/cpy/CVCUS01Y.cpy} and its unhyphenated variant {@code app/cpy/CUSTREC.cpy}; fixture
- * authority {@code app/data/ASCII/custdata.txt}.
+ * <p>Layout authority {@code app/cpy/CVCUS01Y.cpy} and its unhyphenated variant {@code app/cpy/CUSTREC.cpy}
+ * ; fixture authority {@code app/data/ASCII/custdata.txt} .
  */
 @DisplayName("CustomerRecordMapper byte-parity contract")
 class CustomerRecordMapperCoverageTest {

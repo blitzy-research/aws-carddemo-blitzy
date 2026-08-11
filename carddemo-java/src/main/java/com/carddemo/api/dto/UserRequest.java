@@ -346,14 +346,6 @@ import java.util.List;
  * the arrangement working - the authority arrives on the transport, and the request body carries only what
  * the operation acts on.
  *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The estate under {@code app/} is read-only
- * reference: it is cited above and below by member name, item name, declared width and line number
- * only, and no source text from it is reproduced.
- *
  * @param userId the eight-character identifier of the user the operation acts on - the add map's
  *     user-id item at line 72 of {@code app/cpy-bms/COUSR01.CPY}, and the target reading of the
  *     identically named item at line 60 of both {@code app/cpy-bms/COUSR02.CPY} and

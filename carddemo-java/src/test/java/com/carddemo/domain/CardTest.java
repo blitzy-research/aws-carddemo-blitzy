@@ -89,11 +89,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * stronger than that baseline, so a reviewer should read it as the improvement it is rather than as a
  * regression.
  *
- * <p><strong>Provenance.</strong> Legacy checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec;
- * upstream release stamp CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19). Recorded here as a plain
- * identifier string for the traceability matrix. No assertion is made about that stamp, because it is
- * not carried uniformly by every legacy member and testing for it would test the estate rather than
- * this class.
+ * <p>Recorded here as a plain identifier string for the traceability matrix. No assertion is made about
+ * that stamp, because it is not carried uniformly by every legacy member and testing for it would test the
+ * estate rather than this class.
  */
 @DisplayName("Card - the 150-byte card record of copybook CVACT02Y")
 class CardTest {

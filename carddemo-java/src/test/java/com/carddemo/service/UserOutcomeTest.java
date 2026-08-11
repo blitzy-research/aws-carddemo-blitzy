@@ -35,9 +35,6 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * slots that do not exist, and a page longer than the accompanying browse window declares would contradict
  * the window the same turn assembled - so both are refusals rather than truncations. The rendering discloses
  * no identifier and no name, and reports counts instead of contents.
- *
- * <p>Provenance: {@code app/cbl/COUSR00C.cbl} through {@code COUSR03C.cbl} and their four mapsets, read as
- * read-only reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
  */
 @DisplayName("UserOutcome :: the settled user-administration turn the transactions produce")
 class UserOutcomeTest {

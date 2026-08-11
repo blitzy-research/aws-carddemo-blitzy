@@ -90,36 +90,29 @@ import jakarta.validation.constraints.Size;
  * them is a component of this record.
  *
  * <ul>
- *   <li><strong>The refusal test.</strong> The program declines to settle only when the account's
- *       outstanding total is non-positive <em>and</em> the account-id input is non-blank - both
- *       conditions together, tested at line 198 - and reports the refusal with the diagnostic at
- *       line 201. Neither the test nor its message is performed or declared here; this record runs
- *       no comparison and no sign test of any kind.</li>
- *   <li><strong>The transaction identifier.</strong> The program draws it from no generator. It
- *       positions on the highest existing key by browsing backwards from the high value and takes
- *       the one immediately above it at lines 212 to 219, seeding from zeros when the file is empty
- *       at line 488. On an initially empty file the first identifier is therefore the
- *       sixteen-character {@code 0000000000000001} and never {@code 1}. No identifier component
- *       appears here and none is derived here.</li>
- *   <li><strong>The synthesized transaction.</strong> The record the program writes is assembled
- *       from fixed values it holds itself: a type code, a category code, a source at line 222 that
- *       is space-padded to its full declared width, a description at line 223, a merchant
- *       identifier carried as digits rather than as a quantity, a merchant name at line 227, and a
- *       merchant city and postal code. None of those values is client-supplied, so none of them is
- *       declared in this file.</li>
- *   <li><strong>The timestamps.</strong> A single clock reading is stamped into both the origination
- *       and the processing timestamp at lines 231 to 232, so the two are identical for a settlement
- *       made through this screen. The two twenty-six-character renderings used across the estate
- *       differ from one another deliberately, and building either is the service's work. This record
- *       carries no timestamp and imports no date or time type at all.</li>
- *   <li><strong>The order of the writes.</strong> The program writes the transaction, recomputes the
- *       account's stored figure at line 234 and only then updates the account at line 235.
- *       Transaction boundaries and write order are service concerns and are not expressible on a
- *       transfer object.</li>
- *   <li><strong>The confirmation prompt.</strong> When the operator has not yet confirmed, the
- *       program emits the prompt at line 237 instead of settling. That message, like the two
- *       diagnostics above, is declared once on {@code BillPaymentResponse}.</li>
+ *   <li><strong>The refusal test</strong> fires only when the account's outstanding total is
+ *       non-positive <em>and</em> the account-id input is non-blank - both together, at line 198 - with
+ *       the diagnostic at line 201.</li>
+ *   <li><strong>The transaction identifier</strong> comes from no generator: the program browses
+ *       backwards from the high value, takes the key immediately above the highest existing one at lines
+ *       212 to 219, and seeds from zeros when the file is empty at line 488, so the first identifier on
+ *       an empty file is the sixteen-character {@code 0000000000000001} and never {@code 1}.</li>
+ *   <li><strong>The synthesized transaction</strong> is assembled from values the program holds itself -
+ *       type and category codes, a source at line 222 space-padded to its declared width, a description
+ *       at line 223, a merchant identifier carried as digits rather than a quantity, and a merchant name,
+ *       city and postal code - none of them client-supplied.</li>
+ *   <li><strong>The timestamps</strong> are one clock reading stamped into both the origination and the
+ *       processing field at lines 231 to 232, so the two are identical for a settlement made through this
+ *       screen; the two twenty-six-character renderings used across the estate differ deliberately.</li>
+ *   <li><strong>The write order</strong> is transaction, then the recomputed account figure at line 234,
+ *       then the account update at line 235.</li>
+ *   <li><strong>The confirmation prompt</strong> at line 237 is emitted instead of settling when the
+ *       operator has not yet confirmed.</li>
  * </ul>
+ *
+ * <p>None of the above is performed or declared in this record: it runs no comparison, mints no
+ * identifier, carries no synthesized value, imports no date or time type and expresses no write order.
+ * Every message named above is declared once, on {@code BillPaymentResponse}.
  *
  * <h2>Nothing is validated, defaulted or normalised here</h2>
  *
@@ -182,19 +175,10 @@ import jakarta.validation.constraints.Size;
  * <strong>Stringification is not.</strong> The account identifier identifies an account holder and the
  * confirmation character is operator input, so both are replaced by a fixed placeholder in
  * {@link #toString()} while every accessor and the serialized wire form continue to carry them byte for
- * byte. An earlier revision of this file asserted that neither carried value was sensitive and that the
- * generated rendering could therefore stand; that assessment was wrong about the identifier and
- * disagreed with the outbound contract for this same screen, which already withholds both. Nothing is
- * suppressed from the wire form here - that is a different channel with a different requirement, and the
- * service needs both values intact.
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The estate under {@code app/} is read-only
- * reference: it is cited here by member name, field width and line number only, and no COBOL text is
- * reproduced.
+ * byte. NEITHER CARRIED VALUE MAY BE TREATED AS NON-SENSITIVE: the identifier identifies an account
+ * holder, and rendering it would disagree with the outbound contract for this same screen, which
+ * already withholds both. Nothing is suppressed from the wire form here - that is a different channel with
+ * a different requirement, and the service needs both values intact.
  *
  * @param accountId the operator-typed account identifier, corresponding to the eleven-character
  *     account-id item of symbolic map {@code COBIL00} at line 60 of

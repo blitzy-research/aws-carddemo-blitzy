@@ -48,11 +48,6 @@ import java.util.Optional;
  * order, because the legacy screen renders the rows in table order and the operator selects by the number
  * printed beside the row.
  *
- * <p>Provenance: {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy}, read as read-only
- * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook text is transcribed beyond the
- * menu label literals, which are the external screen contract.
- *
  * @since 1.0.0
  */
 public interface MenuOptionSource {

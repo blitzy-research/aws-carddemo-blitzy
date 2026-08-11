@@ -196,13 +196,6 @@ import org.springframework.test.context.DynamicPropertySource;
  * ceiling, and no JVM sizing is set anywhere. The measurements are published for the evidence page and
  * the only assertions made over the instruments are that they exist and that their shape agrees with the
  * record counts the run actually processed.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Dataset names, record widths, record counts and
- * external-contract literals are metadata rather than source text, and no legacy source line is
- * transcribed. No user-specified rules were provided for this engagement - the project's rules document
- * states exactly that - so the work is held to the module's enterprise standards instead, and the
- * divergences this class pins down are recorded in {@code docs/decision-log.md}.
  */
 @SpringBootTest(classes = BatchPipelineE2ETest.PipelineContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -417,12 +410,12 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     // -----------------------------------------------------------------------------------------------
     // WHY THIS IS NOT A TEST THAT LATER TESTS DEPEND ON.
     // -----------------------------------------------------------------------------------------------
-    // The pipeline used to be driven by an ORDERED TEST which wrote its results into static mutable
-    // collections that some thirty later tests then read. That made the class runnable only in its
-    // entirety and only in its declared order: selecting one method to diagnose a failure, or letting a
-    // runner reorder the methods, produced a cascade of failures whose cause was the harness rather than
-    // the code - and the helpers said so in as many words, failing with "the pipeline test must have run
-    // first".
+    // // DRIVING THE PIPELINE FROM AN ORDERED TEST that writes its results into static mutable
+    // // collections for some thirty later tests to read makes the class runnable only in its
+    // // entirety and only in its declared order: selecting one method to diagnose a failure, or letting a
+    // // runner reorder the methods, produces a cascade of failures whose cause is the harness rather than
+    // // the code - and the helpers say so in as many words, failing with "the pipeline test must have run
+    // // first".
     //
     // The run now happens exactly once, in fixture setup, and everything it observed is published as one
     // immutable snapshot. Every test below reads only that snapshot, so each is valid on its own and in
@@ -1289,9 +1282,10 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
         assertThat(rejects.length % REJECT_WIDTH).isZero();
         assertThat(rejects.length / REJECT_WIDTH).isPositive();
 
-        // THE END-TO-END BYTE COPY. The legacy write is MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA
-        // [app/cbl/CBTRN02C.cbl:L447] - the record area the READ filled. So each reject record's leading
-        // segment must be an input line VERBATIM, not a rendering of the fields it decoded to. A single
+        // THE END-TO-END BYTE COPY. The legacy write copies the daily-transaction record area - what the
+        // preceding read filled - into the reject record's leading segment [app/cbl/CBTRN02C.cbl:L447]. So
+        // each reject record's leading segment must be an input line VERBATIM, not a rendering of the
+        // fields it decoded to. A single
         // defensive copy, re-map or reload anywhere between the reader and the writer would break this
         // and no unit test of the writer alone could see it. Recorded as DL-295.
         for (int record = 0; record < rejects.length / REJECT_WIDTH; record++) {

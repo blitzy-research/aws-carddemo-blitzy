@@ -205,13 +205,12 @@ import org.springframework.transaction.PlatformTransactionManager;
  * be added: every one of them interleaves work, and interleaved work destroys the ordering this job
  * exists to establish.
  *
- * <p>Nothing fires when the application context starts. Launch-on-start is disabled in the shared
- * configuration document, and this class contributes no start-up runner, no lifecycle participant, no
- * initialising callback, no event listener and no scheduled trigger, and it names no job for anything
- * to resolve automatically. The job is launched on demand, by the name published as {@link #JOB_NAME},
- * through the registry and operator the framework's own auto-configuration publishes. It is
- * <strong>not</strong> chained to any other job: the estate holds no master orchestrator, pipeline
- * order is an operational convention, and no job that "runs everything" exists in this module.
+ * <p>Nothing fires when the application context starts: launch-on-start is disabled in the shared
+ * configuration document and this class contributes no runner, lifecycle participant, callback, listener
+ * or scheduled trigger. The job is launched on demand by the name published as {@link #JOB_NAME},
+ * through the registry the framework's own auto-configuration publishes. It is <strong>not</strong>
+ * chained to any other job: the estate holds no master orchestrator and pipeline order was an
+ * operational convention.
  *
  * <p>Both steps are real framework steps carrying <strong>distinct, stable names</strong>, which is
  * what makes each one separately visible on the metrics scrape endpoint: the batch tier's own
@@ -261,16 +260,6 @@ import org.springframework.transaction.PlatformTransactionManager;
  * file, because {@code docs/decision-log.md}, {@code docs/traceability-matrix.md} and
  * {@code docs/gate-evidence.md} belong elsewhere: the stable-sort tie-break described above, and the
  * modelling of the combined generation as an in-job ordered result rather than a rendered dataset.
- *
- * <h2>Provenance</h2>
- *
- * <p>Migrated from the CardDemo mainframe estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy tree is cited, never
- * transcribed: no job-control, utility-control, cataloged-procedure, program or copybook statement
- * text appears in this file, and nothing here reads that tree at run time. Step names, data-definition
- * roles, sort offsets and typings, record widths and generation semantics are cited as measured facts.
- *
  * @see CombineTransactionsProcessor
  * @see FixedWidthFlatFileReaderFactory
  * @see TransactionRepository
@@ -655,12 +644,12 @@ public final class CombineTransactionsJobConfig {
      * is proxied through that interface, so no subclass of an implementation type is generated - which
      * keeps this path clear of the class generation the module's reflection budget rules out.
      *
-     * <p><strong>Both locations come from this deployment's configuration, and neither may be blank.</strong>
-     * They are not job parameters and cannot be supplied with a launch: the legacy member declared both
-     * inputs inside itself and the submission named neither, so a caller has nothing to say about where
-     * this job reads. An unconfigured location is diagnosed and refused rather than resolved to some
-     * default, because a job that quietly read one input instead of two would produce a plausible combined
-     * stream missing half its records.
+     * <p><strong>Both locations come from this deployment's configuration, and neither may be
+     * blank.</strong> They are not job parameters and cannot be supplied with a launch: the legacy member
+     * declared both inputs inside itself and the submission named neither, so a caller has nothing to say
+     * about where this job reads. An unconfigured location is diagnosed and refused rather than resolved to
+     * some default, because a job that quietly read one input instead of two would produce a plausible
+     * combined stream missing half its records.
      *
      * @return a reader over both inputs in the legacy concatenation order, ordered by the identifier,
      *         never {@code null}
@@ -852,10 +841,9 @@ public final class CombineTransactionsJobConfig {
      * the staged generations and {@value #STAGING_DIRECTORY_PROPERTY} rather than being handed to a
      * resource loader unexamined.
      *
-     * <p>An earlier revision of this comment described an attached validator and "two parameters", which
-     * was doubly wrong - it named a collaborator this class does not inject and a launch contract this job
-     * does not have - and it would have led a reader to believe a submitted location was being checked when
-     * no location can be submitted.
+     * <p>NO ATTACHED VALIDATOR AND NO "TWO PARAMETERS" MAY BE CLAIMED FOR THIS JOB: it injects no such
+     * collaborator and has no such launch contract, and claiming either would lead a reader to believe a
+     * submitted location is being checked when no location can be submitted.
      *
      * <p>Nothing launches this job automatically. It is registered under {@value #JOB_NAME} and
      * launched on demand; it is not chained to another job and no aggregate job exists that would run
@@ -982,7 +970,7 @@ public final class CombineTransactionsJobConfig {
                 return this.stagingArea.stagedInput(currentDurable.get());
             }
             final Path localCandidate = this.stagingDirectory.resolve(logicalName).normalize();
-            // Existence alone is not the test, and it used to be. A file under the staging root named
+            // // Existence alone is not the test. A file under the staging root named
             // like the configured dataset is only this deployment's staged output if it is a real
             // regular file this process owns, in a root nothing else can write to, reached without
             // following a link - and a local actor who can write the root can satisfy the name without

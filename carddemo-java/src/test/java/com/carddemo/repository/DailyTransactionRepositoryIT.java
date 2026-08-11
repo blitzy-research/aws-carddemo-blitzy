@@ -182,15 +182,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * message, a log line or a literal in this file - every such value is held in a variable and compared
  * by equality.</p>
  *
- * <p>Provenance: the behaviour asserted here is that of the daily-transaction record layout
- * {@code app/cpy/CVTRA06Y.cpy}, the posting program {@code app/cbl/CBTRN02C.cbl}, the extract program
- * {@code app/cbl/CBTRN01C.cbl}, the job members {@code app/jcl/POSTTRAN.jcl} and
- * {@code app/jcl/COMBTRAN.jcl}, the resource definition {@code app/csd/CARDDEMO.CSD} and the reference
- * data set {@code app/data/ASCII/dailytran.txt}, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability matrix header alone and is asserted against no member. No legacy source statement is
- * transcribed.</p>
+ * <p>No legacy source statement is transcribed.</p>
  *
  * <p><strong>Orphan-program context.</strong> The extract program named above reads this layout and is
  * invoked by no job member, no procedure and no online resource definition. Its Java counterpart is a

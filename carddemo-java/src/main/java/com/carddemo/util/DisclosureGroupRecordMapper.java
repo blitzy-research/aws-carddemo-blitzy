@@ -200,16 +200,14 @@ import com.carddemo.domain.id.DisclosureGroupId;
  *
  * <h2>Shape</h2>
  *
- * <p>This class is a stateless collection of pure static functions: it is final, it cannot be
- * instantiated, it holds no mutable static state, and every method performs no I/O, consults no
- * clock, reads no environment and uses no randomness. It has no logger, and deliberately so, because
- * {@code com.carddemo.util} is not among the packages whose log levels the module pins, so a logger
- * here would be unconfigured; a mapper diagnoses by exception rather than by log line. It performs no
- * {@code String} to byte conversion of its own either: every charset decision belongs to
- * {@link FixedWidthFieldReader} and {@link ZonedDecimalCodec}, both of which name US-ASCII explicitly
- * at every boundary, so there is exactly one place per direction where an encoding choice is made and
- * no path in this module relies on a platform default. Slicing likewise goes only through
- * {@link FixedWidthFieldReader}; there is no {@code substring} call below.</p>
+ * <p>A final, non-instantiable holder of pure static functions: no mutable static state, no I/O, no
+ * clock, no environment and no randomness. It has no logger, deliberately, because
+ * {@code com.carddemo.util} is not among the packages whose log levels the module pins, so a logger here
+ * would be unconfigured; a mapper diagnoses by exception. Every charset decision belongs to
+ * {@link FixedWidthFieldReader} and {@link ZonedDecimalCodec}, both of which name US-ASCII explicitly at
+ * every boundary, so there is exactly one place per direction where an encoding choice is made and no
+ * path relies on a platform default. Slicing likewise goes only through {@link FixedWidthFieldReader};
+ * there is no {@code substring} call below.</p>
  *
  * <p>Every figure quoted above is factual layout evidence &mdash; record widths, byte offsets, field
  * lengths, row counts and byte-value censuses &mdash; and never a service level, a buffer size or a
@@ -217,8 +215,8 @@ import com.carddemo.domain.id.DisclosureGroupId;
  *
  * <h2>Usage</h2>
  *
- * <pre>{@code
- * // Decode one record, having stripped the 0x0A terminator.
+ * <pre>{@code //
+ * Decode one record, having stripped the 0x0A terminator.
  * DisclosureGroup group = DisclosureGroupRecordMapper.fromRecord(line);
  *
  * // Decode record i straight out of a whole-file buffer, terminator left behind.
@@ -228,45 +226,6 @@ import com.carddemo.domain.id.DisclosureGroupId;
  * // Re-emit, then compare only the mapped prefix against the fixture (see the filler note).
  * String image = DisclosureGroupRecordMapper.toRecord(group);
  * }</pre>
- *
- * <h2>Decision-log entries raised by this file</h2>
- *
- * <p>These are the translation decisions this mapper makes where legacy semantics and idiomatic
- * Java diverge. Each is developed in full above and is enumerated here so that the module's
- * decision log can be assembled from the sources that raise the decisions rather than from a
- * reviewer's recollection.</p>
- *
- * <ol>
- * <li>{@code DIS-INT-RATE} is {@code PIC S9(04)V99} and therefore <strong>six</strong> encoded bytes:
- *     the only field of that shape in the estate and the only precision-6 column in the schema. An
- *     eleven-byte slice copied from a sibling mapper would read filler into the value and still
- *     parse.</li>
- * <li>Decoding fixes scale at 2 and truncates toward zero, never rounding half-even or half-up,
- *     because {@code ROUNDED} occurs nowhere in the estate and a COBOL store without it truncates.
- *     That policy belongs to {@link ZonedDecimalCodec}; this class never rescales a decoded rate.</li>
- * <li>The ten-character group identifier is never trimmed, in either direction, because the
- *     file-status {@code '23'} recovery re-probes with the space-padded literal and trimming the
- *     stored value would silently disable the fallback. The account record's group identifier is ten
- *     spaces on every seeded row, so the join is between two padded ten-byte fields.</li>
- * <li>A rate of {@code 0.00} is a legitimate decoded value and is never treated as absent, null,
- *     missing or invalid. The zero-rate skip is a service concern, not a mapping concern.</li>
- * <li>The fixture carries three consecutive seventeen-row groups, which makes the fallback branch of
- *     the interest program reachable from seeded data alone. The zero-rate branch is not reachable
- *     that way: the fallback re-probe finds a rate of 15.00, so exercising the skip needs an account
- *     constructed with the zero-rate key. The zero rates themselves are genuinely seeded; it is the
- *     branch that needs the fixture, not the data.</li>
- * <li>Filler bytes are not uniform across the estate's fixtures: this layout's fixture carries ASCII
- *     zero whereas {@link #toRecord(DisclosureGroup)} emits spaces, an uninitialised-{@code FILLER}
- *     anomaly. Round-trip assertions therefore compare only the mapped prefix, and a whole-record
- *     comparison would fail.</li>
- * <li>A record image of the wrong length raises {@link IllegalArgumentException} rather than any
- *     module exception type, because a short or long fixed-width image has no legacy antecedent and
- *     the condition is a caller defect rather than a modelled business outcome.</li>
- * </ol>
- *
- * <p>Traceability: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}. Sources are cited, never
- * transcribed: no COBOL, copybook or job-stream statement appears in this file.</p>
  *
  * @see DisclosureGroup
  * @see ZonedDecimalCodec

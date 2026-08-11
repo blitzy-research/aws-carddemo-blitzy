@@ -78,13 +78,6 @@ import org.springframework.web.bind.annotation.RestController;
  * operations the estate's transactions became, and this path is a servlet mechanism rather than one of
  * them; publishing it would add a nineteenth path that answers no transaction.
  *
- * <p>Provenance: no legacy antecedent. The estate's transaction manager answered an unmapped
- * transaction identifier with its own terminal message, which this module reproduces at the routes it
- * publishes; the error dispatch is a servlet-container concept the estate had no equivalent of. Legacy
- * estate read as read-only reference at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; no legacy source text
- * is reproduced.
- *
  * <p>Stateless, holding one static logger and nothing else, so the single instance the framework
  * creates serves every request concurrently.
  *

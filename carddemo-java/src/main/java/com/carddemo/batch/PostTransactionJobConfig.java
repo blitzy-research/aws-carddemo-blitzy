@@ -66,39 +66,21 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <h2>Provenance</h2>
  *
- * <p>Translated from the legacy estate at checkout commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy antecedents are the job stream
- * {@code app/jcl/POSTTRAN.jcl}, the program it runs, {@code app/cbl/CBTRN02C.cbl}, and
- * {@code app/jcl/DALYREJS.jcl}, which defines the generation group the reject dataset is written into.
- * Every figure stated below was measured by direct read of those three members and is a contract rather
- * than guidance.
- *
- * <p><strong>No COBOL, JCL or utility statement text is reproduced anywhere in this file.</strong> What
- * is carried across is confined to what a contract needs: step and data-definition names, dataset and
- * generation-group names, record lengths, condition-code semantics, completion codes and reject codes.
- * Nothing here reads any legacy artefact at run time, and the legacy tree is neither modified nor
- * copied.
+ * <p>The legacy antecedents are the job stream {@code app/jcl/POSTTRAN.jcl}, the program it runs,
+ * {@code app/cbl/CBTRN02C.cbl}, and {@code app/jcl/DALYREJS.jcl}, which defines the generation
+ * group the reject dataset is written into. Every figure stated below was measured by direct read
+ * of those three members and is a contract rather than guidance.
  *
  * <h2>The measured job stream: one step, no gate, no parameter string</h2>
  *
  * <p>The job member is forty-five lines and declares <strong>exactly one application step</strong>,
- * named {@value TransactionValidationProcessor#LEGACY_STEP}, which runs
- * {@value TransactionPostingService#PROGRAM_NAME}. It carries <strong>no condition-code gate</strong>
- * and <strong>no parameter string</strong>. Three absences therefore follow, and each of them is the
- * shape of the job rather than a gap in it:
- *
- * <ul>
- *   <li>the job holds <strong>one</strong> step, so there is no sequence to gate;</li>
- *   <li>it declares <strong>no failure-ending flow transition</strong>, because the member holds no
- *       condition-code dependency to reproduce;</li>
- *   <li>it requires <strong>no date, mode or any other job parameter</strong>, because the member
- *       passes no parameter string to the program.</li>
- * </ul>
- *
- * <p>Filling any of the three in would be a behavioural invention. The job is also chained to nothing
- * and reached by no composite flow: the estate has no master orchestrator, and the order in which the
- * batch members were submitted was an operational convention rather than a declared pipeline.
+ * {@value TransactionValidationProcessor#LEGACY_STEP}, which runs
+ * {@value TransactionPostingService#PROGRAM_NAME}. It carries <strong>no condition-code gate</strong> and
+ * <strong>no parameter string</strong>, so this job holds one step with no sequence to gate, declares no
+ * failure-ending flow transition and requires no job parameter of any kind. Filling any of the three in
+ * would be a behavioural invention. The job is also chained to nothing and reached by no composite flow:
+ * the estate has no master orchestrator, and the order in which the batch members were submitted was an
+ * operational convention rather than a declared pipeline.
  *
  * <h2>The six data definitions and what each becomes</h2>
  *
@@ -156,10 +138,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  * </ul>
  *
  * <p>One recorded anomaly, for the reader who opens the generation-group member expecting to find a
- * delete: its comment banner announces the deletion of a key-sequenced transaction-master file while
- * its control stream only defines the generation group, and the banner also misspells one word. The
- * defect is recorded and <strong>never reproduced</strong>; the group's provisioning intent is served
- * by the module's schema migrations and by its container stack.
+ * delete: its comment banner announces the deletion of a key-sequenced transaction-master file, and
+ * misspells a word doing so, while its control stream only defines the generation group. The defect is
+ * recorded and <strong>never reproduced</strong>; the provisioning intent is served by the schema
+ * migrations and the container stack.
  *
  * <h2>Correction carried forward: the reject record is 430 bytes and there is no conflicting 500</h2>
  *
@@ -170,14 +152,6 @@ import org.springframework.transaction.PlatformTransactionManager;
  * reason code and a {@value TransactionPostingService#FAIL_REASON_DESCRIPTION_LENGTH}-character
  * description. The width is verified three ways - in the program's file-description area at lines 81 to
  * 84, in its working-storage area at lines 176 to 182, and on the data definition's record length.
- *
- * <p><strong>Planning material claims a conflict between a 500-byte allocation and a 430-byte emitted
- * record. That claim is not supported by the source.</strong> An executed search of the program found
- * the 350-and-80 split in the file description, the same split in working storage and the total on the
- * data definition, and found <strong>no 500 anywhere</strong> - the only matches for those digits are
- * paragraph labels. So {@value RejectRecordWriter#REJECT_RECORD_LENGTH} is implemented, and the alleged
- * conflict is recorded as searched for and <strong>not found</strong> rather than logged as an anomaly
- * that does not exist.
  *
  * <p>Every width on this path is measured in <strong>encoded bytes</strong> and never in character
  * count. The widths themselves belong to {@link RejectRecordWriter} and to the record mappers, so no
@@ -294,11 +268,11 @@ import org.springframework.transaction.PlatformTransactionManager;
  * status - and does not recompute the run counters, whose semantics belong to
  * {@link TransactionValidationProcessor} and are published by it into the step's execution context.
  *
- * <p>On a terminal input or output failure the raw two-character file status is logged <strong>first</strong>
- * and only then is the abend raised; that ordering is contractual. The shared skeleton in
- * {@code batch/step/AbstractCobolStep} owns that sequence and it is <strong>not re-implemented</strong>
- * here. End of file is never collapsed into error: the coarse three-way outcome is nested in that same
- * skeleton, and the raw status vocabulary the estate actually compares lives in
+ * <p>On a terminal input or output failure the raw two-character file status is logged
+ * <strong>first</strong> and only then is the abend raised; that ordering is contractual. The shared
+ * skeleton in {@code batch/step/AbstractCobolStep} owns that sequence and it is <strong>not
+ * re-implemented</strong> here. End of file is never collapsed into error: the coarse three-way outcome is
+ * nested in that same skeleton, and the raw status vocabulary the estate actually compares lives in
  * {@code domain/enums/FileStatus}. Two further status values are documented there but exercised
  * nowhere, and no code path depends on them.
  *
@@ -314,32 +288,6 @@ import org.springframework.transaction.PlatformTransactionManager;
  * initialising callback, no event listener and no scheduled trigger, and never names a job to run.
  * Publishing the job registers it for launch on demand and nothing more - which is how
  * {@code api/BatchJobController} starts it and asks after it, by the name {@link #JOB_NAME} publishes.
- *
- * <h2>The standards this file is held to</h2>
- *
- * <p>No user-specified rules were provided for this migration, so the work is held to
- * enterprise-standard best practice instead, and the absence is stated rather than filled with invented
- * rules. In prose, and in the order they bear on this file: the build is reproducible and hermetic, with
- * every version pinned and the build tool shipped with the project; compilation is warning-free and a
- * warning fails the build, which is why no deprecated builder factory, no raw type, no unchecked
- * operation and no warning suppression appears here; concerns are layered, so this package may depend on
- * the service, domain, utility, repository, exception and configuration packages and is imported by none
- * of them, and all fixed-width offset knowledge stays in the utility layer; there is no code generation
- * and the reflection budget is zero, which is why collaborators arrive through one constructor and every
- * scoped bean is declared by an interface so that no class is generated for it; secrets never appear in
- * source and are never defaulted, and this file holds none; the schema is owned solely by the migration
- * tool, and the framework's own metadata tables are provisioned by the framework and are never referred
- * to here; the test estate is a pyramid with an enforced line-coverage floor; supply-chain hygiene is a
- * scan executed at verification rather than a plugin merely declared; observability is first class, so
- * the step is timed and published, and <strong>no performance target is stated anywhere</strong> - no
- * throughput, latency, heap, timeout, thread-pool, skip, retry, commit-interval, backoff or connection
- * figure appears in this file, in code or in comment, because the estate documents no service level
- * against which one could be set; licence continuity is preserved by the header above, which is the
- * header every legacy member carries; the translation is fully auditable through the traceability matrix
- * and the decision log, which another agent owns and which this file only raises notes for; and the
- * tie-break that decides every hard case is that <strong>faithful beats idiomatic</strong> - the legacy
- * behaviour wins, and each divergence becomes a decision-log entry.
- *
  * @see TransactionPostingService
  * @see TransactionValidationProcessor
  * @see RejectRecordWriter
@@ -642,8 +590,8 @@ public final class PostTransactionJobConfig {
      *
      * <p>The commit granularity is the semantic constant {@link #RECORD_AT_A_TIME}. It is not configurable:
      * each source record's read, reject output and framework metadata are one unit of work. The three
-     * posting stores are <strong>not</strong> in it - the translated program opens a durable unit per store,
-     * for the reason {@link com.carddemo.service.PostingStageTransactionBoundary} states - so this
+     * posting stores are <strong>not</strong> in it - the translated program opens a durable unit per
+     * store, for the reason {@link com.carddemo.service.PostingStageTransactionBoundary} states - so this
      * granularity must never be read as an all-or-none guarantee over a posted record.
      *
      * <p>The completion-code contribution is <strong>not</strong> registered here. The per-record stage

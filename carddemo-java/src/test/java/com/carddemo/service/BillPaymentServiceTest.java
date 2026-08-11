@@ -70,9 +70,7 @@ import com.carddemo.support.TestDataFactory;
 
 /**
  * Unit test for {@link BillPaymentService}, the translation of {@code app/cbl/COBIL00C.cbl} -
- * transaction {@code CB00}, 572 lines, 16 paragraphs, at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19).
+ * transaction {@code CB00}, 572 lines, 16 paragraphs.
  *
  * <h2>Scope and harness</h2>
  *
@@ -116,10 +114,6 @@ import com.carddemo.support.TestDataFactory;
  * is {@code COACTUPC}, {@code COACTVWC}, {@code COCRDLIC}, {@code COCRDSLC} and {@code COCRDUPC} - so
  * it declares no abend handler and no key-translation collaborator. Neither type is mocked, imported or
  * referenced here.
- *
- * <p>No user-specified rules exist for this engagement: the project's rules document holds the single
- * line reporting their absence, confirmed across three separate reads. The absence is not a licence to
- * lower the bar, so this test is held to enterprise-standard practice instead.
  *
  * @see BillPaymentService
  */

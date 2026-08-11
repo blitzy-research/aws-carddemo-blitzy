@@ -69,10 +69,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * made over the enumeration's own constant list. For the same reason no {@code switch} over this type
  * appears here: an optional sixth constant would make it inexhaustive, which under the module's
  * warnings-as-errors compilation would fail the build rather than fail a test.
- *
- * <p>Every fact asserted here was read from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.
  */
 @DisplayName("RejectReason :: the five reject reasons stamped into the 80-byte validation trailer")
 class RejectReasonTest {

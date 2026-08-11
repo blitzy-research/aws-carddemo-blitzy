@@ -118,12 +118,6 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
  *       test in the nest is the one that could not have passed under it.</li>
  * </ol>
  *
- * <h2>Provenance</h2>
- *
- * <p>The seeded data derives from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.
- *
  * @since 1.0.0
  */
 @DisplayName("Seed migrations, applied to a real PostgreSQL server")

@@ -64,12 +64,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * itself to {@code src/main/java/**} for exactly this reason: a test that verifies a structural property of
  * the production sources is not production code, and the same scoping already governs the audit's other
  * counters. No production class here uses reflection, and this class is not shipped.
- *
- * <p>Provenance: the message texts pair back to {@code app/cbl/COACTUPC.cbl} and the four
- * {@code app/cbl/COUSR0*C.cbl} programs, and the page sizes to {@code app/cbl/COCRDLIC.cbl},
- * {@code app/cbl/COTRN00C.cbl} and {@code app/cbl/COUSR00C.cbl}, all read as read-only reference at
- * checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("cross-layer constants :: every twinned declaration agrees character for character")
 class CrossLayerConstantAgreementTest {

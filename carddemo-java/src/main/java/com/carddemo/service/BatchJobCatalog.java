@@ -58,13 +58,6 @@ import java.util.Set;
  * part of no sequence and is never selected implicitly. Nothing here expresses an ordering, because the
  * estate expressed none.
  *
- * <p>Provenance: the twenty-nine job members and two cataloged procedures of {@code app/jcl} and
- * {@code app/proc}, and the resource definitions of {@code app/csd/CARDDEMO.CSD}, which between them
- * establish that a batch job was submitted deliberately and that not one of the eighteen registered
- * transactions starts one; read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No job control statement is transcribed.
- *
  * <p>Immutable and deeply so: every parameter set is built with the immutable set factory, the inventory is
  * built once during class initialisation and copied into an unmodifiable map, and nothing is assembled per
  * request, so this class is safe for unsynchronised concurrent use.
@@ -132,9 +125,9 @@ public final class BatchJobCatalog {
     public static final String DAILY_TRANSACTION_READ_JOB = "dailyTransactionReadJob";
 
     /*
-     * Each job is named once, immediately above. A parallel set of nine "_JOB_NAME" aliases used to sit
-     * here for the job configurations to read, which meant every name existed twice under two spellings
-     * and a reader had to know the two were the same constant. Every reader now reads the canonical name.
+     * Each job is named once, immediately above. A PARALLEL SET OF NINE "_JOB_NAME" ALIASES MUST NOT SIT
+     * here for the job configurations to read: every name would then exist twice under two spellings and a
+     * reader would have to know the two were the same constant. Every reader reads the canonical name.
      */
 
     /**

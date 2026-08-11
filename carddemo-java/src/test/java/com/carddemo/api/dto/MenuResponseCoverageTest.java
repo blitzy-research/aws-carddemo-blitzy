@@ -110,12 +110,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>Provenance</h2>
  *
  * <p>Legacy antecedents cited by the type under test: programs {@code app/cbl/COMEN01C.cbl} and
- * {@code app/cbl/COADM01C.cbl}, option catalogues {@code app/cpy/COMEN02Y.cpy} and {@code
- * app/cpy/COADM02Y.cpy}, title copybook {@code app/cpy/COTTL01Y.cpy}, common messages {@code
- * app/cpy/CSMSG01Y.cpy}, symbolic maps {@code app/cpy-bms/COMEN01.CPY} and {@code
- * app/cpy-bms/COADM01.CPY}. Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is
- * reproduced here.
+ * {@code app/cbl/COADM01C.cbl} , option catalogues {@code app/cpy/COMEN02Y.cpy} and
+ * {@code app/cpy/COADM02Y.cpy} , title copybook {@code app/cpy/COTTL01Y.cpy} , common messages
+ * {@code app/cpy/CSMSG01Y.cpy} , symbolic maps {@code app/cpy-bms/COMEN01.CPY} and
+ * {@code app/cpy-bms/COADM01.CPY} . No legacy source text is reproduced here.
  */
 @DisplayName("MenuResponse :: response contract of legacy transactions CM00 and CA00")
 class MenuResponseCoverageTest {

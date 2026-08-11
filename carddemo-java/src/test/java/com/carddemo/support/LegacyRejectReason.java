@@ -27,11 +27,11 @@ import java.util.Optional;
  * It exists because the module's own enumeration is the <strong>subject</strong> of these tests, not
  * their oracle. Every reject expectation in this suite - the four-digit code in a trailer, the
  * description in the seventy-six byte field, the byte-exact four-hundred-and-thirty byte record, and the
- * record constructed to trigger a given refusal - used to be derived from
+ * record constructed to trigger a given refusal - must NOT be derived from
  * {@code com.carddemo.domain.enums.RejectReason}. A single wrong digit or a mistyped description in that
- * enumeration would then have moved the subject and the expectation <em>together</em>: the produced
- * reject record and the expected reject record would both have carried the wrong value, the byte
- * comparison would have passed, and the defect would have shipped having failed nothing.
+ * enumeration would then move the subject and the expectation <em>together</em>: the produced
+ * reject record and the expected reject record would both carry the wrong value, the byte
+ * comparison would pass, and the defect would ship having failed nothing.
  *
  * <p>So the codes, the descriptions and the conditions that fire them are restated here, read off
  * {@code app/cbl/CBTRN02C.cbl} at the lines each constant cites. That member is read-only and is the
@@ -52,10 +52,9 @@ import java.util.Optional;
  * the description does not distinguish them. Collapsing them would erase a real distinction, so both are
  * present with the same text and different codes, as the member has them.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Reason codes and description texts are external
- * contract - they are written into a 430-byte record an operator reads - and contract metadata is what a
- * parity oracle is made of; no legacy implementation line is transcribed.
+ * <p>Reason codes and description texts are external contract - they are written into a 430-byte record an
+ * operator reads - and contract metadata is what a parity oracle is made of; no legacy implementation line
+ * is transcribed.
  */
 public enum LegacyRejectReason {
 

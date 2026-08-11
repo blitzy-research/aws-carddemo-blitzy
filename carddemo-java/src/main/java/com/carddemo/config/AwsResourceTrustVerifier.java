@@ -801,9 +801,9 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
      * notice announces a batch job that has <em>already</em> finished, so losing one prevents no work.
      * Neither statement is about the resource existing. This check settles that question once, before any
      * bean that could publish is created: a topic that cannot be resolved from a listing, is owned by
-     * another account, or does not answer an attribute read stops the start-up. Best-effort <em>delivery</em>
-     * to a destination this deployment owns is a different claim from an optional destination, and only the
-     * first is made anywhere. Recorded as {@code DL-339}.
+     * another account, or does not answer an attribute read stops the start-up. Best-effort
+     * <em>delivery</em> to a destination this deployment owns is a different claim from an optional
+     * destination, and only the first is made anywhere. Recorded as {@code DL-339}.
      *
      * @param proven collects the capability names that were exercised
      */

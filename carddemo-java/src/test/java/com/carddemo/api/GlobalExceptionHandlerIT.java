@@ -145,15 +145,7 @@ import static org.mockito.BDDMockito.willThrow;
  * reads no system clock. The session token every request presents is minted by the delivered token provider
  * against a seeded identity, so no credential value is named, read or rendered anywhere in this file.
  *
- * <p>Provenance: the contract texts asserted here originate in the common-message copybook
- * {@code app/cpy/CSMSG01Y.cpy}, the abend structure {@code app/cpy/CSMSG02Y.cpy}, the two-level file-status
- * normalisation of {@code app/cbl/CBACT01C.cbl} lines 90 to 114, the screen-decoration macro expanded 39
- * times in {@code app/cbl/COACTUPC.cbl} lines 3208 to 3432, the queue-write paragraph of
- * {@code app/cbl/CORPT00C.cbl} lines 515 to 535, the terminal abend text of {@code app/cbl/COCRDSLC.cbl}
- * and {@code app/cbl/COCRDUPC.cbl}, the reject reason codes of {@code app/cbl/CBTRN02C.cbl}, and the queue
- * attributes of {@code app/csd/CARDDEMO.CSD}; all read as read-only reference at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source line is transcribed.
+ * <p>No legacy source line is transcribed.
  */
 @SpringBootTest(classes = GlobalExceptionHandlerIT.BoundaryContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.MOCK,

@@ -44,13 +44,11 @@ import com.carddemo.util.ZonedDecimalCodec;
  * {@code [app/cbl/CBSTM03A.CBL]} - 924 lines, 25 paragraphs, two output files at two different record
  * widths.
  *
- * <p>Legacy provenance: AWS CardDemo z/OS estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The authority member is one of only three
- * CRLF-encoded sources in the estate - with {@code [app/cbl/CBSTM03B.CBL]} and
- * {@code [app/cbl/COACTUPC.cbl]} - and every line number cited here comes from a
- * carriage-return-tolerant read. No COBOL text is transcribed: member names, paragraph names, line
- * numbers, DD names, field names, record widths and raw status codes are cited, and nothing else.
+ * <p>The authority member is one of only three CRLF-encoded sources in the estate - with {@code
+ * [app/cbl/CBSTM03B.CBL]} and {@code [app/cbl/COACTUPC.cbl]} - and every line number cited here
+ * comes from a carriage-return-tolerant read. No COBOL text is transcribed: member names, paragraph
+ * names, line numbers, DD names, field names, record widths and raw status codes are cited, and
+ * nothing else.
  *
  * <h2>This program is not a loop. It is a hand-rolled state machine</h2>
  *
@@ -888,8 +886,9 @@ public final class StatementGenerationService {
         // L483-L485
         context.stAcctId = movedInto(context.accountRecord.getAcctId(),
                 StatementTextTemplates.ST_LINE7_ACCOUNT_ID_WIDTH);
-        // L484: MOVE ACCT-CURR-BAL TO ST-CURR-BAL. The source declares ten integer digits and the
-        // edited receiving field nine, so the store drops the high-order digit exactly as the move does.
+        // L484 carries the account's current balance into the statement's balance mask. The source field
+        // declares ten integer digits and the edited receiving field nine, so the store drops the
+        // high-order digit exactly as the legacy store does.
         context.stCurrBal = ZonedDecimalCodec.storeIntoMonetary(
                 context.accountRecord.getAcctCurrBal(),
                 AMOUNT_FIELD_INTEGER_DIGITS, FIELD_ST_CURR_BAL);
@@ -1617,7 +1616,7 @@ public final class StatementGenerationService {
     }
 
     /**
-     * A COBOL {@code MOVE} of an alphanumeric value into a fixed-width alphanumeric field: left
+     * A legacy store of an alphanumeric value into a fixed-width alphanumeric field: left
      * justified, padded on the right with spaces, truncated on the right when too long.
      *
      * <p>Every width this is called with is published by the templates class that owns the line the field
@@ -1931,8 +1930,8 @@ public final class StatementGenerationService {
         private final int[] wsTrct = new int[MAX_CARD_ENTRIES];
 
         /**
-         * The transaction count carried into the nth WS-TRCT slot at {@code [app/cbl/CBSTM03A.CBL:L822]} when a
-         * card break is detected and at {@code L850} when the read phase ends.
+         * The transaction count carried into the nth WS-TRCT slot at {@code [app/cbl/CBSTM03A.CBL:L822]}
+         * when a card break is detected and at {@code L850} when the read phase ends.
          *
          * @param cardSubscript the one-based card subscript
          * @param count         the running transaction count to store against that card

@@ -198,13 +198,11 @@ import org.springframework.batch.core.StepExecution;
  * future fixture change which silently made any of the three seed-reachable would be noticed here rather
  * than discovered as a byte difference one job away.
  *
- * <p>Provenance of the expectations, as a traceability-matrix header string and nothing more: the legacy
- * estate at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. <strong>That stamp is not universal and must
- * never be asserted per member</strong>: seventy-eight members carry it, three carry later stamps, all
- * seventeen screen definitions differ from it, and twenty-five carry none at all. It identifies the
- * release the matrix as a whole was taken against, so it belongs in a matrix header and in prose such as
- * this - never in an assertion about any individual artefact.
+ * <p><strong>That stamp is not universal and must never be asserted per member</strong>: seventy-eight
+ * members carry it, three carry later stamps, all seventeen screen definitions differ from it, and
+ * twenty-five carry none at all. It identifies the release the matrix as a whole was taken against, so it
+ * belongs in a matrix header and in prose such as this - never in an assertion about any individual
+ * artefact.
  */
 @DisplayName("Transaction validation processor: the posting step's per-record verdict router")
 class TransactionValidationProcessorTest {

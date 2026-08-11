@@ -91,9 +91,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <em>schema</em> settings the shipped documents declare are supplied verbatim, so the framework
  * provisions its metadata exactly as it does in a deployment.</p>
  *
- * <p>Provenance: no legacy antecedent; the migrated estate carries no test harness. Guards the batch
- * infrastructure of the checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * <p>Provenance: no legacy antecedent; the migrated estate carries no test harness.
  */
 @DisplayName("batch runtime, booted against a real server: nothing duplicated, nothing fired, nothing suppressed")
 class BatchConfigIT extends AbstractPostgresIT {

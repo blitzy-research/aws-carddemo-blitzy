@@ -40,25 +40,12 @@ import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
- * The transaction-view screen: one keyed read of the transaction file, rendered back to the operator.
- * Translated from {@code app/cbl/COTRN01C.cbl}, transaction {@code CT01}, 330 lines and
- * <strong>9 paragraphs</strong>, every one of which has a named method here. Checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19).
+ * The transaction-view screen: one keyed read of the transaction file, rendered back to the
+ * operator. Translated from {@code app/cbl/COTRN01C.cbl}, transaction {@code CT01}, 330 lines and
+ * <strong>9 paragraphs</strong>, every one of which has a named method here.
  *
- * <p>The nine paragraphs and their methods, in source order:
- *
- * <ul>
- *   <li>{@code MAIN-PARA} line 86 &rarr; {@code mainPara}</li>
- *   <li>{@code PROCESS-ENTER-KEY} line 144 &rarr; {@code processEnterKey}</li>
- *   <li>{@code RETURN-TO-PREV-SCREEN} line 197 &rarr; {@code returnToPrevScreen}</li>
- *   <li>{@code SEND-TRNVIEW-SCREEN} line 213 &rarr; {@code sendTrnviewScreen}</li>
- *   <li>{@code RECEIVE-TRNVIEW-SCREEN} line 230 &rarr; {@code receiveTrnviewScreen}</li>
- *   <li>{@code POPULATE-HEADER-INFO} line 243 &rarr; {@code populateHeaderInfo}</li>
- *   <li>{@code READ-TRANSACT-FILE} line 267 &rarr; {@code readTransactFile}</li>
- *   <li>{@code CLEAR-CURRENT-SCREEN} line 301 &rarr; {@code clearCurrentScreen}</li>
- *   <li>{@code INITIALIZE-ALL-FIELDS} line 309 &rarr; {@code initializeAllFields}</li>
- * </ul>
+ * <p>Each of the nine paragraphs resolves to one named method below; the mapping with its source lines is
+ * held once in {@code docs/traceability-matrix.md}.
  *
  * <p><strong>This member sits outside the five-program family, so it has no abend handler and no
  * attention-key copybook, and neither is wired here.</strong> The family that includes
@@ -712,9 +699,9 @@ public class TransactionViewService {
      *
      * <p>This is the procedure division: it establishes the working storage the legacy declares at lines
      * 35 to 61, runs the main paragraph, and then performs the terminal
-     * the pseudo-conversational return that re-arms this transaction with the carried work area, at lines 136 to 139, by
-     * re-arming the transaction. Nothing is retained between calls, so two concurrent turns are wholly
-     * independent.
+     * the pseudo-conversational return that re-arms this transaction with the carried work area, at lines
+     * 136 to 139, by re-arming the transaction. Nothing is retained between calls, so two concurrent turns
+     * are wholly independent.
      *
      * <p><strong>Read-only, and enforced rather than asserted.</strong> The transaction is declared
      * read-only, and the single repository call on any path is a lookup by primary key. No path stores,
@@ -880,7 +867,7 @@ public class TransactionViewService {
         // Line 100 sets CDEMO-PGM-REENTER.
         state.context = state.context.withReEntry();
 
-        // MOVE -1 TO TRNIDINL OF COTRN1AI at line 102.
+        // Line 102 positions the cursor on the transaction-identifier field.
         state.focusField = FIELD_TRANSACTION_ID;
 
         // Lines 103 and 104 test the carried selection for neither blank nor empty.
@@ -948,13 +935,14 @@ public class TransactionViewService {
         // Line 146 holds a multi-way selection. Clause order preserved: the blank test at line 147 first, the
         // catch-all at line 153 second.
         if (isBlankField(state.searchTransactionId)) {
-            // Lines 148 to 152 carry 'Y' into WS-ERR-FLG, the emptiness text, MOVE -1 TO TRNIDINL, send.
+            // Lines 148 to 152 raise the error flag, compose the emptiness text, position the cursor on the
+            // transaction-identifier field and send the screen.
             faultField(state, MSG_TRAN_ID_EMPTY, ValidationException.FieldState.MISSING);
             return;
         }
 
-        // WHEN OTHER at lines 153 to 155: MOVE -1 TO TRNIDINL, then CONTINUE. The cursor is positioned
-        // on the search field whether the edit passed or failed, which is the only thing this arm does.
+        // The catch-all arm at lines 153 to 155 positions the cursor on the transaction-identifier field
+        // and does nothing else, so the cursor lands on the search field whether the edit passed or failed.
         state.focusField = FIELD_TRANSACTION_ID;
 
         // The fixed-width key bound. Not part of the source's cascade because the source's screen makes
@@ -1293,7 +1281,7 @@ public class TransactionViewService {
      * @param state the turn's working storage
      */
     private void initializeAllFields(final TurnState state) {
-        // MOVE -1 TO TRNIDINL OF COTRN1AI at line 311.
+        // Line 311 positions the cursor on the transaction-identifier field.
         state.focusField = FIELD_TRANSACTION_ID;
 
         // Line 312 carries SPACES into TRNIDINI, to the thirteen display fields at lines 313 to 325, and

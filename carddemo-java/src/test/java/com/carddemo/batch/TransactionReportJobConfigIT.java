@@ -110,12 +110,8 @@ import com.carddemo.support.TestDataFactory;
  * migrations, so that the two contracts this specification owns can be measured on real artifacts rather
  * than described.
  *
- * <p>The subject is the translation of the legacy job stream {@code app/jcl/TRANREPT.jcl}, its cataloged
- * procedure {@code app/proc/TRANREPT.prc} and the report program {@code app/cbl/CBTRN03C.cbl}. Provenance
- * for the traceability matrix header: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a matrix
- * header string only - it is not carried by every legacy member, so nothing here asserts it against one -
- * and no legacy source line is transcribed anywhere in this file.
+ * <p>The subject is the translation of the legacy job stream {@code app/jcl/TRANREPT.jcl} , its cataloged
+ * procedure {@code app/proc/TRANREPT.prc} and the report program {@code app/cbl/CBTRN03C.cbl} .
  *
  * <h2>The two contracts that exist nowhere else in the module</h2>
  *

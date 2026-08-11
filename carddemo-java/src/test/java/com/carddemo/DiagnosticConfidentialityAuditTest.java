@@ -42,8 +42,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <h2>Why an audit over the sources rather than a test per call site</h2>
  *
  * <p>Both defects are properties of a <em>call site</em>, not of a behaviour, and both are introduced by
- * writing one ordinary-looking line. A review found twenty-two sites passing a caught throwable straight
- * to a logger and four writing a card number into one; a suite of behavioural tests had not caught any of
+ * writing one ordinary-looking line: a site passing a caught throwable straight to a logger, or one
+ * writing a card number into one. A suite of behavioural tests catches neither, and cannot, because
  * them, and could not have, because every one of those lines executes only on a failure path that a test
  * asserting the failure's <em>outcome</em> never inspects the log of. The only instrument that closes a
  * defect of that shape is one that reads the sources and counts.
@@ -81,8 +81,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * audit would pass while measuring nothing - which is the failure mode of every source-scanning test.
  *
  * <p>Provenance: this audit has no legacy antecedent - the estate carries no test harness of any kind.
- * Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("Diagnostics carry no raw throwable and no primary account number")
 class DiagnosticConfidentialityAuditTest {

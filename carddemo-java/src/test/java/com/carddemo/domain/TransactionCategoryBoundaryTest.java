@@ -54,10 +54,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * byte and a four-character category code must never collapse to one. Nothing trims,
  * pads or folds case, and the assertions below prove that the padded and zero-suppressed
  * spellings are not equal.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("TransactionCategory: the sixty-byte transaction-category reference row")
 class TransactionCategoryBoundaryTest {

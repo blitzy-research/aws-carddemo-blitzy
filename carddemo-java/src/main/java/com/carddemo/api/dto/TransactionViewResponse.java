@@ -30,11 +30,9 @@ import java.util.List;
  * {@code COTRN1AI} opens at line 17 and whose output group {@code COTRN1AO} redefines it at line
  * 145; the map definition {@code app/bms/COTRN01.bms} supplies the screen geometry and the
  * attribute behaviour that shaped the error components. The behaviour these components describe is
- * that of {@code app/cbl/COTRN01C.cbl}, a 330-line program of nine paragraphs. Provenance for all
- * three artefacts is checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy tree is read as evidence
- * only: no COBOL, screen-map or job-control text is reproduced here, and nothing in this module
- * reads that tree at run time.
+ * that of {@code app/cbl/COTRN01C.cbl}, a 330-line program of nine paragraphs. The legacy tree is
+ * read as evidence only: no COBOL, screen-map or job-control text is reproduced here, and nothing
+ * in this module reads that tree at run time.
  *
  * <p>The map holds twenty-one named fields and carries full input and output width parity &mdash;
  * each field is declared at the same width in both groups &mdash; so one record models both

@@ -138,9 +138,9 @@ import java.io.IOException;
  * <p><strong>Where those two unconstrained components are bounded instead.</strong> Carrying no
  * constraint means nothing here bounds their length, and the record fields they are stored into are
  * twenty-five and fifty characters wide. The service therefore truncates each to its record width as it
- * applies it, which is what an alphanumeric {@code MOVE} into a {@code PIC X(n)} item does with a longer
- * source and what the terminal itself did by being unable to accept a further character. That is not a
- * constraint by another name: nothing is rejected, no field error is composed and the turn does not
+ * applies it, which is what a store into a fixed-width alphanumeric item of {@code PIC X(n)} does with a
+ * longer source and what the terminal itself did by being unable to accept a further character. That is not
+ * a constraint by another name: nothing is rejected, no field error is composed and the turn does not
  * fail. It exists because the alternative is worse - an unbounded value reaching a bounded column
  * produces a refusal at the persistence boundary, which is the one outcome the source forbids for these
  * two fields, arriving as a failed turn instead of a field error. Decision log entry DL-297 records it.

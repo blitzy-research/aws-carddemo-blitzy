@@ -79,10 +79,8 @@ import java.util.Optional;
  * <p>The reasoning behind this table, and the measurement that showed a set comparison to be
  * insufficient, are recorded as DL-279 in {@code docs/decision-log.md}.
  *
- * <p>Provenance: {@code app/cbl/CBTRN02C.cbl}, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The literal texts below are field VALUES of an
- * external record contract, not program logic, and no COBOL statement is transcribed.
+ * <p>The literal texts below are field VALUES of an external record contract, not program logic, and no
+ * COBOL statement is transcribed.
  */
 public final class LegacyRejectReasons {
 

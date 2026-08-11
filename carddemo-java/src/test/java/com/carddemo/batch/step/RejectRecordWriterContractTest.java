@@ -61,9 +61,7 @@ import org.springframework.core.io.FileSystemResource;
  * checked by writing to a real file and reading its bytes back, never by inspecting a builder's return
  * value.
  *
- * <p>Provenance of the expectations: the legacy program {@code CBTRN02C} and the job that runs it, at
- * commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here.
+ * <p>No legacy source text is transcribed here.
  */
 @DisplayName("RejectRecordWriter - 430-byte reject record contract")
 class RejectRecordWriterContractTest {

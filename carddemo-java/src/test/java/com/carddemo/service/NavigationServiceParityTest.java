@@ -38,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * {@code [app/csd/CARDDEMO.CSD:L211]} with no source member anywhere in {@code app/cbl}, and the
  * developer transaction {@code CDV1} at {@code [app/csd/CARDDEMO.CSD:L388]} is bound to exactly that
  * dangling definition - so the transaction cannot have been dispatchable. Neither produces a
- * destination, which leaves seventeen. An earlier revision produced eighteen by substituting the
- * date-validation subprogram {@code CSUTLDTC} as the implementation of {@code CDV1}; that subprogram is
+ * destination, which leaves seventeen. SUBSTITUTING THE DATE-VALIDATION SUBPROGRAM
+ * {@code CSUTLDTC} AS THE IMPLEMENTATION OF {@code CDV1} would produce eighteen; that subprogram is
  * bound to no transaction, is named by no transfer-control statement and by no menu catalogue, and is
  * reached only by static {@code CALL} from four sites. {@link TheDerivedRouteVocabulary} holds the
  * vocabulary to seventeen and holds {@code CSUTLDTC} out of it.</p>

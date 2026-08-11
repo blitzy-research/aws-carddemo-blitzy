@@ -41,10 +41,7 @@ import com.carddemo.util.PfKeyTranslator;
 
 /**
  * The card-list screen: one turn of legacy transaction {@code CCLI}, translated from
- * {@code app/cbl/COCRDLIC.cbl} (1,459 lines). Provenance is checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, the trailer this member carries at its
- * line 1458.
+ * {@code app/cbl/COCRDLIC.cbl} (1,459 lines).
  *
  * <p>The member belongs to the <strong>five-program family</strong> &mdash; {@code COACTUPC},
  * {@code COACTVWC}, {@code COCRDLIC}, {@code COCRDSLC}, {@code COCRDUPC} &mdash; which alone
@@ -56,81 +53,27 @@ import com.carddemo.util.PfKeyTranslator;
  *
  * <h2>Paragraph accounting: 42 measured against 39 in the action plan</h2>
  *
- * <p>The action plan records this member as having 39 paragraphs; the figure verified here is 42
- * translation units. Both numbers are right and they count different things, so the reconciliation
- * is stated rather than one number being quietly preferred:
+ * <p>Both figures are right and they count different things. <strong>39</strong> named paragraph labels
+ * are declared in this member's own procedure division, from {@code 0000-MAIN} at line 298 to
+ * {@code SEND-LONG-TEXT-EXIT} at line 1452 - the action plan's figure, exactly reproducible by scanning
+ * column 8. <strong>1</strong> further unit is the {@code COPY 'CSSTRPFY'} expansion site at line 1416,
+ * which is a procedure-division statement in its own right and needs its own translation point because a
+ * copybook that contributes paragraphs is invoked, not declared. <strong>2</strong> further units are the
+ * paragraphs that expansion delivers, {@code YYYY-STORE-PFKEY} at line 17 of
+ * {@code app/cpy/CSSTRPFY.cpy} and its exit at line 80. 39 + 1 + 2 = 42.
  *
- * <ul>
- *   <li><strong>39</strong> named paragraph labels are declared in this member's own procedure
- *       division, from {@code 0000-MAIN} at line 298 to {@code SEND-LONG-TEXT-EXIT} at line 1452.
- *       That is the action plan's figure and it is exactly reproducible by scanning column 8.</li>
- *   <li><strong>1</strong> further unit is the {@code COPY 'CSSTRPFY'} expansion site at line 1416,
- *       which is a procedure-division statement in its own right and needs its own translation
- *       point because a copybook that contributes paragraphs is invoked, not declared.</li>
- *   <li><strong>2</strong> further units are the paragraphs that expansion delivers,
- *       {@code YYYY-STORE-PFKEY} at line 17 of {@code app/cpy/CSSTRPFY.cpy} and its exit at line
- *       80 of the same member.</li>
- * </ul>
+ * <p>The 39 paragraphs and the expansion site are the 40 methods declared here; the 2 copybook paragraphs
+ * are credited to {@code PfKeyTranslator}, their single owner, rather than duplicated here. The full
+ * paragraph-to-method mapping with its source lines is held once, in {@code docs/traceability-matrix.md},
+ * and is deliberately not restated in this file - a second copy of it would drift the first time a method
+ * is renamed.
  *
- * <p>39 + 1 + 2 = 42. Every one of the 42 has a named method: the 39 paragraphs and the expansion
- * site are the 40 methods declared here, and the 2 copybook paragraphs are credited to
- * {@code PfKeyTranslator} in the traceability matrix rather than duplicated here, because that
- * class is their single owner and this member is one of its five includers.
- *
- * <p>Seventeen of the 39 are the {@code NNNN-NAME-EXIT} half of the paired idiom and contain
- * nothing but {@code EXIT.}. Each becomes a named method with a documented empty body and is
- * invoked at each exit point of its partner, so a forward {@code GO TO} to an exit label becomes an
- * invocation followed by {@code return}. A body is deliberately not invented for them: the action
- * plan's treatment of the empty fee paragraph in {@code app/cbl/CBACT04C.cbl} establishes that a
- * documented no-op is the faithful translation of an empty COBOL paragraph, and filling one would
- * be behaviour this estate does not have.
- *
- * <p>The complete mapping, in source order, so that it is verifiable without leaving this file:
- *
- * <pre>
- *  1  0000-MAIN                    298   mainPara
- *  2  COMMON-RETURN                604   commonReturn
- *  3  0000-MAIN-EXIT               621   mainParaExit
- *  4  1000-SEND-MAP                624   sendMap
- *  5  1000-SEND-MAP-EXIT           639   sendMapExit
- *  6  1100-SCREEN-INIT             642   screenInit
- *  7  1100-SCREEN-INIT-EXIT        674   screenInitExit
- *  8  1200-SCREEN-ARRAY-INIT       678   screenArrayInit
- *  9  1200-SCREEN-ARRAY-INIT-EXIT  745   screenArrayInitExit
- * 10  1250-SETUP-ARRAY-ATTRIBS     748   setupArrayAttribs
- * 11  1250-SETUP-ARRAY-ATTRIBS-EXIT 834  setupArrayAttribsExit
- * 12  1300-SETUP-SCREEN-ATTRS      837   setupScreenAttrs
- * 13  1300-SETUP-SCREEN-ATTRS-EXIT 890   setupScreenAttrsExit
- * 14  1400-SETUP-MESSAGE           895   setupMessage
- * 15  1400-SETUP-MESSAGE-EXIT      933   setupMessageExit
- * 16  1500-SEND-SCREEN             938   sendScreen
- * 17  1500-SEND-SCREEN-EXIT        948   sendScreenExit
- * 18  2000-RECEIVE-MAP             951   receiveMap
- * 19  2000-RECEIVE-MAP-EXIT        959   receiveMapExit
- * 20  2100-RECEIVE-SCREEN          962   receiveScreen
- * 21  2100-RECEIVE-SCREEN-EXIT     981   receiveScreenExit
- * 22  2200-EDIT-INPUTS             985   editInputs
- * 23  2200-EDIT-INPUTS-EXIT        999   editInputsExit
- * 24  2210-EDIT-ACCOUNT           1003   editAccount
- * 25  2210-EDIT-ACCOUNT-EXIT      1032   editAccountExit
- * 26  2220-EDIT-CARD              1036   editCard
- * 27  2220-EDIT-CARD-EXIT         1069   editCardExit
- * 28  2250-EDIT-ARRAY             1073   editArray
- * 29  2250-EDIT-ARRAY-EXIT        1119   editArrayExit
- * 30  9000-READ-FORWARD           1123   readForward
- * 31  9000-READ-FORWARD-EXIT      1261   readForwardExit
- * 32  9100-READ-BACKWARDS         1264   readBackwards
- * 33  9100-READ-BACKWARDS-EXIT    1374   readBackwardsExit
- * 34  9500-FILTER-RECORDS         1382   filterRecords
- * 35  9500-FILTER-RECORDS-EXIT    1409   filterRecordsExit
- * 36  SEND-PLAIN-TEXT             1422   sendPlainText
- * 37  SEND-PLAIN-TEXT-EXIT        1433   sendPlainTextExit
- * 38  SEND-LONG-TEXT              1441   sendLongText
- * 39  SEND-LONG-TEXT-EXIT         1452   sendLongTextExit
- * 40  COPY 'CSSTRPFY' (site)      1416   storePfKeyExpansion
- * 41  YYYY-STORE-PFKEY      CSSTRPFY 17  credited to PfKeyTranslator
- * 42  YYYY-STORE-PFKEY-EXIT CSSTRPFY 80  credited to PfKeyTranslator
- * </pre>
+ * <p>Seventeen of the 39 are the {@code NNNN-NAME-EXIT} half of the paired idiom and contain nothing but
+ * {@code EXIT.}. Each becomes a named method with a documented empty body, invoked at each exit point of
+ * its partner, so a forward {@code GO TO} to an exit label becomes an invocation followed by
+ * {@code return}. A body is deliberately not invented for them: a documented no-op is the faithful
+ * translation of an empty COBOL paragraph, as the empty fee paragraph in {@code app/cbl/CBACT04C.cbl}
+ * establishes, and filling one would be behaviour this estate does not have.
  *
  * <h2>Two things here are counter-intuitive</h2>
  *
@@ -773,9 +716,9 @@ public final class CardListService {
          *
          * <p>The source pairs this arm with {@link #NORMAL} in one shared body at every one of those four
          * evaluations, which is why every switch over this type labels the two together rather than
-         * asking a predicate whether a record was delivered. A predicate saying exactly that was declared
-         * here by an earlier revision and reached by nothing once the arms became multi-label; it is
-         * removed rather than kept as documentation, because the four paired arms are the documentation.
+         * asking a predicate whether a record was delivered. NO SUCH PREDICATE IS DECLARED HERE and none
+         * may be added: once the arms became multi-label nothing would reach it, and it is not kept as
+         * documentation either, because the four paired arms are the documentation.
          * See {@code docs/decision-log.md} DL-314.
          */
         DUPLICATE(STATUS_DUPLICATE),
@@ -887,8 +830,8 @@ public final class CardListService {
         }
 
         /**
-         * Normalises the supplied selections onto exactly seven entries, the width {@code PAGE_SIZE} declares,
-         * so that every slot has a position whether the terminal transmitted anything for it or not.
+         * Normalises the supplied selections onto exactly seven entries, the width {@code PAGE_SIZE}
+         * declares, so that every slot has a position whether the terminal transmitted anything for it or not.
          *
          * @param supplied the selections as transmitted, which may be null, short or over-long
          * @return exactly seven entries in slot order, never null and never holding a null

@@ -48,10 +48,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Unit tests for {@link CardListRequest}, the request body of legacy transaction {@code CCLI}
  * implemented by {@code app/cbl/COCRDLIC.cbl} over screen {@code app/cpy-bms/COCRDLI.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Seven selection components, and the seven is not arbitrary.</strong> The legacy screen
  * holds seven rows, declared as {@code WS-SCREEN-ROWS OCCURS 7 TIMES} at
  * {@code app/cbl/COCRDLIC.cbl:255}. The program builds a selection bitmap positionally across those

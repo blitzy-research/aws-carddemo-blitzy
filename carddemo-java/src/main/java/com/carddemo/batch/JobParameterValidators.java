@@ -188,16 +188,14 @@ import com.carddemo.service.DateValidationService;
  *
  * <h2>Provenance</h2>
  *
- * <p>Translated from the CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy antecedents of this class are the
- * linkage section of {@code app/cbl/CBACT04C.cbl}, the parameter literal of {@code app/jcl/INTCALC.jcl},
- * the sort symbols and date-parameter data definitions of {@code app/jcl/TRANREPT.jcl} and
- * {@code app/proc/TRANREPT.prc}, the date-parameter file of {@code app/cbl/CBTRN03C.cbl}, and — for the
- * negative finding above — {@code app/jcl/CREASTMT.JCL}. No COBOL, JCL, cataloged-procedure or utility
- * control text is transcribed here: the legacy source is cited by member, field, data-definition name
- * and line number, and its statements are described rather than quoted. Traceability is by citation
- * only, and nothing in this class reads the legacy tree at runtime.</p>
+ * <p>The legacy antecedents of this class are the linkage section of {@code app/cbl/CBACT04C.cbl},
+ * the parameter literal of {@code app/jcl/INTCALC.jcl}, the sort symbols and date-parameter data
+ * definitions of {@code app/jcl/TRANREPT.jcl} and {@code app/proc/TRANREPT.prc}, the date-parameter
+ * file of {@code app/cbl/CBTRN03C.cbl}, and — for the negative finding above — {@code
+ * app/jcl/CREASTMT.JCL}. No COBOL, JCL, cataloged-procedure or utility control text is transcribed
+ * here: the legacy source is cited by member, field, data-definition name and line number, and its
+ * statements are described rather than quoted. Traceability is by citation only, and nothing in
+ * this class reads the legacy tree at runtime.</p>
  */
 @Component
 public final class JobParameterValidators {
@@ -564,9 +562,9 @@ public final class JobParameterValidators {
      * bytes, and ignores whatever follows them.</p>
      *
      * <p>So a record carrying content beyond position twenty-one is <em>not</em> refused, because the
-     * legacy did not refuse it. An earlier revision of this method did refuse it, on the reasoning that a
-     * control record running past its layout is a defect worth failing on. That reasoning describes a
-     * system the estate is not: it made the method reject input the mainframe accepted, which is a
+     * legacy did not refuse it. REFUSING IT IS NOT AVAILABLE, and the reasoning that argues for it - a
+     * control record running past its layout is a defect worth failing on - describes a system the estate
+     * is not: it would reject input the mainframe accepted, which is a
      * behavioural regression whatever its merits as policy, and only an explicit authorisation could
      * license it. The withdrawal is reasoned in {@code docs/decision-log.md} DL-107. Input shorter than the
      * group is still refused - a sending item too small to fill the

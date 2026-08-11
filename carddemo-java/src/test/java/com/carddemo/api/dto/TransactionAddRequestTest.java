@@ -98,10 +98,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * local, and constraint identity from the violation metadata the validation API itself publishes. No
  * declaration, member or annotation of the type under test is introspected anywhere in this file.
  *
- * <p>Provenance for every width, line citation and count above: repository checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced; the
- * citations point into a read-only reference tree that this migration never copies from.
+ * <p>No legacy source text is reproduced; the citations point into a read-only reference tree that this
+ * migration never copies from.
  */
 @DisplayName("TransactionAddRequest :: inbound contract of legacy transaction CT02")
 class TransactionAddRequestTest {

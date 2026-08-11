@@ -46,12 +46,10 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Each of the four methods below binds a request body, makes <strong>one</strong> call to
  * {@link UserManagementService}, records how long that call took, and returns the answer. That is the
- * whole of it. There is no rule of any kind here: no presence test, no ordering of presence tests, no
- * change detection, no selector scan, no cursor arithmetic, no page assembly, no credential handling,
- * no message selection and no routing decision. Every one of those lives in the service, which is what
- * lets all four transactions be exercised without a servlet and - more importantly - what stops this
- * class from becoming a second, quietly divergent copy of rules that the legacy programs state exactly
- * once.
+ * whole of it. Every rule - presence tests and their ordering, change detection, selector scanning,
+ * paging, credential handling, message selection and routing - lives in the service, which is what lets
+ * all four transactions be exercised without a servlet and, more importantly, stops this class from
+ * becoming a second, quietly divergent copy of rules the legacy programs state exactly once.
  *
  * <p>The distinction matters because these four screens are unusually rule-dense for their size, and
  * several of the rules are ones a reader would reasonably expect a controller to hold:
@@ -159,22 +157,15 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy authorities, read as read-only reference: {@code app/cbl/COUSR00C.cbl} ({@code CU00}, list),
+ * <p>Legacy authorities: {@code app/cbl/COUSR00C.cbl} ({@code CU00}, list),
  * {@code app/cbl/COUSR01C.cbl} ({@code CU01}, add), {@code app/cbl/COUSR02C.cbl} ({@code CU02}, update)
- * and {@code app/cbl/COUSR03C.cbl} ({@code CU03}, delete); their symbolic maps
- * {@code app/cpy-bms/COUSR00.CPY} through {@code app/cpy-bms/COUSR03.CPY} and mapsets
- * {@code app/bms/COUSR00.bms} through {@code app/bms/COUSR03.bms}; the shared copybooks
- * {@code app/cpy/COCOM01Y.cpy}, {@code app/cpy/CSMSG01Y.cpy}, {@code app/cpy/COTTL01Y.cpy} and
- * {@code app/cpy/COADM02Y.cpy}; and {@code app/csd/CARDDEMO.CSD}, whose transaction definitions bind
+ * and {@code app/cbl/COUSR03C.cbl} ({@code CU03}, delete), with their symbolic maps, mapsets and the
+ * shared copybooks {@code app/cpy/COCOM01Y.cpy}, {@code app/cpy/CSMSG01Y.cpy},
+ * {@code app/cpy/COTTL01Y.cpy} and {@code app/cpy/COADM02Y.cpy}. {@code app/csd/CARDDEMO.CSD} binds
  * {@code CU00} at line 449, {@code CU01} at 459, {@code CU02} at 469 and {@code CU03} at 479, each to
  * the correspondingly named program, and {@code CA00} at 327 to the administrative menu these four
+ * return toward - which is where the administrative gating below comes from.
  * return toward.
- *
- * <p>Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Only member names, transaction identifiers,
- * line numbers, field widths and row counts cross into this file: no COBOL statement, map definition,
- * attribute byte, coordinate, filler or offset is transcribed, and nothing here reads the legacy tree
- * at run time.
  *
  * <p><strong>Immutability and thread safety.</strong> Both collaborators are final and are supplied
  * through the only constructor; the class declares no mutable field, no static state and nothing

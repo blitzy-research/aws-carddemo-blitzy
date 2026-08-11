@@ -108,10 +108,7 @@ import org.junit.jupiter.api.Test;
  *       outcome as data.</li>
  * </ul>
  *
- * <p>Provenance for every citation above: repository checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No source statement is reproduced anywhere in
- * this file.
+ * <p>No source statement is reproduced anywhere in this file.
  */
 @DisplayName("CardListResponse :: card-list response contract of legacy transaction CCLI")
 class CardListResponseTest {

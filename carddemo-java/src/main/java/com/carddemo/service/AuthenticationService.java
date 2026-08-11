@@ -86,10 +86,6 @@ import org.springframework.stereotype.Service;
  * behaviour - which credentials are admitted, and what the operator is told when one is not - is
  * unchanged, and only the stored representation differs.
  *
- * <p>Provenance: {@code app/cbl/COSGN00C.cbl} and {@code app/cpy/CSUSR01Y.cpy}, read as read-only
- * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
- *
  * @since 1.0.0
  */
 @Service

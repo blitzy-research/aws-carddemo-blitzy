@@ -117,14 +117,14 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * refusing them rejects nothing the original accepted.
  *
  * <p>Those three methods are the only builder interactions this class permits, and the distinction is
- * exact. {@link Jackson2ObjectMapperBuilderCustomizer} beans are consulted <em>by</em> the auto-configuration,
- * against the very builder that already carries the four settings above: the framework's own customiser
- * applies {@code spring.jackson.*} first and every additional customiser runs afterwards on the same
- * builder. Nothing is re-derived, no mapper is constructed here and no setting is restated, so the four
- * settings survive untouched - which {@code ApplicationJsonContractTest} asserts against a context that
- * includes this class, rather than leaving it to inspection. A customiser that instead <em>restated</em>
- * any of the four, or a bean that built its own mapper, would be the silent discard this point warns
- * about.
+ * exact. {@link Jackson2ObjectMapperBuilderCustomizer} beans are consulted <em>by</em> the
+ * auto-configuration, against the very builder that already carries the four settings above: the
+ * framework's own customiser applies {@code spring.jackson.*} first and every additional customiser runs
+ * afterwards on the same builder. Nothing is re-derived, no mapper is constructed here and no setting is
+ * restated, so the four settings survive untouched - which {@code ApplicationJsonContractTest} asserts
+ * against a context that includes this class, rather than leaving it to inspection. A customiser that
+ * instead <em>restated</em> any of the four, or a bean that built its own mapper, would be the silent
+ * discard this point warns about.
  *
  * <p><strong>3. The management base path is resolved as text by three sibling files.</strong> The health
  * probe and the metrics scrape endpoint are spelled out literally in the {@code Dockerfile} health
@@ -204,18 +204,18 @@ public final class WebMvcConfig implements WebMvcConfigurer {
     /**
      * Where the request-body limit filter is registered in the servlet chain.
      *
-     * <h2>Why it is not first, which is where it used to be</h2>
+     * <h2>Why it is not first in the chain</h2>
      *
-     * <p>Registered at {@code Ordered.HIGHEST_PRECEDENCE} the filter ran ahead of the entire chain, and
-     * two things followed from that. Spring Boot registers its server observation filter one step behind
-     * highest precedence, so every refusal happened <em>outside</em> any observation: the response carried
-     * status 413 and appeared in no request metric, opened no span, and had no correlation identifiers in
-     * scope for a log line to carry. A caller could drive refusals indefinitely and leave nothing behind
-     * to detect, which is a monitoring gap rather than merely a telemetry one. And it ran ahead of
-     * authentication, so an anonymous request's body was read and buffered before anyone had established
-     * that the caller was entitled to send one at all.
+     * <p>Registered at {@code Ordered.HIGHEST_PRECEDENCE} the filter would run ahead of the entire chain,
+     * and two things would follow. Spring Boot registers its server observation filter one step behind
+     * highest precedence, so every refusal would happen <em>outside</em> any observation: the response
+     * would carry status 413 and appear in no request metric, open no span, and have no correlation
+     * identifiers in scope for a log line to carry. A caller could drive refusals indefinitely and leave
+     * nothing behind to detect, which is a monitoring gap rather than merely a telemetry one. And it would
+     * run ahead of authentication, so an anonymous request's body would be read and buffered before anyone
+     * had established that the caller was entitled to send one at all.
      *
-     * <p>One step behind the security chain fixes both at once. The refusal is now inside the server
+     * <p>One step behind the security chain closes both at once. The refusal sits inside the server
      * observation, so it is timed, counted and traced like any other response; and an unauthenticated
      * request to a protected route is answered by the security chain before this filter allocates
      * anything for it.
@@ -506,9 +506,9 @@ public final class WebMvcConfig implements WebMvcConfigurer {
      * byte for byte against the emitting program's own output and escaping it would fail that
      * comparison. That residual is a property of the legacy design, is stated on
      * {@link com.carddemo.util.StatementHtmlTemplates} where the emission happens, and is recorded in
-     * {@code docs/decision-log.md} entries DL-209 and DL-267. What this bean closes is the control-byte path, which is the half
-     * of the exposure that produces a failing batch and a corrupted fixed-length record rather than a
-     * rendering concern.
+     * {@code docs/decision-log.md} entries DL-209 and DL-267. What this bean closes is the control-byte
+     * path, which is the half of the exposure that produces a failing batch and a corrupted fixed-length
+     * record rather than a rendering concern.
      *
      * <p>The refusal is raised as an ordinary mapping failure against the resolved property path, so
      * {@link com.carddemo.api.GlobalExceptionHandler} answers {@code 400} naming the offending declared

@@ -77,13 +77,11 @@ import org.springframework.transaction.PlatformTransactionManager;
  * Declares the job that archives the transaction master and then clears it for the next cycle.
  *
  * <p>Legacy antecedent: the 71-line job member {@code app/jcl/TRANBKP.jcl}, which drives the
- * cataloged unload wrapper {@code app/proc/REPROC.prc} and its control member
- * {@code app/ctl/REPROCT.ctl}, and whose output generation base is declared in
- * {@code app/jcl/DEFGDGB.jcl}. Read at commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No statement text
- * from the legacy tree is reproduced anywhere in this file; what is carried across is step naming,
- * data-definition and dataset naming, condition-code semantics, key length and offset, record
- * length and status vocabulary.
+ * cataloged unload wrapper {@code app/proc/REPROC.prc} and its control member {@code app/ctl/REPROCT.ctl},
+ * and whose output generation base is declared in {@code app/jcl/DEFGDGB.jcl}.
+ * No statement text from the legacy tree is reproduced anywhere in this file;
+ * what is carried across is step naming, data-definition and dataset naming, condition-code
+ * semantics, key length and offset, record length and status vocabulary.
  *
  * <h2>The measured legacy job stream: three steps, one gate</h2>
  *
@@ -166,8 +164,9 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <p><strong>The re-definition is absorbed, not implemented.</strong> Creating a cluster with its
  * data and index components is schema provisioning, and schema evolution in this module is owned
- * exclusively by the four flat migrations - the eleven application tables in the first and the index
- * equivalents, including the equivalent of the processing-timestamp alternate index, in the second.
+ * exclusively by the migrations under {@code db/migration/schema} - the eleven application tables in the
+ * first, the index equivalents including the processing-timestamp alternate index in the second, and the
+ * protected-value invariants in the third.
  * This job therefore creates, drops and alters no table and no index, emits no schema statement and
  * adds no migration. The framework's own metadata tables are created by the framework and never by
  * the migrations, are excluded from the eleven-application-table count, and are not touched here
@@ -306,16 +305,6 @@ import org.springframework.transaction.PlatformTransactionManager;
  * inter-bean reference for a proxy to intercept and no singleton guarantee to preserve.
  *
  * <h2>Standards this file is held to</h2>
- *
- * <p>No user-specified rules were provided for this engagement, so the work is held to
- * enterprise-standard best practice instead: a reproducible hermetic build; zero-warning compilation
- * as a build failure rather than a report; layered separation of concerns, with this tier depending
- * downward only; no code generation and a reflection budget of zero; secrets never in source and
- * never defaulted; migrations as the sole owner of the schema; a test pyramid with an enforced line
- * coverage floor; supply-chain hygiene through dependency scanning at verification; observability as
- * a first-class concern with no hardcoded performance target; licence continuity through the header
- * above; and full auditability through the traceability matrix. Where a faithful translation and an
- * idiomatic one disagree, the legacy behaviour wins and the divergence becomes a decision-log entry.
  *
  * <p>Declared as a lite configuration, which is what every other configuration class in this module
  * declares and what this one has to declare. A full configuration class is subclassed at runtime so

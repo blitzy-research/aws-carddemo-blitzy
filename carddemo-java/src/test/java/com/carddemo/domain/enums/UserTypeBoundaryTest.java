@@ -56,10 +56,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * main menu rather than being rejected. The predicate therefore answers only
  * whether the type is the administrator, and resolution of an unrecognised code
  * yields an empty result that the calling service treats as the else branch.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("UserType: the one-character role vocabulary of the credential record")
 class UserTypeBoundaryTest {

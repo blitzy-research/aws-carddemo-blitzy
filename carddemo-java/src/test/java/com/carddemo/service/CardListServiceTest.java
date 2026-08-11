@@ -78,9 +78,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 /**
  * Surefire unit tests for {@link CardListService} &mdash; legacy transaction {@code CCLI}, translated
- * from {@code app/cbl/COCRDLIC.cbl} (1,459 lines). Provenance is checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * from {@code app/cbl/COCRDLIC.cbl} (1,459 lines).
  *
  * <p>Every collaborator is a Mockito double, so this class starts no container, opens no JDBC
  * connection, binds no port, reaches no network and touches no file. The repository double is the
@@ -128,61 +126,13 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
  * <h2>Traceability: the 39 units this member contributes, and the three things that are not units</h2>
  *
  * <p><strong>39</strong> named labels stand in this member's own procedure division, and 39 is what the
- * action plan records and what the traceability matrix carries rows for. The nests below cover them as
- * follows.
- *
- * <p>The list runs to 42 lines because three further things are exercised from this member and are
- * <em>not</em> units of it: the copybook expansion site at line 1416 is a directive rather than a
- * paragraph, and the two paragraphs that expansion delivers are units of {@code app/cpy/CSSTRPFY.cpy},
- * which the matrix gives a section and two rows of its own. That copybook is included by five members, so
- * counting its two paragraphs against each of them would report ten units for two and the frozen 544 would
- * no longer hold. This suite previously described all 42 lines as units it contributed; the three marked
- * below carry their behaviour here and their rows elsewhere.
- *
- * <pre>
- *  1  0000-MAIN                     every nest (the entry point)
- *  2  COMMON-RETURN                 PageComposition, AttentionKeys (the re-armed transaction)
- *  3  0000-MAIN-EXIT                PageComposition (reached on every completed turn)
- *  4  1000-SEND-MAP                 PageComposition (the header and rows it assembles)
- *  5  1000-SEND-MAP-EXIT            PageComposition
- *  6  1100-SCREEN-INIT              PageComposition (the stamped header)
- *  7  1100-SCREEN-INIT-EXIT         PageComposition
- *  8  1200-SCREEN-ARRAY-INIT        PageComposition (populated slots only, never padded)
- *  9  1200-SCREEN-ARRAY-INIT-EXIT   PageComposition
- * 10  1250-SETUP-ARRAY-ATTRIBS      SelectionTallyAndBitmap (the two-state field findings)
- * 11  1250-SETUP-ARRAY-ATTRIBS-EXIT SelectionTallyAndBitmap
- * 12  1300-SETUP-SCREEN-ATTRS       KeyFilterEdits (the focused field)
- * 13  1300-SETUP-SCREEN-ATTRS-EXIT  KeyFilterEdits
- * 14  1400-SETUP-MESSAGE            MessageContract, PageMetadataFidelity (the arm order)
- * 15  1400-SETUP-MESSAGE-EXIT       MessageContract
- * 16  1500-SEND-SCREEN              AbendDiagnostic (the assembled-screen record)
- * 17  1500-SEND-SCREEN-EXIT         AbendDiagnostic
- * 18  2000-RECEIVE-MAP              SelectionTallyAndBitmap (gated on this screen re-submitting)
- * 19  2000-RECEIVE-MAP-EXIT         SelectionTallyAndBitmap
- * 20  2100-RECEIVE-SCREEN           NullAndBoundaryInput (staged exactly as transmitted)
- * 21  2100-RECEIVE-SCREEN-EXIT      NullAndBoundaryInput
- * 22  2200-EDIT-INPUTS              KeyFilterEdits (the three edits in source order)
- * 23  2200-EDIT-INPUTS-EXIT         KeyFilterEdits
- * 24  2210-EDIT-ACCOUNT             KeyFilterEdits
- * 25  2210-EDIT-ACCOUNT-EXIT        KeyFilterEdits
- * 26  2220-EDIT-CARD                KeyFilterEdits
- * 27  2220-EDIT-CARD-EXIT           KeyFilterEdits
- * 28  2250-EDIT-ARRAY               SelectionTallyAndBitmap
- * 29  2250-EDIT-ARRAY-EXIT          SelectionTallyAndBitmap (the early exit on a filter error)
- * 30  9000-READ-FORWARD             PageComposition, BrowseOrderAndPostRetrievalFilter
- * 31  9000-READ-FORWARD-EXIT        PageComposition
- * 32  9100-READ-BACKWARDS           PagingDirection
- * 33  9100-READ-BACKWARDS-EXIT      PagingDirection
- * 34  9500-FILTER-RECORDS           BrowseOrderAndPostRetrievalFilter
- * 35  9500-FILTER-RECORDS-EXIT      BrowseOrderAndPostRetrievalFilter
- * 36  SEND-PLAIN-TEXT               DiagnosticSenders
- * 37  SEND-PLAIN-TEXT-EXIT          DiagnosticSenders
- * 38  SEND-LONG-TEXT                DiagnosticSenders
- * 39  SEND-LONG-TEXT-EXIT           DiagnosticSenders
- * --  COPY 'CSSTRPFY' (site 1416)  AttentionKeys        - a directive, not a paragraph
- * --  YYYY-STORE-PFKEY              AttentionKeys        - a unit of CSSTRPFY.cpy, row held there
- * --  YYYY-STORE-PFKEY-EXIT         AttentionKeys        - a unit of CSSTRPFY.cpy, row held there
- * </pre>
+ * action plan records and what the traceability matrix carries rows for. Three further things are
+ * exercised from this member and are <em>not</em> units of it: the copybook expansion site at line 1416
+ * is a directive rather than a paragraph, and the two paragraphs that expansion delivers are units of
+ * {@code app/cpy/CSSTRPFY.cpy}, which the matrix gives a section and two rows of its own. That copybook
+ * is included by five members, so counting its two paragraphs against each of them would report ten
+ * units for two and the frozen 544 would no longer hold. The unit-to-test inventory is held once in
+ * {@code docs/traceability-matrix.md}.
  *
  * <h2>Independent oracles</h2>
  *

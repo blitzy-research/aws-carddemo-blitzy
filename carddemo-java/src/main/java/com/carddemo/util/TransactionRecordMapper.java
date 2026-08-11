@@ -165,38 +165,23 @@ import java.util.Objects;
  *
  * <h2>Fixture evidence, verified by measurement</h2>
  *
- * <p><strong>The persisted transaction table starts empty.</strong> Unlike the account, card and
- * customer masters, no sample file populates it in {@code V3__seed_reference_data.sql}, so a query
- * against a freshly migrated database legitimately returns nothing; rows arrive only from the posting
- * job, the interest run and the online bill-payment path. The offset witness for this layout is
- * therefore the daily-transaction fixture {@code [app/data/ASCII/dailytran.txt]}, whose layout is
- * field-for-field parallel to this
- * one at identical offsets and identical widths. That file is 105,300 bytes, which is exactly 300
- * records at a stride of 351 - the record width plus one line-feed byte. <strong>The line feed is a
- * terminator and never record content</strong>, so a caller reading lines must exclude it.
+ * <p><strong>The persisted transaction table starts empty.</strong> No sample file populates it in
+ * {@code V3__seed_reference_data.sql}, so a query against a freshly migrated database legitimately
+ * returns nothing; rows arrive only from the posting job, the interest run and the online bill-payment
+ * path. The offset witness for this layout is therefore the daily-transaction fixture
+ * {@code [app/data/ASCII/dailytran.txt]}, whose layout is field-for-field parallel to this one at
+ * identical offsets and widths. That file is 105,300 bytes, exactly 300 records at a stride of 351 - the
+ * record width plus one line-feed byte. <strong>The line feed is a terminator and never record
+ * content</strong>, so a caller reading lines must exclude it.
  *
- * <table>
- * <caption>Slices of the parallel fixture at the offsets published here, rows 0, 250 and 299</caption>
- * <tr><th scope="col">Offset</th><th scope="col">Observed</th></tr>
- * <tr><td>0</td><td>a sixteen-character transaction identifier with leading zeros</td></tr>
- * <tr><td>16</td><td>{@code 01}</td></tr>
- * <tr><td>18</td><td>{@code 0001}</td></tr>
- * <tr><td>22</td><td>a ten-byte source code, each of the two observed values carrying two trailing
- *     spaces: 250 records point-of-sale and 50 operator-originated</td></tr>
- * <tr><td>32</td><td>a hundred-byte description</td></tr>
- * <tr><td>132</td><td>{@code 0000005047G}, {@code 0000000349I} and {@code 0000006032B}, decoding to
- *     504.77, 34.99 and 603.22 - see the correction below</td></tr>
- * <tr><td>143</td><td>{@code 800000000}</td></tr>
- * <tr><td>152</td><td>a fifty-byte merchant name</td></tr>
- * <tr><td>202</td><td>a fifty-byte merchant city</td></tr>
- * <tr><td>252</td><td>{@code 72112} followed by five spaces, and {@code 53200-7529} - a hyphenated
- *     nine-digit postal code, which is why this field is free-form and never numeric</td></tr>
- * <tr><td>262</td><td>sixteen-digit card numbers, confirming that one-based 263 is this field</td></tr>
- * <tr><td>278</td><td>a twenty-six-character timestamp of the form
- *     {@code 2022-06-10 19:27:53.000000}, identical on all 300 records</td></tr>
- * <tr><td>304</td><td><strong>twenty-six spaces</strong>, on all 300 records</td></tr>
- * <tr><td>330</td><td>twenty spaces</td></tr>
- * </table>
+ * <p>Read at the offsets published above, the fixture confirms four things worth naming. At 132 the
+ * amount images {@code 0000005047G}, {@code 0000000349I} and {@code 0000006032B} decode to 504.77,
+ * 34.99 and 603.22 - see the correction below. At 252 the postal code appears both as {@code 72112}
+ * with five trailing spaces and as the hyphenated nine-digit {@code 53200-7529}, which is why this
+ * field is free-form and never numeric. At 262 the sixteen-digit card numbers confirm that one-based
+ * 263 is this field. At 278 the twenty-six-character timestamp {@code 2022-06-10 19:27:53.000000} is
+ * identical on all 300 records, and at 304 the processing timestamp is <strong>twenty-six
+ * spaces</strong> on all 300 - so the date-window filter cannot be exercised from this fixture alone.
  *
  * <p><strong>A correction, recorded because the wrong figure is the more plausible one.</strong> The
  * first image above is sometimes reported as decoding to 500.47. It does not. The trailing
@@ -254,64 +239,24 @@ import java.util.Objects;
  *
  * <h2>Deliberate absences, each a boundary rather than an oversight</h2>
  *
- * <ul>
- *   <li><strong>No comparator, sort or ordering</strong> - the three external sort specifications
- *       become per-job comparators and range predicates in the {@code batch} package, for the typing
- *       reason given above.</li>
- *   <li><strong>No arithmetic and no re-scaling</strong> - the over-limit basis is evaluated strictly
- *       left to right and the interest expression multiplies before it divides, both in the
- *       {@code service} package. Because every store truncates, re-ordering either expression would
- *       move the truncation point and change the cent, so neither may be rearranged and neither
- *       belongs here.</li>
- *   <li><strong>No date or timestamp parsing</strong>, and no date-time import.</li>
- *   <li><strong>No validation</strong> - no type or category lookup, no merchant check, no
- *       card-number checksum and no reject-reason assignment; the reject reason codes and the
- *       430-byte reject record belong to the posting step.</li>
- *   <li><strong>No enumeration translation</strong> - the source code stays a raw ten-byte value.</li>
- *   <li><strong>No statement-work projection of any kind.</strong> The 328-of-350-byte COSTM01
- *       reprojection that {@code [app/jcl/CREASTMT.JCL]} declares has exactly one authority, and it is
- *       {@link StatementWorkRecordMapper}, not this class. An earlier revision carried a second, fully
- *       parallel copy of that projection here - its own constants, projector, parser and key reader -
- *       and the two happened to agree byte for byte, which is precisely the hazard: either could have
- *       been changed alone and nothing would have failed to compile. This class publishes the canonical
- *       350-byte layout that the projection reads FROM, and nothing else.</li>
- *   <li><strong>No optimistic-lock counter</strong> - this entity declares none, because a posted
- *       transaction is inserted and read, never edited in place.</li>
- *   <li><strong>No logging</strong> - this package is not among the module's configured logger
- *       names, so a logger here would be unconfigured; emit-then-abend logging is a caller
- *       obligation.</li>
- *   <li><strong>No persistence</strong> - no repository, no entity manager, no transaction.</li>
- * </ul>
+ * <p>This class publishes the canonical 350-byte layout and nothing else: no ordering, arithmetic,
+ * re-scaling, date parsing, validation, reject-reason assignment, enumeration translation,
+ * optimistic-lock counter or persistence. Two of those boundaries are load-bearing rather than
+ * tidiness. Ordering belongs to the job configuration that needs it, because the same field is typed
+ * {@code ZD} in one external sort specification and {@code CH} in another, so a shared comparator would
+ * be wrong for one of them; and the arithmetic belongs to the {@code service} package, where the
+ * over-limit basis is evaluated strictly left to right and the interest expression multiplies before it
+ * divides - every store truncates, so re-ordering either expression would move the truncation point and
+ * change the cent.
  *
- * <h2>Decision-log entries raised by this file</h2>
+ * <p><strong>The 328-of-350-byte COSTM01 reprojection that {@code [app/jcl/CREASTMT.JCL]} declares has
+ * exactly one authority, and it is {@link StatementWorkRecordMapper}.</strong> No second, parallel copy
+ * of that projection may be carried here - not its constants, projector, parser or key reader, and not
+ * even one that agrees byte for byte, because that is precisely the hazard: either could be changed
+ * alone and nothing would fail to compile. This class publishes the layout the projection reads from.
  *
- * <ol>
- *   <li>Monetary values are decoded and encoded at scale two with truncation toward zero, never
- *       half-even and never half-up, because the rounding keyword occurs zero times across the
- *       estate and a store without it truncates.</li>
- *   <li>The same sixteen bytes at one-based 263 are typed zoned decimal by the report procedure and
- *       character by the statement job, so ordering comparators are per-job and are never shared.</li>
- *   <li>The sort symbol at one-based 305 is the leading ten bytes of the twenty-six-byte processing
- *       timestamp, not an independent field.</li>
- *   <li>Both timestamps are preserved as raw twenty-six-byte strings rather than temporal types,
- *       because the seeded processing timestamp is twenty-six spaces and no temporal type can
- *       represent that.</li>
- *   <li>The posted-transaction table is empty after the reference-data seed, so the daily-transaction
- *       fixture is the offset witness for this layout; the two layouts are field-for-field
- *       parallel.</li>
- *   <li>The statement job's 328-of-350-byte reprojection truncates the processing timestamp by two
- *       bytes. The job owns when it occurs and {@link StatementWorkRecordMapper} owns the projection
- *       and parse mechanics; this class owns neither.</li>
- *   <li>The merchant identifier maps to the column {@code merchant_id}, unprefixed, diverging from
- *       the parallel daily-transaction entity whose every column carries a prefix. The divergence is
- *       preserved rather than corrected.</li>
- *   <li>Filler bytes are not uniform across the estate's fixtures - a recorded source anomaly - so
- *       the encode direction emits spaces and every fixture round-trip assertion compares only the
- *       mapped prefix.</li>
- *   <li>A record image of the wrong encoded width raises {@link IllegalArgumentException} rather than
- *       any exception type of this module's own exception package, for the reason given on
- *       {@link #fromRecord(String)}.</li>
- * </ol>
+ * <p>There is also no logger, because this package is not among the module's configured logger names,
+ * so one here would be unconfigured; emit-then-abend logging is a caller obligation.
  *
  * <h2>Shape</h2>
  *
@@ -329,12 +274,6 @@ import java.util.Objects;
  * can never shift this record's byte geometry by silently becoming a question mark. Delegating rather
  * than repeating that choice is what makes the guarantee checkable: this file imports no charset at
  * all, so there is no second place for the decision to drift.
- *
- * <p>Provenance: translated from the estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; the copybook trailer records the upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68}, dated 2022-07-19. The legacy tree is read-only
- * reference: no source text from it is reproduced here, so traceability cites member names, field
- * names, pictures, widths, offsets and positions only.
  *
  * @see Transaction
  * @see ZonedDecimalCodec

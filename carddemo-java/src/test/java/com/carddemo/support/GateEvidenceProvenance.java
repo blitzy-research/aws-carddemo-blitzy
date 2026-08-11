@@ -60,10 +60,6 @@ import java.util.Objects;
  * <p>Decision log DL-315 records why the evidence is uploaded before the reproducibility clean and why
  * it is stamped.
  *
- * <p>Provenance of the estate itself, unchanged and separate from this: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 public final class GateEvidenceProvenance {

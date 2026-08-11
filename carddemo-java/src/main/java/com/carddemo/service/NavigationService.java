@@ -44,9 +44,8 @@ import com.carddemo.domain.enums.UserType;
  * carrying the communication area with it, and the next pseudo-conversational turn was re-armed on the
  * same terminal. Neither is reproduced: an endpoint <em>returns a route constant in its response body</em>
  * and the <strong>client drives the next call</strong>. That is what makes every endpoint independently
- * testable &mdash; no endpoint is reachable only as the continuation of another, and no test has to drive
- * a conversation to reach a screen. This class accordingly performs no redirect, no {@code forward:}, no
- * request-dispatcher call, no response-entity construction and no web-framework operation of any kind.
+ * testable - no endpoint is reachable only as the continuation of another, and no test has to drive a
+ * conversation to reach a screen.
  *
  * <p>It has exactly two responsibilities: it owns the route vocabulary, one constant per reachable
  * destination, as compile-time strings in {@link Routes} and in typed form in {@link Route}; and it owns
@@ -81,14 +80,14 @@ import com.carddemo.domain.enums.UserType;
  * {@code CDV1} at {@code [app/csd/CARDDEMO.CSD:L388]} is itself bound to that dangling program
  * definition at {@code [app/csd/CARDDEMO.CSD:L211]}, which means the transaction cannot have been
  * dispatchable in the shipped estate. <em>No route constant is created for {@code CDV1} either</em>, and
- * the reason is worth stating because an earlier revision of this class did create one.
+ * the reason is worth stating because the omission is deliberate rather than an oversight.
  *
- * <p>That revision reasoned that {@code CDV1} is one of the eighteen registered transaction definitions
- * and that omitting it would leave the vocabulary short of the resource definition it derives from, so
- * it substituted the date-validation subprogram {@code CSUTLDTC} as the destination's implementation.
- * The substitution invents a destination the estate does not have. {@code CSUTLDTC} is bound to no
- * transaction anywhere in the resource definition file, is named by no transfer-control statement and by
- * no menu catalogue, and is reached only by static {@code CALL} from four sites - two in
+ * <p>The argument for creating one is that {@code CDV1} is one of the eighteen registered transaction
+ * definitions and that omitting it leaves the vocabulary short of the resource definition it derives
+ * from, so the date-validation subprogram {@code CSUTLDTC} could be substituted as the destination's
+ * implementation. That substitution invents a destination the estate does not have. {@code CSUTLDTC} is
+ * bound to no transaction anywhere in the resource definition file, is named by no transfer-control
+ * statement and by no menu catalogue, and is reached only by static {@code CALL} from four sites - two in
  * {@code app/cbl/COTRN02C.cbl} and two in {@code app/cbl/CORPT00C.cbl}. It is an internal subprogram,
  * not a navigable screen, and it stays internal: it is modelled by the date-validation service and is
  * absent from this vocabulary. A transaction whose only binding is to a program that does not exist has
@@ -122,12 +121,11 @@ import com.carddemo.domain.enums.UserType;
  * <p><strong>What this class deliberately does not do.</strong> It decodes no attention key -
  * translating a raw terminal identifier into an action, including folding program-function keys 13
  * through 24 back onto 1 through 12, belongs to the utility-layer key translator, which returns an
- * action and never a route; this class maps an action plus context <em>to</em> a route. It carries no
- * screen message text - the messages belong to {@code MessageCatalogService} and to the owning online
- * service, so the "coming soon" text and the admin-only text are composed by {@code MenuService} and
- * not here. It makes no authorisation decision: {@link #adminScopedRoutes()} and
- * {@link Route#isAdminScoped()} merely <em>report</em> that a destination is administrative.
- * It touches no database, no repository, no monetary value and no fixed-width record offset.
+ * action and never a route; this class maps an action plus context <em>to</em> a route. Screen message
+ * text belongs to {@code MessageCatalogService} and the owning online service, so the "coming soon" and
+ * admin-only texts are composed by {@code MenuService}. It makes no authorisation decision either:
+ * {@link #adminScopedRoutes()} and {@link Route#isAdminScoped()} merely <em>report</em> that a
+ * destination is administrative.
  *
  * <p><strong>Administrative access is enforced outside this class.</strong> The security chain requires
  * the administrator authority for every request beneath {@code /api/admin/**}. The delivered boundary
@@ -628,12 +626,12 @@ public final class NavigationService {
      * and the calling screen's own default.
      *
      * <p><strong>Both arms of the legacy rule are modelled.</strong> At
-     * {@code app/cbl/COBIL00C.cbl:L129-L134} the program tests the <em>originating</em>-program field of the
-     * communication area: when it holds spaces or low values it nominates the calling screen's own default,
-     * and otherwise it nominates the destination that field names. The default is <strong>per screen and
-     * not global</strong> &mdash; the bill-payment program's is the user main menu at {@code L130}, while
-     * both menu programs default their sign-off path to sign-on &mdash; which is why the fallback is a
-     * parameter here and is never assumed.
+     * {@code app/cbl/COBIL00C.cbl:L129-L134} the program tests the <em>originating</em>-program field of
+     * the communication area: when it holds spaces or low values it nominates the calling screen's own
+     * default, and otherwise it nominates the destination that field names. The default is <strong>per
+     * screen and not global</strong> &mdash; the bill-payment program's is the user main menu at {@code
+     * L130}, while both menu programs default their sign-off path to sign-on &mdash; which is why the
+     * fallback is a parameter here and is never assumed.
      *
      * <p>The blank test is the legacy test, not the conventional Java one: the field is fixed width, so a
      * value consisting entirely of spaces or of low values is blank, while one containing other white space
@@ -644,14 +642,14 @@ public final class NavigationService {
      * default. The legacy transfer-control statement would have attempted the transfer and abended on an
      * unresolvable program name, and that is the behaviour reproduced here.
      *
-     * <p>An earlier revision applied the caller's default and logged a warning instead, reasoning that
-     * the field is client-echoed and therefore untrusted, so honouring it blindly would let a client
-     * provoke a server failure. The premise is right and the conclusion does not follow. Substituting a
-     * different destination is not the safe response to untrusted input; it is a silent change of
-     * outcome, which is worse than a failure because it is invisible. Untrusted input is handled where it
-     * belongs - the name is bounded to the legacy field width before it reaches a diagnostic, exactly as a
-     * move into {@code PIC X(8)} bounds it - and the outcome is left alone. A refused navigation is a
-     * refusal, not a redirection.
+     * <p>APPLYING THE CALLER'S DEFAULT AND LOGGING A WARNING INSTEAD IS NOT AVAILABLE, and the reasoning
+     * that argues for it - the field is client-echoed and therefore untrusted, so honouring it blindly
+     * would let a client provoke a server failure - has a right premise and a conclusion that does not
+     * follow. Substituting a different destination is not the safe response to untrusted input; it is a
+     * silent change of outcome, which is worse than a failure because it is invisible. Untrusted input is
+     * handled where it belongs - the name is bounded to the legacy field width before it reaches a
+     * diagnostic, exactly as a move into {@code PIC X(8)} bounds it - and the outcome is left alone. A
+     * refused navigation is a refusal, not a redirection.
      *
      * <p>In the shipped estate the field can only ever hold one of the seventeen online program names, so
      * a legitimate client never reaches this path.
@@ -675,8 +673,8 @@ public final class NavigationService {
     }
 
     /**
-     * Resolves the destination an attention key leads to, producing one only for the key that returns to the
-     * previous screen. The navigation-bearing arm of the attention-key evaluation at
+     * Resolves the destination an attention key leads to, producing one only for the key that returns to
+     * the previous screen. The navigation-bearing arm of the attention-key evaluation at
      * {@code app/cbl/COBIL00C.cbl:L125-L142}: only the third program-function key transfers control there,
      * while the enter key is processed by the screen itself and every other key produces an invalid-key
      * message and re-presents the same screen. Neither of those transfers control, so neither yields a
@@ -748,16 +746,16 @@ public final class NavigationService {
 
     /**
      * Reports whether a catalogued program name suppresses dispatch. The legacy guard compares the
-     * <strong>first five characters</strong> of the name against the suppression literal and dispatches only
-     * when they differ, at {@code app/cbl/COMEN01C.cbl:L146} and {@code app/cbl/COADM01C.cbl:L138}. When
-     * they match, control never transfers and the program falls through to compose a "coming soon" message
-     * instead &mdash; so a suppressed selection produces <strong>no route at all</strong>, which is why the
-     * dispatch methods return an empty result rather than a destination.
+     * <strong>first five characters</strong> of the name against the suppression literal and dispatches
+     * only when they differ, at {@code app/cbl/COMEN01C.cbl:L146} and {@code app/cbl/COADM01C.cbl:L138}.
+     * When they match, control never transfers and the program falls through to compose a "coming soon"
+     * message instead &mdash; so a suppressed selection produces <strong>no route at all</strong>, which is
+     * why the dispatch methods return an empty result rather than a destination.
      *
      * <p><strong>Documented unreachable, and deliberately preserved.</strong> No entry in either menu
-     * catalogue names a program beginning with the literal, so the branch cannot fire in the shipped estate.
-     * It is reproduced anyway, because deleting it would discard a documented behaviour of the source and
-     * because the guard is what makes a catalogue entry safely extensible.
+     * catalogue names a program beginning with the literal, so the branch cannot fire in the shipped
+     * estate. It is reproduced anyway, because deleting it would discard a documented behaviour of the
+     * source and because the guard is what makes a catalogue entry safely extensible.
      *
      * <p>A blank or absent name is <em>not</em> suppressed, faithfully: it does not begin with the literal,
      * so the legacy guard would let dispatch proceed. Such a name simply names no reachable destination,
@@ -781,9 +779,9 @@ public final class NavigationService {
      *
      * <p><strong>Documented unreachable, and deliberately preserved.</strong> All ten entries of the user
      * menu catalogue carry the standard-user code, so the second condition can never hold. The eighth entry
-     * does carry a commented-out alternative label marking it administrator-only, and that label is inactive
-     * &mdash; which is precisely why the gate exists and equally why it is dormant. The denial message text
-     * belongs to the owning menu service.
+     * does carry a commented-out alternative label marking it administrator-only, and that label is
+     * inactive &mdash; which is precisely why the gate exists and equally why it is dormant. The denial
+     * message text belongs to the owning menu service.
      */
     public boolean isAdminOnlyOptionDenied(final UserType selectingUserType,
             final String optionUserTypeCode) {
@@ -795,9 +793,9 @@ public final class NavigationService {
      * Resolves the destination a user-menu selection dispatches to, applying the legacy gates in source
      * order. <strong>The order is the contract:</strong> the administrator-only gate at
      * {@code app/cbl/COMEN01C.cbl:L136-L143} is evaluated first and short-circuits, then the suppression
-     * guard at {@code L146}, and only then does control transfer at {@code L152-L155}. Either gate yields an
-     * empty result, because in both cases the legacy program re-presents the menu instead of transferring
-     * control.
+     * guard at {@code L146}, and only then does control transfer at {@code L152-L155}. Either gate yields
+     * an empty result, because in both cases the legacy program re-presents the menu instead of
+     * transferring control.
      *
      * <p>The option's program name and user-type code are passed in as plain values rather than read from
      * the menu catalogue, because the catalogue is a configuration-layer component and this layer must not
@@ -850,14 +848,14 @@ public final class NavigationService {
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Resolves a legacy program name to its destination &mdash; the lookup the two nomination rules rest on,
-     * because the communication-area fields they read carry an eight-character program name rather than a
-     * route. It also serves menu dispatch, whose catalogue entries carry the same kind of value.
+     * Resolves a legacy program name to its destination &mdash; the lookup the two nomination rules rest
+     * on, because the communication-area fields they read carry an eight-character program name rather than
+     * a route. It also serves menu dispatch, whose catalogue entries carry the same kind of value.
      *
-     * <p>Matching tolerates the trailing padding of a fixed-width field, because the legacy transfer-control
-     * command ignores trailing blanks, but applies no case fold and no other normalisation, because program
-     * names are case-sensitive in the resource definition. The value inspected is never altered; only the
-     * lookup key is. Never throws, and no name resolves to the dangling program definition.
+     * <p>Matching tolerates the trailing padding of a fixed-width field, because the legacy
+     * transfer-control command ignores trailing blanks, but applies no case fold and no other
+     * normalisation, because program names are case-sensitive in the resource definition. The value
+     * inspected is never altered; only the lookup key is. Never throws, and no name resolves to the dangling program definition.
      */
     public Optional<Route> routeForLegacyProgram(final String legacyProgramName) {
         return lookupFixedWidth(ROUTES_BY_LEGACY_PROGRAM, legacyProgramName);
@@ -881,10 +879,10 @@ public final class NavigationService {
 
     /**
      * Resolves a wire value back to its destination, the inverse of {@link Route#getRouteValue()}. Matching
-     * is <strong>exact</strong>: unlike the two legacy-identifier lookups, a wire value is not a fixed-width
-     * field, so surrounding white space is not padding to be tolerated but a difference from the published
-     * token. An unrecognised value yields an empty result rather than an error, so a malformed echo cannot
-     * fail a request here.
+     * is <strong>exact</strong>: unlike the two legacy-identifier lookups, a wire value is not a
+     * fixed-width field, so surrounding white space is not padding to be tolerated but a difference from
+     * the published token. An unrecognised value yields an empty result rather than an error, so a
+     * malformed echo cannot fail a request here.
      */
     public Optional<Route> routeForValue(final String routeValue) {
         if (routeValue == null) {
@@ -992,10 +990,10 @@ public final class NavigationService {
             // the abend, where it is structured data on an exception rather than text in a log record.
             //
             // Routed through the shared online abend diagnostic rather than logged here and raised
-            // separately. This site's own record was correct but was a third shape on a surface that should
-            // have one: it named its fields differently from every other abend record, under a different
+            // separately. A record of this site's own would be a third shape on a surface that should have
+            // one: it would name its fields differently from every other abend record, under a different
             // category, so a reader who searched the abend vocabulary would not find the abend. The rule
-            // being applied travels as the operation, so nothing this record used to say is lost.
+            // being applied travels as the operation, so nothing is lost by routing it.
             //
             // The described-culprit form is used because the culprit here is the one abend culprit in the
             // estate that a caller chooses. The description travels into the record; the bounded value
@@ -1143,8 +1141,8 @@ public final class NavigationService {
 
     /**
      * Removes the trailing space and low-value padding of a fixed-width field value. Only trailing padding
-     * is removed, and only those two characters; leading characters, interior characters and letter case are
-     * never altered, so a name differing other than by padding still fails to match, which is intended.
+     * is removed, and only those two characters; leading characters, interior characters and letter case
+     * are never altered, so a name differing other than by padding still fails to match, which is intended.
      */
     private static String stripTrailingPadding(final String value) {
         int end = value.length();

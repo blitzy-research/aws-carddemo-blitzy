@@ -57,13 +57,10 @@ import com.carddemo.service.FileMaintenanceService;
 /**
  * What this configuration publishes, and what its own documentation commits it to.
  *
- * <p>The subject is the translation of the legacy job stream {@code app/jcl/PRTCATBL.jcl} at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Three facts measured from that member are
- * asserted here because getting any of them wrong compiles cleanly and fails only at the byte level:
- * the member declares <strong>three</strong> steps, it declares <strong>no</strong> condition-code
- * dependency on any of them, and its output record length is <strong>forty</strong> bytes against a
- * reprojection whose own segments add up to forty-one.
+ * <p>Three facts measured from that member are asserted here because getting any of them wrong compiles
+ * cleanly and fails only at the byte level: the member declares <strong>three</strong> steps, it declares
+ * <strong>no</strong> condition-code dependency on any of them, and its output record length is
+ * <strong>forty</strong> bytes against a reprojection whose own segments add up to forty-one.
  *
  * <p>The behaviour that needs a database - the ordering, the staged datasets and their widths - is
  * asserted by {@code CategoryBalanceReportJobConfigIT} against a real server. What is asserted here is

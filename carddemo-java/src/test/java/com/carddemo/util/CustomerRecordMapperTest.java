@@ -128,10 +128,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * shipped with. The complementary traversal of all fifty fixture records lives in the sibling
  * coverage test for this mapper, which reads the fixture from the test resources.
  *
- * <p><strong>Provenance.</strong> Legacy estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Provenance is recorded here as a header
- * fact; it is not asserted against any member of the class under test.
+ * <p>Provenance is recorded here as a header fact; it is not asserted against any member of the class under
+ * test.
  */
 @DisplayName("CustomerRecordMapper - the 500-byte CUSTOMER-RECORD layout")
 class CustomerRecordMapperTest {

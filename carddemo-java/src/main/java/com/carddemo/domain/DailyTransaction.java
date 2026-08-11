@@ -117,8 +117,8 @@ import java.util.Objects;
 public class DailyTransaction {
 
     /**
-     * Total digit count of the amount column: 11, being nine digits before the implied decimal point and two
-     * after, from the copybook's own picture clause.
+     * Total digit count of the amount column: 11, being nine digits before the implied decimal point and
+     * two after, from the copybook's own picture clause.
      *
      * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
      * than two copies of it.
@@ -374,10 +374,11 @@ public class DailyTransaction {
     /**
      * The 350 bytes this instance was mapped from, when it was mapped from a record image at all.
      *
-     * <p><strong>&#9733; Why an entity carries a copy of its own input.</strong> The legacy reject write is
-     * {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA} [app/cbl/CBTRN02C.cbl:L447]. {@code DALYTRAN-RECORD}
-     * is the record <em>area the READ filled</em>, so the leading 350 bytes of a 430-byte reject record are
-     * the input bytes, unaltered and unexamined. They are not re-derived from anything.
+     * <p><strong>&#9733; Why an entity carries a copy of its own input.</strong> The legacy reject write
+     * copies the daily-transaction record area into the reject record's leading segment
+     * [app/cbl/CBTRN02C.cbl:L447]. That area is what the preceding read filled, so the leading 350 bytes of
+     * a 430-byte reject record are the input bytes, unaltered and unexamined. They are not re-derived from
+     * anything.
      *
      * <p>Re-rendering them from these thirteen attributes is <strong>not</strong> equivalent, and the
      * difference is not theoretical. The amount arrives as a zoned-decimal image whose final byte carries
@@ -746,10 +747,10 @@ public class DailyTransaction {
     /**
      * Records the 350-byte image this instance was mapped from.
      *
-     * <p>Called by the mapper that owns the daily-transaction layout, at the moment it slices the image, and
-     * by nothing else in production. The width is enforced here rather than trusted, because an image of the
-     * wrong width would produce a reject record of the wrong width and the failure would surface as a
-     * malformed dataset rather than as a rejected argument.
+     * <p>Called by the mapper that owns the daily-transaction layout, at the moment it slices the image,
+     * and by nothing else in production. The width is enforced here rather than trusted, because an image
+     * of the wrong width would produce a reject record of the wrong width and the failure would surface as
+     * a malformed dataset rather than as a rejected argument.
      *
      * @param  sourceRecordImage the image at exactly 350 characters, or {@code null} to record that this
      *                           instance came from no image

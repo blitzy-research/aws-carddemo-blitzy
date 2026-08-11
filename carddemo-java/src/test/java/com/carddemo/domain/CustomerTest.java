@@ -72,10 +72,8 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * calendar validity belongs to the date-validation service; neither is asserted here, and this
  * suite deliberately proves that the entity itself performs no such check.
  *
- * <p><strong>Provenance.</strong> Legacy estate read at commit
- * 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
- * CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. No legacy source text is reproduced; field names,
- * widths, offsets and record lengths are cited as metadata only.
+ * <p>No legacy source text is reproduced; field names, widths, offsets and record lengths are cited as
+ * metadata only.
  */
 @DisplayName("Customer - the 500-byte customer record, 18 mapped fields plus a 168-byte filler")
 class CustomerTest {

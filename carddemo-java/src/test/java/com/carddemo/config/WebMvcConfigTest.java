@@ -175,8 +175,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * one. Its value is the survival slice, which covers a behaviour of the module rather than a line of the
  * class.
  *
- * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. No legacy source text
- * is reproduced anywhere in this file; record widths and field shapes are cited as metadata only.
+ * <p>No legacy source text is reproduced anywhere in this file; record widths and field shapes are cited as
+ * metadata only.
  */
 @DisplayName("WebMvcConfig - explicit web boundaries and the auto-configuration they preserve")
 class WebMvcConfigTest {

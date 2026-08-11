@@ -64,8 +64,8 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  * are written out below as literals rather than read from {@link AwsProperties}, and the type's own
  * published constants are then asserted <em>against</em> those literals. The direction matters: a test
  * that took its expectations from the type under test would agree with any key path the type happened
- * to bind, which is precisely how an earlier revision came to bind {@code s3.bucket} and
- * {@code sqs.job-submission-queue} with every binding test passing.</p>
+ * to bind, which is precisely how {@code s3.bucket} and {@code sqs.job-submission-queue} come to be
+ * bound with every binding test passing.</p>
  *
  * <h2>Why the queue name is a contract rather than a preference</h2>
  *

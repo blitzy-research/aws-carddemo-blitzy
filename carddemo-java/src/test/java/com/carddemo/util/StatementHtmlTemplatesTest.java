@@ -168,12 +168,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * whitespace or ordering variability can enter the output; a record-length conflict in the job
  * stream resolved to one hundred bytes for the HTML stream; and colour and width literals
  * reproduced byte for byte with no design-system involvement of any kind.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Legacy estate at checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release
- * stamp CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. The stamp is recorded here as a header
- * note only; it is never asserted against any member of the class under test.</p>
  */
 @DisplayName("StatementHtmlTemplates :: hundred-byte HTML statement line templates")
 class StatementHtmlTemplatesTest {

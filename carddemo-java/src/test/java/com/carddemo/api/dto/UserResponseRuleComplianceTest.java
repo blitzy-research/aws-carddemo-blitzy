@@ -50,10 +50,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * transactions {@code CU00} through {@code CU03}, implemented by {@code app/cbl/COUSR00C.cbl},
  * {@code COUSR01C.cbl}, {@code COUSR02C.cbl} and {@code COUSR03C.cbl}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Ten rows, fixed by an OCCURS clause.</strong> {@code app/cbl/COUSR00C.cbl:57} declares
  * {@code 02 USER-REC OCCURS 10 TIMES}, so the list screen's page size is ten and is declared in the
  * table rather than inferred from a loop bound as the transaction list's is.

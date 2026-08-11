@@ -56,9 +56,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *
  * <p>Reflection is used for that pairing only. The module's unsafe-code audit commits to zero reflection in
  * {@code src/main/java/**} and scopes itself there deliberately; nothing under test uses any.
- *
- * <p>Provenance: {@code app/cbl/COACTUPC.cbl} and {@code app/cpy-bms/COACTUP.CPY}, read as read-only
- * reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
  */
 @DisplayName("AccountUpdateContractAdapter :: the one crossing between the update wire contract and the "
         + "service-owned pair")

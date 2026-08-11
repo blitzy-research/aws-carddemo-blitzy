@@ -50,19 +50,15 @@ import jakarta.validation.constraints.Size;
  * is therefore the one operator-typed value this response echoes, and it is what the finding this
  * component closes calls the map's safe output.
  *
- * <p><strong>Recorded observation: the program never assigns that output item, and what the legacy
- * screen actually redisplayed is a terminal artefact.</strong> {@code POPULATE-HEADER-INFO} on lines
- * 181 to 204 writes eight items and {@code SEND-SIGNON-SCREEN} writes the ninth; no statement anywhere
- * in {@code COSGN00C} moves anything into {@code USERIDO}. The output map redefines the input map, and
- * within each fifteen-byte field group the output value sits three bytes ahead of the input value - the
- * input group is a two-byte length, a flag byte, four filler bytes and then the eight-character value,
- * while the output group is four attribute bytes, the eight-character value and three filler bytes. So
- * on a redisplay the item transmitted overlaps the received user id without coinciding with it, and
- * what the operator saw was neither the typed identifier nor a blank field. That is generated 3270
- * plumbing of exactly the kind this contract does not model, alongside the length, flag and attribute
- * items and the terminal input/output area filler. This contract carries the identifier itself, which
- * is the value the screen was trying and failing to restate, and the artefact is recorded here rather
- * than reproduced.
+ * <p><strong>Recorded observation: the program never assigns that output item, and what the legacy screen
+ * actually redisplayed is a terminal artefact.</strong> {@code POPULATE-HEADER-INFO} on lines 181 to 204
+ * writes eight items and {@code SEND-SIGNON-SCREEN} writes the ninth; no statement anywhere moves
+ * anything into {@code USERIDO}. The output map redefines the input map and, within each fifteen-byte
+ * field group, the output value sits three bytes ahead of the input value, so on a redisplay the item
+ * transmitted overlaps the received user id without coinciding with it and the operator saw neither the
+ * typed identifier nor a blank field. That is generated 3270 plumbing of exactly the kind this contract
+ * does not model. The contract carries the identifier itself - the value the screen was trying and
+ * failing to restate - and the artefact is recorded rather than reproduced.
  *
  * <p><strong>The credential is not echoed, and the map declaring an output item for it changes
  * nothing.</strong> {@code PASSWDO} is declared on line 146 of the same copybook, immediately after
@@ -73,20 +69,20 @@ import jakarta.validation.constraints.Size;
  * <p>Those nine written items and that one echo, plus the outcome facts the screen conveyed through
  * cursor placement and the transfer of control, are exactly what this response carries.
  *
- * <p>The transaction also emits two shared texts &mdash; the thank-you on the exit-key path and the
- * invalid-key text on an unmapped key. Both are owned by the common-message catalog service and are
- * deliberately not restated here, because a second copy would be a second source of truth. Each is a
- * forty-nine-character literal held in a fifty-character field, so its stored value is fifty
- * characters including one filling space; this type neither trims nor pads nor re-cases, so it
- * conveys all fifty. A separate forty-character courtesy text, in a different copybook and naming the
- * application by an older abbreviation, is a different value entirely and must never be merged with
- * it. The title values this response echoes come from that same copybook, whose second title has a
+ * <p>The transaction also emits two shared texts declared in {@code app/cpy/CSMSG01Y.cpy} - the thank-you
+ * on the exit-key path at line 89 and the invalid-key text on an unmapped key at line 93. Both are owned
+ * by the common-message catalog service and are deliberately <strong>not</strong> restated here, because
+ * a second copy would be a second source of truth; the obligation this contract carries is that it can
+ * convey them <em>unaltered</em>, which the eighty-character message bound and the absence of any
+ * normalization logic guarantee. A separate forty-character courtesy text, in a different copybook and
+ * naming the application by an older abbreviation, is a different value entirely and must never be merged
+ * with it. The title values this response echoes come from that same copybook, whose second title has a
  * commented-out alternative that must remain inactive.
  *
  * <p><strong>A failed credential comparison is not a general error.</strong> The program raises its
  * error flag on five of its nine outcomes and leaves it lowered on four: a successful sign-on, an empty
- * communication area, the exit key, and &mdash; the subtle one &mdash; a failed comparison, which composes a
- * message and moves the cursor without assigning the flag at all. {@link #generalError()} is
+ * communication area, the exit key, and &mdash; the subtle one &mdash; a failed comparison, which composes
+ * a message and moves the cursor without assigning the flag at all. {@link #generalError()} is
  * therefore an explicit primitive that the service sets from the path it took and is never inferred
  * from the presence of {@link #message()}; deriving it would raise the flag on two paths where the
  * legacy leaves it lowered, which is a behavioural change rather than a simplification.
@@ -122,22 +118,14 @@ import jakarta.validation.constraints.Size;
  * customer identity beyond what {@link NavigationContext} defines and redacts in its own rendering,
  * which is why this type needs no rendering override of its own.
  *
- * <p>The transaction also emits two of the shared messages declared in {@code app/cpy/CSMSG01Y.cpy}:
- * the thank-you text on the exit-key path at line 89, and the invalid-key text on the unmapped-key
- * path at line 93. Both are declared once, in the common-message catalog service that owns that
- * copybook, and are deliberately <strong>not</strong> restated here - a second copy would be a second
- * source of truth. The obligation this contract does carry is that it can convey them <em>unaltered</em>,
- * which the eighty-character message bound and the total absence of normalization logic guarantee.
- *
- * <p><strong>Fifty characters, not forty-nine.</strong> Both facts about those two texts are true at
- * once and neither may be dropped. The literal written in each copybook value clause is
- * <strong>forty-nine</strong> characters long, and the field holding it is <strong>fifty</strong>
- * characters wide, so the stored content is the forty-nine-character literal followed by one filling
- * space - exactly <strong>fifty</strong> characters. Fifty is the figure this contract conveys and the
- * figure the catalog service guarantees. Those trailing spaces are part of the contract: this type
- * neither trims, strips, re-fills, re-cases nor otherwise normalizes any value, and the module's
- * serialization settings do not trim either, so a fifty-character value arrives at the client as fifty
- * characters.
+ * <p><strong>Fifty characters, not forty-nine.</strong> Both facts about the two shared texts are true at
+ * once and neither may be dropped: the literal in each copybook value clause is
+ * <strong>forty-nine</strong> characters long and the field holding it is <strong>fifty</strong>
+ * characters wide, so the stored content is the literal followed by one filling space - exactly
+ * <strong>fifty</strong> characters, which is the figure this contract conveys and the figure the catalog
+ * service guarantees. Those trailing spaces are part of the contract: this type neither trims, strips,
+ * re-fills, re-cases nor otherwise normalizes any value, and the module's serialization settings do not
+ * trim either, so a fifty-character value arrives at the client as fifty characters.
  *
  * <h2>The forty-character thank-you is a different value entirely</h2>
  *
@@ -243,51 +231,34 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>What this response never carries</h2>
  *
- * <p><strong>No credential, in any form.</strong> Not the value the operator submitted, not the value
- * the security record stores, not a one-way transformation of either, and no salt or work factor. No
- * component is named for one, and no such literal appears - the seed identities carried in
- * {@code app/jcl/DUSRSECJ.jcl} are never restated here.
+ * <p><strong>No credential, in any form.</strong> Not the value the operator submitted, not the value the
+ * security record stores, not a one-way transformation of either, and no salt or work factor. No
+ * component is named for one, and the seed identities carried in {@code app/jcl/DUSRSECJ.jcl} are never
+ * restated here.
  *
- * <p><strong>No signed bearer artefact either.</strong> No access grant and no refresh grant, no
- * expiry, no issue time, no signing key and no claim payload of any kind. No component is named for
- * one, none is derived from one, and none appears indirectly: the successor state below carries screen
- * navigation facts only. That much is a property of this file and is verifiable by reading it.
+ * <p><strong>No signed bearer artefact either.</strong> No grant, expiry, issue time, signing key or
+ * claim payload appears here, and none is derived from one indirectly: the successor state below carries
+ * screen navigation facts only, which is a property of this file and verifiable by reading it.
  *
- * <p><strong>Where authorisation actually travels, and why this contract's silence about it is now an
- * assurance rather than only a property of this file.</strong> The grant is carried on the transport's own
- * header, minted and validated by the security layer, and never echoed into a response body. Every part
- * of that is delivered: {@code api.AuthController} produces this type at {@code /api/auth/signon};
- * {@code service.AuthenticationService} verifies the presented credential against the stored digest before
- * anything is minted; {@code service.SessionTokenIssuer} and {@code config.JwtTokenProvider} mint the
- * grant; and the bearer filter in {@code config.SecurityConfig} validates it on every subsequent request,
- * re-checking it against the current authoritative record so that a demotion, a deletion or a credential
- * change revokes it at the next request instead of at its expiry.
+ * <p><strong>Where authorisation actually travels.</strong> The grant is carried on the transport's own
+ * header, minted and validated by the security layer, and never echoed into a response body:
+ * {@code service.AuthenticationService} verifies the presented credential against the stored digest
+ * before {@code service.SessionTokenIssuer} and {@code config.JwtTokenProvider} mint anything, and the
+ * bearer filter in {@code config.SecurityConfig} re-checks the grant against the current authoritative
+ * record on every subsequent request, so a demotion, deletion or credential change revokes it at the next
+ * request rather than at its expiry. This type's component set is unaffected - still fifteen, as
+ * enumerated below - and its carrying no credential material of any kind is a property of the type that
+ * this package's own tests assert.
  *
- * <p>The three obligations that were written here for a future endpoint are therefore met rather than
- * outstanding: the grant is minted only after a successful verification, it is returned by way of the
- * transport header rather than by adding a component to this record, and this contract's component set is
- * unchanged - still fifteen, as enumerated below. What remains true, and is the reason the paragraph above
- * is worth keeping, is that this type carries no credential material of any kind; that is a property of
- * the type, it is asserted by this package's own tests, and the mechanism it defers to is now a mechanism
- * that exists.
- *
- * <p>No cardholder or customer identity beyond what {@link NavigationContext} defines and redacts in
- * its own rendering. Consequently this type needs no rendering override of its own, and the absence of
- * one is a deliberate finding rather than an omission - it is the one response contract in this package
- * whose every component is safe to print. Exhaustively, across all fifteen: nine are screen text
- * supplied by the server (the message line, the two title lines, the transaction and program names, the
- * clock date and time, and the application and system identifiers), one is a role, one is a route label,
- * one is a screen-field identifier, one is an error flag, one is the sign-on identifier, and the last is
- * the nested navigation state, which withholds its own six identifying values. No identifier of an
- * account, card, customer or transaction appears, no monetary value, no personal data and no credential,
- * so there is nothing here for a withholding rendering to withhold. The sign-on identifier is the one
- * component worth justifying rather than merely listing: it is not newly disclosed by appearing here,
- * because {@link NavigationContext} carries the same value from the same communication-area item and
- * renders it in the clear, so it already reaches this type's rendering through the nested context - and
- * the screen it came from restates it. What is withheld is withheld absolutely: no credential in any
- * form and no bearer artefact, as stated above. Sibling contracts that do carry regulated values -
- * among them {@link AccountViewResponse}, {@link CardDetailResponse} and {@link TransactionViewResponse}
- * - each override {@code toString()} for exactly that reason.
+ * <p>No cardholder or customer identity beyond what {@link NavigationContext} defines and redacts in its
+ * own rendering, so this type needs no rendering override and the absence of one is deliberate: it is the
+ * one response contract in this package whose every component is safe to print. No account, card,
+ * customer or transaction identifier appears, no monetary value, no personal data and no credential. The
+ * sign-on identifier is the one component worth justifying, and it is not newly disclosed here:
+ * {@link NavigationContext} carries the same value from the same communication-area item and renders it in
+ * the clear, and the screen it came from restates it. Sibling contracts that do carry regulated values -
+ * among them {@link AccountViewResponse}, {@link CardDetailResponse} and
+ * {@link TransactionViewResponse} - each override {@code toString()} for exactly that reason.
  *
  * <p>Bean Validation is used for measurement only. Every component is optional in the legacy sense -
  * each can legitimately be absent, empty or space-filled - so no presence, pattern or format constraint
@@ -299,11 +270,9 @@ import jakarta.validation.constraints.Size;
  * reproduction of all seven sign-on message texts, and DL-054, which scopes that guarantee to the
  * sign-on flow itself rather than to the generic error boundary.
  *
- * <p>Traceability: {@code app/cbl/COSGN00C.cbl} lines 38, 80-83, 88-90, 91-95, 118-131, 149, 181-204,
- * 224-228, 230-240, 240-245, 246-251 and 252-257; {@code app/cpy-bms/COSGN00.CPY};
- * {@code app/bms/COSGN00.bms}; {@code app/cpy/COCOM01Y.cpy}; {@code app/cpy/CSMSG01Y.cpy};
- * {@code app/cpy/COTTL01Y.cpy}. Source checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * <p>Traceability: {@code app/cbl/COSGN00C.cbl} lines 38, 80-83, 88-90, 91-95, 118-131, 149,
+ * 181-204, 224-228, 230-240, 240-245, 246-251 and 252-257; {@code app/cpy-bms/COSGN00.CPY}; {@code
+ * app/bms/COSGN00.bms}; {@code app/cpy/COCOM01Y.cpy}; {@code app/cpy/CSMSG01Y.cpy}; {@code app/cpy/COTTL01Y.cpy}.
  *
  * @param message the operator-facing text the screen displayed, from {@code WS-MESSAGE} on line 38 of
  *     {@code COSGN00C} and rendered through {@code ERRMSG} by line 149. Carried at the program-side

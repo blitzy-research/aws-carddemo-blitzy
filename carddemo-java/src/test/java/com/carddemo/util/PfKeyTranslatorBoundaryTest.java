@@ -62,11 +62,7 @@ import com.carddemo.domain.enums.KeyAction;
  * record relies on it filling the field exactly. Width is therefore asserted on the encoded byte
  * count of every value, and the reverse lookup is asserted to refuse a value of any other width.
  *
- * <p>Provenance: the legacy authority is {@code app/cpy/CSSTRPFY.cpy}, performed as the paragraph
- * range YYYY-STORE-PFKEY through YYYY-STORE-PFKEY-EXIT from account maintenance, account view,
- * card list, card detail and card update, at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("PfKeyTranslator - the CSSTRPFY attention-key store")
 class PfKeyTranslatorBoundaryTest {

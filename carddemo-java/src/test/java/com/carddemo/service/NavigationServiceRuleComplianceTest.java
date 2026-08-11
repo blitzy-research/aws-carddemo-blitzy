@@ -62,15 +62,12 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  *
  * <h2>What the expectations are read from</h2>
  *
- * <p>Every value asserted here comes from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose every COBOL and job-control member carries
- * the trailer release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The vocabulary is
- * the 18 transaction definitions registered in {@code app/csd/CARDDEMO.CSD}; the four rule families
- * are the sign-on role split at {@code app/cbl/COSGN00C.cbl} lines 227 to 240, the zero-length
- * communication-area branch at {@code app/cbl/COBIL00C.cbl} lines 107 and 108, the originating- and
- * destination-program tests at {@code app/cbl/COBIL00C.cbl} lines 129 to 134 and
- * {@code app/cbl/COMEN01C.cbl} lines 170 to 177, and the two menu gates at
- * {@code app/cbl/COMEN01C.cbl} lines 136 to 146.
+ * <p>The vocabulary is the 18 transaction definitions registered in {@code app/csd/CARDDEMO.CSD} ; the four
+ * rule families are the sign-on role split at {@code app/cbl/COSGN00C.cbl} lines 227 to 240, the
+ * zero-length communication-area branch at {@code app/cbl/COBIL00C.cbl} lines 107 and 108, the originating-
+ * and destination-program tests at {@code app/cbl/COBIL00C.cbl} lines 129 to 134 and
+ * {@code app/cbl/COMEN01C.cbl} lines 170 to 177, and the two menu gates at {@code app/cbl/COMEN01C.cbl}
+ * lines 136 to 146.
  *
  * <h2>Nothing is mocked, deliberately</h2>
  *

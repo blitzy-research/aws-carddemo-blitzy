@@ -66,10 +66,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * table carries no referential constraint over it either, so a landing row can legitimately hold a
  * value from outside the vocabulary. The lookup therefore reports an unknown value as absent
  * instead of throwing, and this class proves that rather than assuming it.
- *
- * <p>Every fact asserted here was read from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.
  */
 @DisplayName("TransactionSourceType :: the ten-byte origination field shared by both 350-byte layouts")
 class TransactionSourceTypeTest {

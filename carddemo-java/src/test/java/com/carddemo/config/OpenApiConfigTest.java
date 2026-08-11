@@ -179,8 +179,9 @@ final class OpenApiConfigTest {
      * tells a reader.
      *
      * <p>Every value here is established outside this module rather than read from the description it
-     * judges. The two provenance identifiers are the analysed checkout and the release stamp embedded in
-     * the trailer of every legacy member. The transaction count was counted from the resource definition
+     * judges. The two provenance identifiers are the analysed checkout and the designated release stamp,
+     * which is the one embedded in the trailer of the measured cohort of legacy members rather than one
+     * every member bears. The transaction count was counted from the resource definition
      * {@code [app/csd/CARDDEMO.CSD]}, which declares eighteen transactions of which one - the
      * date-validation transaction - drove no screen, leaving seventeen that did; that figure is
      * corroborated independently by the seventeen mapsets in {@code [app/bms]} and the seventeen

@@ -69,15 +69,6 @@ import org.springframework.transaction.interceptor.TransactionAttribute;
  * member {@code app/jcl/INTCALC.jcl}, which drives the interest program {@code app/cbl/CBACT04C.cbl}
  * and writes a new generation of the generation group declared in {@code app/jcl/DEFGDGB.jcl}.
  *
- * <p>Provenance: the legacy estate is read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here and
- * nothing on this path reads the legacy tree at run time. Every figure below was measured by direct
- * read of that checkout and is a contract rather than guidance; what is reproduced is confined to what
- * the migration plan permits a target file to carry - step names, data-definition and dataset names,
- * condition-code semantics, record lengths, status codes, and the output record's own contract
- * literals.
- *
  * <h2>What this class is, and what it deliberately is not</h2>
  *
  * <p>It is <strong>composition only</strong>. It names the job, names its single step, resolves the
@@ -496,9 +487,9 @@ public final class InterestCalculationJobConfig {
      *
      * <p><strong>The step does not publish.</strong> It seals its generation and registers it, and the
      * shared job-boundary listener publishes every registered artefact once the whole submission has
-     * completed. An earlier revision also uploaded the sealed file here, which put the same generation
-     * in the bucket twice under two different key shapes and left one of the two outside the retention
-     * pass. See {@code docs/decision-log.md} entry DL-212.
+     * completed. UPLOADING THE SEALED FILE HERE AS WELL would put the same generation in the bucket twice
+     * under two different key shapes and leave one of the two outside the retention pass. See
+     * {@code docs/decision-log.md} entry DL-212.
      *
      * @return the step, registered under {@link #STEP_NAME}
      */

@@ -119,10 +119,10 @@ class GrafanaDashboardMetricsContractTest {
         final JsonNode panel = panel(11);
         final Set<String> counters = countersOf(panel);
 
-        // The title used to read "GATE 3 RECORDS PER SECOND", and this assertion used to require it. It
-        // was a claim the expression could not support: rate() divides by the RATE WINDOW, while Gate 3
-        // asks for a run's records over that run's own elapsed time, so a job finishing inside the window
-        // reads low. The panel is a sound visualization of throughput and is now labelled as one; the
+        // // A title of "GATE 3 RECORDS PER SECOND", required by this assertion, would be a claim the
+        // // expression cannot support: rate() divides by the RATE WINDOW, while Gate 3 asks for a run's
+        // // records over that run's own elapsed time, so a job finishing inside the window reads low. The
+        // // panel is a sound visualization of throughput and is labelled as one; the
         // quotable figure is measured per run through support/RunScopedPerformanceRecorder.
         assertThat(panel.path("title").asText())
                 .contains("Application records per second", "rolling rate", "not the Gate 3 figure")

@@ -80,9 +80,8 @@ import static org.mockito.Mockito.when;
  * <p>The member also carries a copybook directive that textually inserts the two paragraphs of
  * {@code app/cpy/CSSTRPFY.cpy}. Those two are exercised from here and are units of the <em>copybook</em>,
  * which the matrix gives a section and two rows of its own; the copybook is included by five members, so
- * counting its pair against each of them would report ten units for two. An earlier revision of this suite
- * and of the class under test published 38 by adding the directive's slot and the inserted pair to the
- * member's own count.
+ * counting its pair against each of them would report ten units for two. Adding the directive's slot
+ * and the inserted pair to the member's own count publishes 38, and must not.
  *
  * <p>The screen resolves an account identifier through the card cross-reference and joins the customer
  * onto it. It reads {@code app/cpy/CVACT01Y.cpy} as the account layout, {@code app/cpy/CVCUS01Y.cpy} as
@@ -126,9 +125,6 @@ import static org.mockito.Mockito.when;
  * Mockito double under strict stubbing, the clock is fixed, and no container, context, connection, port,
  * socket or file is involved. The diagnostic channel is captured with a list appender so that ordering
  * can be asserted rather than co-occurrence, because the failure types carry no logger of their own.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * @since 1.0.0
  */

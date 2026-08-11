@@ -78,10 +78,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * by every other integration test in the same JVM, so this class costs no additional container.
  *
  * <p>Provenance: this test has no legacy antecedent - the legacy estate carries no test harness of any
- * kind. It guards the client configuration for the queue that replaces {@code TDQUEUE(JOBS)} as defined
- * in {@code app/csd/CARDDEMO.CSD}, taken from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * kind.
  */
 @DisplayName("No AWS client under the test profile can address a real account")
 class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {

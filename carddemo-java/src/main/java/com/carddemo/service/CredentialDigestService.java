@@ -120,9 +120,6 @@ import org.springframework.stereotype.Service;
  * factor, so a value written at an earlier strength keeps verifying, and
  * {@link #isDigest(String)} accepts the whole declared range rather than only the current
  * strength.
- *
- * <p>Provenance: repository SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @Service
 public final class CredentialDigestService {

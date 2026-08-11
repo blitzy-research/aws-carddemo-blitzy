@@ -179,15 +179,13 @@ import java.util.List;
  *
  * <h2>Provenance</h2>
  *
- * <p>Translated from the legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Sources consulted:
- * {@code app/cpy-bms/COCRDLI.CPY} for the field inventory and every field width;
- * {@code app/bms/COCRDLI.bms} for the terminal attributes that identified the excluded field; and
- * {@code app/cbl/COCRDLIC.cbl} for the row geometry at lines 250 to 260 and 255, the selection
- * tally at lines 1079 to 1082, the positional indicator at lines 1090 to 1093, the backward fill at
- * lines 1284 to 1286, the post-retrieval filtering paragraph at line 1382 and the unused
- * alternate-index declaration at lines 213 to 217. No source statement is reproduced here.</p>
+ * <p>Sources consulted: {@code app/cpy-bms/COCRDLI.CPY} for the field inventory and every field
+ * width; {@code app/bms/COCRDLI.bms} for the terminal attributes that identified the excluded
+ * field; and {@code app/cbl/COCRDLIC.cbl} for the row geometry at lines 250 to 260 and 255, the
+ * selection tally at lines 1079 to 1082, the positional indicator at lines 1090 to 1093, the
+ * backward fill at lines 1284 to 1286, the post-retrieval filtering paragraph at line 1382 and the
+ * unused alternate-index declaration at lines 213 to 217. No source statement is reproduced
+ * here.</p>
  *
  * @param transactionName the screen's own transaction identifier, map field {@code TRNNAME}, four
  *     characters. Echoed for display; carried as supplied.

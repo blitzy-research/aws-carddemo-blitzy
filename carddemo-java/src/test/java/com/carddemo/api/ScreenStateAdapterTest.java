@@ -53,7 +53,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
  * zeros are what the screen displayed. That the round trip is lossless in both directions, which is the only
  * reason the two type families may exist side by side. That the two identity members <em>are</em> reconciled
  * against the authenticated principal in both directions, because over HTTP the client holds the record the
- * region used to hold, so a caller could otherwise name somebody else simply by editing two fields it echoes
+ * legacy region held, so a caller could otherwise name somebody else simply by editing two fields it echoes
  * back. That the two pairs of routing nominations are screened against the destination vocabulary, so an
  * invented program name is carried as "nominates nothing" - the legacy's own empty-field case - rather than
  * reaching the navigation authority's unresolvable arm and surfacing as a terminal failure. And that absence
@@ -62,11 +62,6 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
  * member the turn never produced.
  *
  * <p>A pure unit test: no Spring context, no connection, no container.
- *
- * <p>Provenance: {@code app/cpy/COCOM01Y.cpy}, {@code app/cpy/CVCRD01Y.cpy} and
- * {@code app/cpy/CSSETATY.cpy}, read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * @since 1.0.0
  */

@@ -93,10 +93,6 @@ import java.math.RoundingMode;
  * failure mode is {@link IllegalArgumentException}, which is what this package already raises for a
  * value no legitimate record image could carry.
  *
- * <p>Provenance: derived from the read-only legacy copybooks of {@code app/cpy} at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 public final class StoredValueRules {

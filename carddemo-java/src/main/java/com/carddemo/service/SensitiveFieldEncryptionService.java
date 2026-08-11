@@ -91,14 +91,6 @@ import com.carddemo.util.SensitiveFieldCodec;
  *
  * <p>Immutable after construction and safe to share. The key is held as a private copy of the
  * decoded material, is never handed out, and is never mutated; the codec is stateless.
- *
- * <h2>Provenance</h2>
- *
- * <p>Derived from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Encryption at rest is a documented
- * divergence from the legacy design rather than a translation of it, and it is recorded as such in
- * {@code docs/decision-log.md}.
  */
 @Service
 public class SensitiveFieldEncryptionService {

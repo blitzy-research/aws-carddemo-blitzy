@@ -111,11 +111,6 @@ import static org.mockito.Mockito.when;
  * own test, so composing the two here asserts the hand-off without either test standing in for the
  * other. What this file adds is that the bytes are neither trimmed, padded nor re-encoded on their
  * way to a message body, which is asserted on the encoded bytes rather than on characters.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Legacy estate at checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
- * CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19.</p>
  */
 @DisplayName("JobSubmissionService :: the online-to-batch job-submission bridge")
 class JobSubmissionServiceSecurityTest {
@@ -1215,8 +1210,8 @@ class JobSubmissionServiceSecurityTest {
             // This class already refuses to echo any caller-supplied value into a diagnostic, and
             // states the reason in its own words: the sink is any channel a human or a tool later
             // reads. The queue client's exception text is the one value written into these records
-            // that this module did not author, so it is subject to exactly the same rule - and it is
-            // the one place the rule was previously not enforced.
+            // // that this module did not author, so it is subject to exactly the same rule - and it is the value
+            // // most easily left outside it.
             failAtAttempt = FIRST_ORDINAL;
             refusal = () -> new IllegalStateException(DISCLOSING_DESCRIPTION,
                     new IllegalArgumentException(DISCLOSING_DESCRIPTION));

@@ -978,10 +978,10 @@ final class BuildAndCiContractTest {
         }
 
         // THE END-TO-END CRITERION IS FROZEN AT FOUR CONTRACTUAL WIDTHS, AND FIVE GOLDENS EXIST. Both
-        // halves are load-bearing and an earlier revision of this assertion collapsed them into one: it
-        // required the deck to say "five compared widths" and forbade "four", which made a rewritten
-        // acceptance criterion a condition of a green build. The deck must now name the criterion as the
-        // criterion, and name the fifth golden as the supplemental evidence it is. PublicationConsistencyTest
+        // // halves are load-bearing and MUST NOT BE COLLAPSED INTO ONE: requiring the deck to say "five
+        // // compared widths" while forbidding "four" would make a rewritten acceptance criterion a condition
+        // // of a green build. The deck must name the criterion as the criterion, and name the fifth golden as
+        // // the supplemental evidence it is. PublicationConsistencyTest
         // owns the detail - it parses both of the evidence page's inventory tables and holds every
         // publication to them - so the check here is the deck's vocabulary only.
         // Matched over a whitespace-collapsed view, because the deck is hand-wrapped HTML and where an
@@ -1105,13 +1105,12 @@ final class BuildAndCiContractTest {
         // the stack, and the stack is enumerated for us. `java-25`, `spring-data-jpa` and `testcontainers`
         // name Java 25 LTS, Spring Data JPA and Testcontainers, three of the technologies the target stack
         // lists by name, so they are among the most defensible of the nine rather than outside the scope.
-        // An earlier revision removed exactly those three and rewrote this assertion to `hasSize(17)` with
-        // a `doesNotContain` for them, which made the descriptor and its guard agree with each other and
-        // with nothing else: a discoverability tag naming a headline technology of the migration had gone,
-        // and the test that should have caught it had been taught to require its absence. Restored here to
-        // the nine the migration actually added. Every pre-existing tag is preserved on the other side of
-        // the same rule, because the instruction was additive; `python`, `typescript` and `web-app` no
-        // longer describe the stack and are kept anyway, with the inaccuracy recorded in the decision log
+        // REMOVING EXACTLY THOSE THREE and rewriting this assertion to `hasSize(17)` with a
+        // `doesNotContain` for them would make the descriptor and its guard agree with each other and
+        // with nothing else: a discoverability tag naming a headline technology of the migration would
+        // be gone, and the test that should catch it would have been taught to require its absence.
+        // The three obsolete tags are asserted here under the same rule, because the instruction was
+        // additive; `python`, `typescript` and `web-app` no longer describe the stack and are kept anyway, with the inaccuracy recorded in the decision log
         // rather than resolved by deletion here.
         final List<String> tags = new ArrayList<>();
         catalog.path("metadata").path("tags").forEach(tag -> tags.add(tag.asText()));

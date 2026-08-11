@@ -58,10 +58,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * its own hash across a flush and corrupt any collection already holding it. It is also
  * financial data, which has no place in an incidental log line. Both exclusions are
  * asserted directly below.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("DisclosureGroup: the fifty-byte disclosure-group row carrying the accrual rate")
 class DisclosureGroupBoundaryTest {

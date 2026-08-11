@@ -121,9 +121,6 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * figures are referenced rather than restated so that this tier and the shared tier cannot drift apart. This
  * class deliberately does not extend that base - it starts an emulator of its own, with the provisioning
  * hook copied in before start - which is exactly why the base's two levers are public.
- *
- * <p><strong>Provenance.</strong> Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("AWS bootstrap, executed: the hook runs, provisions three resources, and reruns cleanly")
 @Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
@@ -517,10 +514,10 @@ class LocalStackBootstrapIT {
         @DisplayName("has object versioning enabled, which is the generation-data-group replacement")
         void hasObjectVersioningEnabled() {
             // Versioning is what carries the retained-history semantics of the legacy generation data
-            // groups. It is not, as this comment used to say, the only setting the bucket needs: that
-            // claim was about generation semantics and said nothing about who can read the objects or
-            // whether they are encrypted, and both are now provisioned and asserted below. No
-            // retention rule and no object lock is applied, because neither carries those semantics
+            // // groups. It is NOT the only setting the bucket needs: that
+            // // claim is about generation semantics and says nothing about who can read the objects or
+            // // whether they are encrypted, and both are provisioned and asserted below. No
+            // // retention rule and no object lock is applied, because neither carries those semantics
             // and neither was configured in the estate.
             final BucketVersioningStatus status;
             try (S3Client client = s3Client()) {

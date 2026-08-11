@@ -99,8 +99,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * JSON number back produces a double-valued node by default and would silently drop the trailing zero
  * the wire form actually carried.
  *
- * <p>Provenance: checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
+ * <p>No legacy source text is reproduced.
  */
 @DisplayName("BillPaymentResponse :: bill-payment response contract of legacy transaction CB00")
 class BillPaymentResponseCoverageTest {

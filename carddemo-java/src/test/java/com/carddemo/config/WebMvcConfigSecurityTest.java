@@ -40,7 +40,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  *
  * <h2>Asserting that a class does nothing is not a contradiction</h2>
  *
- * <p>An empty configuration hook is the most fragile kind of class to review, because the reviewer
+ * <p>An empty configuration hook is the most fragile kind of class to read, because a reader
  * cannot distinguish "deliberately empty" from "someone forgot". The class itself resolves that by
  * recording each declined customisation in prose. This test resolves the complementary risk, which is
  * the opposite direction of drift: that a future edit quietly <em>adds</em> a customisation. The

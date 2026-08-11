@@ -45,10 +45,6 @@ import com.carddemo.domain.enums.KeyAction;
  * record that no edits are coded - so any value an operator can type is a value the legacy accepts.
  * Nothing in this module may narrow them.
  *
- * <p>Provenance: {@code app/cbl/COACTUPC.cbl} and {@code app/cpy-bms/COACTUP.CPY}, read as read-only
- * reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook or program text is transcribed.
- *
  * @param accountId the eleven-character account-identifier search item, as transmitted
  * @param accountStatus the one-character active-status item
  * @param openYear the four-character open-date year item

@@ -23,38 +23,34 @@ import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
- * Persistence gateway for the {@code card_cross_reference} table, replacing the {@code CARDXREF}
- * VSAM base cluster and - through {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)} - the
- * {@code CXACAIX} alternate
- * index defined over its account-identifier field, key length 11 at offset 25 per
- * {@code app/jcl/XREFFILE.jcl} lines 72-77.
+ * Persistence gateway for the {@code card_cross_reference} table, replacing the {@code CARDXREF} VSAM
+ * base cluster and - through {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)} - the
+ * {@code CXACAIX} alternate index defined over its account-identifier field, key length 11 at
+ * offset 25.
  *
- * <p>The record declared by {@code app/cpy/CVACT03Y.cpy} is 50 bytes wide and carries information
- * in 36 of them: a 16-byte card number at offset 0, a 9-byte customer identifier at offset 16 and
- * an 11-byte account identifier at offset 25, followed by a 14-byte filler that is deliberately not
- * persisted. That split reconciles two validation artefacts describing the same 50 records at
- * different widths, and neither is truncated: {@code app/data/ASCII/cardxref.txt} measures 1,850
- * bytes, being 50 rows of the 36 mapped bytes plus one line terminator each, while
- * {@code app/data/EBCDIC/AWS.M2.CARDDEMO.CARDXREF.PS} measures 2,500 bytes, being the same rows at
- * the full cluster record length. The two file sizes differ by 650 bytes; the record payloads
- * differ by the 700 filler bytes, the 50 line terminators of the text form accounting for the
- * remainder.
+ * <p>The 50-byte record carries information in 36 of them: a 16-byte card number at offset 0, a 9-byte
+ * customer identifier at offset 16 and an 11-byte account identifier at offset 25, followed by a
+ * 14-byte filler that is deliberately not persisted. That split is why the two validation artefacts
+ * describing the same 50 rows measure 1,850 and 2,500 bytes without either being truncated; the record
+ * mapper owns the offsets.
  *
- * <p>Identity is the 16-character card number at offset 0, held as a {@link String} because its
- * leading zeros are contractual. Values are matched and returned exactly as supplied - nothing here
- * trims, pads or folds - and fixed-width layout knowledge belongs to the record mapper.
+ * <p>Identity is the 16-character card number at offset 0, held as a {@link String} because its leading
+ * zeros are contractual. Values are matched and returned exactly as supplied - nothing here trims, pads
+ * or folds - and an empty result is the analogue of the legacy not-found response rather than an error,
+ * the service turning absence into that screen's own message.
  *
  * <p><strong>Two declared finders, and no more.</strong> Keyed access to the base cluster is the
- * inherited {@code findById}; a rewrite is the inherited {@code save}. The two finders below are the
+ * inherited {@code findById} and a rewrite is the inherited {@code save}. The two finders below are the
  * whole of the alternate-index surface this table needs: one answers which rows an account carries, and
- * one answers which single row a legacy keyed read of the path returns.
+ * one answers which single row a legacy keyed read of the path returns. The non-unique index exists
+ * precisely because those are different questions, so the pair must not be collapsed.
  *
  * @see CardCrossReference
  */
 public interface CardCrossReferenceRepository extends JpaRepository<CardCrossReference, String> {
     /**
-     * The cross-reference rows of one account, ascending by card number, limited to the number of rows the
-     * caller asks for: the {@code CXACAIX} alternate-index access path.
+     * The cross-reference rows of one account, ascending by card number, limited to the number of rows
+     * the caller asks for: the {@code CXACAIX} alternate-index access path.
      *
      * <p>The return type is a list because the alternate key is non-unique and an account may carry
      * several cards. A single-valued derived query would raise an incorrect-result-size failure the
@@ -64,27 +60,21 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
      * <p><strong>Use this only when more than one row of the account is genuinely wanted.</strong> A
      * caller reproducing a legacy keyed READ of this path wants one row - the first duplicate in
      * ascending base-key order - and asks for it through
-     * {@link #findFirstByXrefAcctIdOrderByXrefCardNumAsc(String)} instead. Five services once
-     * materialised every row here and then discarded all but the lowest, five copies of one rule paying
-     * five times for rows they threw away; the rule has one home again, and the reasoning is recorded as
-     * {@code DL-121} and its restoration as {@code DL-164} in {@code docs/decision-log.md}.
-     *
-     * <p><strong>&#9733; Bounded and ordered, for the reasons the sibling finder already states.</strong>
-     * Nothing bounds how many cards an account may carry - there is no unique constraint on the account
-     * identifier - so the caller states what it will accept rather than discovering it. The ordering is
-     * the path's own: a read of a duplicate-bearing index yields rows in ascending base-key order, and
-     * the base key here is the card number. An earlier revision declared neither, on the reasoning that
-     * a caller depending on sequence should sort what it receives; that left "the first n rows" with no
-     * referent and left the result size a property of the data. Recorded as {@code DL-296} in
+     * {@link #findFirstByXrefAcctIdOrderByXrefCardNumAsc(String)} instead. Materialising every row here
+     * and discarding all but the lowest duplicates that rule at the call site and pays for rows it
+     * throws away; the reasoning is recorded as {@code DL-121} and {@code DL-164} in
      * {@code docs/decision-log.md}.
      *
-     * <p>An empty list is the analogue of the legacy not-found response and is not an error here; the
-     * service turns absence into a screen message.
+     * <p><strong>&#9733; Bounded and ordered, both required.</strong> Nothing bounds how many cards an
+     * account may carry - there is no unique constraint on the account identifier - so the caller states
+     * what it will accept rather than discovering it. The ordering is the path's own: a read of a
+     * duplicate-bearing index yields rows in ascending base-key order, and the base key here is the card
+     * number. Declaring neither would leave "the first n rows" without a referent and leave the result
+     * size a property of the data. Recorded as {@code DL-296} in {@code docs/decision-log.md}.
      *
      * <p>The reference seed is one-to-one across 50 accounts, 50 cards and 50 cross-reference rows, so
-     * it exercises this method without stressing it: demonstrating multi-row retrieval, the ordering or
-     * the first-match rule requires a purpose-built fixture holding two rows that share an account
-     * identifier.
+     * exercising multi-row retrieval, the ordering or the first-match rule requires a purpose-built
+     * fixture holding two rows that share an account identifier.
      *
      * @param xrefAcctId the eleven-character account identifier, matched exactly as supplied; its
      *                   leading zeros are significant and it is never trimmed
@@ -101,17 +91,9 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
      * base-key order, and the base key of this cluster is the card number, so the ordering term is the
      * legacy rule itself rather than a preference. The read is bounded to one row, so an account
      * carrying many cards costs no more than one carrying a single card - which is the whole difference
-     * between this method and {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)}.
-     *
-     * <p>Both verified legacy consumers issue a single keyed READ of this path rather than a browse, so
-     * this is the shape those services need; the list form remains for the callers that genuinely want
-     * more than one row. Keeping both is deliberate: one states "which row does a keyed read return", the
-     * other "which rows does this account carry", and the non-unique index exists precisely because those
-     * are different questions. Both order by the card number, because that is the order the path yields
-     * duplicates in.
-     *
-     * <p>An empty result is the analogue of the legacy not-found response and is not an error here; the
-     * service turns absence into that screen's own message.
+     * between this method and {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String, Limit)}. Both
+     * verified legacy consumers issue a single keyed READ of this path rather than a browse, so this is
+     * the shape those services need.
      *
      * @param xrefAcctId the eleven-character account identifier, matched exactly as supplied; its
      *                   leading zeros are significant and it is never trimmed

@@ -367,16 +367,27 @@ than a secret — a bucket name, a topic name, a message group, a token lifetime
 
 Sign-on is the entry point, and it carries the attention-key field the 3270 contract required: omit
 `keyAction` and the service answers with the legacy invalid-key message, which is faithful behaviour
-rather than a validation bug. Supply the seeded credential yourself — read it into the shell so it is
-never echoed, never in your history and never in a file:
+rather than a validation bug. Supply the seeded credential yourself, using the same pattern
+[the repository README](../README.md) uses:
 
 ```bash
-read -rs SEED_CREDENTIAL
-
+read -rsp 'seeded sample password: ' SEED_PASSWORD; echo
 curl -i -X POST http://localhost:8080/api/auth/signon \
   -H 'Content-Type: application/json' \
-  -d "{\"userId\":\"ADMIN001\",\"password\":\"$SEED_CREDENTIAL\",\"keyAction\":\"ENTER\"}"
+  --data-binary @- <<JSON
+{"userId":"ADMIN001","password":"$SEED_PASSWORD","keyAction":"ENTER"}
+JSON
+unset SEED_PASSWORD
 ```
+
+Three properties of that pattern, stated precisely so none of them is assumed to cover the others.
+`read -rs` keeps the value off the terminal and out of the shell's history list. `--data-binary @-`
+with a here-document sends the body on standard input, so the credential never becomes a command
+argument and never appears in the process table — which is the part a `-d "…$VARIABLE…"` form gets
+wrong, because the shell expands it before `curl` is executed and the expanded body is then readable
+by anything that can list processes. `unset` drops it from the environment of anything you run next.
+What none of the three does is protect the value in transit: the `local` profile serves cleartext
+HTTP, which is safe only because it is bound to the loopback interface.
 
 A successful sign-on answers `200` and returns the token in the `Authorization` **response** header; the
 body carries the next route the legacy screen would have transferred to, which is the admin menu for an

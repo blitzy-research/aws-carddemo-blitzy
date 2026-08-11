@@ -87,10 +87,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * each coarse result below was read from the estate's source and typed out as a literal, and the
  * frequencies were confirmed by counting comparison sites rather than inferred from the class under
  * test.
- *
- * <p>Every fact asserted here was read from the estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.
  */
 @DisplayName("FileStatus :: the raw two-character status vocabulary the estate's reads report into")
 class FileStatusTest {

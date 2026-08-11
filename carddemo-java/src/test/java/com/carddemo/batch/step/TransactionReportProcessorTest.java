@@ -81,13 +81,11 @@ import org.mockito.InOrder;
  * and data-definition names, the two date bounds the job bakes in, and the handful of contract
  * literals that appear byte for byte in the program's own output.
  *
- * <p>Matrix header for the provenance of every expectation below:
- * {@code SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec / CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)}.
- * That release stamp is deliberately recorded as a <strong>matrix-header string and never as a
- * per-member assertion</strong>, because it is not universal across the estate: 78 members carry it,
- * 3 carry later stamps, all 17 screen definitions differ and 25 members carry none at all. Asserting
- * it member by member would therefore encode a falsehood; carrying it once, here, records the
- * checkout the figures were measured from without claiming more than the estate supports.
+ * <p>That release stamp is deliberately recorded as a <strong>matrix-header string and never as a
+ * per-member assertion</strong>, because it is not universal across the estate: 78 members carry it, 3
+ * carry later stamps, all 17 screen definitions differ and 25 members carry none at all. Asserting it
+ * member by member would therefore encode a falsehood; carrying it once, here, records the checkout the
+ * figures were measured from without claiming more than the estate supports.
  *
  * <h2>Why the suite is shaped the way it is</h2>
  *

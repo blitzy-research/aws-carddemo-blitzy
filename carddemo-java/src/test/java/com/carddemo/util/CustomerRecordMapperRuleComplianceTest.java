@@ -45,10 +45,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * {@code CUSTOMER-RECORD} declared by {@code app/cpy/CVCUS01Y.cpy} and its {@code CUSTREC} variant
  * onto {@link Customer} and back.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>This is the widest layout in the estate and the only one with regulated fields.</strong>
  * Eighteen mapped fields fill three hundred and thirty-two bytes, followed by a hundred and
  * sixty-eight of filler. Two of the eighteen — the national identifier and the government-issued

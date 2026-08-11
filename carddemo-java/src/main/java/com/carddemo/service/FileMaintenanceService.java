@@ -119,40 +119,10 @@ import com.carddemo.util.TransactionCategoryBalanceKeyCodec;
  * cluster definition in the estate declares its key at offset zero, which is why the identity of each
  * entity is the natural business key and no generated surrogate exists anywhere in the module.
  *
- * <p><strong>Traceability - all twenty-one paragraphs.</strong> The two paragraphs every member shares
- * map to one Java method each, so a single name serves all four members and both legacy spellings stay
- * findable.
- *
- * <table>
- *   <caption>Legacy paragraph to Java method</caption>
- *   <tr><th>Member</th><th>Paragraph</th><th>Line</th><th>Method</th></tr>
- *   <tr><td>CBACT01C</td><td>(unnamed mainline)</td><td>70</td><td>readAccountFile</td></tr>
- *   <tr><td>CBACT01C</td><td>0000-ACCTFILE-OPEN</td><td>133</td><td>openAcctFile</td></tr>
- *   <tr><td>CBACT01C</td><td>1000-ACCTFILE-GET-NEXT</td><td>92</td><td>acctFileGetNext</td></tr>
- *   <tr><td>CBACT01C</td><td>1100-DISPLAY-ACCT-RECORD</td><td>118</td><td>displayAcctRecord</td></tr>
- *   <tr><td>CBACT01C</td><td>9000-ACCTFILE-CLOSE</td><td>151</td><td>closeAcctFile</td></tr>
- *   <tr><td>CBACT01C</td><td>9999-ABEND-PROGRAM</td><td>169</td><td>abendProgram</td></tr>
- *   <tr><td>CBACT01C</td><td>9910-DISPLAY-IO-STATUS</td><td>176</td><td>displayIoStatus</td></tr>
- *   <tr><td>CBACT02C</td><td>(unnamed mainline)</td><td>70</td><td>readCardFile</td></tr>
- *   <tr><td>CBACT02C</td><td>0000-CARDFILE-OPEN</td><td>118</td><td>openCardFile</td></tr>
- *   <tr><td>CBACT02C</td><td>1000-CARDFILE-GET-NEXT</td><td>92</td><td>cardFileGetNext</td></tr>
- *   <tr><td>CBACT02C</td><td>9000-CARDFILE-CLOSE</td><td>136</td><td>closeCardFile</td></tr>
- *   <tr><td>CBACT02C</td><td>9999-ABEND-PROGRAM</td><td>154</td><td>abendProgram</td></tr>
- *   <tr><td>CBACT02C</td><td>9910-DISPLAY-IO-STATUS</td><td>161</td><td>displayIoStatus</td></tr>
- *   <tr><td>CBACT03C</td><td>(unnamed mainline)</td><td>70</td>
- *       <td>readCardCrossReferenceFile</td></tr>
- *   <tr><td>CBACT03C</td><td>0000-XREFFILE-OPEN</td><td>118</td><td>openXrefFile</td></tr>
- *   <tr><td>CBACT03C</td><td>1000-XREFFILE-GET-NEXT</td><td>92</td><td>xrefFileGetNext</td></tr>
- *   <tr><td>CBACT03C</td><td>9000-XREFFILE-CLOSE</td><td>136</td><td>closeXrefFile</td></tr>
- *   <tr><td>CBACT03C</td><td>9999-ABEND-PROGRAM</td><td>154</td><td>abendProgram</td></tr>
- *   <tr><td>CBACT03C</td><td>9910-DISPLAY-IO-STATUS</td><td>161</td><td>displayIoStatus</td></tr>
- *   <tr><td>CBCUS01C</td><td>(unnamed mainline)</td><td>70</td><td>readCustomerFile</td></tr>
- *   <tr><td>CBCUS01C</td><td>0000-CUSTFILE-OPEN</td><td>118</td><td>openCustFile</td></tr>
- *   <tr><td>CBCUS01C</td><td>1000-CUSTFILE-GET-NEXT</td><td>92</td><td>custFileGetNext</td></tr>
- *   <tr><td>CBCUS01C</td><td>9000-CUSTFILE-CLOSE</td><td>136</td><td>closeCustFile</td></tr>
- *   <tr><td>CBCUS01C</td><td>Z-ABEND-PROGRAM</td><td>154</td><td>abendProgram</td></tr>
- *   <tr><td>CBCUS01C</td><td>Z-DISPLAY-IO-STATUS</td><td>161</td><td>displayIoStatus</td></tr>
- * </table>
+ * <p><strong>Traceability - all twenty-one paragraphs.</strong> Each maps to one named method, and the
+ * two paragraphs every member shares map to a single Java method so one name serves all four members and
+ * both legacy spellings stay findable. The paragraph-to-method mapping with its source lines is held once
+ * in {@code docs/traceability-matrix.md} and is not restated here.
  *
  * <p><strong>Source anomalies recorded rather than propagated.</strong> Four are relevant here and each
  * belongs in the decision log. First, {@code CBCUS01C} names its status-display paragraph
@@ -176,16 +146,16 @@ import com.carddemo.util.TransactionCategoryBalanceKeyCodec;
  * name {@code XREFFILE}. Exactly one job member invokes it - {@code app/jcl/READXREF.jcl} step
  * {@code STEP05}, against {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}.
  *
- * <p><strong>An earlier revision of this class bound that reader group to the transaction category balance
- * cluster instead, on the strength of planning material that described the member as a category-balance
- * listing driver.</strong> That description is a documentation error, not a design decision, and the
- * binding it produced was a parity defect of the worst kind: it compiled, it passed tests written under the
- * same misunderstanding, and it would have reported a healthy file while never opening the one the member
- * names. The error was plausible only because of a width coincidence - the cross-reference record and the
- * category-balance record are both fifty bytes - which is exactly why it had to be settled by reading the
- * member rather than by reading about it. The binding is corrected here: the third reader group serves the
- * cross-reference cluster, under the member's own DD name, its own record key and its own three failure
- * literals, reproduced verbatim rather than composed.
+ * <p><strong>THAT READER GROUP MUST NOT BE BOUND TO THE TRANSACTION CATEGORY BALANCE CLUSTER</strong>,
+ * however plausible the planning material that describes the member as a category-balance listing
+ * driver. That description is a documentation error, not a design decision, and the binding it produces
+ * is a parity defect of the worst kind: it compiles, it passes tests written under the same
+ * misunderstanding, and it reports a healthy file while never opening the one the member names. The
+ * error is plausible only because of a width coincidence - the cross-reference record and the
+ * category-balance record are both fifty bytes - which is exactly why it has to be settled by reading
+ * the member rather than by reading about it. The third reader group serves the cross-reference cluster,
+ * under the member's own DD name, its own record key and its own three failure literals, reproduced
+ * verbatim rather than composed.
  *
  * <p><strong>The category balance still needs an ordered sequential pass, and it gets one that cites a job
  * stream rather than a member.</strong> A census across all ten legacy batch programs finds the category
@@ -229,10 +199,6 @@ import com.carddemo.util.TransactionCategoryBalanceKeyCodec;
  * a similar skeleton for the chunk-oriented steps; the two coexist deliberately and neither imports the
  * other, and this service is the one the traceability matrix cites for these four members. The category
  * balance pass keeps the same shape without appearing in the matrix, because a job step is not a paragraph.
- *
- * <p>Migrated from the AWS CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @Service
 public final class FileMaintenanceService {
@@ -263,8 +229,8 @@ public final class FileMaintenanceService {
     private static final String DD_ACCTFILE = "ACCTFILE";
 
     /**
-     * DD name of the card cluster, {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}, whose key is 16 bytes wide at
-     * offset 0.
+     * DD name of the card cluster, {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}, whose key is 16 bytes wide
+     * at offset 0.
      */
     private static final String DD_CARDFILE = "CARDFILE";
 
@@ -285,8 +251,8 @@ public final class FileMaintenanceService {
     private static final String DD_TCATBALF = "TCATBALF";
 
     /**
-     * DD name of the customer cluster, {@code AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS}, whose key is 9 bytes wide
-     * at offset 0.
+     * DD name of the customer cluster, {@code AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS}, whose key is 9 bytes
+     * wide at offset 0.
      */
     private static final String DD_CUSTFILE = "CUSTFILE";
 
@@ -308,18 +274,18 @@ public final class FileMaintenanceService {
     /**
      * Legacy step name of the only sequential pass the estate makes over the category balance cluster.
      *
-     * <p>A step name and not a member name, because {@code app/jcl/PRTCATBL.jcl} step {@code STEP05R} invokes
-     * a cataloged copy wrapper rather than an application program. Naming a program here would assert an
-     * antecedent that does not exist.
+     * <p>A step name and not a member name, because {@code app/jcl/PRTCATBL.jcl} step {@code STEP05R}
+     * invokes a cataloged copy wrapper rather than an application program. Naming a program here would
+     * assert an antecedent that does not exist.
      */
     private static final String LEGACY_UNLOAD_STEP = "STEP05R";
 
     /**
      * Opening banner of the category balance pass, naming the job step and the DD rather than a program.
      *
-     * <p>Deliberately not the {@code START OF EXECUTION OF PROGRAM} banner every member displays: no program
-     * executes here, and reusing that banner would put a member's own diagnostic into a log line no member
-     * produced.
+     * <p>Deliberately not the {@code START OF EXECUTION OF PROGRAM} banner every member displays: no
+     * program executes here, and reusing that banner would put a member's own diagnostic into a log line no
+     * member produced.
      */
     private static final String START_OF_UNLOAD = "{} BEGINNING SEQUENTIAL UNLOAD OF {}";
 
@@ -357,10 +323,10 @@ public final class FileMaintenanceService {
      * Failure literal of the category balance open arm.
      *
      * <p>No application program reads this cluster sequentially, so there is no member whose literal could
-     * be reproduced. The estate's own {@code ERROR <gerund> <DD>} phrasing is applied to the {@code TCATBALF}
-     * DD instead, which is what an operator reading the log would recognise. It is deliberately <em>not</em>
-     * borrowed from {@code CBACT03C}: that member names {@code XREFFILE}, and a literal naming the wrong
-     * dataset is worse than one composed to the estate's pattern.
+     * be reproduced. The estate's own {@code ERROR <gerund> <DD>} phrasing is applied to the {@code
+     * TCATBALF} DD instead, which is what an operator reading the log would recognise. It is deliberately
+     * <em>not</em> borrowed from {@code CBACT03C}: that member names {@code XREFFILE}, and a literal naming
+     * the wrong dataset is worse than one composed to the estate's pattern.
      */
     private static final String FAILURE_OPENING_TCATBALF = "ERROR OPENING TCATBALF";
 
@@ -724,14 +690,14 @@ public final class FileMaintenanceService {
      * described this member as a category-balance listing driver; that is a documentation error rather than
      * a design choice, and binding this reader to the category balance would compile, would pass a test
      * written under the same misunderstanding, and would report a healthy file while never opening the one
-     * the member names. The width coincidence that made the error plausible - both records are fifty bytes -
-     * is exactly why it had to be settled by reading the member rather than by reading about it.
+     * the member names. The width coincidence that made the error plausible - both records are fifty bytes
+     * - is exactly why it had to be settled by reading the member rather than by reading about it.
      *
-     * <p>The record reaches the diagnostic channel <strong>twice</strong> per successful read, once from the
-     * read paragraph's own emission at line 96 and once from the mainline's at line 78. The duplication is
-     * in the source and is reproduced rather than tidied away; the sibling card reader has that same inner
-     * emission commented out at its line 96, which is precisely why one member displays twice and the other
-     * once.
+     * <p>The record reaches the diagnostic channel <strong>twice</strong> per successful read, once from
+     * the read paragraph's own emission at line 96 and once from the mainline's at line 78. The duplication
+     * is in the source and is reproduced rather than tidied away; the sibling card reader has that same
+     * inner emission commented out at its line 96, which is precisely why one member displays twice and the
+     * other once.
      *
      * @return the member name, the DD name, the number of records read and the status that ended the loop
      * @throws AbendException if the open, a read or the close reports a status the member treats as an error
@@ -812,10 +778,10 @@ public final class FileMaintenanceService {
      * <p><strong>This pass translates no COBOL member, and saying so is the point.</strong> A census across
      * all ten legacy batch programs finds the category balance cluster referenced by exactly two of them -
      * the posting run and the accrual run - and both reach it transactionally, by key, rather than listing
-     * it. The only sequential pass over it in the whole estate is a job stream's: {@code app/jcl/PRTCATBL.jcl}
-     * step {@code STEP05R} invokes the cataloged copy wrapper {@code app/proc/REPROC.prc} with its control
-     * member {@code app/ctl/REPROCT.ctl}, and step {@code STEP10R} invokes the external sort. So this method
-     * exists because a job stream needs an ordered sequential pass over the cluster, and it is deliberately
+     * it. The only sequential pass over it in the whole estate is a job stream's: {@code
+     * app/jcl/PRTCATBL.jcl} step {@code STEP05R} invokes the cataloged copy wrapper {@code
+     * app/proc/REPROC.prc} with its control member {@code app/ctl/REPROCT.ctl}, and step {@code STEP10R}
+     * invokes the external sort. So this method exists because a job stream needs an ordered sequential pass over the cluster, and it is deliberately
      * <em>not</em> attributed to a paragraph of any member - not to {@code CBACT03C}, which reads the
      * cross-reference cluster above, and not to anything else.
      *
@@ -913,9 +879,9 @@ public final class FileMaintenanceService {
      * Reads the next category balance record.
      *
      * <p>Emits the record image once, not twice. The double emission of the cross-reference reader above is
-     * a property of {@code CBACT03C}'s own paragraph structure; a copy utility emits no record image at all,
-     * so one diagnostic line per record is already more than the step it stands for produced and a second
-     * would be an invention.
+     * a property of {@code CBACT03C}'s own paragraph structure; a copy utility emits no record image at
+     * all, so one diagnostic line per record is already more than the step it stands for produced and a
+     * second would be an invention.
      *
      * @param cursor the open cursor to advance
      * @throws AbendException if the read reports a status that is neither success nor end of file
@@ -1026,20 +992,20 @@ public final class FileMaintenanceService {
 
     /**
      * Emits the raw two-byte file status as the legacy status line. This one method is the Java home of
-     * {@code 9910-DISPLAY-IO-STATUS} in {@code CBACT01C} at line 176, in {@code CBACT02C} at line 161 and in
-     * {@code CBACT03C} at line 161, and of {@code Z-DISPLAY-IO-STATUS} in {@code CBCUS01C} at line 161 - the
-     * same paragraph under a different name, which is a source anomaly recorded rather than propagated.
+     * {@code 9910-DISPLAY-IO-STATUS} in {@code CBACT01C} at line 176, in {@code CBACT02C} at line 161 and
+     * in {@code CBACT03C} at line 161, and of {@code Z-DISPLAY-IO-STATUS} in {@code CBCUS01C} at line 161 -
+     * the same paragraph under a different name, which is a source anomaly recorded rather than propagated.
      *
      * <p>The paragraph renders the status into a four-character display field before displaying it, and the
      * rendering has two arms. When the status is not numeric, or its first byte is the implementor-defined
      * class, the first byte is placed verbatim and the second byte's binary value fills the remaining three
      * digits - the legacy moves that byte into the low-order half of a halfword and then into a three-digit
-     * field. Otherwise the field is zero-filled and the two status characters occupy its last two positions.
-     * Both arms are reproduced, and the display literal precedes the rendered field with no separator exactly
-     * as the legacy display concatenated them.
+     * field. Otherwise the field is zero-filled and the two status characters occupy its last two
+     * positions. Both arms are reproduced, and the display literal precedes the rendered field with no
+     * separator exactly as the legacy display concatenated them.
      *
-     * <p>It is public because it carries an operator-facing contract that four members share and because the
-     * ordering it participates in - status first, abend second - is verified against it. It emits and
+     * <p>It is public because it carries an operator-facing contract that four members share and because
+     * the ordering it participates in - status first, abend second - is verified against it. It emits and
      * returns; it never raises, so a caller that has not yet decided to abend may use it.
      *
      * @param rawFileStatus the raw two-character status to render, which may be outside the declared
@@ -1064,8 +1030,8 @@ public final class FileMaintenanceService {
      * {@code Z-ABEND-PROGRAM} in {@code CBCUS01C} at line 154 - the same paragraph under a different name,
      * which is the second of that member's two naming anomalies.
      *
-     * <p>The paragraph displays its banner, zeroes a timing value, moves the batch abend code and issues the
-     * Language Environment abort. The banner, the code and the raise all belong to the injected abend
+     * <p>The paragraph displays its banner, zeroes a timing value, moves the batch abend code and issues
+     * the Language Environment abort. The banner, the code and the raise all belong to the injected abend
      * service, which is why this method delegates rather than reimplementing them; the timing value has no
      * equivalent, because nothing in a Spring runtime consumes it. By the time this method is reached the
      * failure literal and the raw status have already been emitted, so the ordering the legacy guaranteed -
@@ -1140,8 +1106,8 @@ public final class FileMaintenanceService {
      * mainline loop and is a normal completion, never an error. Anything else - and that includes the
      * pre-operation sentinel, because the legacy tests only for the success and end-of-file condition names
      * and treats every other value as a failure - emits the failure literal and the status and abends. The
-     * switch covers every constant of the coarse enum with no default, so a constant added later cannot slip
-     * through unhandled.
+     * switch covers every constant of the coarse enum with no default, so a constant added later cannot
+     * slip through unhandled.
      *
      * @param <T>            the record type the cluster holds
      * @param cursor         the open cursor to advance
@@ -1173,13 +1139,13 @@ public final class FileMaintenanceService {
      * release the resource, normalise with no end-of-file arm, and abend on anything other than success.
      *
      * <p>The account member arms the sentinel by adding eight to zero and clears it by subtracting the
-     * variable from itself where the other three move literals; the arithmetic differs, the meaning does not,
-     * and the difference is not reproduced because it is not observable.
+     * variable from itself where the other three move literals; the arithmetic differs, the meaning does
+     * not, and the difference is not reproduced because it is not observable.
      *
-     * <p>The error arm of a close is defensive in the legacy too: a close that follows a successful open and
-     * a loop which either reached end of file or abended has nothing left to fail on. It is preserved because
-     * the paragraph structure is the contract, and it shares every line of its error handling with the open
-     * and read arms rather than duplicating them.
+     * <p>The error arm of a close is defensive in the legacy too: a close that follows a successful open
+     * and a loop which either reached end of file or abended has nothing left to fail on. It is preserved
+     * because the paragraph structure is the contract, and it shares every line of its error handling with
+     * the open and read arms rather than duplicating them.
      *
      * @param cursor         the cursor to release
      * @param failureLiteral the member's own display literal for a failed close
@@ -1194,8 +1160,8 @@ public final class FileMaintenanceService {
     }
 
     /**
-     * The error arm shared by every open, read and close: emit the member's own failure literal together with
-     * both levels of the status model, emit the status line, abend.
+     * The error arm shared by every open, read and close: emit the member's own failure literal together
+     * with both levels of the status model, emit the status line, abend.
      *
      * <p>Both levels appear in the one record deliberately. An operator reading a legacy joblog saw the raw
      * two-byte status; an engineer reading this translation needs to see which coarse value the raw status
@@ -1217,10 +1183,10 @@ public final class FileMaintenanceService {
     }
 
     /**
-     * Emits the completion diagnostic and returns the summary. The legacy members report nothing beyond their
-     * closing banner, so this record exists for the callers that replace the job step: it names what was read
-     * and the status that ended the loop, which is how a reader proves it terminated at end of file rather
-     * than by any other route.
+     * Emits the completion diagnostic and returns the summary. The legacy members report nothing beyond
+     * their closing banner, so this record exists for the callers that replace the job step: it names what
+     * was read and the status that ended the loop, which is how a reader proves it terminated at end of
+     * file rather than by any other route.
      *
      * @param cursor the cursor whose loop has ended and whose resource has been released
      * @return the summary of the completed read
@@ -1233,14 +1199,14 @@ public final class FileMaintenanceService {
     }
 
     /**
-     * Normalises a raw two-byte file status into the coarse result the members branch on: success becomes the
-     * all-clear value, end of file becomes the end-of-file value when the calling arm recognises one, and
-     * every other value - declared or not, including one the runtime reports that the legacy never tested -
-     * becomes the error value. The raw status is not consumed here; the caller keeps it for the diagnostic.
+     * Normalises a raw two-byte file status into the coarse result the members branch on: success becomes
+     * the all-clear value, end of file becomes the end-of-file value when the calling arm recognises one,
+     * and every other value - declared or not, including one the runtime reports that the legacy never
+     * tested - becomes the error value. The raw status is not consumed here; the caller keeps it for the diagnostic.
      *
      * <p>The flag is what keeps the translation faithful. The read arm passes it set, because its paragraph
-     * has three branches; the open and close arms pass it clear, because theirs have two, and a status of end
-     * of file reported by an open or a close is therefore an error in the legacy and an error here.
+     * has three branches; the open and close arms pass it clear, because theirs have two, and a status of
+     * end of file reported by an open or a close is therefore an error in the legacy and an error here.
      *
      * @param rawFileStatus        the raw two-character status, which may be {@code null} or malformed
      * @param endOfFileRecognised  whether the calling arm has an end-of-file branch
@@ -1345,8 +1311,8 @@ public final class FileMaintenanceService {
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * What a completed reader reports. The legacy members returned nothing beyond a completion code, so this
-     * exists for the caller that replaces the job step.
+     * What a completed reader reports. The legacy members returned nothing beyond a completion code, so
+     * this exists for the caller that replaces the job step.
      *
      * <p>The terminal status is the one value that distinguishes a normal completion from every other route
      * out of a read loop: a reader that returns at all reports end of file, because a status the member
@@ -1389,11 +1355,11 @@ public final class FileMaintenanceService {
      *
      * <p>The legacy declares one binary working-storage variable and two condition names over it: one bound
      * to zero for all clear and one bound to sixteen for end of file. Twelve is the error value and carries
-     * no condition name of its own, so the members reach it by elimination; eight is moved into the variable
-     * immediately before every open and close so that a path which sets no result is not mistaken for
-     * success. All four values are declared here, in their numeric order, because all four are reachable and
-     * because the read arm's branch treats the pre-operation sentinel exactly as the legacy does - as
-     * something that is neither all clear nor end of file, and therefore a failure.
+     * no condition name of its own, so the members reach it by elimination; eight is moved into the
+     * variable immediately before every open and close so that a path which sets no result is not mistaken
+     * for success. All four values are declared here, in their numeric order, because all four are
+     * reachable and because the read arm's branch treats the pre-operation sentinel exactly as the legacy
+     * does - as something that is neither all clear nor end of file, and therefore a failure.
      *
      * <p>It is nested and private on purpose. The raw two-byte vocabulary is a domain concern and lives in
      * the domain enum this class consumes; the coarse outcome is a translation concern and belongs to the
@@ -1421,8 +1387,8 @@ public final class FileMaintenanceService {
         }
 
         /**
-         * @return the value the legacy moved into its coarse variable, carried so that a diagnostic can show
-         *         both levels of the status model rather than only the raw code
+         * @return the value the legacy moved into its coarse variable, carried so that a diagnostic can
+         * show         both levels of the status model rather than only the raw code
          */
         int applResult() {
             return this.coarseValue;
@@ -1441,9 +1407,9 @@ public final class FileMaintenanceService {
      * One sequential read in progress: the Java counterpart of a COBOL file connector together with the
      * coarse status variable that accompanies it.
      *
-     * <p>It is created per invocation and referred to only by a local of the reader that created it, which is
-     * what keeps the service itself stateless: the count, the position, the current record and both levels of
-     * the status live here and never in a field of the service or in static state.
+     * <p>It is created per invocation and referred to only by a local of the reader that created it, which
+     * is what keeps the service itself stateless: the count, the position, the current record and both
+     * levels of the status live here and never in a field of the service or in static state.
      *
      * <p>The ordered retrieval is held as a supplier and performed on the first advance rather than at
      * construction, so that a retrieval failure is reported by the read arm and an accessibility failure by
@@ -1497,8 +1463,8 @@ public final class FileMaintenanceService {
         }
 
         /**
-         * @return the raw status of the most recent operation, or {@code null} when the current operation has
-         *         been armed and has not yet reported one
+         * @return the raw status of the most recent operation, or {@code null} when the current operation
+         * has         been armed and has not yet reported one
          */
         String lastFileStatus() {
             return this.lastFileStatus;
@@ -1530,8 +1496,8 @@ public final class FileMaintenanceService {
         }
 
         /**
-         * Records the raw status an operation reported and normalises it into the coarse result, keeping both
-         * levels available to the diagnostic.
+         * Records the raw status an operation reported and normalises it into the coarse result, keeping
+         * both levels available to the diagnostic.
          *
          * @param rawFileStatus       the raw status the operation reported
          * @param endOfFileRecognised whether the calling arm has an end-of-file branch
@@ -1621,10 +1587,10 @@ public final class FileMaintenanceService {
          * Releases the resource.
          *
          * <p>Nothing the provider holds survives the ordered retrieval, so releasing amounts to marking the
-         * connector closed and dropping the current record. The one status other than success this can report
-         * is the defensive arm the legacy close paragraph also carries: a close of something that was never
-         * opened. The retrieval's iterator is left as it stands, because the cursor becomes unreachable when
-         * the reader that owns it returns.
+         * connector closed and dropping the current record. The one status other than success this can
+         * report is the defensive arm the legacy close paragraph also carries: a close of something that
+         * was never opened. The retrieval's iterator is left as it stands, because the cursor becomes
+         * unreachable when the reader that owns it returns.
          *
          * @return the raw status of the release
          */

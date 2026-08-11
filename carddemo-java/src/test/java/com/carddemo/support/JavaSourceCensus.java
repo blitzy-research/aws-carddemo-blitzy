@@ -55,11 +55,11 @@ import java.util.stream.Stream;
  * {@code @Test} in prose would read as declaring one.
  *
  * <p>The blanking is done by {@link #codeOnly(String)}, a single left-to-right scan, rather than by a chain
- * of regular expressions. The chain this replaced had two defects that a scan cannot have. It matched a
- * string literal with a pattern that forbids an embedded newline, so the body of a text block was never
+ * of regular expressions. A chain of patterns has two defects a scan cannot have. It matches a
+ * string literal with a pattern that forbids an embedded newline, so the body of a text block is never
  * blanked at all - and this module writes 354 text-block delimiters, every JPQL query among them. And it
- * applied its patterns in sequence, so a {@code //} inside a literal blanked the rest of a real line while
- * a quote inside a comment could open a literal that was never there. A single scan decides what each
+ * applies its patterns in sequence, so a {@code //} inside a literal blanks the rest of a real line while
+ * a quote inside a comment can open a literal that was never there. A single scan decides what each
  * character is once, in the order the compiler reads it, and cannot disagree with itself.
  *
  * <p>Blanking preserves length and line structure: every removed character becomes a space and every
@@ -70,9 +70,6 @@ import java.util.stream.Stream;
  * <p>The line-addressable view exists for the whole-source warning-suppression audit recorded as
  * {@code DL-317} in {@code docs/decision-log.md}, which needs to name the file and line of a finding and to
  * separate an annotation the compiler reads from a mention of one in prose.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 public final class JavaSourceCensus {
 

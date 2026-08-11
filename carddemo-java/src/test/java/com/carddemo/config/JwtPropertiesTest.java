@@ -202,7 +202,7 @@ class JwtPropertiesTest {
             Pattern.CASE_INSENSITIVE);
 
     /**
-     * Fallback values a defective earlier revision of this module used, which must never reappear.
+     * Fallback values this module must never declare, asserted absent so they cannot appear.
      *
      * <p>Compared for equality rather than containment, because a resource name may legitimately begin
      * with the same word as one of them.</p>
@@ -971,10 +971,10 @@ class JwtPropertiesTest {
          *
          * <h2>The defect this closes, and why a fallback did not close it</h2>
          *
-         * <p>Both overlays used to declare {@code ${CARDDEMO_JWT_SECRET:...}} and
-         * {@code ${CARDDEMO_MANAGEMENT_TOKEN:...}} - production's own variables, with a self-describing
-         * non-production tail beside them. Every assertion above passed on that arrangement, because every
-         * assertion above is about the <em>fallback</em>. The fallback is the part that is only consulted
+         * <p>DECLARING {@code ${CARDDEMO_JWT_SECRET:...}} or {@code ${CARDDEMO_MANAGEMENT_TOKEN:...}} in
+         * either overlay - production's own variables, with a self-describing non-production tail beside them -
+         * passes every assertion above, because every assertion above is about the <em>fallback</em>. The
+         * fallback is the part that is only consulted
          * when the variable is absent.
          *
          * <p>So on any machine where the variable was present the fallback was never reached, and the

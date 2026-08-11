@@ -133,11 +133,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * inventory and its order are demonstrated through the serialised shape, the static types through
  * assignment, and immutability through construction.
  *
- * <p><strong>Provenance.</strong> Every citation above resolves against commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} of the read-only legacy estate. The release stamps
- * of the two option copybooks differ - {@code app/cpy/COADM02Y.cpy} line 50 carries a later stamp than
- * the estate-wide one - which is why no stamp is a constant anywhere in this module and provenance
- * lives in documentation and in commentary such as this. No picture clause, table declaration or
+ * <p>The release stamps of the two option copybooks differ - {@code app/cpy/COADM02Y.cpy} line 50 carries a
+ * later stamp than the estate-wide one - which is why no stamp is a constant anywhere in this module and
+ * provenance lives in documentation and in commentary such as this. No picture clause, table declaration or
  * procedural statement is transcribed; only external contract text is reproduced.
  *
  * @see MenuResponse

@@ -113,9 +113,7 @@ import org.springframework.http.ResponseEntity;
  *
  * <p>Provenance: no legacy antecedent. The estate's transaction manager answered an unmapped transaction
  * identifier with its own terminal message; the container error dispatch is a servlet concept the estate
- * had no equivalent of. Legacy estate read as read-only reference at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; no legacy source text is reproduced.
+ * had no equivalent of.
  *
  * @since 1.0.0
  */
@@ -142,10 +140,10 @@ class ErrorDispatchContractIT extends AbstractPostgresIT {
      * A path no mapping claims and no authorization rule names, used to provoke the unmatched-path
      * condition.
      *
-     * <p><strong>It sits OUTSIDE the API root, and that is load-bearing.</strong> It used to be
-     * {@code /api/no-such-route}, which reached the unmatched-path condition because the chain granted
-     * either sign-on authority the whole API root and left the dispatcher to report that nothing was
-     * mapped there. The chain now names the eleven delivered ordinary addresses and refuses everything
+     * <p><strong>It sits OUTSIDE the API root, and that is load-bearing.</strong> A path such as
+     * {@code /api/no-such-route} reaches the unmatched-path condition only while the chain grants either
+     * sign-on authority the whole API root and leaves the dispatcher to report that nothing is mapped
+     * there. The chain names the eleven delivered ordinary addresses and refuses everything
      * else beneath the root, so an unknown address under {@code /api} is answered before a handler is
      * looked for and never becomes an unmatched path at all - see {@code docs/decision-log.md} DL-345.
      * Outside the root the closing rule still asks only for an established identity, so a signed-on

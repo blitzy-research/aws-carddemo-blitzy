@@ -74,10 +74,7 @@ import org.junit.jupiter.api.Test;
  * goes through the serialization API rather than the low-level introspection API, so the module's
  * zero budget for the latter is left untouched.
  *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Cited as provenance only and never asserted
- * against a member.
+ * <p>Cited as provenance only and never asserted against a member.
  */
 @DisplayName("DisclosureGroupId - the 16-byte composite key of the 50-byte disclosure-group record")
 class DisclosureGroupIdBaselineTest {

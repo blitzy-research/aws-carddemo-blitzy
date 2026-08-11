@@ -63,8 +63,8 @@ import org.springframework.stereotype.Service;
  * swallowed. A dependency described as optional cannot delay the thing it is optional to.
  *
  * <p>{@link #onApplicationEvent(JobCompletionEvent)} therefore hands the snapshot to a bounded worker
- * and returns, so {@code afterJob} is released immediately. {@link
- * #publishCompletion(JobCompletionEvent)} remains synchronous and keeps returning its outcome, because
+ * and returns, so {@code afterJob} is released immediately. {@link #publishCompletion(JobCompletionEvent)}
+ * remains synchronous and keeps returning its outcome, because
  * a caller that invokes it directly has asked for the publish rather than for the fan-out. Two entry
  * points, one for each caller, rather than one entry point that serves neither well.
  *
@@ -117,10 +117,10 @@ import org.springframework.stereotype.Service;
  * exit code exactly as the framework recorded them, is counted on the shed meter above, and does not
  * take the instance out of service: {@code application.yml} publishes the topic's health contributor
  * but deliberately leaves it OUT of the readiness group, because the topic carries a notice that a
- * batch job has <em>already</em> finished, so its absence loses a notice and prevents no work. An
- * earlier revision did place it in the required group, which took a whole instance out of service for
- * a lost notice - the treatment owed to a dependency whose absence prevents work, and this one
- * prevents none. The contrast that settles the readiness question is the job-submission queue, which
+ * batch job has <em>already</em> finished, so its absence loses a notice and prevents no work. PLACING
+ * IT IN THE REQUIRED GROUP would take a whole instance out of service for a lost notice - the treatment
+ * owed to a dependency whose absence prevents work, and this one prevents none. The contrast that
+ * settles the readiness question is the job-submission queue, which
  * stays in the group: a report request that cannot reach the queue never runs its job, so an instance
  * that cannot reach the queue genuinely cannot serve.
  *
@@ -314,8 +314,8 @@ public final class JobCompletionNotificationService
      * <p>A snapshot that cannot even be queued is shed rather than published inline, because publishing
      * it inline is the behaviour being removed. Reporting the shed belongs to
      * {@link #shedRatherThanQueue}, not here: this method cannot observe a rejection it does not receive,
-     * and the queue-depth sample it used to read instead was taken at a different moment from the one it
-     * described. Nothing is logged here about a loss, and nothing needs to be.
+     * and a queue-depth sample read here instead would be taken at a different moment from the one it
+     * describes. Nothing is logged here about a loss, and nothing needs to be.
      *
      * @param event completed job snapshot
      */

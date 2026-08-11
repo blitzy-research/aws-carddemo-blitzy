@@ -97,8 +97,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * confirmation character must reach the service intact so the program can name a value that is
  * neither acceptable answer - and a test below proves it.
  *
- * <p>Provenance: checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
+ * <p>No legacy source text is reproduced.
  */
 @DisplayName("BillPaymentRequest :: bill-payment request contract of legacy transaction CB00")
 class BillPaymentRequestCoverageTest {

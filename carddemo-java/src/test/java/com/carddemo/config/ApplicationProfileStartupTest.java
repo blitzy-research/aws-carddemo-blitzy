@@ -150,12 +150,6 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * resolves the schema half and withholds the seed half is made against the scripts that ship rather
  * than against a second copy of their names.
  *
- * <h2>Provenance</h2>
- *
- * <p>The configuration under test derives from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.
- *
  * @since 1.0.0
  */
 @DisplayName("Shipped configuration profiles, resolved by a started context")
@@ -174,14 +168,15 @@ final class ApplicationProfileStartupTest {
     private static final String KEY_ACTIVE_PROFILES = "spring.profiles.active";
 
     /**
-     * The one location production migrates from, holding the two schema scripts and no seed.
+     * The one location production migrates from, holding the three schema scripts and no seed.
      *
-     * <p>WHAT A PROFILE RESOLVES IS THE DIFFERENCE between a seeded and an unseeded database. The two
+     * <p>WHAT A PROFILE RESOLVES IS THE DIFFERENCE between a seeded and an unseeded database. The three
      * schema scripts and the two seed scripts ship from sibling directories whose shared parent holds
      * no script at all, so a profile that resolves this location alone reaches the schema and nothing
-     * else - the seeds are not applied, not pending and not resolved. This replaced a version pin of
-     * {@code 2}, which excluded the seeds by arithmetic and froze the schema at the same version. See
-     * docs/decision-log.md DL-298.
+     * else - the seeds are not applied, not pending and not resolved. Production also pins
+     * {@code spring.flyway.target} at the highest version this location delivers, so the two controls
+     * exclude the seeds by directory and by number. See docs/decision-log.md DL-298 for the split and
+     * DL-334 for the ceiling.
      */
     private static final String SCHEMA_LOCATION = "classpath:db/migration/schema";
 

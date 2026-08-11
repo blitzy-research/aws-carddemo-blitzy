@@ -40,33 +40,14 @@ import com.carddemo.util.JclCardImageBuilder;
  * The transaction-report request screen: the online half of the estate's only online-to-batch bridge.
  *
  * <p>Translation of {@code app/cbl/CORPT00C.cbl}, legacy CICS transaction {@code CR00}, 649 source
- * lines and 10 procedure-division paragraphs. Provenance: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * lines and 10 procedure-division paragraphs.
  *
  * <h2>Paragraph map</h2>
- * Every paragraph resolves to one named method, so the traceability matrix has one row per paragraph:
- * <ul>
- *   <li>{@code MAIN-PARA} line 163 &rarr; {@code mainPara}, reached from
- *       {@code processReportRequest}, which also carries the terminal re-arm of this
- *       transaction at lines 199 to 202;</li>
- *   <li>{@code PROCESS-ENTER-KEY} line 208 &rarr; {@code processEnterKey}, whose three period
- *       branches invoke submission at lines 238 and 255 and, for the operator-supplied range, at
- *       line 435, and whose acknowledgement is composed at line 450;</li>
- *   <li>{@code SUBMIT-JOB-TO-INTRDR} line 462 &rarr; {@code submitJobToIntrdr};</li>
- *   <li>{@code WIRTE-JOBSUB-TDQ} line 515 &rarr; {@code writeJobSubmissionTdq}. <strong>The
- *       paragraph name is misspelled in the source</strong> &mdash; row 6 of the AAP source-anomaly
- *       register. The Java method is spelled correctly and the original spelling is recorded in the
- *       traceability row so the mapping stays findable;</li>
- *   <li>{@code RETURN-TO-PREV-SCREEN} line 540 &rarr; {@code returnToPrevScreen};</li>
- *   <li>{@code SEND-TRNRPT-SCREEN} line 556 &rarr; {@code sendTrnrptScreen};</li>
- *   <li>{@code RETURN-TO-CICS} line 585 &rarr; {@code returnToCics}. This member has its own
- *       return paragraph, which the bill-payment program does not, so it gets its own method rather
- *       than being folded into the send;</li>
- *   <li>{@code RECEIVE-TRNRPT-SCREEN} line 596 &rarr; {@code receiveTrnrptScreen};</li>
- *   <li>{@code POPULATE-HEADER-INFO} line 609 &rarr; {@code populateHeaderInfo};</li>
- *   <li>{@code INITIALIZE-ALL-FIELDS} line 633 &rarr; {@code initializeAllFields}.</li>
- * </ul>
+ * Every paragraph resolves to one named method, so the traceability matrix has one row per paragraph; the
+ * mapping itself is held there and is not restated here. Two sites shape this class as a whole:
+ * {@code processReportRequest} carries the terminal re-arm of this transaction at lines 199 to 202, and
+ * {@code processEnterKey}'s three period branches invoke submission at lines 238 and 255 and, for the
+ * operator-supplied range, at line 435.
  *
  * <h2>The date-validation acceptance test is two-level, and both levels are kept</h2>
  * The operator-supplied range is checked by two invocations of the shared date-validation subprogram,
@@ -91,54 +72,17 @@ import com.carddemo.util.JclCardImageBuilder;
  * The queue is defined {@code ERROROPTION(IGNORE)} at {@code app/csd/CARDDEMO.CSD} lines 499 to 505,
  * alongside an eighty-byte fixed unblocked record, append disposition, output-only direction and
  * open-at-initialisation. The write paragraph therefore reports the failure to the operator and
- * returns control normally: there is no abend and no re-raise. Accordingly {@code
- * JobSubmissionException} is caught and logged here and never leaves this service, and no retry,
+ * returns control normally: there is no abend and no re-raise. Accordingly {@code JobSubmissionException}
+ * is caught and logged here and never leaves this service, and no retry,
  * backoff, timeout or delay is applied.
  *
  * <h2>What this service does not do</h2>
- * It requests a report; it does not generate one. It builds no card image &mdash; the seventeen
- * eighty-column cards and their four ten-character substitution slots belong to {@code
- * JclCardImageBuilder}. It knows no queue name, no message group and no endpoint &mdash; those
- * belong to {@code JobSubmissionService}. It touches no database, holds no transaction, performs no
- * monetary arithmetic, spawns no process and wires no abend path, because the source member is not in
- * the five-program family and carries neither an attention-key copybook nor a CICS abend handler.
  *
- * <h2>Divergences raised for the decision log</h2>
- * Every place where legacy semantics and idiomatic Java pull apart is resolved in favour of the legacy
- * and raised as a decision-log entry. The owning document is maintained elsewhere; the entries this
- * translation raises are:
- * <ol>
- *   <li>the two-level date acceptance test is kept verbatim, so a non-zero severity carrying the
- *       tolerated message number is accepted silently, exactly as the legacy accepts it;</li>
- *   <li>the declined-confirmation arm deliberately emits no message text, matching the legacy's silent
- *       rejection, rather than inventing a cancellation message;</li>
- *   <li>the end-of-stream card is transmitted, so a complete submission is exactly
- *       {@code JclCardImageBuilder.CARD_COUNT} messages;</li>
- *   <li>a publish failure stops the remaining cards and returns normally instead of aborting the
- *       request, matching the queue's ignore-on-error attribute, so the submission exception is caught
- *       and logged and never propagated;</li>
- *   <li>the misspelled queue-write paragraph name is corrected in Java, with the original spelling
- *       recorded in the traceability row;</li>
- *   <li>the month-to-date end date is derived by the legacy's first-of-next-month-minus-one-day
- *       computation rather than by a month-length helper;</li>
- *   <li>the eighty-column job image is built by the shared card builder rather than assembled here, and
- *       the thousand-slot bound is a defensive upper limit derived from an oversized redefinition and not
- *       a tuning value;</li>
- *   <li>no process invocation is used anywhere, so the module's process-execution audit count stays at
- *       zero;</li>
- *   <li>this member declares no clear-key arm, so the clear key reaches the catch-all and produces the
- *       invalid-key message; no arm the source lacks was added;</li>
- *   <li>the send paragraph ends the turn, because the legacy's send jumps to the return paragraph and
- *       that paragraph ends the task; so the <em>first</em> failed validation is the last thing that happens
- *       in the turn, with the summary message and the cursor position latched from it, and no later
- *       normalisation, validation, report-name assignment or submission runs;</li>
- *   <li>consequently the operator-supplied cascade reports at most one field failure per turn, which is
- *       the legacy's own cardinality: the six emptiness tests are an ordered evaluation that fires once,
- *       and the six range tests and the two subprogram calls each stop at their own first failure
- *       because each ends in a send;</li>
- *   <li>the numeric conversion of an argument that is not a well-formed numeric lexeme is undefined in
- *       the language, and the field is left as transmitted so the following numeric test fires.</li>
- * </ol>
+ * <p>It requests a report; it does not generate one. The seventeen eighty-column cards and their four
+ * ten-character substitution slots belong to {@code JclCardImageBuilder}, and the queue name, message
+ * group and endpoint belong to {@code JobSubmissionService}. It touches no database, performs no monetary
+ * arithmetic and wires no abend path, because the source member is not in the five-program family and
+ * carries neither an attention-key copybook nor a CICS abend handler.
  *
  * <p>This bean is a stateless singleton. Everything the legacy held in working storage lives in a
  * per-invocation state object, so concurrent turns cannot observe one another.
@@ -627,7 +571,7 @@ public final class ReportRequestService {
      * @param endDate                 the ten-character end date, or empty when none was derived.
      *                                Never {@code null}
      * @param cardsPublished          how many cards the queue accepted. Exactly {@code
-     *                                JclCardImageBuilder.CARD_COUNT} on a complete submission,
+     * JclCardImageBuilder.CARD_COUNT} on a complete submission,
      *                                because the end-of-stream card is itself transmitted; fewer when
      *                                a publish failed; zero when the confirmation gate blocked the
      *                                submission or no submission was attempted
@@ -952,9 +896,9 @@ public final class ReportRequestService {
      * <p><strong>The first failure ends the turn, and that is true between stages and within
      * them.</strong> Every failure site in this arm performs the send, and the send jumps out of the
      * performed range to the return paragraph, which ends the task - so in the source the very first
-     * failing test is the last thing the turn does. Nothing later is normalised, no later bound is compared, neither
-     * subprogram is called, no substitution slot is written, the report name is not set and no
-     * submission is attempted. Each stage below is therefore entered only while the turn is still
+     * failing test is the last thing the turn does. Nothing later is normalised, no later bound is
+     * compared, neither subprogram is called, no substitution slot is written, the report name is not set
+     * and no submission is attempted. Each stage below is therefore entered only while the turn is still
      * running, and the stages that hold several independent tests stop at the first one that fires
      * rather than reporting all of them: reporting the rest would put field errors in the response that
      * the legacy never evaluated, and continuing past them would return normalised values it never

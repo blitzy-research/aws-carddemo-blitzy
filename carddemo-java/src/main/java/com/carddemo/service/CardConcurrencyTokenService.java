@@ -152,17 +152,6 @@ import com.carddemo.util.CobolStringUtils;
  *
  * <p>The service is stateless, holds no cache and is safe for concurrent use. Diagnostics name the
  * record type and the reason and never the key, the token, the digest or any field value.
- *
- * <h2>Provenance</h2>
- *
- * <p>Derived from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Sealing the fetched image is a documented
- * divergence from the legacy design rather than a translation of it, and it is recorded as such by
- * decision {@code DL-109} in {@code docs/decision-log.md}, which also records that the two contract
- * files which formerly declared no concurrency component are overruled by the stale-update parity
- * requirement rather than the other way about. No COBOL statement and no picture clause is
- * reproduced here.
  */
 @Service
 public class CardConcurrencyTokenService {

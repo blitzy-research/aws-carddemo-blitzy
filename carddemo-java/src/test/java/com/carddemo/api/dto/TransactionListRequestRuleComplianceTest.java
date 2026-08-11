@@ -48,10 +48,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Unit tests for {@link TransactionListRequest}, the request body of legacy transaction {@code CT00}
  * implemented by {@code app/cbl/COTRN00C.cbl} over screen {@code app/cpy-bms/COTRN00.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Ten rows, established by loop bounds rather than by an OCCURS clause.</strong> Unlike
  * the card list, the transaction list screen declares no table. Its page size is fixed by the two
  * loop bounds {@code PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10} at

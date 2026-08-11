@@ -57,11 +57,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * extracted, and both halves of that need proving - that a legitimate envelope is accepted, and that
  * the name inside it is still held to the rule.
  *
- * <p>Provenance: these rules govern the queue replacing the estate's sole online-to-batch bridge, the
- * transient-data queue defined at the end of {@code app/csd/CARDDEMO.CSD} and written from the one
- * {@code EXEC CICS WRITEQ TD} site in {@code app/cbl/CORPT00C.cbl}, at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text appears here.
+ * <p>No legacy source text appears here.
  */
 @DisplayName("SqsNamingRules: the one shared statement of the queue naming contract")
 class SqsNamingRulesTest {

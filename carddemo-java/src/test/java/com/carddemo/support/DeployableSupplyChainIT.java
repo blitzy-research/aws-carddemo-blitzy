@@ -62,11 +62,6 @@ import org.junit.jupiter.api.Test;
  *
  * <p>It does not make a vulnerability claim; dependency-check owns that claim over every scope. It
  * proves only that build-time tooling is not packaged as runtime code.</p>
- *
- * <p>Provenance: the deployable artifact this inspects replaces the load modules the legacy
- * compile-and-link procedures produced, at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("the deployable artifact excludes every test-only library")
 class DeployableSupplyChainIT {

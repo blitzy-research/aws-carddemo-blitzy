@@ -63,15 +63,16 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * which scripts are resolved: the two halves of the migration set ship from two sibling locations,
  * production resolves one of them, and a location a profile never lists is not a value an operator can
  * widen - it produces no script to decline. THE CEILING decides how far a resolved list may be applied:
- * {@code spring.flyway.target: 2} is the highest version the schema location delivers, so a
- * seed-numbered script presented by some other location would still not be applied.
+ * {@code spring.flyway.target} is pinned at {@value #SCHEMA_CEILING}, the highest version the schema
+ * location delivers, so a seed-numbered script presented by some other location would still not be
+ * applied.
  *
  * <p>The known objection to a ceiling is real and is answered rather than avoided. A number written down
- * and never checked freezes the schema: the day a {@code V5} schema script shipped, production would
- * apply nothing above the pin and report success. {@code FlywayConfigTest} therefore asserts the pin
- * against the versions the schema location delivers, so raising the schema without raising the pin fails
- * the build. So the assertions here hold a location list, hold production to the pin, and hold it to
- * REFUSING every alternative - the open marker included. See docs/decision-log.md DL-298 and DL-334.
+ * and never checked freezes the schema: a schema script numbered above the pin would be resolved, skipped
+ * and reported as a successful migration. {@code FlywayConfigTest} therefore asserts the pin against the
+ * versions the schema location delivers, so raising the schema without raising the pin fails the build.
+ * The assertions here hold a location list, hold production to the pin, and hold it to REFUSING every
+ * alternative - the open marker included. See docs/decision-log.md DL-298 and DL-334.
  *
  * <h2>The parent is the way this can be silently defeated</h2>
  *
@@ -84,10 +85,10 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * <h2>Flyway's ordering, not a regular expression</h2>
  *
  * <p>Versions are parsed with {@link MigrationVersion#fromVersion(String)} and compared with its own
- * {@code compareTo}, because it is the authority on what a migration file name means - including the
- * dotted form {@code V1_1__}, which no delivered script uses today and which this file asserts stays
- * absent. A pattern that read one leading integer could not make that distinction, and the comparison it
- * fed would be meaningless.
+ * {@code compareTo}, because it is the authority on what a migration file name means. The dotted form
+ * matters here rather than being hypothetical: the invariants script is numbered {@value #SCHEMA_CEILING},
+ * which sorts between the indexes and the first seed. A pattern that read one leading integer would read
+ * it as version 2 and the comparison it fed would be meaningless.
  *
  * <h2>The control is a refusal, not a silent re-pin</h2>
  *
@@ -103,12 +104,6 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  *
  * <p>The expected locations, the expected target and the expected profile are all typed here rather than
  * read from the class under test.
- *
- * <h2>Provenance</h2>
- *
- * <p>The migration set under test derives from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.
  *
  * @since 1.0.0
  */
@@ -297,7 +292,8 @@ final class FlywayConfigCoverageTest {
                     .isEmpty();
 
             assertThat(scriptsSittingDirectlyIn(EXPECTED_SCHEMA_PATH))
-                    .as("while the schema location must carry its four scripts DIRECTLY, so that a "
+                    .as("while the schema location must carry every one of its scripts DIRECTLY, so "
+                            + "that a "
                             + "recursive scan and a listing of the directory agree")
                     .containsExactlyInAnyOrderElementsOf(SCHEMA_MIGRATIONS);
             assertThat(scriptsSittingDirectlyIn(EXPECTED_SEED_PATH))
@@ -322,9 +318,9 @@ final class FlywayConfigCoverageTest {
             MigrationVersion invariants = versionOf("V2_2__add_protected_value_invariants.sql");
 
             assertThat(first)
-                    .as("the delivered set is flatly numbered; a dotted version such as 1.1 would sort "
-                            + "between two of them and would be read as version 1 by anything that took "
-                            + "one leading integer")
+                    .as("the first two are flatly numbered; a dotted version such as 1.1 would sort "
+                            + "between them and would be read as version 1 by anything that took one "
+                            + "leading integer, which is why the parse is Flyway's own")
                     .isEqualTo(MigrationVersion.fromVersion("1"))
                     .isLessThan(second);
             assertThat(second).isEqualTo(MigrationVersion.fromVersion("2"));

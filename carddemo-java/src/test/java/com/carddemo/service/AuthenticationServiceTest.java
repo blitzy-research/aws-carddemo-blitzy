@@ -113,10 +113,7 @@ import static org.mockito.Mockito.when;
  * that the service selects the matching decision for each of the five source conditions. Nothing here
  * asks a production class what the answer should be.
  *
- * <p>Provenance: {@code app/cbl/COSGN00C.cbl}, {@code app/cpy/CSUSR01Y.cpy},
- * {@code app/cpy/CSMSG01Y.cpy} and {@code app/cpy/COCOM01Y.cpy}, read as read-only reference at commit
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("AuthenticationService :: transaction CC00, the sign-on screen, six paragraphs")
@@ -222,12 +219,17 @@ class AuthenticationServiceTest {
     private static final String LOCALE_DIVERGENT_CHARACTERS = "\u00df\u00b5";
 
     /**
-     * A value the credential column must never hold: eight characters, no version marker, no
-     * cost and no radix-64 tail. It stands for a column that stopped holding a digest - a
-     * migration run against the wrong schema, a restore from a pre-hashing backup - which is a
-     * deployment fault rather than anything the caller did.
+     * A synthetic value the credential column must never hold: no version marker, no cost and no
+     * radix-64 tail, so {@code CredentialDigestService} classifies it as not a digest. It stands for a
+     * column that stopped holding one - a migration run against the wrong schema, a restore from a
+     * pre-hashing backup - which is a deployment fault rather than anything the caller did.
+     *
+     * <p>Invented here and unrelated to any value this module delivers, seeds or accepts: a stored
+     * credential is only ever a 60-character BCrypt digest, so nothing about the shape of a cleartext
+     * credential is needed to exercise this path. It also shares no substring with the diagnostic rule
+     * name asserted below, so the assertion that the log never echoes it cannot pass or fail by accident.
      */
-    private static final String NOT_A_DIGEST = "PASSWORD";
+    private static final String NOT_A_DIGEST = "cobalt-thimble-42";
 
     /** A short entry, below the key width, used to prove the move into the record's own key. */
     private static final String SHORT_USER_ENTRY = "user1";

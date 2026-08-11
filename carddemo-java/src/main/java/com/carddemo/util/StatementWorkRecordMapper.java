@@ -68,7 +68,7 @@ public final class StatementWorkRecordMapper {
     public static final int TIMESTAMP_SEGMENT_OFFSET =
             CARD_NUMBER_LENGTH + LEADING_SEGMENT_LENGTH;
 
-    /** Width selected by {@code OUTREC FIELDS=(...,279:279,50)}. */
+    /** Width of the third projection segment, copied from the same offset it is written to. */
     public static final int TIMESTAMP_SEGMENT_LENGTH = 50;
 
     /** Bytes populated by the three reprojection segments. */
@@ -103,8 +103,8 @@ public final class StatementWorkRecordMapper {
      * Verifies the declared geometry once, at class initialisation, so a mis-typed figure fails on first
      * use rather than producing a plausible but wrongly framed work record.
      *
-     * <p>These checks used to live beside a second copy of this layout in
-     * {@link TransactionRecordMapper}. They belong here, with the layout they describe: this class is
+     * <p>These checks belong here, with the layout they describe, and not beside a second copy of that
+     * layout in {@link TransactionRecordMapper}: this class is
      * the sole authority for the reprojection, so it is also the only place that can assert the
      * reprojection is self-consistent.
      */

@@ -145,11 +145,8 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *
  * <h2>Provenance</h2>
  *
- * <p>Every width, line number and count cited above was measured at repository checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose card-list members carry the upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy estate under
- * {@code app/} is read-only reference: it is cited by member name, width, line number and count only,
- * and no line of legacy source is reproduced here.
+ * <p>The legacy estate under {@code app/} is read-only reference: it is cited by member name, width, line
+ * number and count only, and no line of legacy source is reproduced here.
  */
 @DisplayName("CardListRequest :: the CCLI card-list submission contract")
 class CardListRequestTest {

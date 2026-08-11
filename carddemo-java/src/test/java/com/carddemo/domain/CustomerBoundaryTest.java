@@ -78,10 +78,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * redacted rendering, the entity declares none at all, so the inherited default can carry
  * no attribute value whatsoever. A test below asserts that property directly, because it is
  * a deliberate design decision rather than an omission.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("Customer: the five-hundred-byte customer record")
 class CustomerBoundaryTest {

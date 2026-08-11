@@ -228,8 +228,8 @@ final class ProductionConfigurationValidatorTest {
      *
      * <p>Resolved with {@code classpath*:} rather than {@code classpath:}. The single-copy form stops at
      * the first match, and for {@code application-test.yml} that is the suite-only overlay, which would
-     * hide the packaged deliverable of the same name - the shadowing this checkpoint already had to
-     * correct once.
+     * hide the packaged deliverable of the same name, and that shadowing is exactly what the wildcard
+     * form prevents.
      *
      * @param document file name of the document
      * @return every copy found, in class-path order
@@ -490,7 +490,11 @@ final class ProductionConfigurationValidatorTest {
                     .withMessageContaining(reportLineFor(
                             settingFor(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY)))
                     .withMessageContaining("shorter than the " + floor + " characters")
-                    .withMessageContaining("openssl rand -hex 16")
+                    .as("the generator the refusal names must be one whose output satisfies the "
+                            + "distinctness rule as well as the length rule, or the deployer follows the "
+                            + "advice and is refused again")
+                    .withMessageContaining("openssl rand -base64 24")
+                    .withMessageNotContaining("openssl rand -hex")
                     .as("the requirement is what makes the refusal actionable; the actual length is a "
                             + "property of the credential and is withheld - see DL-348")
                     .withMessageNotContaining("is " + (floor - 1) + " characters");
@@ -502,9 +506,9 @@ final class ProductionConfigurationValidatorTest {
             final Map<String, String> variables = everyRequiredVariable();
             variables.put(OPERATOR_CREDENTIAL_VARIABLE, "x");
 
-            // The refusal names the requirement and NOT the measurement. It used to publish the exact
-            // stripped length, which is the search space a guesser needs and a property of a live
-            // credential; a deployer already knows how long their own value is. Recorded as DL-348.
+            // The refusal names the requirement and NOT the measurement. Publishing the exact stripped
+            // length would publish the search space a guesser needs and a property of a live credential;
+            // a deployer already knows how long their own value is. Recorded as DL-348.
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> ProductionConfigurationValidator
                             .validateRequiredSettings(environmentWith(variables)))
@@ -551,8 +555,8 @@ final class ProductionConfigurationValidatorTest {
                     .containsOnlyKeys(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY);
             assertThat(ProductionConfigurationValidator.MINIMUM_LENGTH_BY_KEY
                     .get(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY))
-                    .as("thirty-two characters is the width `openssl rand -hex 16` and "
-                            + "`openssl rand -base64 24` each produce")
+                    .as("thirty-two characters is the width `openssl rand -base64 24` produces, which "
+                            + "is the generator the refusal and the profile both name")
                     .isEqualTo(32);
         }
 

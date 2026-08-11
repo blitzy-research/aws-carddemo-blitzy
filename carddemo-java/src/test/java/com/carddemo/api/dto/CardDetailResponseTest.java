@@ -84,13 +84,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *
  * <h2>Provenance</h2>
  *
- * <p>Every width, line citation and message length below was read from the read-only legacy tree at
- * repository checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose members carry the upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The field contract is the generated
- * symbolic map {@code app/cpy-bms/COCRDSL.CPY}, the layout authority is {@code app/bms/COCRDSL.bms}, the
- * message text and the program behaviour are {@code app/cbl/COCRDSLC.cbl}, and the underlying 150-byte
- * record layout is {@code app/cpy/CVACT02Y.cpy}. No legacy source text is reproduced here: the citations
- * are references, and the message strings are the externally observable contract rather than program source.
+ * <p>The field contract is the generated symbolic map {@code app/cpy-bms/COCRDSL.CPY} , the layout
+ * authority is {@code app/bms/COCRDSL.bms} , the message text and the program behaviour are
+ * {@code app/cbl/COCRDSLC.cbl} , and the underlying 150-byte record layout is {@code app/cpy/CVACT02Y.cpy}
+ * . No legacy source text is reproduced here: the citations are references, and the message strings are the
+ * externally observable contract rather than program source.
  */
 @DisplayName("CardDetailResponse :: card-detail response contract of legacy transaction CCDL")
 class CardDetailResponseTest {

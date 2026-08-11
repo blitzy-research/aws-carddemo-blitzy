@@ -82,8 +82,8 @@ import com.carddemo.util.SensitiveFieldCodec;
  * opens it through the field-bound reveal, which refuses an envelope written for any other column, so
  * a value sealed without the binding authenticates under the key and is then refused by every reader:
  * the account view transaction, the account update transaction and the statement job would each fail
- * on every seeded row. An earlier revision seeded the unbound form deliberately, and that is exactly
- * the failure it produced.
+ * on every seeded row. SEEDING THE UNBOUND FORM produces exactly that failure, which is why this
+ * specification exists.
  *
  * <p>The convention is also what lets the migration assert a width on every row while holding no key
  * at all: a column-bound payload carries the twenty-three-character column name, a separator and the
@@ -109,10 +109,7 @@ import com.carddemo.util.SensitiveFieldCodec;
  *       schema history and not only against a scripted result set.</li>
  * </ol>
  *
- * <p>Provenance: the seeded values originate in {@code app/data/ASCII/custdata.txt}, fifty 500-byte
- * records whose government-issued identifier occupies twenty characters at offset 288, taken from
- * checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text appears here.
+ * <p>No legacy source text appears here.
  */
 @DisplayName("seeded customer identifiers, sealed by a real migration of the real seeds")
 class SeededIdentifierSealingIT extends AbstractPostgresIT {
@@ -141,11 +138,11 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
      * A second Base64 key of the required thirty-two bytes, different from {@link #TEST_KEY} and used
      * only to stand in for a mis-keyed process.
      *
-     * <p>It exists because the state it produces used to be reachable by configuration: both packaged
-     * non-production profiles once declared the fixture key as
-     * {@code ${CARDDEMO_FIELD_ENCRYPTION_KEY:<literal>}}, so exporting that variable left the fifty
-     * committed envelopes unreadable while every marker-based check still passed. The profiles now
-     * declare the literal bare, which removes that route; this key is how the refusal that closes the
+     * <p>It exists because the state it produces must not be reachable by configuration. Declaring the
+     * fixture key in a packaged non-production profile as
+     * {@code ${CARDDEMO_FIELD_ENCRYPTION_KEY:<literal>}} would let exporting that variable leave the fifty
+     * committed envelopes unreadable while every marker-based check still passed. The profiles
+     * declare the literal bare, which closes that route; this key is how the refusal that closes the
      * remaining routes is exercised.
      */
     private static final String FOREIGN_KEY = "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=";

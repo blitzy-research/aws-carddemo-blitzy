@@ -54,9 +54,6 @@ import org.junit.jupiter.params.provider.EnumSource;
  *
  * <p>A pure unit test: no Spring context, no connection, no container.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 @DisplayName("ConversationState :: the service-owned pseudo-conversational carry-over")

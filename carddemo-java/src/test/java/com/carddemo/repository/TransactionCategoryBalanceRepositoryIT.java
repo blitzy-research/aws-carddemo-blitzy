@@ -190,18 +190,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * purpose. The reserved type and category codes sit outside the seeded shape and outside the shapes
  * any other test class constructs, so no two classes contend for a key.
  *
- * <h2>Provenance and governance</h2>
- * No user-specified rules were provided for this project: {@code review_rules} reports their absence,
- * which was read in full and confirmed. That absence is not a licence to lower the bar, so this class
- * is held to the module's enterprise standards instead - real containers rather than an in-memory
- * substitute, exact decimals, no reflective or generated mapping, deterministic fixtures, no
- * credential of any kind in a literal or a message, and no source text copied out of the legacy
- * estate. The estate is cited here by record width, offset, byte count, resource name, program name
- * and column name only. Legacy facts come from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; that stamp is a provenance string for the
- * traceability matrix header and is asserted against no individual member.
- *
  * @see TransactionCategoryBalanceRepository
  * @see TransactionCategoryBalance
  * @see TransactionCategoryBalanceId

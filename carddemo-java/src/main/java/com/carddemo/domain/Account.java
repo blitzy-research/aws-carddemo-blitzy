@@ -64,8 +64,8 @@ public class Account {
     static final int ACCT_ID_WIDTH = 11;
 
     /**
-     * Total digit count of every money column on this table: 12, being ten digits before the implied decimal
-     * point and two after, from the five identical picture clauses the copybook declares.
+     * Total digit count of every money column on this table: 12, being ten digits before the implied
+     * decimal point and two after, from the five identical picture clauses the copybook declares.
      *
      * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
      * than two copies of it.
@@ -128,22 +128,8 @@ public class Account {
 
     /**
      * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
-     * all-zero {@code ACCT-CREDIT-LIMIT}.
-     *
-     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
-     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
-     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
-     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
-     * because inventing a column for it would put a representation artefact into the schema.
-     *
-     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
-     * and written back out re-emits the byte it arrived with rather than silently normalising
-     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
-     * that owns this layout is its only producer and its only consumer.
-     *
-     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
-     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
-     * of the value.
+     * all-zero {@code ACCT-CREDIT-LIMIT}. Transient, and excluded from equality, for the reasons
+     * {@link #acctCurrBalNegativeZero} records.
      */
     @Transient
     private boolean acctCreditLimitNegativeZero;
@@ -153,22 +139,8 @@ public class Account {
 
     /**
      * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
-     * all-zero {@code ACCT-CASH-CREDIT-LIMIT}.
-     *
-     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
-     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
-     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
-     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
-     * because inventing a column for it would put a representation artefact into the schema.
-     *
-     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
-     * and written back out re-emits the byte it arrived with rather than silently normalising
-     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
-     * that owns this layout is its only producer and its only consumer.
-     *
-     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
-     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
-     * of the value.
+     * all-zero {@code ACCT-CASH-CREDIT-LIMIT}. Transient, and excluded from equality, for the reasons
+     * {@link #acctCurrBalNegativeZero} records.
      */
     @Transient
     private boolean acctCashCreditLimitNegativeZero;
@@ -192,22 +164,8 @@ public class Account {
 
     /**
      * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
-     * all-zero {@code ACCT-CURR-CYC-CREDIT}.
-     *
-     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
-     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
-     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
-     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
-     * because inventing a column for it would put a representation artefact into the schema.
-     *
-     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
-     * and written back out re-emits the byte it arrived with rather than silently normalising
-     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
-     * that owns this layout is its only producer and its only consumer.
-     *
-     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
-     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
-     * of the value.
+     * all-zero {@code ACCT-CURR-CYC-CREDIT}. Transient, and excluded from equality, for the reasons
+     * {@link #acctCurrBalNegativeZero} records.
      */
     @Transient
     private boolean acctCurrCycCreditNegativeZero;
@@ -217,22 +175,8 @@ public class Account {
 
     /**
      * Whether the field image this instance was mapped from carried a <em>negative</em> overpunch on an
-     * all-zero {@code ACCT-CURR-CYC-DEBIT}.
-     *
-     * <p><strong>Not persisted, and it cannot be.</strong> A zoned-decimal image distinguishes a negative
-     * zero from a positive one by its final byte - {@code '}'} against {@code '{'} - while neither
-     * {@link java.math.BigDecimal} nor a numeric column has a negative zero at all. The bit therefore has
-     * nowhere to live except beside the amount, and it is declared {@link jakarta.persistence.Transient}
-     * because inventing a column for it would put a representation artefact into the schema.
-     *
-     * <p>What it buys is byte parity on the paths that matter: a record read from a fixed-width resource
-     * and written back out re-emits the byte it arrived with rather than silently normalising
-     * {@code '}'} to {@code '{'}. It is meaningful only while every digit is zero, and the record mapper
-     * that owns this layout is its only producer and its only consumer.
-     *
-     * <p>It is deliberately absent from {@link #equals(Object)} and {@link #hashCode()}: two rows holding
-     * the same amount are the same row, and a sign carried on a zero is a property of an image rather than
-     * of the value.
+     * all-zero {@code ACCT-CURR-CYC-DEBIT}. Transient, and excluded from equality, for the reasons
+     * {@link #acctCurrBalNegativeZero} records.
      */
     @Transient
     private boolean acctCurrCycDebitNegativeZero;

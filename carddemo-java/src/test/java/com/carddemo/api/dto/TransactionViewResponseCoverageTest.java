@@ -141,8 +141,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * instance holds, and no assertion below is worded as though it were.
  * {@link ApplicationJsonContractTest} is the in-boundary evidence for the deployed object.
  *
- * <p>Provenance: checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
+ * <p>No legacy source text is reproduced.
  */
 @DisplayName("TransactionViewResponse :: transaction-view response contract of legacy transaction "
         + "CT01")
@@ -407,10 +406,10 @@ class TransactionViewResponseCoverageTest {
          * Twenty-one components are bounded and the remaining four are unbounded.
          *
          * <p>The focus hint moved into the bounded set. It is not a legacy map value, which is why it
-         * was originally left unmeasured, but it does carry the <em>name</em> of a legacy map field and
-         * this screen's widest field name is seven characters. Leaving it unmeasured admitted a name no
-         * field on this screen can have; bounding it at the screen's own widest name is the narrower and
-         * therefore the correct statement. The amount, the indicator, the route and the navigation state
+         * is not a legacy map value, which is the argument for leaving it unmeasured, but it does carry the
+         * <em>name</em> of a legacy map field and this screen's widest field name is seven characters. Leaving
+         * it unmeasured admits a name no field on this screen can have; bounding it at the screen's own widest
+         * name is the narrower and therefore the correct statement. The amount, the indicator, the route and the navigation state
          * remain unbounded, each for a reason of its own: a decimal has no character width, a primitive
          * boolean has no length, the route is a service-owned identifier and the navigation state is a
          * nested record whose own components carry their own bounds.</p>
@@ -1049,10 +1048,10 @@ class TransactionViewResponseCoverageTest {
          * This type applies no scaling of its own: an amount at the record scale is carried exactly as
          * supplied, including the trailing zero a normalising layer would strip.
          *
-         * <p>An earlier revision made the point with a four-place amount and asserted its scale
-         * survived. That amount is now refused outright, and the two behaviours are not in tension:
-         * refusing an amount whose scale contradicts the record field, and rescaling one it accepts, are
-         * different acts, and only the second would change the bytes the screen presents. Scaling still
+         * <p>THE POINT CANNOT BE MADE WITH A FOUR-PLACE AMOUNT whose scale is asserted to survive: such an
+         * amount is refused outright. The two behaviours are not in tension - refusing an amount whose scale
+         * contradicts the record field, and rescaling one it accepts, are different acts, and only the second
+         * would change the bytes the screen presents. Scaling still
          * belongs to the single decimal codec in the utility layer, which applies the estate's downward
          * mode in exactly one place; this type neither rescales nor rounds anything it carries.</p>
          */

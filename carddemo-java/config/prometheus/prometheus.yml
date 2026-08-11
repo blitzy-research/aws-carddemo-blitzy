@@ -92,13 +92,12 @@
 #   delivery scope, which is why this file carries the requirement rather than
 #   an inert second job block that no stack would ever run.
 #
-#   THE TOKEN THAT SENTENCE REFERS TO IS A NAMED SETTING, and it was not always.
-#   An earlier revision of this note asked for a "scoped read-only bearer token"
-#   while the security model offered no such thing: the management paths required
-#   only `authenticated()`, which every signed-on cardholder satisfies, so the
-#   strongest credential a collector could have presented was an ordinary user's
-#   session token - and that same token read the exposition. The scope was a
-#   description rather than a rule.
+#   THE TOKEN THAT SENTENCE REFERS TO IS A NAMED SETTING RATHER THAN A
+#   DESCRIPTION. Asking for a "scoped read-only bearer token" would describe
+#   nothing the security model offers if the management paths required only
+#   `authenticated()`, which every signed-on cardholder satisfies: the strongest
+#   credential a collector could then present would be an ordinary user's
+#   session token, and that same token would read the exposition.
 #
 #   The credential is now carddemo.security.management.token, supplied to a
 #   production deployment as CARDDEMO_MANAGEMENT_TOKEN with no fallback and
@@ -159,15 +158,15 @@ scrape_configs:
       # any host-gateway fallback, and the reason there is only one entry is
       # arithmetic rather than tidiness.
       #
-      # An earlier revision listed a second entry here, host.docker.internal
-      # at the same port, so that a host-run application would be collected by
-      # the same job. Both entries belonged to job="carddemo-app", which is the
-      # label every dashboard panel and every performance-gate query aggregates
-      # by - so whenever both happened to answer, each series existed twice and
-      # every rate and every memory reading was doubled. In the ordinary case
-      # only one answered, which is worse in a quieter way: the job carried a
-      # permanently DOWN target, so `up` was never 1 for it and a reader could
-      # not tell a misconfigured scrape from a stopped application. The
+      # A SECOND ENTRY HERE - host.docker.internal at the same port, so that a
+      # host-run application would be collected by the same job - IS PROHIBITED.
+      # Both entries would belong to job="carddemo-app", which is the label every
+      # dashboard panel and every performance-gate query aggregates by - so
+      # whenever both answered, each series would exist twice and every rate and
+      # every memory reading would be doubled. In the ordinary case only one
+      # answers, which is worse in a quieter way: the job would carry a
+      # permanently DOWN target, so `up` would never be 1 for it and a reader
+      # could not tell a misconfigured scrape from a stopped application. The
       # performance gate ESTABLISHES this module's first baseline from a single
       # run, and a baseline that may or may not be doubled is not a baseline.
       #

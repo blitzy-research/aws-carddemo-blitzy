@@ -167,9 +167,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * claimed here is the exposure configuration only; whether a published path answers an unauthenticated
  * caller belongs to the security configuration and is asserted with it.
  *
- * <p>Provenance: legacy estate checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced
- * here.
+ * <p>No legacy source text is reproduced here.
  *
  * @since 1.0.0
  */
@@ -234,7 +232,7 @@ final class ObservabilityConfigTest {
     /** The framework generation's current name for the metric exposition switch. */
     private static final String KEY_EXPOSITION_ENABLED = "management.prometheus.metrics.export.enabled";
 
-    /** The name that switch used to carry, kept only so its absence can be asserted. */
+    /** The withdrawn prefix for that switch, kept only so its absence can be asserted. */
     private static final String KEY_WITHDRAWN_EXPOSITION_PREFIX = "management.metrics.export.";
 
     /** Every distribution setting sits beneath this prefix. */

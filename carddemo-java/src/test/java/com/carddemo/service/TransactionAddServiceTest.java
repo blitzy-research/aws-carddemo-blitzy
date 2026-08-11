@@ -72,11 +72,9 @@ import static org.mockito.Mockito.when;
  * {@code app/cbl/COTRN02C.cbl} - legacy CICS transaction {@code CT02}, 783 source lines and 18
  * procedure-division paragraphs.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy tree is read-only reference; no
- * COBOL, copybook, JCL or CICS-definition text is transcribed here. Member names, paragraph names,
- * line numbers, field widths, record offsets and the operator-visible message literals are cited as
- * metadata only.
+ * <p>The legacy tree is read-only reference; no COBOL, copybook, JCL or CICS-definition text is transcribed
+ * here. Member names, paragraph names, line numbers, field widths, record offsets and the operator-visible
+ * message literals are cited as metadata only.
  *
  * <h2>A pure unit test</h2>
  * No container, no Spring context, no JDBC connection, no socket and no clock reading. All seven
@@ -135,15 +133,9 @@ import static org.mockito.Mockito.when;
  * repositories are not collaborators and are deliberately not mocked.
  *
  * <h2>Paragraph traceability</h2>
- * All 18 paragraphs are named in the test methods that exercise them, so the traceability matrix can be
- * filled from this class: {@code MAIN-PARA} 107, {@code PROCESS-ENTER-KEY} 164,
- * {@code VALIDATE-INPUT-KEY-FIELDS} 193, {@code VALIDATE-INPUT-DATA-FIELDS} 235,
- * {@code ADD-TRANSACTION} 442, {@code COPY-LAST-TRAN-DATA} 471, {@code RETURN-TO-PREV-SCREEN} 500,
- * {@code SEND-TRNADD-SCREEN} 516, {@code RECEIVE-TRNADD-SCREEN} 539, {@code POPULATE-HEADER-INFO} 552,
- * {@code READ-CXACAIX-FILE} 576, {@code READ-CCXREF-FILE} 609, {@code STARTBR-TRANSACT-FILE} 642,
- * {@code READPREV-TRANSACT-FILE} 673, {@code ENDBR-TRANSACT-FILE} 702,
- * {@code WRITE-TRANSACT-FILE} 711, {@code CLEAR-CURRENT-SCREEN} 754 and
- * {@code INITIALIZE-ALL-FIELDS} 762.
+ *
+ * <p>All 18 paragraphs are named in the test methods that exercise them. The unit-to-test inventory,
+ * with the source line of each, is held once in {@code docs/traceability-matrix.md}.
  *
  * <p>No monetary value anywhere in this class is held as a {@code double}, a {@code Double} or a
  * {@code float}: every amount is an exact decimal built from a string literal, and every amount

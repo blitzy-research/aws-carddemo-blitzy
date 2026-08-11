@@ -153,13 +153,11 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy estate at checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
- * CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19 - a matrix-header provenance string for the estate as a
- * whole, never a per-member assertion. The legacy antecedents behind these contracts are the interest
- * calculator {@code [app/cbl/CBACT04C.cbl]} with its job stream {@code [app/jcl/INTCALC.jcl]}, the
- * transaction report {@code [app/cbl/CBTRN03C.cbl]} with its job stream {@code [app/jcl/TRANREPT.jcl]}
- * and cataloged procedure {@code [app/proc/TRANREPT.prc]}, the statement job stream
- * {@code [app/jcl/CREASTMT.JCL]}, and the customer-probe job stream {@code [app/jcl/READCUST.jcl]}.</p>
+ * <p>The legacy antecedents behind these contracts are the interest calculator
+ * {@code [app/cbl/CBACT04C.cbl]} with its job stream {@code [app/jcl/INTCALC.jcl]} , the transaction report
+ * {@code [app/cbl/CBTRN03C.cbl]} with its job stream {@code [app/jcl/TRANREPT.jcl]} and cataloged procedure
+ * {@code [app/proc/TRANREPT.prc]} , the statement job stream {@code [app/jcl/CREASTMT.JCL]} , and the
+ * customer-probe job stream {@code [app/jcl/READCUST.jcl]} .</p>
  */
 @DisplayName("JobParameterValidators :: the launch-time contract of the migrated batch jobs")
 class JobParameterValidatorsTest {

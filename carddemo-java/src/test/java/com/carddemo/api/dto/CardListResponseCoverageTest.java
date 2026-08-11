@@ -136,8 +136,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  * instance holds, and no assertion below is worded as though it were.
  * {@link ApplicationJsonContractTest} is the in-boundary evidence for the deployed object.
  *
- * <p>Provenance: checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
+ * <p>No legacy source text is reproduced.
  */
 @DisplayName("CardListResponse :: card-list page contract of legacy transaction CCLI")
 class CardListResponseCoverageTest {

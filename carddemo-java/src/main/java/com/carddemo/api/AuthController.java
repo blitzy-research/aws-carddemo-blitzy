@@ -51,9 +51,9 @@ import org.springframework.web.bind.annotation.RestController;
  * service or the adapter, which is what lets both be exercised without a servlet and what keeps this
  * class from becoming the place where a second, divergent copy of the sign-on rules accumulates.
  *
- * <p><strong>The rules that live elsewhere, listed so that no later edit migrates one of them here.</strong>
- * Each of the following is externally observable, each belongs to the component named against it, and
- * each would be broken by an apparently harmless convenience added at this boundary:
+ * <p><strong>The rules that live elsewhere, listed so that no later edit migrates one of them
+ * here.</strong> Each of the following is externally observable, each belongs to the component named
+ * against it, and each would be broken by an apparently harmless convenience added at this boundary:
  *
  * <ul>
  *   <li><em>The blank cascade is ordered, and the identifier is tested first.</em> A submission with
@@ -111,11 +111,6 @@ import org.springframework.web.bind.annotation.RestController;
  * outcomes translated by the service and therefore receive the bounded {@code UNABLE_TO_VERIFY} tag rather
  * than escaping through this failure path. No latency, throughput or memory figure is asserted anywhere
  * in this class: the meter establishes the baseline rather than testing against one.
- *
- * <p>Provenance: {@code app/cbl/COSGN00C.cbl} and {@code app/csd/CARDDEMO.CSD}, whose transaction
- * definition binds {@code CC00} to the sign-on program, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
  *
  * @since 1.0.0
  */
@@ -220,11 +215,11 @@ public final class AuthController {
      * the decision's own enumerated name, or the fixed failure constant when the turn reached no
      * decision at all, so it cannot become a high-cardinality label.
      *
-     * <p>Nothing outside the request body reaches the service. An earlier revision additionally read the
-     * caller address and handed it on as the second subject of an abuse-resistance governor; that
-     * governor was removed as feature expansion - the legacy transaction has no attempt counter - and the
-     * attribution went with it, because a value nothing consumes is dead plumbing at a boundary that must
-     * stay readable. {@code docs/decision-log.md} entry DL-352 records the removal.
+     * <p>Nothing outside the request body reaches the service, and nothing else may. Reading the caller
+     * address and handing it on as the second subject of an abuse-resistance governor is not available:
+     * that governor is feature expansion - the legacy transaction has no attempt counter - and an
+     * attribution whose consumer does not exist is dead plumbing at a boundary that must stay readable.
+     * {@code docs/decision-log.md} entry DL-352 records the removal.
      *
      * @param request the operator's entry and the attention key they pressed
      * @return the screen the turn produces, carrying a bearer session when the credential verified

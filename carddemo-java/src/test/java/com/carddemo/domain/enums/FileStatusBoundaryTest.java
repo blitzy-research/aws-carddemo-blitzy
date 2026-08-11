@@ -59,10 +59,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * documented-but-unexercised values and no production branch may depend on them.
  * This class asserts that they are present and that they behave as ordinary
  * non-success, non-end-of-file codes, which is the whole of their contract.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("FileStatus: the raw two-byte file-status vocabulary of the batch tier")
 class FileStatusBoundaryTest {

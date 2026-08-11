@@ -44,14 +44,14 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>The union is exactly the union, and nothing wider.</strong> Four components, because
  * {@code com.carddemo.service.BatchJobCatalog} accepts exactly four distinct parameter names across the
- * nine jobs. An earlier revision published two more - a transaction-backup generation name and a
- * synthesized-transaction generation name - that no job accepted, so every request carrying either was
- * refused by the per-job rule while the published document invited it. They are not restored here and
- * they are not added to a job's accepted set either: the combine and backup jobs name their datasets
- * from the deployment's own configuration precisely so that no caller-supplied location reaches a
- * resource loader, and admitting one would be both feature the estate never had and the hazard that
- * arrangement exists to remove. {@code BatchJobLaunchRequestTest} now asserts the union against the
- * catalog itself, so the two cannot drift apart again.
+ * nine jobs. TWO FURTHER COMPONENTS MUST NOT BE PUBLISHED HERE - a transaction-backup generation name
+ * and a synthesized-transaction generation name - because no job accepts either, so every request
+ * carrying one would be refused by the per-job rule while the published document invited it. Nor may
+ * they be added to a job's accepted set: the combine and backup jobs name their datasets from the
+ * deployment's own configuration precisely so that no caller-supplied location reaches a resource
+ * loader, and admitting one would be both a feature the estate never had and the hazard that
+ * arrangement exists to remove. {@code BatchJobLaunchRequestTest} asserts the union against the
+ * catalog itself, so the two cannot drift apart.
  *
  * <p><strong>Every value is transmitted byte for byte.</strong> Nothing here trims, pads, upper-folds,
  * parses or reformats: the interest parameter's ten characters become the leading characters of every
@@ -68,13 +68,6 @@ import jakarta.validation.constraints.Size;
  * those keys as constants: the launch operation pairs each accessor with the batch tier's own key
  * constant, which keeps a single spelling in a single place, and
  * {@code BatchJobLaunchRequestTest} asserts that the wire names and those constants agree.
- *
- * <p>Provenance: the program parameter at {@code app/jcl/INTCALC.jcl}, the sort symbols of
- * {@code app/jcl/TRANREPT.jcl}, the four collapsed read jobs {@code app/jcl/READACCT.jcl},
- * {@code READCARD.jcl}, {@code READCUST.jcl} and {@code READXREF.jcl}, and the two concatenated inputs
- * of {@code app/jcl/COMBTRAN.jcl}; read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No job control statement text is transcribed.
  *
  * @param interestParmDate the interest run's ten-character parameter value, or {@code null} when the
  *        addressed job does not take one

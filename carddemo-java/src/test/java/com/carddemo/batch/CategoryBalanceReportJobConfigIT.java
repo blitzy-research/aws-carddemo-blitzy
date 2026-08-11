@@ -101,12 +101,8 @@ import com.carddemo.support.TestDataFactory;
  * delivered migrations, with every expectation built here from first principles rather than from the code
  * under test.
  *
- * <p>Provenance: the translated job stream is {@code app/jcl/PRTCATBL.jcl} (66 lines) read at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. The upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19 is carried only as the provenance string of the
- * traceability-matrix header; the stamp is not universal across the estate, so nothing here asserts it
- * against any member. No job-stream, control-card, copybook or program source line is transcribed: the
- * estate is cited by step name, data-definition name, dataset name, field name, width, offset and count.
+ * <p>No job-stream, control-card, copybook or program source line is transcribed: the estate is cited by
+ * step name, data-definition name, dataset name, field name, width, offset and count.
  *
  * <h2>This job has no application-program antecedent, and that governs what may be asserted</h2>
  * The planning material describes this job as driven by an application COBOL program. Measured from the
@@ -1492,11 +1488,11 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
      * asserted against rather than standing in for it: the job, not this method, is what has to survive an
      * absent output.
      *
-     * <p><strong>It is not protection against an earlier build.</strong> It used to be described that way,
-     * and while the root was a fixed directory beneath the platform temporary directory that description
-     * was accurate: the directory outlived the build while the framework's execution identifiers restarted
-     * against a fresh database, so a generation from an earlier build could appear to belong to an
-     * execution of this one. The root is now private to this process and discarded when the class finishes
+     * <p><strong>It is not protection against an earlier build, and must not be described as such.</strong>
+     * That description would be accurate only while the root was a fixed directory beneath the platform
+     * temporary directory: such a directory outlives the build while the framework's execution identifiers
+     * restart against a fresh database, so a generation from an earlier build could appear to belong to an
+     * execution of this one. The root is private to this process and discarded when the class finishes
      * (DL-273), so no artefact of another build or another clone can be present to remove, and a reader
      * should not infer from this method that one could be.
      *

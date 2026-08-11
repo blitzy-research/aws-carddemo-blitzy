@@ -61,15 +61,15 @@ import org.springframework.stereotype.Component;
  * disagreement harmless, so this exists for diagnostics and for a caller that wants to log it.
  *
  * <p><strong>Inbound: the routing nominations are screened.</strong> Two of the four routing fields the
- * carried state keeps hold an eight-character program name, and the navigation authority resolves one into a
- * destination. Its unresolvable arm reproduces the abend a legacy transfer to an unknown program would have
- * raised, and that arm was defensive and unreachable on the mainframe because the communication area was held
- * by the region: only the system itself could put a name in it. Over HTTP the caller holds it, so an invented
- * name would reach that arm and surface as a terminal failure on an authenticated route. A nomination that
- * resolves to no destination is therefore carried as blank - which is exactly "nominates nothing", the
- * legacy's own empty-field case, so the calling screen's default applies. Every name the estate actually
- * declares still crosses unchanged, so no reachable legacy behaviour changes; what changes is that the
- * unreachable arm stays unreachable.
+ * carried state keeps hold an eight-character program name, and the navigation authority resolves one into
+ * a destination. Its unresolvable arm reproduces the abend a legacy transfer to an unknown program would
+ * have raised, and that arm was defensive and unreachable on the mainframe because the communication area
+ * was held by the region: only the system itself could put a name in it. Over HTTP the caller holds it, so
+ * an invented name would reach that arm and surface as a terminal failure on an authenticated route. A
+ * nomination that resolves to no destination is therefore carried as blank - which is exactly "nominates
+ * nothing", the legacy's own empty-field case, so the calling screen's default applies. Every name the
+ * estate actually declares still crosses unchanged, so no reachable legacy behaviour changes; what changes
+ * is that the unreachable arm stays unreachable.
  *
  * <p>Holds one injected collaborator, the navigation authority it screens nominations against, and no
  * per-turn state of any kind, so the singleton remains safe for unsynchronised concurrent use.
@@ -103,9 +103,9 @@ public final class ConversationStateAdapter {
      * service never has to null-check the state it is given, and the empty state is exactly what the
      * navigation authority treats as no carry-over at all.
      *
-     * <p>The two program-name nominations are screened on the way through, for the reason given on the type:
-     * an invented name is carried as nominating nothing rather than reaching the navigation authority's
-     * unresolvable arm.
+     * <p>The two program-name nominations are screened on the way through, for the reason given on the
+     * type: an invented name is carried as nominating nothing rather than reaching the navigation
+     * authority's unresolvable arm.
      *
      * @param context the record the client echoed, which may be {@code null}
      * @return the five-field carried state, never {@code null}
@@ -127,8 +127,8 @@ public final class ConversationStateAdapter {
      *
      * <p>A nomination that is already empty is left exactly as received, because a blank field is
      * significant: it is what makes the calling screen's default apply. The legacy test is
-     * {@code = SPACES OR LOW-VALUES}, so an absent value, an empty one, one made only of spaces and one made
-     * only of low values are all that same state.
+     * {@code = SPACES OR LOW-VALUES}, so an absent value, an empty one, one made only of spaces and one
+     * made only of low values are all that same state.
      *
      * @param nominatedProgram the eight-character program name the client echoed, possibly {@code null}
      * @return the same value when it resolves or is already empty, and {@code null} otherwise

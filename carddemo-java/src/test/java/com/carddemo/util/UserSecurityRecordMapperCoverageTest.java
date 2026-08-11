@@ -69,9 +69,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * framework, and no reflection. The digest function is a plain lambda, which is precisely what makes
  * that possible.</p>
  *
- * <p>Provenance: part of the migration of the AWS CardDemo z/OS application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("UserSecurityRecordMapper - the 80-byte user-security record")
 class UserSecurityRecordMapperCoverageTest {

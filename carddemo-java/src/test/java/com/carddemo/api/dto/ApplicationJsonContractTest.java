@@ -107,9 +107,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * request and response records. Those belong to the five focused suites, which remain the primary
  * cover for each type; this file asserts only what the mapper contributes.
  *
- * <p>Provenance: the wire contract derives from the 17 symbolic screen maps of the legacy online
- * estate at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Behaviour is cited, never transcribed.
+ * <p>Behaviour is cited, never transcribed.
  */
 @DisplayName("Application JSON contract: the mapper the deployed application actually uses")
 class ApplicationJsonContractTest {

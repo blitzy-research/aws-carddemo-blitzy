@@ -163,18 +163,14 @@ import org.springframework.transaction.annotation.Transactional;
  * would be feature expansion; that residual gap is decision {@code D-14} in
  * {@code docs/decision-log.md} and is recorded there as deliberately unclosed rather than fixed here.
  *
- * <p>Provenance: this test has no legacy antecedent - the estate carries no test harness of any kind.
- * The contract it asserts is that of the record layout {@code app/cpy/CVACT03Y.cpy}, the cluster and
- * alternate-index definitions of {@code app/jcl/XREFFILE.jcl}, the two online file definitions of
- * {@code app/csd/CARDDEMO.CSD}, and the keyed reads of the account path in
- * {@code app/cbl/COBIL00C.cbl} and {@code app/cbl/COTRN02C.cbl} together with the sequential read of
- * the base cluster in {@code app/cbl/CBACT03C.cbl}. All were read as read-only reference at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a provenance string for the
- * traceability matrix header only; nothing here asserts it against a member. No source line of any
- * legacy artefact is transcribed and none is copied into this module: the estate is cited by member
- * name, record width, field offset, key length, table name, column name, index name and constraint
- * name alone.
+ * <p>Provenance: this test has no legacy antecedent - the estate carries no test harness of any kind. The
+ * contract it asserts is that of the record layout {@code app/cpy/CVACT03Y.cpy} , the cluster and
+ * alternate-index definitions of {@code app/jcl/XREFFILE.jcl} , the two online file definitions of
+ * {@code app/csd/CARDDEMO.CSD} , and the keyed reads of the account path in {@code app/cbl/COBIL00C.cbl}
+ * and {@code app/cbl/COTRN02C.cbl} together with the sequential read of the base cluster in
+ * {@code app/cbl/CBACT03C.cbl} . No source line of any legacy artefact is transcribed and none is copied
+ * into this module: the estate is cited by member name, record width, field offset, key length, table name,
+ * column name, index name and constraint name alone.
  *
  * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
  *
@@ -797,8 +793,8 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
 
             // ★ THE ORDER IS THE PATH'S, AND THE BOUND SELECTS THE LEADING ROWS OF IT. A read of a
             // duplicate-bearing index yields rows in ascending base-key order, and the base key here is
-            // the card number. An earlier revision declared neither an order nor a bound, which left the
-            // sequence to the plan and the result size to the data. Asserted as ORDERED lists. DL-296.
+            // // the card number. DECLARING NEITHER AN ORDER NOR A BOUND leaves the sequence to the plan and the
+            // // result size to the data. Asserted as ORDERED lists. DL-296.
             assertThat(rows)
                     .extracting(CardCrossReference::getXrefCardNum)
                     .as("ascending by card number: the seeded key sorts below both reserved keys")

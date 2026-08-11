@@ -63,9 +63,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * tests them in that order at {@code app/cbl/CORPT00C.cbl} lines 214, 240 and 256, acting on the
  * first non-blank one it finds and reporting at line 437 a submission that marked none. All three
  * are therefore carried as three separately markable one-character components rather than collapsed
- * into a single enumerated value. An earlier revision collapsed them, on the grounds that the screen
- * can only ever mean one period and that a multiply-marked state should be unrepresentable; both
- * premises are wrong. Three independently markable fields mean a 3270 submission carrying two or
+ * into a single enumerated value. COLLAPSING THEM - on the grounds that the screen can only ever mean
+ * one period and that a multiply-marked state should be unrepresentable - rests on two wrong premises.
+ * Three independently markable fields mean a 3270 submission carrying two or
  * three marks is a state the screen actually produces, and the program does not reject it - it
  * resolves it by order. A single enumerated value cannot express "monthly and custom were both
  * marked", so it cannot reproduce the resolution either: it forces the client to choose, which moves
@@ -92,8 +92,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * type takes under those settings and makes no claim about the mapper a deployed instance holds;
  * {@link ApplicationJsonContractTest} is the in-boundary evidence for the deployed object.
  *
- * <p>Provenance: checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.
+ * <p>No legacy source text is reproduced.
  */
 @DisplayName("ReportRequest :: report-request contract of legacy transaction CR00")
 class ReportRequestCoverageTest {

@@ -48,10 +48,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Unit tests for {@link TransactionAddResponse}, the response body of legacy transaction {@code CT02}
  * implemented by {@code app/cbl/COTRN02C.cbl} over screen {@code app/cpy-bms/COTRN02.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Thirty-five message literals, and the grouping is the contract.</strong> The add screen
  * distinguishes an empty field from a non-numeric one from a malformed date from an invalid calendar
  * date, and reports each with its own sentence. Collapsing any pair would leave an operator unable to

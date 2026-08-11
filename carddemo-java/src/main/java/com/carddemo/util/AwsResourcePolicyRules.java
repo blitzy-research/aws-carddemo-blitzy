@@ -96,17 +96,6 @@ import java.util.Objects;
  * which is not an object, is {@link PolicyPosture#UNREADABLE} rather than sound; a {@code Deny} whose
  * shape this class cannot fully recognise does not count towards rule two. The failure mode is a refused
  * deployment, which is visible, rather than an accepted one, which is not.
- *
- * <h2>Provenance</h2>
- *
- * <p>This class has no legacy antecedent. The migrated estate's files were VSAM clusters reached through
- * a transaction manager and a batch scheduler, with no attachable policy of any kind - the CICS
- * definitions carried {@code READINTEG(UNCOMMITTED)}, {@code RECOVERY(NONE)} and {@code JOURNAL(NO)} and
- * nothing resembling a principal. What it preserves is the property the mainframe had by construction: a
- * dataset was reachable only from within the estate that owned it. Legacy estate read at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; no legacy source text is reproduced here.
- *
  * @since 1.0.0
  */
 public final class AwsResourcePolicyRules {

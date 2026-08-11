@@ -674,9 +674,9 @@ class MenuServiceTest {
      *
      * <h2>Why this group exists</h2>
      *
-     * <p>Review found that both of this class's abend paths built their failure directly, so a menu dispatch
-     * that terminated left <strong>no log record at all</strong>: not the culprit, not the reason, nothing.
-     * The exception reached the boundary, was rendered to the caller, and the operator had only the response
+     * <p>An abend path that builds its failure directly leaves a terminated menu dispatch with
+     * <strong>no log record at all</strong>: not the culprit, not the reason, nothing.
+     * The exception reaches the boundary, is rendered to the caller, and the operator has only the response
      * to work from - on a path that only fires when the option catalog and the destination table disagree,
      * which is exactly the condition an operator needs told about.
      *

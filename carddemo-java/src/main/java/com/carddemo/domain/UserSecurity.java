@@ -238,11 +238,9 @@ import java.util.Objects;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, the stamp appearing in the copybook
- * trailer at {@code app/cpy/CSUSR01Y.cpy} L25. The legacy estate under {@code app/} is read-only
- * reference material and no source text from it is copied into this module: only member names,
- * field names, pictures, widths, offsets, line references and codes appear above.
+ * <p>The legacy estate under {@code app/} is read-only reference material and no source text from
+ * it is copied into this module: only member names, field names, pictures, widths, offsets, line
+ * references and codes appear above.
  */
 @Entity
 @Table(name = "user_security")
@@ -289,8 +287,8 @@ public class UserSecurity {
      *
      * <p>Thirty-one is not a policy choice: BCrypt encodes its work factor as a base-two logarithm of
      * the round count, and the algorithm is defined only up to 2^31 rounds, so a verifier refuses any
-     * value above 31 outright. This bound used to be absent, which meant the two digits were checked
-     * for being digits and for being at least ten and nothing else - so a digest declaring cost 32
+     * value above 31 outright. WITHOUT THIS BOUND the two digits would be checked for being digits and for
+     * being at least ten and nothing else - so a digest declaring cost 32
      * through 99 was structurally well formed, passed this guard, and was written to the column. It
      * would then have failed every subsequent verification, because the verifier rejects it before
      * looking at the hash. The identity would have been created or updated successfully and been
@@ -618,8 +616,8 @@ public class UserSecurity {
      * {@value #BCRYPT_DIGEST_LENGTH} characters long; it must open with one of the recognised version
      * markers; the two characters after that marker must be digits forming a cost between
      * {@value #MINIMUM_BCRYPT_COST} and {@value #MAXIMUM_BCRYPT_COST} inclusive, followed by a
-     * separator; and the remaining 53 characters must all come from BCrypt's radix-64 alphabet. The check is structural only - it does not hash, does not
-     * verify and does not need an encoder - so it adds no dependency to this layer.
+     * separator; and the remaining 53 characters must all come from BCrypt's radix-64 alphabet. The check
+     * is structural only - it does not hash, does not verify and does not need an encoder - so it adds no dependency to this layer.
      *
      * <p><strong>The rejection message never contains the offending value</strong>, because a rejected
      * value is by definition likely to be the very cleartext credential the caller should not have

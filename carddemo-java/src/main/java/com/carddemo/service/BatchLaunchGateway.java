@@ -8,11 +8,11 @@
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
  */
 package com.carddemo.service;
 
@@ -97,11 +97,10 @@ public interface BatchLaunchGateway {
      * Safe launch refusal carrying only a closed reason code.
      *
      * <p>This is the only refusal type in the module and {@link RejectionReason} is the only refusal
-     * vocabulary. The implementation used to publish a second enum of the same three constants and a
-     * subclass that converted between them by {@code Enum.valueOf(other.name())}: a name-matched bridge
-     * that compiled either way and would have failed at run time the first time one side gained a
-     * constant the other did not. The class is final and the vocabulary is declared once so that bridge
-     * cannot come back.
+     * vocabulary, declared exactly once. A second enum of the same constants with a subclass converting
+     * between them by {@code Enum.valueOf(other.name())} would be a name-matched bridge that compiles
+     * either way and fails at run time the first time one side gains a constant the other lacks. The
+     * class is final and the vocabulary has one home so that bridge cannot be introduced.
      */
     final class LaunchRejectedException extends RuntimeException {
 

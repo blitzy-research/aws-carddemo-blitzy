@@ -121,11 +121,6 @@ import org.springframework.transaction.PlatformTransactionManager;
  * failure to store the archive abends rather than completing quietly. No reflection is used and no
  * static call is mocked, in keeping with the rest of the test estate.
  *
- * <p>Provenance of the expectations: the legacy job member, its unload wrapper and control member,
- * and the generation-base declaration, read at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 @DisplayName("BackupTransactionJobConfig - the strict ceiling, the 350-byte archive and the clear")

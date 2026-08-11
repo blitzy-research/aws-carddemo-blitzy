@@ -61,9 +61,7 @@ import ch.qos.logback.core.read.ListAppender;
 
 /**
  * Unit test for {@link CardUpdateService}, the translation of the card-update transaction {@code CCUP}
- * carried by {@code app/cbl/COCRDUPC.cbl} at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19).
+ * carried by {@code app/cbl/COCRDUPC.cbl}.
  *
  * <p><strong>What this suite is for.</strong> Three behaviours of that member are counter-intuitive
  * enough that a plausible, compiling, wrong translation passes any test written under the same
@@ -99,41 +97,10 @@ import ch.qos.logback.core.read.ListAppender;
  * {@code PROCEDURE DIVISION} paragraphs, and 45 is the figure the action plan records and the
  * traceability matrix carries rows for. Its three {@code IDENTIFICATION DIVISION} entries -
  * {@code PROGRAM-ID} at line 23, {@code DATE-WRITTEN} at line 25 and {@code DATE-COMPILED} at line 27 -
- * are program metadata rather than procedure units and the matrix carries no row for any of them; this
- * suite once added them and published 48, which redefines the frozen 544-row model from inside a test.
- * They are still asserted, as the member and transaction names the screen header publishes. The units, and
- * the nested class that covers each, are:
- *
- * <ul>
- *   <li>Identification, lines 23 to 27 - {@code PROGRAM-ID}, {@code DATE-WRITTEN}, {@code DATE-COMPILED}:
- *       <em>not</em> paragraph units and owed no matrix row; carried as the member and transaction names
- *       the screen header publishes, asserted in {@code DispatchAndAbend}</li>
- *   <li>{@code 0000-MAIN} line 367, {@code COMMON-RETURN} line 546, {@code 0000-MAIN-EXIT} line 560: the
- *       five-arm dispatch, the terminal return and the re-armed transaction, asserted in
- *       {@code DispatchAndAbend} and {@code ReachableAbend}</li>
- *   <li>{@code 1000-PROCESS-INPUTS} line 564 with its exit line 575, {@code 1100-RECEIVE-MAP} line 578 with
- *       its exit line 638: the marker normalisation and the received-field bounding, asserted in
- *       {@code BlankFieldCascade} and {@code NullAndBoundaryInput}</li>
- *   <li>{@code 1200-EDIT-MAP-INPUTS} line 641 with its exit line 717 and the six field edits -
- *       {@code 1210-EDIT-ACCOUNT} line 721, {@code 1220-EDIT-CARD} line 762, {@code 1230-EDIT-NAME}
- *       line 806, {@code 1240-EDIT-CARDSTATUS} line 845, {@code 1250-EDIT-EXPIRY-MON} line 877,
- *       {@code 1260-EDIT-EXPIRY-YEAR} line 913, each with its own exit: asserted in
- *       {@code AlphabeticCheck}, {@code FilterFetchAndFileError} and {@code BlankFieldCascade}</li>
- *   <li>{@code 2000-DECIDE-ACTION} line 948 with its exit line 1029: the seven-clause action decision,
- *       asserted in {@code WritePath}, {@code Folding} and {@code ReachableAbend}</li>
- *   <li>{@code 3000-SEND-MAP} line 1035, {@code 3100-SCREEN-INIT} line 1052,
- *       {@code 3200-SETUP-SCREEN-VARS} line 1082, {@code 3250-SETUP-INFOMSG} line 1138,
- *       {@code 3300-SETUP-SCREEN-ATTRS} line 1168, {@code 3400-SEND-SCREEN} line 1324, each with its own
- *       exit: asserted in {@code DispatchAndAbend}, {@code TwoStateDecoration} and
- *       {@code BlankFieldCascade}</li>
- *   <li>{@code 9000-READ-DATA} line 1343 with its exit line 1372 and
- *       {@code 9100-GETCARD-BYACCTCARD} line 1376 with its exit line 1415: the first fold site and the two
- *       read routes, asserted in {@code Folding} and {@code FilterFetchAndFileError}</li>
- *   <li>{@code 9200-WRITE-PROCESSING} line 1420 with its exit line <b>1494</b> and
- *       {@code 9300-CHECK-CHANGE-IN-REC} line 1498 with its exit line 1521: the second fold site, the
- *       six-field comparison and the backward jump at line <b>1518</b>, asserted in {@code WritePath}</li>
- *   <li>{@code ABEND-ROUTINE} line 1531 with its exit line 1554: asserted in {@code ReachableAbend}</li>
- * </ul>
+ * are program metadata rather than procedure units, and <strong>the matrix owes them no row</strong>:
+ * publishing 48 from here would redefine the frozen 544-row model from inside a test. They are still
+ * asserted, as the member and transaction names the screen header publishes. The unit-to-test inventory
+ * is held once in {@code docs/traceability-matrix.md}.
  */
 @DisplayName("CardUpdateService - card-update transaction CCUP, app/cbl/COCRDUPC.cbl")
 class CardUpdateServiceTest {

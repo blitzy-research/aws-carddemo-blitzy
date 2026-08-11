@@ -154,8 +154,8 @@ spring:
   # fails closed; an absent AWS endpoint does NOT - the SDK falls back to the REGION'S REAL PUBLIC
   # ENDPOINT. So a framework-created S3, SQS or SNS client under this profile with no endpoint set
   # would address a real AWS account, and would do so silently on the credentials it happened to
-  # find. An earlier revision of this file set no endpoint at all and relied on the base classes,
-  # which only ever bound the clients they built themselves.
+  # find. Setting no endpoint at all and relying on the base classes is not sufficient: they only ever
+  # bind the clients they build themselves.
   #
   # The endpoints below therefore redirect every client at the emulator. The redirection IS the
   # setting, not a placeholder. It is the same shape the packaged copy uses, so the two agree: the
@@ -176,10 +176,10 @@ spring:
   # its own inert pair. Never substitute a real access key here.
   #
   # ONLY LOCALSTACK_* MAY OVERRIDE THEM, and that restriction is what makes the sentence above true.
-  # An earlier revision read AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY - the default chain's own
-  # variable names - so the paragraph claimed to shut that chain out while quietly reading the values it
-  # would have found. The ambient key would then have been signed into requests aimed at the emulator,
-  # which verifies nothing and would therefore never have failed to reveal it. The dedicated names
+  # READING AWS_ACCESS_KEY_ID AND AWS_SECRET_ACCESS_KEY - the default chain's own variable names - would
+  # make the paragraph above claim to shut that chain out while quietly reading the values it would have
+  # found. The ambient key would then be signed into requests aimed at the emulator,
+  # which verifies nothing and would therefore never surface as a failure. The dedicated names
   # cannot be set by accident, and they are the names application-local.yml and docker-compose.yml
   # already use, so a CI runner supplies an inert pair through one vocabulary rather than two.
   #
@@ -209,8 +209,8 @@ management:
     # tracing instrumentation switched on, so the bridge still places the trace and span identifiers
     # in the diagnostic context and the correlation fields of a log line still resolve - which is
     # what logback-spring.xml publishes through its two-key allow list. Switching instrumentation
-    # off outright, as an earlier revision of this copy did, empties those fields for every test in
-    # the suite and leaves the packaged copy exercising a posture no suite run ever sees.
+    # off outright empties those fields for every test in the suite and leaves the packaged copy
+    # exercising a posture no suite run ever sees.
     enabled: true
     sampling:
       # An optimisation and nothing more: it suppresses ROOT spans, which keeps recording cost off
@@ -283,11 +283,11 @@ carddemo:
       # here would make a suite run depend on a variable nothing guards. See docs/decision-log.md
       # DL-105.
       #
-      # THE VARIABLE NAME IS THE SUITE'S OWN, AND THAT IS THE POINT. This overlay used to read
-      # ${CARDDEMO_JWT_SECRET} - production's variable - so any machine that already exported a
-      # deployment signing secret injected it into the suite without a word. Nothing failed and
-      # nothing reported it: the placeholder resolved, the tail was ignored, and the tests signed and
-      # verified with a production credential. Placeholder resolution is by exact key, so a
+      # THE VARIABLE NAME IS THE SUITE'S OWN, AND THAT IS THE POINT. Reading ${CARDDEMO_JWT_SECRET} here -
+      # production's variable - would let any machine that already exported a deployment signing secret
+      # inject it into the suite without a word. Nothing would fail and
+      # nothing would report it: the placeholder resolves, the tail is ignored, and the tests sign and
+      # verify with a production credential. Placeholder resolution is by exact key, so a
       # test-scoped name is a complete fix rather than a mitigation - production's variable is not
       # read here at all, and JwtPropertiesTest asserts that this overlay names it nowhere.
       secret: ${CARDDEMO_TEST_JWT_SECRET:test-only-signing-secret-not-used-outside-tests-0123456789}

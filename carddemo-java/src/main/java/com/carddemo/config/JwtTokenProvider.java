@@ -413,12 +413,12 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      * a caller that invented its arguments.</p>
      *
      * <p><strong>What is deliberately not checked: that the stored code equals the resolved authority's
-     * own code.</strong> That check used to be here and it was a defect. The legacy route split tests
-     * the administrator letter once and its alternative is unconditional, so a record carrying any other
-     * value - including one the estate never declared - signs on successfully and resolves to the
-     * standard authority. For such a record the stored code and the standard authority's code are
-     * different strings, and requiring them to match refused a session to an operator the sign-on had
-     * just admitted, which surfaced as a server failure on a successful sign-on. The two facts are now
+     * own code.</strong> Such a check would be a defect. The legacy route split tests the administrator
+     * letter once and its alternative is unconditional, so a record carrying any other value - including
+     * one the estate never declared - signs on successfully and resolves to the standard authority. For
+     * such a record the stored code and the standard authority's code are different strings, and requiring
+     * them to match would refuse a session to an operator the sign-on had just admitted, surfacing as a
+     * server failure on a successful sign-on. The two facts are
      * carried in two claims and each is checked against what it is actually a fact about: the stored code
      * against the record, and the resolved authority against the two codes the estate declares.</p>
      *

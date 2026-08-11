@@ -173,12 +173,10 @@ import org.mockito.InOrder;
  * consolidation job configuration, which also owns the comparator. Nothing here touches persistence,
  * a container, a Spring context or a schema.
  *
- * <p>Provenance: translated from the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a matrix-header string only
- * and is deliberately never asserted per member: 78 members carry it, three carry later stamps, all
- * seventeen screen definitions differ and twenty-five carry none. The legacy job, procedure, control
- * member and copybook are cited, never transcribed, and are never read at run time.
+ * <p>That stamp is a matrix-header string only and is deliberately never asserted per member: 78 members
+ * carry it, three carry later stamps, all seventeen screen definitions differ and twenty-five carry none.
+ * The legacy job, procedure, control member and copybook are cited, never transcribed, and are never read
+ * at run time.
  *
  * @see CombineTransactionsProcessor
  * @see Transaction

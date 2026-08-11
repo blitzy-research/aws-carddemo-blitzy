@@ -50,10 +50,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the code alone, which also matches the single-column primary key of the mapped table.
  * A test below changes the description on a stored instance and proves the instance is
  * still retrievable from a map.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("TransactionType: the sixty-byte transaction-type reference row")
 class TransactionTypeBoundaryTest {

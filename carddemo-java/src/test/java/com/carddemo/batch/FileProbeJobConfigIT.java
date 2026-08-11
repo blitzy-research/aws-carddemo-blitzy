@@ -123,11 +123,6 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * end of file and close. Their procedure divisions contain 6, 5, 5 and 5 paragraph units respectively,
  * for 21 units represented by this one job.
  *
- * <p>Provenance is the matrix header only: checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68}, dated 2022-07-19. The stamp is not asserted per member because
- * the estate also contains later, differently stamped and unstamped artifacts.
- *
  * <p>The job's product is not a data file. It has no fixed-width writer and no applicable output-record
  * width; its complete observable product is the ordered structured diagnostic stream plus the terminal
  * status. This test consequently measures record references, ordering and clean termination rather than

@@ -65,10 +65,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * seventy-six byte field: a description longer than that would be truncated in
  * the emitted reject record and would break the byte-parity gate, so each one is
  * asserted to fit.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("RejectReason: the five daily-transaction posting rejections")
 class RejectReasonBoundaryTest {

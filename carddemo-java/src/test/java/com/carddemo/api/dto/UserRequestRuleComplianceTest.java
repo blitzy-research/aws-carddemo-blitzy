@@ -52,10 +52,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * {@code COUSR01C.cbl}, {@code COUSR02C.cbl} and {@code COUSR03C.cbl} over screens
  * {@code app/cpy-bms/COUSR00.CPY} through {@code COUSR03.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Every width is a field of the eighty-byte user-security record.</strong>
  * {@code app/cpy/CSUSR01Y.cpy} declares {@code SEC-USR-ID PIC X(08)},
  * {@code SEC-USR-FNAME PIC X(20)}, {@code SEC-USR-LNAME PIC X(20)},
@@ -241,10 +237,9 @@ class UserRequestRuleComplianceTest {
                     .isEqualTo(PageMetadata.USER_LIST_PAGE_SIZE)
                     .isEqualTo(10);
 
-            // The figure is published once and once only. An earlier revision declared it twice, under
-            // two names with two separate justifications, and that duplication was the stated reason a
-            // later revision dropped the cap altogether. Asserting singularity here is what stops the
-            // same argument being available again.
+            // // The figure is published once and once only. DECLARING IT TWICE, under two names with two separate
+            // // justifications, is exactly the duplication that makes "drop the cap altogether" an available
+            // // argument. Asserting singularity here is what keeps that argument off the table.
             assertThat(Arrays.stream(UserRequest.class.getDeclaredFields())
                             .filter(field -> Modifier.isStatic(field.getModifiers()))
                             .filter(field -> !field.isSynthetic())

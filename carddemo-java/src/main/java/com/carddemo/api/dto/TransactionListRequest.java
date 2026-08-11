@@ -260,14 +260,6 @@ import java.util.List;
  * why the paging component is withheld whole rather than by delegation, is on that method. This file
  * holds no logger and emits nothing on its own.
  *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The estate under {@code app/} is read-only
- * reference: it is cited here by member name, item name, item width and line number only, and no
- * source text is reproduced.</p>
- *
  * @param transactionIdFilter the operator-entered transaction-identifier filter, mirroring inbound
  *     map item {@code TRNIDIN} of width 16 at {@code app/cpy-bms/COTRN00.CPY} line 66 and the
  *     enterable screen item at {@code app/bms/COTRN00.bms} line 95. Optional: {@code null}, empty

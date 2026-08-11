@@ -119,11 +119,11 @@ import org.springframework.validation.annotation.Validated;
  * redirection was configured and receives an answer it cannot misread, instead of testing a string for
  * emptiness at each of the three client builders and getting one of them wrong.
  *
- * <p><strong>Not declaring the endpoint is not the same as forbidding it, and an earlier revision
- * treated the two as equivalent.</strong> Production's safety rested on the observation that its own
- * profile document declares no endpoint key. A document cannot see the environment, and an override
+ * <p><strong>Not declaring the endpoint is not the same as forbidding it, and the two must never be
+ * treated as equivalent.</strong> Resting production's safety on the observation that its own profile
+ * document declares no endpoint key is unsound: a document cannot see the environment, and an override
  * supplied there - a variable, a command-line property, a co-activated overlay - binds just as well
- * for a key no document mentions. So the endpoint keys are now <em>refused</em> under production by
+ * for a key no document mentions. So the endpoint keys are <em>refused</em> under production by
  * {@link ProductionConfigurationValidator} rather than merely omitted, and the same guard holds the
  * queue destination below to a rule about this deployment rather than only about its shape.
  *
@@ -149,7 +149,7 @@ import org.springframework.validation.annotation.Validated;
  * application before it serves a request.
  *
  * <p>Constructor binding needs no annotation. A record has one canonical constructor, so the binder
- * uses it; the type-level annotation that used to say so is deprecated on this framework line, and a
+ * uses it; the type-level annotation that would state it is deprecated on this framework line, and a
  * deprecation warning fails this build.
  *
  * <h2>How validation is split</h2>
@@ -354,11 +354,11 @@ public record AwsProperties(
      * composed by the job that writes it, because a key names one object of one run while this namespace
      * carries only what a deployment may decide.</p>
      *
-     * <p>An earlier revision declared six {@code s3.prefix.*} keys here, one per output family. They are
-     * withdrawn on the principle the withdrawn queue keys were withdrawn on, recorded in
-     * {@code docs/decision-log.md} DL-094: nothing bound them, no writer read one, and configuration that
-     * nothing consumes advertises an adjustability that does not exist. The plan states one object-store
-     * key for this module and this is it.</p>
+     * <p>No {@code s3.prefix.*} key is declared here - one per output family would be six of them - and
+     * none may be added, on the principle the withdrawn queue keys were withdrawn on, recorded in
+     * {@code docs/decision-log.md} DL-094: nothing would bind them, no writer would read one, and
+     * configuration that nothing consumes advertises an adjustability that does not exist. The plan states
+     * one object-store key for this module and this is it.</p>
      *
      * @param batchStagingBucket name of the bucket batch input and output are staged in. Supplied by
      *                           {@code CARDDEMO_S3_BUCKET}, defaulted in the shared baseline to the name
@@ -461,12 +461,12 @@ public record AwsProperties(
          * report request rather than a failed deployment.</p>
          *
          * <p><strong>The check is delegated rather than written here, and that is the point.</strong>
-         * An earlier revision tested one condition inline - that the value ends in the
-         * first-in-first-out suffix - and nothing else. That test is satisfied by values that are not
-         * queue destinations at all, because the suffix can sit at the end of any string: a URL whose
-         * last path segment happens to end in it, an ARN with the wrong number of segments, a name
-         * carrying characters the queue service refuses. Each of those bound cleanly and failed at the
-         * first publish. {@link SqsNamingRules#requireQueueDestination(String, String)} is the module's
+         * Testing one condition inline - that the value ends in the first-in-first-out suffix - and nothing
+         * else is not sufficient. That test is satisfied by values that are not queue destinations at all,
+         * because the suffix can sit at the end of any string: a URL whose last path segment happens to end
+         * in it, an ARN with the wrong number of segments, a name carrying characters the queue service
+         * refuses. Each of those binds cleanly and fails at the first publish.
+         * {@link SqsNamingRules#requireQueueDestination(String, String)} is the module's
          * one statement of the destination grammar, shared with the publisher and with the emulator
          * bootstrap's own contract, so binding delegates to it and the three cannot drift apart.</p>
          *

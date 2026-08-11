@@ -35,10 +35,6 @@ import org.junit.jupiter.api.Test;
  * remain distinct, that diagnostic rendering withholds the cardholder-bearing values, and that the
  * carried values still compose into the legacy statement writers' exact 80-byte text and 100-byte
  * HTML records.</p>
- *
- * <p>Provenance: {@code app/cpy/COSTM01.CPY} lines 20-36 at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("StatementLineSummary :: service-owned statement values are carried verbatim")
 final class StatementLineSummaryTest {

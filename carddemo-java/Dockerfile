@@ -287,38 +287,35 @@ EXPOSE 8080
 # Liveness at the container boundary, so a dependent waiting on
 # `condition: service_healthy` is waiting on something real.
 #
-# TWO PROPERTIES OF THIS PROBE ARE LOAD-BEARING, and an earlier revision had
-# neither. It must speak the transport the server is actually listening with,
-# and it must be bounded independently of whether this deployment's external
-# dependencies happen to be reachable.
+# TWO PROPERTIES OF THIS PROBE ARE LOAD-BEARING. It must speak the transport the
+# server is actually listening with, and it must be bounded independently of
+# whether this deployment's external dependencies happen to be reachable.
 #
 # ---- 1. THE TRANSPORT IS OBSERVED, NOT CONFIGURED -----------------------------
-# The first revision of this probe always sent plaintext HTTP. application-prod
-# .yml enables in-JVM transport security on this same port, so under that profile
-# the probe sent a plaintext request to a TLS listener, never received a status
-# line, and reported a perfectly healthy process as unhealthy - which an
-# orchestrator acts on by restarting it, forever. Verified rather than reasoned
-# about: a plaintext /dev/tcp request to a TLS listener returns no
-# `HTTP/1.1 200` line at all.
+# A probe that always sends plaintext HTTP is wrong under application-prod.yml,
+# which enables in-JVM transport security on this same port: the plaintext request
+# reaches a TLS listener, no status line comes back, and a perfectly healthy
+# process is reported unhealthy - which an orchestrator acts on by restarting it,
+# forever. Verified rather than reasoned about: a plaintext /dev/tcp request to a
+# TLS listener returns no `HTTP/1.1 200` line at all.
 #
-# THE SECOND REVISION FIXED THAT BY READING A VARIABLE, AND THE VARIABLE WAS THE
-# DEFECT. It branched on SERVER_SSL_ENABLED alone, defaulting to plaintext. That
-# reads as safe - the name is the relaxed-binding environment form of
+# BRANCHING ON SERVER_SSL_ENABLED WOULD NOT FIX IT, AND THE VARIABLE IS THE REASON
+# WHY. The name reads as safe - it is the relaxed-binding environment form of
 # `server.ssl.enabled` - but a configuration KEY and an ENVIRONMENT VARIABLE are
 # not the same thing, and the transport is not obliged to arrive through the
 # variable. application-prod.yml sets `server.ssl.enabled: true` as a literal in
-# YAML and sets no variable at all, so a prod container inherited the plaintext
-# default: TLS listener, plaintext probe, unhealthy forever. The same gap opens
-# for any deployment that configures the listener through a properties file, a
-# command-line argument or a configuration server rather than through this one
-# variable, and none of those is a misuse.
+# YAML and sets no variable at all, so a container branching on the variable would
+# take the plaintext default: TLS listener, plaintext probe, unhealthy forever.
+# The same gap opens for any deployment that configures the listener through a
+# properties file, a command-line argument or a configuration server rather than
+# through this one variable, and none of those is a misuse.
 #
-# SO THE PROBE NOW ESTABLISHES THE TRANSPORT BY OBSERVING THE LISTENER. Both
-# attempts are built in, and whichever one the server answers is the answer:
-# the probe passes when EITHER a plaintext or a TLS request returns a 200 status
-# line, and fails only when neither does. There is nothing left to keep in step,
-# because nothing is declared twice - the server states its transport in exactly
-# one place, wherever that deployment chooses, and the probe reads the result.
+# SO THE PROBE ESTABLISHES THE TRANSPORT BY OBSERVING THE LISTENER. Both attempts
+# are built in, and whichever one the server answers is the answer: the probe
+# passes when EITHER a plaintext or a TLS request returns a 200 status line, and
+# fails only when neither does. Nothing has to be kept in step, because nothing is
+# declared twice - the server states its transport in exactly one place, wherever
+# that deployment chooses, and the probe reads the result.
 #
 # SERVER_SSL_ENABLED IS STILL HONOURED, AS A HINT AND NOT AS A SWITCH. When it
 # is set true the TLS attempt is made first and the plaintext attempt is the

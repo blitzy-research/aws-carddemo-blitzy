@@ -73,10 +73,6 @@ import com.carddemo.domain.enums.KeyAction;
  * and count below is a literal typed out in this source, taken from the copybook clause table and from the
  * level-88 condition names declared beneath the work-area action field. Nothing is read back out of the
  * class under test and then asserted against itself, and no line of legacy source is transcribed.
- *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("PfKeyTranslator - the single translation point for the 28-clause attention-key construct")
 class PfKeyTranslatorBaselineTest {

@@ -77,12 +77,6 @@ import static org.mockito.Mockito.when;
  * transaction layout of {@code app/cpy/CVTRA05Y.cpy}, and reaching the file-handling subprogram of
  * {@code app/cbl/CBSTM03B.CBL} at 13 call sites.
  *
- * <p>Legacy provenance: the AWS CardDemo z/OS estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No user rules were supplied for this
- * engagement - {@code review_rules} returns a single sentinel line - so this suite is held to
- * enterprise-standard best practice instead, and no assertion here originates from a rule.
- *
  * <h2>Why the first group of tests is the important one</h2>
  *
  * <p>The member under test is <strong>not a loop</strong>. It is a hand-rolled dispatcher: an
@@ -1224,8 +1218,8 @@ class StatementGenerationServiceTest {
     /**
      * What a scripted run emitted, plus the tallies the service returned.
      *
-     * <p>Exposes the same accessors the service's result used to carry, so an assertion about content
-     * reads the same as it did when the content came back from the call. The difference that matters is
+     * <p>Exposes the same accessors the service's own result carries, so an assertion about content
+     * reads the same whichever side supplied it. The difference that matters is
      * where the content lives: here, in a test-owned collection, rather than inside the service.
      *
      * @param statementRecords     the plain records the run emitted, in emission order

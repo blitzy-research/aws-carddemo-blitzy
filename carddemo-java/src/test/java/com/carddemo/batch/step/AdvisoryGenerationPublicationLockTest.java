@@ -58,9 +58,6 @@ import org.springframework.jdbc.core.JdbcOperations;
  * PostgreSQL server in {@code AdvisoryGenerationPublicationLockIT}. What is asserted here is everything
  * this class decides: which keys it asks for, in which order, with which bound value, under which
  * timeout, and what it does with the transaction when the publication succeeds or fails.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("AdvisoryGenerationPublicationLock: ordered acquisition, bounded waiting, honest failure")
 class AdvisoryGenerationPublicationLockTest {

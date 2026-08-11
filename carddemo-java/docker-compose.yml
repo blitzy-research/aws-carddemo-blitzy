@@ -87,22 +87,21 @@
 # IS REACHABLE FROM THIS MACHINE ONLY. Loopback is not merely the default here; it is the condition
 # every credential above was chosen under, and there is no supported way to publish the stack past it.
 #
-# THERE IS NO WIDENING RECIPE HERE ANY MORE, AND ITS REMOVAL IS THE FIX FOR A REAL DEFECT
+# THERE IS NO WIDENING RECIPE HERE, AND NONE MAY BE ADDED
 #
-# An earlier revision of this file carried one. It set the app service's bind override to the wildcard
-# address alongside generated values for POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD and
-# CARDDEMO_JWT_SECRET, and presented the pairing as what made the wide bind safe. It was not safe, for
-# a reason that is a property of this
-# file rather than a matter of judgement: THE APP SERVICE'S environment BLOCK BELOW NEVER PASSED
-# CARDDEMO_JWT_SECRET OR CARDDEMO_MANAGEMENT_TOKEN INTO THE CONTAINER. Verified by reading the
-# resolved configuration - `docker compose config` shows the app service's environment and neither
-# name appears in it - so an operator who followed the recipe exported a generated signing secret into
-# their own shell while the container went on minting and accepting tokens signed with the committed
-# literal in src/main/resources/application-local.yml. The procedure read as though the exposure had
-# been paid for, and nothing had been paid.
+# A recipe that set the app service's bind override to the wildcard address alongside generated values
+# for POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD and CARDDEMO_JWT_SECRET, presenting the pairing as what
+# makes the wide bind safe, would not be safe - for a reason that is a property of this file rather
+# than a matter of judgement: THE APP SERVICE'S environment BLOCK BELOW PASSES NEITHER
+# CARDDEMO_JWT_SECRET NOR CARDDEMO_MANAGEMENT_TOKEN INTO THE CONTAINER. Read the resolved
+# configuration to confirm it - `docker compose config` shows the app service's environment and neither
+# name appears in it - so an operator following such a recipe would export a generated signing secret
+# into their own shell while the container went on minting and accepting tokens signed with the
+# committed literal in src/main/resources/application-local.yml. The procedure would read as though the
+# exposure had been paid for, and nothing would have been paid.
 #
-# CORRECTING THE FORWARDING WOULD NOT HAVE MADE IT SAFE EITHER, which is why the recipe is gone rather
-# than repaired. A stack published on a routable address still answers over cleartext HTTP, so a
+# CORRECTING THE FORWARDING WOULD NOT MAKE IT SAFE EITHER, which is why no such recipe belongs here in
+# any form. A stack published on a routable address still answers over cleartext HTTP, so a
 # bearer token can be lifted off the wire and replayed until it expires; still accepts the ten seeded
 # sign-on identities whose password the estate README documents in full; and still exposes, beside the
 # application, a LocalStack endpoint that authenticates nobody, a Prometheus that authenticates
@@ -266,8 +265,8 @@ services:
       PGTZ: UTC
     # One diagnostic setting, and two settings that bound what that diagnostic is allowed to say. A
     # statement slower than two seconds is logged so a fixed-width mapping or a truncating decimal store
-    # is visible while parity evidence is being gathered - the replacement for a diagnostic channel that
-    # used to be a DISPLAY statement. NO memory, connection or planner setting is declared: performance
+    # is visible while parity evidence is being gathered - the replacement for the legacy DISPLAY
+    # statement that served as this diagnostic channel. NO memory, connection or planner setting is declared: performance
     # engineering is out of scope, there is no legacy baseline to tune against, and the measurement
     # surface is the meter set Prometheus scrapes rather than a value guessed here.
     #
@@ -458,7 +457,7 @@ services:
 
   # -----------------------------------------------------------------------------------------------
   # Jaeger, all-in-one - the trace sink for the OpenTelemetry bridge, and one third of the
-  # replacement for a diagnostic channel that used to be 217 DISPLAY statements.
+  # replacement for the legacy estate's 217 DISPLAY statements.
   #
   # In-memory storage, because a local validation stack has nothing to retain: `down -v` is meant to
   # leave nothing behind, and a durable trace store would outlive the run that produced it.

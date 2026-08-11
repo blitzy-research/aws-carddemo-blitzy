@@ -54,10 +54,7 @@ import org.junit.jupiter.api.Test;
  *       to it, because the inventory being closed is the security property.</li>
  * </ul>
  *
- * <p>Provenance: the job members of {@code app/jcl} and the cataloged procedures of {@code app/proc},
- * read as read-only reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No job control statement is
- * transcribed.
+ * <p>No job control statement is transcribed.
  */
 @DisplayName("BatchJobCatalog - nine jobs, closed, with a closed parameter set each")
 final class BatchJobCatalogTest {

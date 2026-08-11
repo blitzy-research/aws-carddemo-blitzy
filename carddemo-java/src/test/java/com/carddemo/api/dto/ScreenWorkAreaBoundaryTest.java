@@ -55,10 +55,7 @@ import com.carddemo.domain.enums.KeyAction;
  * text is what a fixed-width record stores. Both are asserted: the type for validity, the text for
  * width.
  *
- * <p>Provenance: the legacy authority is {@code app/cpy/CVCRD01Y.cpy}, included by account
- * maintenance, account view, card list, card detail and card update, at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("ScreenWorkArea - the CVCRD01Y CC-WORK-AREAS structure")
 class ScreenWorkAreaBoundaryTest {

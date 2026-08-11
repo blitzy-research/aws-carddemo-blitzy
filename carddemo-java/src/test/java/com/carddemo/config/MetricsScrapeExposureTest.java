@@ -44,8 +44,8 @@ import org.yaml.snakeyaml.Yaml;
  * {@code docker-compose.yml}. Nothing on the class path resolves it, so a drift between what it assumes
  * and what {@link SecurityConfig} enforces cannot surface as a compilation error or as a failed context
  * refresh. It surfaces as one of two silent outcomes instead: every dashboard panel resolving to nothing
- * because the scrape is refused, or - the outcome the review found - a production deployment answering
- * the same credential-free scrape to any client on the network, because the file's assumption had been
+ * because the scrape is refused, or - the more dangerous of the two - a production deployment answering
+ * the same credential-free scrape to any client on the network, because the file's assumption has been
  * written into the filter chain as an unconditional permit.
  *
  * <p>So the agreement is asserted here directly. Three claims are checked, and each is a claim about the
@@ -67,10 +67,7 @@ import org.yaml.snakeyaml.Yaml;
  * declares is asserted in {@code ConfigurationProfileBaselineTest}. This class covers only the collector
  * artefact, which neither of those reads.
  *
- * <p>Traceability: the observability layer this file collects for replaces the legacy estate's only
- * diagnostic channel, approximately 217 {@code DISPLAY} statements across the 28 COBOL programs, at
- * checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.
+ * <p>No legacy source text is reproduced here.
  */
 @DisplayName("The shipped collector configuration, and its agreement with the filter chain")
 final class MetricsScrapeExposureTest {

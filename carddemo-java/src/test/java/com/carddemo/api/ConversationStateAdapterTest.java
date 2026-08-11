@@ -98,9 +98,6 @@ import org.junit.jupiter.params.provider.EnumSource;
  * collaborator - the navigation authority it screens an echoed program nomination against - and no per-turn
  * state, so it is constructed directly over the real authority.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 @DisplayName("ConversationStateAdapter :: the navigation-state trust boundary")
@@ -349,10 +346,9 @@ final class ConversationStateAdapterTest {
         @DisplayName("every cardholder member the service never saw is carried through unchanged, so "
                 + "the client's own view of its state is not silently emptied")
         void everyCardholderMemberIsCarriedThroughUnchanged() {
-            // Relocated from MenuServiceTest, where it used to be asserted against a service that
-            // rebuilt the whole sixteen-field record itself. That copy is what made the eleven readable
-            // in the service tier at all; the pass-through now happens here, where the values are never
-            // in reach of a decision.
+            // // Asserted here rather than in MenuServiceTest, because a service that rebuilt the whole
+            // // sixteen-field record itself is what would make the eleven readable in the service tier at all.
+            // // The pass-through happens here, where the values are never in reach of a decision.
             final NavigationContext inbound = fullyEchoed();
 
             final NavigationContext outbound = subject.toNavigationContext(inbound,
@@ -772,7 +768,7 @@ final class ConversationStateAdapterTest {
 
         /**
          * A floor on the number of carried identity reads found, so the identity guard cannot pass by
-         * finding nothing. Thirty-four lines carry one at the time of writing.
+         * finding nothing. The floor is set far below the number of lines that carry one.
          */
         private static final int MINIMUM_CARRIED_IDENTITY_READS = 30;
 

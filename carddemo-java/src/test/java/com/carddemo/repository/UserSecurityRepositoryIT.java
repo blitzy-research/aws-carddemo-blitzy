@@ -195,11 +195,8 @@ import com.carddemo.support.TestDataFactory.SeededIdentity;
  * encoding, no EBCDIC decode is needed to reproduce it - which is why the mainframe user-security data
  * set having no ASCII twin costs nothing, its 800 bytes being exactly ten records of 80.
  *
- * <p>Legacy estate at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; the stamp is a provenance string for the
- * traceability matrix header and is not asserted against any individual member. No legacy source text
- * is reproduced here: member names, field names, byte offsets, widths, record lengths, line references
- * and row counts are metadata describing where a mapping came from.
+ * <p>No legacy source text is reproduced here: member names, field names, byte offsets, widths, record
+ * lengths, line references and row counts are metadata describing where a mapping came from.
  *
  * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
  *

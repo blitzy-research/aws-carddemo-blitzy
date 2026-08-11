@@ -51,10 +51,6 @@ import java.util.List;
  * field findings the cascade produced. {@link #error()} is an explicit fact the turn recorded and is never
  * derived from either the message or the findings.
  *
- * <p>Provenance: {@code app/cbl/COACTUPC.cbl} and {@code app/cpy-bms/COACTUP.CPY}, read as read-only
- * reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook or program text is transcribed.
- *
  * @param transactionName the four-character transaction-name item
  * @param title01 the forty-character first title item
  * @param currentDate the eight-character current-date item, month-day-year

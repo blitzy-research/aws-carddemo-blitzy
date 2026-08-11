@@ -7,11 +7,11 @@
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
  */
 
 package com.carddemo.config;
@@ -61,13 +61,7 @@ import io.swagger.v3.oas.models.security.SecurityScheme;
  * actually performs - {@code getIfAvailable()} translating an unresolvable lookup into {@code null} - is the
  * framework's own implementation rather than a test convenience that could diverge from it.</p>
  *
- * <p>Expectations are derived, never echoed. The fallback version is asserted against the module's declared
- * Maven coordinate; the licence name and URL are asserted against the Apache-2.0 grant the repository ships
- * and that every legacy member carries in its header; the provenance identifiers are asserted against the
- * legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; the bearer scheme name and token format are
- * asserted against the OpenAPI security-scheme vocabulary. No expectation is read back out of the class
- * under test.</p>
+ * <p>Expectations are derived, never echoed. No expectation is read back out of the class under test.</p>
  */
 @DisplayName("OpenApiConfig - the published interface contract for the screen-derived endpoints")
 final class OpenApiConfigBaselineTest {
@@ -81,7 +75,11 @@ final class OpenApiConfigBaselineTest {
     /** The legacy checkout the migration is traceable to. */
     private static final String LEGACY_CHECKOUT_SHA = "7756d895ffeb65f7ea72aaa609e356d9899afcec";
 
-    /** The upstream release stamp carried in the trailer comment of every legacy member. */
+    /**
+     * The designated provenance stamp for this migration: the upstream release stamp carried in the trailer
+     * comment of the measured cohort of legacy members. It is not universal - other legacy artefacts carry a
+     * later stamp or none - so it is cited as the designated identifier rather than as one every member bears.
+     */
     private static final String UPSTREAM_RELEASE_STAMP = "CardDemo_v1.0-15-g27d6c6f-68";
 
     /** The date that release stamp carries. */

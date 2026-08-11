@@ -131,10 +131,6 @@ import org.springframework.transaction.annotation.Transactional;
  * keyed lookup. The reference seed loads exactly fifty rows into this table under the local and test
  * profiles only, after the customer table and before the card table.
  *
- * <p>Migrated from the AWS CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @see Account
  */
 public interface AccountRepository extends JpaRepository<Account, String> {

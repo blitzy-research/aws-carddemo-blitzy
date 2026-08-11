@@ -55,11 +55,8 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <h2>Provenance</h2>
  *
- * <p>Legacy authority {@code app/cbl/COACTUPC.cbl}, read at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The member is 4,236 lines and is one of only
- * three in the estate stored with CRLF line endings, so any count re-derived from it must strip the
- * carriage returns first or it measures zero paragraphs.
+ * <p>The member is 4,236 lines and is one of only three in the estate stored with CRLF line endings, so
+ * any count re-derived from it must strip the carriage returns first or it measures zero paragraphs.
  *
  * <p>{@code COACTUPC} is the <strong>sole includer</strong> of four copybooks, which is why the whole
  * validation-lookup surface of the estate is exercised by this one feature:
@@ -70,21 +67,16 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <h2>Paragraph count: 88 measured against 85 in the action plan</h2>
  *
- * <p>The action plan states 85 paragraphs; the measured figure is <strong>88</strong>. Both are correct
- * and the difference is fully accounted for. A strict Area-A label census inside the
- * {@code PROCEDURE DIVISION}, which begins at line 858, yields exactly 85 labels. The same label shape
- * applied to the whole member yields 88, and the three additional matches are the
- * {@code IDENTIFICATION DIVISION} paragraphs {@code PROGRAM-ID.} (line 22), {@code DATE-WRITTEN.}
- * (line 24) and {@code DATE-COMPILED.} (line 26) - which are genuinely COBOL paragraphs, merely
- * non-procedural ones. So 88 = 3 identification paragraphs + 85 procedure paragraphs, and the action
- * plan counted only the procedure division. All 88 map to a named method here: the 85 procedural
- * paragraphs to the flow methods below, and the three identification paragraphs to
- * {@code programIdParagraph()}, {@code dateWrittenParagraph()} and {@code dateCompiledParagraph()}.
- *
- * <p>Two further Area-A {@code COPY} statements graft procedural text into this member's procedure
- * division and are credited to their own owners rather than duplicated here: {@code COPY 'CSSTRPFY'} at
- * line 4199 contributes two paragraphs, owned by {@code com.carddemo.util.PfKeyTranslator}, and
- * {@code COPY CSUTLDPY} at line 4232 contributes fourteen, owned by {@code DateValidationService}.
+ * <p>Both figures are correct. A strict Area-A label census inside the {@code PROCEDURE DIVISION}, which
+ * begins at line 858, yields exactly <strong>85</strong> labels - the action plan's figure. The same
+ * label shape applied to the whole member yields <strong>88</strong>, the three extra matches being the
+ * {@code IDENTIFICATION DIVISION} paragraphs {@code PROGRAM-ID.} (line 22), {@code DATE-WRITTEN.} (24)
+ * and {@code DATE-COMPILED.} (26), which are genuinely COBOL paragraphs, merely non-procedural ones.
+ * All 88 map to a named method here. Two further Area-A {@code COPY} statements graft procedural text
+ * into this member's procedure division and are credited to their owners rather than duplicated here:
+ * {@code COPY 'CSSTRPFY'} at line 4199 contributes two paragraphs, owned by
+ * {@code com.carddemo.util.PfKeyTranslator}, and {@code COPY CSUTLDPY} at line 4232 contributes
+ * fourteen, owned by {@code DateValidationService}.
  *
  * <h2>The six counter-intuitive behaviours, all reproduced deliberately</h2>
  *
@@ -172,15 +164,6 @@ import com.carddemo.util.ZonedDecimalCodec;
  * lowest card number is the record that read would have returned, because the card number is the
  * cluster's base key. The rule lives in the repository rather than being restated here and in four
  * sibling services. An empty result is the legacy not-found condition.
- *
- * <h2>Rules</h2>
- *
- * <p>{@code review_rules} reports that no user rules were provided, verified by a default read and by
- * an explicit full-range read. No rule-mandated file and no rule conflict apply to this class. That
- * absence is not licence to lower the bar: the work is held to the module's enterprise standards
- * instead. The construct mapping table is a requirement and the eight validation gates are acceptance
- * criteria; neither is a rule.
- *
  * <h2>Shape and thread safety</h2>
  *
  * <p>A stateless singleton. Every collaborator is injected through the constructor and there is no
@@ -907,7 +890,7 @@ public final class AccountUpdateService {
         /** The customer as fetched, standing for {@code CUSTOMER-RECORD}. */
         private Customer customer;
 
-        /** The token that replaces the old-image copy the commarea extension used to carry. */
+        /** The concurrency token standing in for the commarea extension's old-image copy. */
         private String concurrencyToken = "";
 
         /**
@@ -1610,25 +1593,25 @@ public final class AccountUpdateService {
      * carries no edit at all, so a stand-in would compare as a difference and then be <em>written</em>,
      * replacing a stored identifier with a row of asterisks.
      *
-     * <p><strong>Why the stored value unconditionally, rather than only where a stand-in came back.</strong>
-     * An earlier form of this method substituted the stored value only when the submitted one was the
-     * stand-in itself - the withheld character repeated to the stored value's own width - on the reasoning
-     * that anything else had been typed and should be honoured. The reasoning inverted the authorization it
-     * was implementing. A caller shown a mask has not been shown the value, so nothing it submits in that
-     * position can be an edit <em>of</em> that value; it is an assertion about a value the caller never saw.
-     * The narrow test therefore left every one of these fields writable by exactly the callers the mask
-     * exists to keep away from them: replacing a mask with a well-formed alternative identifier, date of
-     * birth, government-issued identifier or transfer account passed straight through to the record. A
-     * value a caller may not read is a value it may not write, and only the reveal-authorized caller - who
-     * receives these values in the clear and edits them as the legacy screen let anyone edit them - can
-     * change them here.
+     * <p><strong>Why the stored value unconditionally, rather than only where a stand-in came
+     * back.</strong> An earlier form of this method substituted the stored value only when the submitted
+     * one was the stand-in itself - the withheld character repeated to the stored value's own width - on
+     * the reasoning that anything else had been typed and should be honoured. The reasoning inverted the
+     * authorization it was implementing. A caller shown a mask has not been shown the value, so nothing it
+     * submits in that position can be an edit <em>of</em> that value; it is an assertion about a value the
+     * caller never saw. The narrow test therefore left every one of these fields writable by exactly the
+     * callers the mask exists to keep away from them: replacing a mask with a well-formed alternative
+     * identifier, date of birth, government-issued identifier or transfer account passed straight through
+     * to the record. A value a caller may not read is a value it may not write, and only the
+     * reveal-authorized caller - who receives these values in the clear and edits them as the legacy screen
+     * let anyone edit them - can change them here.
      *
-     * <p><strong>Why every component, the retained digits included.</strong> The outbound gate discloses the
-     * final part of the national identifier so an identity can be confirmed, which makes that component the
-     * one place a withheld caller does see real digits. It is still restored, because the identifier is one
-     * regulated value rather than three: leaving its last component writable would let a withheld caller
-     * change the stored identifier while seeing only a mask of the rest of it, which is the same defect in a
-     * smaller field. The date of birth is restored as three components for the same reason.
+     * <p><strong>Why every component, the retained digits included.</strong> The outbound gate discloses
+     * the final part of the national identifier so an identity can be confirmed, which makes that component
+     * the one place a withheld caller does see real digits. It is still restored, because the identifier is
+     * one regulated value rather than three: leaving its last component writable would let a withheld
+     * caller change the stored identifier while seeing only a mask of the rest of it, which is the same
+     * defect in a smaller field. The date of birth is restored as three components for the same reason.
      *
      * <p><strong>Why restoring rather than refusing.</strong> The other way to close this is to reject a
      * submission that deviates, and the source gives no basis for it: {@code 1250-EDIT-SIGNED-9V2} and its
@@ -1647,17 +1630,17 @@ public final class AccountUpdateService {
      * <p><strong>The consequence, stated plainly.</strong> A caller without the authority to see these
      * values can neither change them nor clear them: whatever it submits in those positions is replaced by
      * what the record holds, so the comparison reads unchanged and the write stores what was already there.
-     * Every other field on the screen remains fully editable, which is the point - the restoration exists so
-     * that an ordinary operator can save a limit or an address, not so that the transaction can be refused.
-     * This extends the masking divergence recorded in {@code docs/decision-log.md} DL-135 from what a caller
-     * may see to what it may write, and it can only permit less than the legacy did, never more. The
-     * extension itself, including why the disclosed component is restored too and why refusal was
+     * Every other field on the screen remains fully editable, which is the point - the restoration exists
+     * so that an ordinary operator can save a limit or an address, not so that the transaction can be
+     * refused. This extends the masking divergence recorded in {@code docs/decision-log.md} DL-135 from
+     * what a caller may see to what it may write, and it can only permit less than the legacy did, never
+     * more. The extension itself, including why the disclosed component is restored too and why refusal was
      * rejected, is recorded as DL-327.
      *
      * @param state the turn's working storage, holding the old image this restores from
      * @param request the submission as transmitted
-     * @return the submission with every regulated value replaced by the stored one, or the submission itself
-     *         when nothing was withheld
+     * @return the submission with every regulated value replaced by the stored one, or the submission
+     * itself         when nothing was withheld
      */
     private AccountUpdateCommand restoreWithheldValues(final EditState state,
             final AccountUpdateCommand request) {
@@ -2168,12 +2151,12 @@ public final class AccountUpdateService {
      * direction. The source has no such arm. Its receive paragraph converts the keyed field with
      * {@code FUNCTION NUMVAL-C} straight into a {@code PIC S9(10)V99} redefinition of the twelve-character
      * work field - {@code app/cbl/COACTUPC.cbl} lines 1078 to 1080 for the credit limit, and lines 1092,
-     * 1107, 1120 and 1135 for the other four - with no {@code ON SIZE ERROR} clause and no rejection
+     * 1107, 1120 and 1135 for the other four - with no size-error clause and no rejection
      * anywhere, and this paragraph at lines 2180 to 2218 tests only for absence and for the currency
-     * grammar. A store into a narrower receiving field without a size-error clause keeps the low-order digit
-     * positions the field declares and discards the rest, so the source accepts the value and stores it
-     * wrapped. Refusing it instead is a rejection the screen cannot produce, so it is gone; the magnitude is
-     * now handled where the source handles it, in the store, by
+     * grammar. A store into a narrower receiving field without a size-error clause keeps the low-order
+     * digit positions the field declares and discards the rest, so the source accepts the value and stores
+     * it wrapped. Refusing it instead is a rejection the screen cannot produce, so it is gone; the
+     * magnitude is now handled where the source handles it, in the store, by
      * {@code ZonedDecimalCodec.storeIntoMonetary}.
      */
     private void editSigned9v2(final EditState state, final ScreenField field, final String value) {
@@ -3526,11 +3509,11 @@ public final class AccountUpdateService {
      * reports a conflict, this method translates it.
      *
      * <p><strong>Both holds test for the normal response and treat everything else alike.</strong> The
-     * source tests WS-RESP-CD only for the normal response, with a single else arm and no three-arm evaluation,
-     * so a missing row and a failing read reach one arm: the input error is raised, the could-not-lock
-     * text is claimed through the message gate, and the range is left. A read that raised instead of
-     * returning nothing is therefore mapped onto that arm rather than escaping, because escaping would
-     * abend a turn the legacy leaves on the screen with a message.
+     * source tests WS-RESP-CD only for the normal response, with a single else arm and no three-arm
+     * evaluation, so a missing row and a failing read reach one arm: the input error is raised, the
+     * could-not-lock text is claimed through the message gate, and the range is left. A read that raised
+     * instead of returning nothing is therefore mapped onto that arm rather than escaping, because escaping
+     * would abend a turn the legacy leaves on the screen with a message.
      */
     private void writeProcessing(final EditState state, final AccountUpdateCommand request) {
         writeRange:
@@ -4085,7 +4068,7 @@ public final class AccountUpdateService {
     /**
      * A stored value as the screen item it is moved into holds it.
      *
-     * <p>A COBOL {@code MOVE} into a narrower alphanumeric item keeps the leading characters and discards
+     * <p>A legacy store into a narrower alphanumeric item keeps the leading characters and discards
      * the surplus, so a value already inside the width is returned untouched and a wider one is cut. Only
      * the presentation of a value uses this: no comparison, no edit and no write narrows anything, so the
      * stored value keeps its own width everywhere except on the screen.
@@ -4102,12 +4085,12 @@ public final class AccountUpdateService {
     }
 
     /**
-     * One transmitted value as an alphanumeric {@code MOVE} into a fixed-width record field leaves it:
+     * One transmitted value as a store into a fixed-width alphanumeric record field leaves it:
      * left-justified, truncated on the right when longer and space-padded on the right when shorter.
      *
      * <p>This is not a convenience. Every value that reaches an account or customer record field in the
-     * legacy program has already crossed at least one {@code MOVE} into a {@code PIC X(n)} item, and
-     * that move is defined to pad a shorter source and to discard the surplus of a longer one. The
+     * legacy program has already crossed at least one store into an alphanumeric item of {@code PIC X(n)},
+     * and such a store is defined to pad a shorter source and to discard the surplus of a longer one. The
      * terminal could not transmit more characters than the map item declares and BMS delivered the item
      * at its full declared width, so on the legacy path both halves of the rule were satisfied before
      * the program ever ran. Over a JSON boundary neither is, which is why the rule has to be applied
@@ -4135,9 +4118,9 @@ public final class AccountUpdateService {
      *
      * <p>The two fields this serves - the middle name and the second address line - carry no constraint
      * and never may, because the source states in place that neither is edited, so nothing here may
-     * reject a value however long it is. Truncation is what the {@code MOVE} into their
-     * {@code PIC X(25)} and {@code PIC X(50)} items does with a longer source, and it is also what the
-     * terminal itself did by being unable to accept a further character. Without it an over-long value
+     * reject a value however long it is. Truncation is what a store into their {@code PIC X(25)} and
+     * {@code PIC X(50)} items does with a longer source, and it is also what the terminal itself did by
+     * being unable to accept a further character. Without it an over-long value
      * reaches a bounded column and the turn fails at the persistence boundary - which is a rejection
      * arriving by a different route, and the one outcome the source forbids for these two fields.
      *
@@ -4293,8 +4276,8 @@ public final class AccountUpdateService {
      * <p><strong>The magnitude is wrapped and never refused, because a COBOL store wraps.</strong> The five
      * receiving fields are {@code PIC S9(10)V99} redefinitions of twelve-character work items, declared at
      * {@code app/cbl/COACTUPC.cbl} lines 762 to 771, while the map items they are filled from are
-     * {@code PIC X(15)}. A {@code COMPUTE} into one of them carries no {@code ON SIZE ERROR} clause, so a
-     * converted value needing more than ten integer digits is stored in the digit positions the field has -
+     * {@code PIC X(15)}. The arithmetic store into one of them carries no size-error clause, so a converted
+     * value needing more than ten integer digits is stored in the digit positions the field has -
      * the low-order ten, with the operational sign kept - and the surplus high-order digits are dropped
      * silently. {@code ZonedDecimalCodec.storeIntoMonetary} is that store, and it is the module's single
      * holder of both truncation directions, so no policy is expressed here.

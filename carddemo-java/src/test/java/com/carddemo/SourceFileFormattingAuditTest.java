@@ -33,13 +33,13 @@ import org.junit.jupiter.api.Test;
 /**
  * Holds every Java source file in the module to one line-ending convention, by reading the bytes.
  *
- * <p><strong>Why this file exists.</strong> Review found forty-seven sources whose last line carried no
- * terminator and eleven files that were a licence header and a package statement with no type at all. Both
- * are invisible to the compiler: a class file is produced either way, so a zero-warning build says nothing
- * about them. They are not invisible to everything else. A file without a final newline makes every later
- * diff of it re-state its last line, makes {@code cat} of two files run one into the other, and is
- * malformed under POSIX's definition of a text line; a file with no type is a compilation unit that
- * declares nothing and reads, to anyone who opens it, as a contract that was meant to arrive and did not.
+ * <p><strong>Why this file exists.</strong> A source whose last line carries no terminator, and a source
+ * that is a licence header and a package statement with no type at all, are both invisible to the
+ * compiler: a class file is produced either way, so a zero-warning build says nothing about them. They are
+ * not invisible to everything else. A file without a final newline makes every later diff of it re-state
+ * its last line, makes {@code cat} of two files run one into the other, and is malformed under POSIX's
+ * definition of a text line; a file with no type declares nothing and reads, to anyone who opens it, as a
+ * contract that was meant to arrive and did not.
  *
  * <p><strong>Why a test rather than a build plugin.</strong> The module's build is pinned artefact by
  * artefact and compiles under {@code -Xlint:all -Werror}; adding a formatter or a style plugin would extend
@@ -58,9 +58,6 @@ import org.junit.jupiter.api.Test;
  * <p>A pure unit test: no Spring context, no connection, no container. It reads files from the module
  * directory the build runs tests from and asserts a floor on the number of files read first, because an
  * absence assertion over an empty walk is vacuous.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * @since 1.0.0
  */

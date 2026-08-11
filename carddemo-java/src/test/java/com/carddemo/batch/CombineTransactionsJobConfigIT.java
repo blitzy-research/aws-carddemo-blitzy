@@ -144,11 +144,6 @@ import org.springframework.test.context.DynamicPropertySource;
  * dataset whose access method supplied the boundary. Assertions therefore measure every image and the
  * concatenated image payload at 350-byte multiples without trimming; the separator is verified
  * separately and is never counted as record content.
- *
- * <p>Provenance: matrix-header reference only, from checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). The stamp is not asserted against an individual
- * legacy member, and no legacy source text is transcribed here.
  */
 @SpringBootTest(classes = CombineTransactionsJobConfigIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -1423,9 +1418,9 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
     /**
      * Removes only this specification's private staging namespace.
      *
-     * <p>"Private" is now a property of the path rather than a claim about it: the root carries this
-     * process's own namespace, so the removal cannot reach a file another run or another clone staged. It
-     * previously named a directory every one of them shared.
+     * <p>"Private" is a property of the path rather than a claim about it: the root carries this
+     * process's own namespace, so the removal cannot reach a file another run or another clone staged. A
+     * root shared by every one of them could not carry that property.
      */
     private static void clearStagingDirectory() {
         IsolatedStagingRoot.discard(stagingDirectory());

@@ -88,10 +88,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       initialiser produced.</li>
  * </ol>
  *
- * <p>Provenance: this test has no legacy antecedent; the legacy estate carries no test harness. It guards
- * the job-repository schema that replaces the z/OS job scheduler's own bookkeeping, for the checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * <p>Provenance: this test has no legacy antecedent; the legacy estate carries no test harness.
  */
 @DisplayName("batch metadata provisioning, verified against a real database and the framework's own script")
 class BatchMetadataProvisioningIT extends AbstractPostgresIT {

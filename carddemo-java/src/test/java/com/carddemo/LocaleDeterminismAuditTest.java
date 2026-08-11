@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and {@code RejectRecordWriter} each carry their own locale-invariance suites, and all forty-nine
  * {@code String.format} calls in the module already name a locale. What no test held to the same rule was
  * the code that builds the fixtures those suites run against. Four of them rendered numbers with
- * {@code String.formatted}, and review found the first: a page of user identifiers built with
+ * {@code String.formatted}, and one is enough to make the point: a page of user identifiers built with
  * {@code "USER%04d"} came out as {@code USER٠٠٠١} under the {@code ar-EG} locale, whose CLDR default
  * numbering system is {@code arab}, so every assertion in that class compared against a string it could
  * never match.
@@ -75,9 +75,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Decision log DL-187 records the ban and the four call sites that motivated it. DL-027 records why the
  * amount masks may not use a locale-sensitive formatter at all.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * @since 1.0.0
  */
@@ -258,7 +255,7 @@ final class LocaleDeterminismAuditTest {
         @DisplayName("String.formatted appears nowhere, because it resolves the ambient default and offers "
                 + "no way to say otherwise")
         void theShorthandIsAbsent() {
-            // This is the defect review found, generalised. "USER%04d".formatted(index) rendered
+            // // The defect, generalised. "USER%04d".formatted(index) renders
             // USER٠٠٠١ under ar-EG. The rule is an absence rather than a per-call-site judgement so that
             // it cannot be widened by an edit to this file.
             assertThat(occurrencesOf(".formatted("))

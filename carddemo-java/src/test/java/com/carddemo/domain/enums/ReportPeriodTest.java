@@ -75,9 +75,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * the operator supplies for the third selection, the submission confirmation gate and the error
  * flag are all the report-request service's contract rather than this type's, so none of them is
  * asserted in this class and no clock, date type or screen message appears in it.
- *
- * <p>Traced from the checkout at commit 7756d895ffeb65f7ea72aaa609e356d9899afcec, whose report
- * program carries the upstream release stamp CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19.
  */
 @DisplayName("ReportPeriod :: the three bare period literals the report-request program writes")
 class ReportPeriodTest {

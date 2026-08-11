@@ -57,10 +57,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * distinct actions. Only twelve function-key constants therefore exist, and this class
  * asserts that no thirteenth is defined — the folding itself belongs to the key
  * translator rather than to this vocabulary.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("KeyAction: the five-byte attention-identifier vocabulary of the screen work area")
 class KeyActionBoundaryTest {

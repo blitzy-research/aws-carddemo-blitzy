@@ -85,11 +85,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * Parity tests for {@link InterestCalculationService}, the Java realisation of the batch interest
- * calculator {@code app/cbl/CBACT04C.cbl} - 652 lines, 22 procedure-division paragraphs - read as
- * read-only reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is
- * transcribed here: widths, offsets, status codes, paragraph names and contract literals are cited as
- * metadata only.
+ * calculator {@code app/cbl/CBACT04C.cbl} - 652 lines, 22 procedure-division paragraphs. Widths,
+ * offsets, status codes, paragraph names and contract literals are cited as metadata only.
  *
  * <h2>Why every expected value below is a hand-written literal</h2>
  *
@@ -142,53 +139,13 @@ import static org.mockito.Mockito.when;
  *       class's own 100-character overlay oracle.</li>
  * </ol>
  *
- * <h2>Paragraph traceability: all 22 units, and where each is exercised</h2>
+ * <h2>Paragraph traceability: all 22 units</h2>
  *
- * <p>{@code docs/traceability-matrix.md} carries the row-per-paragraph inventory and is owned
- * elsewhere; nothing here writes it. The mapping this class covers is:
- *
- * <table>
- *   <caption>The member's 22 procedure-division paragraphs and their covering tests</caption>
- *   <tr><th>Paragraph</th><th>Covered by</th></tr>
- *   <tr><td>{@code 0000-TCATBALF-OPEN}</td>
- *       <td rowspan="5">{@code everyOpenAndCloseParagraphIsInvokedInSourceOrder}</td></tr>
- *   <tr><td>{@code 0100-XREFFILE-OPEN}</td></tr>
- *   <tr><td>{@code 0200-DISCGRP-OPEN}</td></tr>
- *   <tr><td>{@code 0300-ACCTFILE-OPEN}</td></tr>
- *   <tr><td>{@code 0400-TRANFILE-OPEN}</td></tr>
- *   <tr><td>{@code 1000-TCATBALF-GET-NEXT}</td>
- *       <td>{@code theWholeMasterScanIsAscendingOnTheCompositeKey},
- *           {@code anUnreadableMasterIsTheErrorArm}</td></tr>
- *   <tr><td>{@code 1050-UPDATE-ACCOUNT}</td>
- *       <td>the whole control-break nest; its <strong>second, unreachable invocation site</strong> is
- *           covered by {@code theSecondUpdateSiteNeverBecomesASecondRewrite}</td></tr>
- *   <tr><td>{@code 1100-GET-ACCT-DATA}</td><td>{@code aMissingAccountAbends},
- *       {@code theKeyedReadsHappenOncePerGroup}</td></tr>
- *   <tr><td>{@code 1110-GET-XREF-DATA}</td><td>{@code anAbsentCrossReferenceIsTheNotFoundPath},
- *       {@code theCardNumberComesFromTheResolvedFirstRow}</td></tr>
- *   <tr><td>{@code 1200-GET-INTEREST-RATE}</td><td>the rate-lookup nest</td></tr>
- *   <tr><td>{@code 1200-A-GET-DEFAULT-INT-RATE}</td><td>{@code aMissFallsBackExactlyOnce},
- *       {@code aSecondMissAbends}, {@code theFallbackProbeKeyIsThePaddedTenByteLiteral}</td></tr>
- *   <tr><td>{@code 1300-COMPUTE-INTEREST}</td><td>the interest-expression nest</td></tr>
- *   <tr><td>{@code 1300-B-WRITE-TX}</td><td>the synthesized-record nest and the description nest</td></tr>
- *   <tr><td>{@code 1400-COMPUTE-FEES}</td>
- *       <td><strong>a documented non-implementation</strong>: empty in the source and genuinely
- *           invoked. {@code theFeeParagraphContributesNothingOnTheAccruingPath},
- *           {@code theFeeParagraphTouchesNoCollaborator},
- *           {@code aZeroRateSkipsBothTheComputationAndTheFeeInvocation}</td></tr>
- *   <tr><td>{@code 9000-TCATBALF-CLOSE}</td>
- *       <td rowspan="5">{@code everyOpenAndCloseParagraphIsInvokedInSourceOrder}</td></tr>
- *   <tr><td>{@code 9100-XREFFILE-CLOSE}</td></tr>
- *   <tr><td>{@code 9200-DISCGRP-CLOSE}</td></tr>
- *   <tr><td>{@code 9300-ACCTFILE-CLOSE}</td></tr>
- *   <tr><td>{@code 9400-TRANFILE-CLOSE}</td></tr>
- *   <tr><td>{@code Z-GET-DB2-FORMAT-TIMESTAMP}</td>
- *       <td>{@code theTwoTimestampsAreByteIdenticalAndCarryTheBatchForm},
- *           {@code theHundredthsFieldIsTwoDigits}</td></tr>
- *   <tr><td>{@code 9910-DISPLAY-IO-STATUS}</td><td>{@code theStatusDisplayPrecedesTheAbendCall}</td></tr>
- *   <tr><td>{@code 9999-ABEND-PROGRAM}</td><td>{@code theAbendPathEmitsBeforeItRaises},
- *       {@code theAbendContextCarriesTheDeclaredFieldWidths}</td></tr>
- * </table>
+ * <p>Every one of the 22 procedure-division units is named in the test method that exercises it. The
+ * row-per-paragraph inventory, with the covering test of each, is held once in
+ * {@code docs/traceability-matrix.md} and is not restated here. One unit is worth calling out: the
+ * account-update paragraph has a <strong>second, unreachable invocation site</strong>, covered by
+ * {@code theSecondUpdateSiteNeverBecomesASecondRewrite}.
  *
  * @see InterestCalculationService
  * @see AbendService

@@ -42,8 +42,8 @@ import net.logstash.logback.encoder.LogstashEncoder;
  *
  * <h2>Why this exists</h2>
  *
- * <p>An earlier revision of {@code logback-spring.xml} exported the <em>whole</em> diagnostic context
- * from the JSON appender. The diagnostic context is a thread-local map that any code on the request or
+ * <p>Exporting the <em>whole</em> diagnostic context from {@code logback-spring.xml}'s JSON appender
+ * is prohibited. The diagnostic context is a thread-local map that any code on the request or
  * batch thread may write - including a framework or a library this module did not author - and the JSON
  * appender's output is the one that leaves the process. The values this service handles include a card
  * primary account number, a card verification code, a government-issued identifier and a sign-on

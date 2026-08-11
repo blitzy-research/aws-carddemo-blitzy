@@ -37,9 +37,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * so what is asserted here is the shape that makes that safe: the selection column normalised so emptiness
  * is the single representation of "carries nothing", a cardinality refusal rather than a truncation, and a
  * rendering that discloses no personal value and no credential.
- *
- * <p>Provenance: {@code app/cbl/COUSR00C.cbl} through {@code COUSR03C.cbl} and their four mapsets, read as
- * read-only reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
  */
 @DisplayName("UserCommand :: the transmitted user-administration screen the transactions read")
 class UserCommandTest {

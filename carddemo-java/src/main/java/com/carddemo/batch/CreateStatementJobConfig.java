@@ -86,14 +86,9 @@ import com.carddemo.util.TransactionRecordMapper;
  * materialise the transient work resource, scratch the previous run's two statement outputs, then
  * generate the statements in both of their fixed-width forms.
  *
- * <p>Legacy antecedents, every figure below measured by direct read at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19: the 97-line job member
- * {@code app/jcl/CREASTMT.JCL}, the 924-line, 25-paragraph batch program {@code app/cbl/CBSTM03A.CBL}
- * it drives, and the 230-line file-handling subprogram {@code app/cbl/CBSTM03B.CBL} that program
- * reaches at thirteen call sites. No statement of any of those members is reproduced here; what is
- * reproduced is their step inventory, their data-definition names, their condition-code semantics,
- * their ordering positions and types, and their record lengths.
+ * <p>No statement of any of those members is reproduced here; what is reproduced is their step
+ * inventory, their data-definition names, their condition-code semantics, their ordering positions
+ * and types, and their record lengths.
  *
  * <h2>Five legacy steps become four, with exactly three gates</h2>
  *
@@ -210,9 +205,11 @@ import com.carddemo.util.TransactionRecordMapper;
  * created and destroyed <strong>entirely within this one job stream</strong>.
  *
  * <p>It is therefore an in-job ordered result and not part of the persistent schema: not a provisioned
- * table, and <strong>not a migration</strong>. The schema owner holds exactly four flat migrations
- * covering the eleven persistent application tables, this transient artefact is not one of them, and
- * no migration may be added for it. {@link TransactionWorkResource} is the whole of its
+ * table, and <strong>not a migration</strong>. The migrations under {@code db/migration/schema} create and
+ * index the eleven persistent application tables and add their invariants; this transient artefact is not
+ * one of them, and no migration may be added for it. {@code config/FlywayConfig} is the authority for the
+ * delivered inventory and for which part of it a production profile applies.
+ * {@link TransactionWorkResource} is the whole of its
  * representation, it is scoped to one job execution, and the third step of the pipeline is an ordinary
  * read-and-write step: <strong>no process is spawned, no command is composed and no external utility
  * is invoked anywhere in this file.</strong>
@@ -383,8 +380,8 @@ public final class CreateStatementJobConfig {
     /**
      * The gate this job's three guarded steps are routed through.
      *
-     * <p><strong>{@code COND=(0,NE)} is a numeric test, and this is the numeric decider.</strong> The
-     * measured condition on {@code app/jcl/CREASTMT.JCL} lines 56, 66 and 79 runs the guarded step only
+     * <p><strong>The legacy gate is a numeric test, and this is the numeric decider.</strong> The measured
+     * condition-code gate on {@code app/jcl/CREASTMT.JCL} lines 56, 66 and 79 runs the guarded step only
      * when <em>every</em> earlier step returned exactly zero - it does not ask whether the previous step
      * carried one particular status name. Routing on the framework's {@code FAILED} exit code against a
      * wildcard alternative asked the wrong question: a step ending with a nonzero code that is not spelled

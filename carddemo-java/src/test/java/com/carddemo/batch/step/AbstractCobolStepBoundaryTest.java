@@ -81,10 +81,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * would make every assertion below wall-clock dependent. The constructor requires a clock, and
  * these tests pin one, which is what lets the exact timestamp image be asserted character for
  * character rather than merely measured.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("AbstractCobolStep: the shared lifecycle of the ten legacy batch programs")
 class AbstractCobolStepBoundaryTest {

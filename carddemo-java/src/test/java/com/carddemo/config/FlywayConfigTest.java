@@ -87,10 +87,10 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * <p><strong>Every schema version sorts below every seed version, and the assertions here hold that
  * as an invariant rather than as a coincidence.</strong> The schema script added after the indexes
  * takes a DOTTED version between the indexes and the fixtures - 2 &lt; 2.2 &lt; 3 - because three
- * separate controls depend on the ordering. An earlier revision numbered a schema script 5,
- * above the seeds, and broke all three; the reversal and its evidence are recorded at
- * docs/decision-log.md DL-343, and the protected-value invariants script at DL-349. There is no 2.1:
- * a sign-on attempt ledger held that version and was withdrawn with the throttle it served, so the gap
+ * separate controls depend on the ordering. NUMBERING A SCHEMA SCRIPT 5, above the seeds, breaks all
+ * three; the numbering rule and its evidence are recorded at docs/decision-log.md DL-343, and the
+ * protected-value invariants script at DL-349. There is no 2.1: that version is retired with the
+ * sign-on attempt ledger of the throttle it served, so the gap
  * is deliberate and a new schema script takes the next free dotted version below 3 (DL-352).
  *
  * <p>Production excludes the seed scripts by NOT RESOLVING THE LOCATION THEY LIVE IN, which is the
@@ -1810,10 +1810,10 @@ class FlywayConfigTest {
                             .as("delivered seed version %s must be at or above the watched version %s",
                                     version, ProductionSeedRejectionCallback.FIRST_SEED_VERSION)
                             .isTrue());
-            // ORDERING, not membership, and the difference was measured. An earlier revision numbered
-            // a schema script 5 - above both seeds - and weakened this to "no schema version
-            // is one of the seed versions", on the reasoning that the refusal watched for exact
-            // versions. It does not: it refuses on a successful history row AT OR ABOVE the watched
+            // // ORDERING, not membership, and the difference is measurable. A schema script numbered 5 - above
+            // // both seeds - together with a weakening of this to "no schema version is one of the seed
+            // // versions", on the reasoning that the refusal watches for exact versions, does not hold: the
+            // // refusal fires on a successful history row AT OR ABOVE the watched
             // version, so a schema script numbered 5 satisfied it and a correctly migrated production
             // database refused to start, reporting seed data it did not hold. Every schema script is
             // numbered below the seeds for that reason and this assertion is the guard. DL-343.

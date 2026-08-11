@@ -179,12 +179,8 @@ import org.testcontainers.utility.DockerImageName;
  * optimistic locking. That is a <strong>strict improvement</strong> over the baseline, not a change in
  * behaviour. The full record belongs in {@code docs/decision-log.md}.
  *
- * <p>Provenance: this support type has no legacy antecedent - the legacy estate carries no test
- * harness of any kind. It exists to serve tests of the migrated schema derived from the record
- * layouts in {@code app/cpy}, taken from checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is a
- * provenance string for the traceability matrix header only: it is not carried by every legacy
- * member, so nothing here asserts it against one.</p>
+ * <p>Provenance: this support type has no legacy antecedent - the legacy estate carries no test harness of
+ * any kind.
  */
 @ActiveProfiles("test")
 public abstract class AbstractPostgresIT {
@@ -224,7 +220,7 @@ public abstract class AbstractPostgresIT {
     protected static final String DATABASE_PASSWORD = "carddemo";
 
     /**
-     * The schema location every shipped profile declares, holding the two schema migrations.
+     * The schema location every shipped profile declares, holding the schema migrations and no seed.
      *
      * <p>This base exists to reproduce a shipped profile rather than to invent a third arrangement, so
      * it declares exactly what the test profile declares: this location together with

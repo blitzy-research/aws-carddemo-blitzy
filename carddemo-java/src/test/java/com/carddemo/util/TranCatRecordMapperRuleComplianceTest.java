@@ -41,10 +41,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * Unit tests for {@link TranCatRecordMapper}, which maps the sixty-byte {@code TRAN-CAT-RECORD}
  * declared by {@code app/cpy/CVTRA04Y.cpy} onto {@link TransactionCategory} and back.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>This layout has a composite key, and the key has its own image.</strong> The first six
  * bytes are the transaction type and category codes together, which is why the mapper publishes a
  * separate key-image emitter alongside the whole-record one. The key emitter shares the two field

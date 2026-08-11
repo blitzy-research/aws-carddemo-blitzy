@@ -136,18 +136,15 @@ import java.util.function.UnaryOperator;
  * else, because a diagnostic that echoed the offending record would print a credential and an
  * exception message is one of the surfaces most likely to reach a log.
  *
- * <p>Boundaries: this class maps bytes to an entity and back. It does not authenticate, verify a
- * credential or compare one - the legacy direct comparison becomes a digest verification in the
- * sign-on service. It performs no validation of any kind, no identifier format check, no name check
- * and no role-code whitelist, because each would reject data the legacy system accepts. It seeds
- * nothing, persists nothing, holds no repository or entity manager, opens no transaction, reads no
- * optimistic-locking token - the entity has none - and <strong>logs nothing at all</strong>: this
- * package is not among the module's pinned logger names, so a logger here would be unconfigured, and
- * for a credential-bearing mapper an unconfigured logger is a leak waiting to happen. Every byte
- * position is placed by explicit offset arithmetic against the constants below and every slice and
- * placement goes through {@link FixedWidthFieldReader}, so there is no {@code substring} call, no
- * annotation-driven mapping, no reflection and no generated code. The class is final, holds only
- * immutable static members, and is safe for concurrent use.
+ * <p>Boundaries: this class maps bytes to an entity and back. It neither authenticates nor compares a
+ * credential - the legacy direct comparison becomes a digest verification in the sign-on service - and it
+ * performs no validation of any kind, because an identifier-format, name or role-code check would reject
+ * data the legacy system accepts. It persists nothing and <strong>logs nothing at all</strong>: this
+ * package is not among the module's pinned logger names, so a logger here would be unconfigured, and for
+ * a credential-bearing mapper an unconfigured logger is a leak waiting to happen. Every byte position is
+ * placed by explicit offset arithmetic through {@link FixedWidthFieldReader}, so there is no
+ * {@code substring} call, no annotation-driven mapping, no reflection and no generated code. The class is
+ * final, holds only immutable static members, and is safe for concurrent use.
  *
  * @see UserSecurity
  * @see FixedWidthFieldReader

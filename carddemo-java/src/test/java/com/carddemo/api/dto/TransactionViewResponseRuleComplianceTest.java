@@ -46,10 +46,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * {@code CT01} implemented by {@code app/cbl/COTRN01C.cbl} over screen
  * {@code app/cpy-bms/COTRN01.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Every width is the stored width, not a screen truncation.</strong> The view screen shows
  * one transaction in full, so its component bounds follow the 350-byte transaction record in
  * {@code app/cpy/CVTRA05Y.cpy} rather than a list rendering. The clearest evidence is the

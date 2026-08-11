@@ -122,12 +122,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * commit, the delivered rows are put back through the base class's own reset helper rather than by
  * discarding the context.
  *
- * <p>Provenance: the account copybook, its cluster definition, the sequential reader's file section,
- * the online update program, the posting program, the interest program and the CICS resource
- * definition, read at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Every legacy fact above is cited as
- * metadata - a width, an offset, a record length, a row count or a resource name. No legacy source
- * statement is transcribed.
+ * <p>Every legacy fact above is cited as metadata - a width, an offset, a record length, a row count or a
+ * resource name. No legacy source statement is transcribed.
  *
  * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
  *
@@ -416,7 +412,7 @@ final class AccountRepositoryIT extends AbstractPostgresIT {
      * server, and nothing else.
      *
      * <p>Exactly three auto-configurations are imported - the data source, the persistence provider and
-     * the template used to read the catalogue - which is the same set the sibling repository tests
+     * the template that reads the catalogue - which is the same set the sibling repository tests
      * assemble. The remainder of the application is deliberately absent: a web tier, a message tier and
      * a metrics tier would each add a prerequisite this test does not need, and one of them would add an
      * external service the repository contract has nothing to do with. The persistence provider supplies

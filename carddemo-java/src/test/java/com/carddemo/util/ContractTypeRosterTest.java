@@ -54,9 +54,6 @@ import org.junit.jupiter.api.Test;
  * against a minimal local one declared here. The local one is what distinguishes a contract from a
  * description of one class's behaviour - if the guarantees were only reachable through the delivered class,
  * a consumer written against the interface would have nothing to rely on.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("ContractTypeRoster: the roster contract, exercised through the interface it declares")
 class ContractTypeRosterTest {

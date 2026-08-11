@@ -48,14 +48,14 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * <p>{@code AccountController} publishes one account view turn by handing the resolved customer row to
  * {@link AccountProtectedDataAdapter#revealForView}, which opens both protected columns through the
  * <em>field-bound</em> reveal - a reveal that refuses an envelope sealed for any other column, or for no
- * column at all. An earlier revision of {@code V3__seed_reference_data.sql} sealed its fifty
- * government-issued identifiers without that binding, deliberately, and nothing caught it: the marker
- * check in the migration saw an envelope, the after-migrate callback opened each value under the key
- * without asking about its binding, and every test that read a seeded identifier read it the same
- * unbound way. The result was that {@code POST /api/accounts/view} answered {@code 500} for every
- * account that exists, while the not-found and malformed-filter turns - which never reach a customer row
- * - kept answering correctly. The most-used read screen in the estate was unreachable and the suite was
- * green.
+ * column at all. SEALING THE FIFTY GOVERNMENT-ISSUED IDENTIFIERS OF
+ * {@code V3__seed_reference_data.sql} WITHOUT THAT BINDING passes every other control silently: the
+ * marker check in the migration sees an envelope, the after-migrate callback opens each value under the
+ * key without asking about its binding, and a test that reads a seeded identifier the same unbound way
+ * reads it successfully. The visible result is that {@code POST /api/accounts/view} answers {@code 500}
+ * for every account that exists, while the not-found and malformed-filter turns - which never reach a
+ * customer row - keep answering correctly: the most-used read screen in the estate unreachable behind a
+ * green suite.
  *
  * <p>This test closes that gap in the only place it can be closed: between the seed as delivered and the
  * gate as the controller calls it. It reads what the database holds, builds the entity the repository
@@ -88,11 +88,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *       masking policy is exercised over delivered data too.</li>
  * </ol>
  *
- * <p>Provenance: the seeded values originate in {@code app/data/ASCII/custdata.txt}, fifty 500-byte
- * records whose government-issued identifier occupies twenty characters at offset 288 and whose birth
- * date occupies ten at offset 308, read as read-only reference at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text appears here.
+ * <p>No legacy source text appears here.
  *
  * @since 1.0.0
  */

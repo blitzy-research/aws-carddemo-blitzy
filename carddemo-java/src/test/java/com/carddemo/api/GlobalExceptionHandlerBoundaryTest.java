@@ -69,11 +69,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
  * contain the internal detail, because an assertion that only checked the expected text would pass
  * even if the detail were appended to it.
  *
- * <p>Provenance: the legacy authorities are the common-message copybook {@code app/cpy/CSMSG01Y.cpy},
- * the queue definition {@code app/csd/CARDDEMO.CSD} and the account-maintenance rollback at
- * {@code app/cbl/COACTUPC.cbl}, at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("GlobalExceptionHandler - the six failure carriers at the REST boundary")
 class GlobalExceptionHandlerBoundaryTest {

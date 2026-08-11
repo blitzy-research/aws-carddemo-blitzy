@@ -27,33 +27,28 @@ import io.micrometer.observation.ObservationRegistry;
  *
  * <h2>The problem this solves</h2>
  *
- * <p>An observation, and therefore a trace context, is thread-bound. Handing work to any plain executor
- * therefore severs it: the work runs with nothing current, so whatever it observes becomes a <em>detached
- * root</em> - a trace of one span, unconnected to the request or job that caused it. Two places in this
- * module hand work to a bounded worker for reasons that have nothing to do with tracing and everything to
- * do with not blocking a caller: the completion notifier, so a slow topic cannot delay a job's
- * finalisation, and the readiness checks, so an unreachable resource cannot delay a probe past its
- * deadline. Both were losing their context, and the outbound call each makes was appearing in its own
- * disconnected trace.
+ * <p>An observation, and therefore a trace context, is thread-bound, so handing work to any plain executor
+ * severs it: the work runs with nothing current and whatever it observes becomes a <em>detached root</em>,
+ * a trace of one span unconnected to the request or job that caused it. Two places in this module hand
+ * work to a bounded worker for reasons that have nothing to do with tracing and everything to do with not
+ * blocking a caller - the completion notifier, so a slow topic cannot delay a job's finalisation, and the
+ * readiness checks, so an unreachable resource cannot delay a probe past its deadline.
  *
- * <p>Nothing about the executors changes. The queue, the ceiling, the rejection behaviour and the deadline
- * semantics of each are load-bearing and are documented where they are declared; replacing them with a
+ * <p>Nothing about the executors changes. The queue, ceiling, rejection behaviour and deadline semantics
+ * of each are load-bearing and are documented where they are declared; replacing them with a
  * context-propagating variant would change those properties as a side effect of fixing tracing, which is
  * the wrong trade. What changes is only that the work is wrapped: the submitting observation is captured
- * <em>on the submitting thread</em>, and its scope is opened around the work on the executing one.
+ * <em>on the submitting thread</em> and its scope is opened around the work on the executing one.
  *
  * <h2>What it deliberately does not do</h2>
  *
- * <p>It does not create an observation, name one, tag one or stop one. The work it wraps observes whatever
- * it already observed, and now does so as a child. It also does not fail when there is nothing to carry:
- * with no current observation the work runs exactly as before, because a caller with no context is a
- * normal case - a scheduled probe, a test, or a job launched by something that is not itself observed.
+ * <p>It does not create an observation, name one, tag one or stop one - the work it wraps observes
+ * whatever it already observed, and now does so as a child. It also does not fail when there is nothing to
+ * carry: with no current observation the work runs exactly as before, because a caller with no context is
+ * a normal case, such as a scheduled probe, a test, or a job launched by something not itself observed.
  *
- * <p>See {@code docs/decision-log.md} entry DL-305.
- *
- * <p>Provenance: legacy estate checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Nothing here has a legacy
- * antecedent: the estate ran one task at a time on one thread and had no context to lose.
+ * <p>See {@code docs/decision-log.md} entry DL-305. Nothing here has a legacy antecedent: the estate ran
+ * one task at a time on one thread and had no context to lose.
  *
  * @since 1.0.0
  */

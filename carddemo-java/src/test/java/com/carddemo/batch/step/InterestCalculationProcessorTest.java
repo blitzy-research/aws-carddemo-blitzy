@@ -95,13 +95,10 @@ import org.springframework.batch.test.MetaDataInstanceFactory;
  * {@link com.carddemo.support.TestDataFactory}, whose codec is implemented independently of the
  * module's own.
  *
- * <p>Provenance, as one matrix-header string: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is deliberately
- * <strong>not</strong> asserted against any individual legacy member: most members carry it, a few
- * carry later stamps, every screen definition differs and a number carry none, so a per-member
- * assertion would fail for a reason unrelated to the migration. It is a document header and nothing
- * else.
+ * <p>That stamp is deliberately <strong>not</strong> asserted against any individual legacy member: most
+ * members carry it, a few carry later stamps, every screen definition differs and a number carry none, so a
+ * per-member assertion would fail for a reason unrelated to the migration. It is a document header and
+ * nothing else.
  *
  * <h2>Decision-log candidates this suite reproduces rather than repairs</h2>
  *
@@ -498,10 +495,10 @@ final class InterestCalculationProcessorTest {
      * <p><strong>This is the whole point of the parameter.</strong> The stage names its control break on
      * every call - the key-change break on a transition, the end-of-file arm on the final flush - and a
      * stub that ignored it answers a rewritten account on both, which is the outcome the source does not
-     * have for the last account of a run. An earlier revision of this file did exactly that:
-     * {@code accountRewritten} was hard-coded true in the fixture and the matcher was {@code any()}, so
-     * the suite blessed a final group whose balance had been posted and whose accumulators had been zeroed,
-     * and would not have noticed the production stage regressing to it.
+     * have for the last account of a run. A FIXTURE THAT HARD-CODES {@code accountRewritten} TRUE with a
+     * matcher of {@code any()} does exactly that: it blesses a final group whose balance has been posted
+     * and whose accumulators have been zeroed, and would not notice the production stage regressing to
+     * it.
      *
      * @param accountId the account whose group is stubbed
      * @param closer    builds the group for the control break the stage requests

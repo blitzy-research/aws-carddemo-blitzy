@@ -75,8 +75,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p><strong>What this proves, and why it is the finding's closure.</strong> Before this controller
  * existed the module published no operation at all: eleven repositories, twenty-six services and a full
  * DTO layer with nothing reachable over HTTP. The first nest below asserts the delivered inventory - that a
- * documented POST operation is mapped at the one route the security rules exempt - which is the property
- * the review found missing. The rest asserts the behaviour that makes the route usable and safe:
+ * documented POST operation is mapped at the one route the security rules exempt - which is the
+ * property a module without it would lack. The rest asserts the behaviour that makes the route usable:
  * <ul>
  *   <li><strong>Every outcome answers {@code 200}.</strong> All nine are screens the legacy program
  *       successfully composed, rejections included, so the outcome is read from the body exactly as an
@@ -93,9 +93,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * The service beneath it is real, over a mocked repository, because a mocked service could not show that
  * the turn's outcome and the header's presence stay in step.
  *
- * <p>Provenance: {@code app/cbl/COSGN00C.cbl} and {@code app/csd/CARDDEMO.CSD}, read as read-only
- * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("AuthController :: the delivered sign-on operation")
 class AuthControllerTest {

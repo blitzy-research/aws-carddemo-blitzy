@@ -115,11 +115,10 @@ import org.springframework.core.io.FileSystemResource;
  * walks it steps by width plus one. That asymmetry is the point - an input rendering and an output
  * dataset are framed by different authorities.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The emitting programs are
- * {@code app/cbl/CBTRN02C.cbl} for the reject dataset, {@code app/cbl/CBTRN03C.cbl} for the report and
- * {@code app/cbl/CBSTM03A.CBL} for the statement. No legacy source line is transcribed here - only
- * widths, offsets, counts and contract literals, which are metadata rather than source.
+ * <p>The emitting programs are {@code app/cbl/CBTRN02C.cbl} for the reject dataset,
+ * {@code app/cbl/CBTRN03C.cbl} for the report and {@code app/cbl/CBSTM03A.CBL} for the statement. No legacy
+ * source line is transcribed here - only widths, offsets, counts and contract literals, which are metadata
+ * rather than source.
  */
 @DisplayName("Expected-output fixtures: the 430, 133 and 80-byte golden files, executed")
 final class ExpectedOutputFixtureContractTest {

@@ -88,10 +88,8 @@ import org.junit.jupiter.api.Test;
  * {@code CardXrefRecordMapper} while the entity it maps is the fully spelled
  * {@link CardCrossReference}; and the corrected six-foreign-key figure noted above.
  *
- * <p><strong>Provenance.</strong> Legacy checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec;
- * upstream release stamp CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19). No copybook, program or
- * job-stream text is reproduced here: traceability is carried by citation of member names, field
- * names, pictures, widths, offsets and counts only.
+ * <p>No copybook, program or job-stream text is reproduced here: traceability is carried by citation of
+ * member names, field names, pictures, widths, offsets and counts only.
  */
 @DisplayName("CardXrefRecordMapper - one card cross-reference record at two live widths (CVACT03Y)")
 class CardXrefRecordMapperTest {

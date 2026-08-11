@@ -81,10 +81,6 @@ import com.carddemo.exception.ValidationException;
  * <p><strong>Expectations are derived, never echoed.</strong> Every status, message and field state below
  * is a literal typed out in this source or a constant declared on the failure carrier itself, never a
  * value read back out of the advice and asserted against itself. No line of legacy source is transcribed.
- *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("GlobalExceptionHandler - the boundary advice for the six migrated failure carriers")
 class GlobalExceptionHandlerBaselineTest {

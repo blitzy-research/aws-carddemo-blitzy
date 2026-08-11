@@ -220,10 +220,6 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
  * widths, counts and condition-code forms are metadata and are cited; no job-control statement,
  * ordering-utility control statement, procedure-division fragment, screen map or resource definition is
  * transcribed, and nothing in the legacy tree is read at run time.
- *
- * <p>No user-specified rules govern this file - the project's rules document reports that none were
- * provided - so the work is held to the enterprise standards the migration plan substitutes for them,
- * and where faithful translation and idiomatic Java diverge, faithful wins.
  */
 @SpringBootTest(classes = BatchJobControllerIT.DeliveredGraph.class,
         webEnvironment = SpringBootTest.WebEnvironment.MOCK,

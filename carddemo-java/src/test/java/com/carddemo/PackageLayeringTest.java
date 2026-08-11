@@ -79,9 +79,6 @@ import org.junit.jupiter.api.Test;
  * <p>A pure unit test: no Spring context, no connection, no container. It reads files from the module
  * directory the build runs tests from.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * @since 1.0.0
  */
 @DisplayName("package layering :: nothing depends upward, and there is no exemption")
@@ -116,11 +113,11 @@ final class PackageLayeringTest {
      *
      * <h2>Why a list of closed classes and not a table of licensed edges</h2>
      *
-     * <p>This file used to carry the opposite construct: a map naming each upward edge that was allowed
-     * to exist, with a hand-counted total beside it. Review found twenty-eight service-to-transport
-     * edges and nine API-to-batch edges, and the table was how they were recorded rather than removed.
-     * All thirty-seven are now gone, so a table of permitted exceptions would have nothing to hold, and
-     * keeping an empty one would leave the mechanism in place for the next edge to be entered into.
+     * <p>THE OPPOSITE CONSTRUCT IS NOT AVAILABLE HERE: a map naming each upward edge that is allowed to
+     * exist, with a hand-counted total beside it, records upward edges rather than removing them. There are
+     * none to record - not a service-to-transport edge and not an API-to-batch edge - so such a table would
+     * have nothing to hold, and keeping an empty one would leave the mechanism in place for the next edge
+     * to be entered into.
      *
      * <p>What replaces it is an inversion. Instead of naming what may point upward, this names the
      * classes that must never point upward again, and the tests below assert the absence directly. The
@@ -188,7 +185,7 @@ final class PackageLayeringTest {
     /**
      * A floor on the internal edges the service package must declare, so that asserting the absence of
      * an upward one is not satisfied by a walk that reached no service at all. Well over a hundred are
-     * declared at the time of writing; the floor is set far below that so ordinary refactoring does not
+     * declared; the floor is set far below that so ordinary refactoring does not
      * trip it while an empty or misdirected walk still does.
      */
     private static final int MINIMUM_SERVICE_EDGES = 40;
@@ -347,7 +344,7 @@ final class PackageLayeringTest {
 
 
     // ----------------------------------------------------------------------------------------
-    // The two kinds of upward edge review found - a service naming a transport record, and the batch
+    // // The two kinds of upward edge this package layering admits - a service naming a transport record, and the batch
     // control surface naming a job configuration - asserted separately so a regression names itself
     // ----------------------------------------------------------------------------------------
 

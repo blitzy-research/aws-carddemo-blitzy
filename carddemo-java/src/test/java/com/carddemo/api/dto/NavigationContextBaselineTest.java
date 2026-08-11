@@ -7,11 +7,11 @@
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
  */
 
 package com.carddemo.api.dto;
@@ -69,8 +69,7 @@ import jakarta.validation.ValidatorFactory;
  * program-context vocabulary from its two condition names for the context field. No expectation is read back
  * out of the class under test.</p>
  *
- * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.</p>
+ * <p>No legacy source text is reproduced here.</p>
  */
 @DisplayName("NavigationContext - the migrated inter-program communication area")
 final class NavigationContextBaselineTest {

@@ -60,9 +60,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
  * Unit test for {@link TransactionViewService}, the translation of transaction {@code CT01} carried by
  * {@code app/cbl/COTRN01C.cbl} &mdash; 330 lines and <strong>9 paragraphs</strong>, each of which is
  * named by a test in {@link ParagraphTraceability} so all nine rows of the paragraph traceability
- * matrix are attributable to this class. Provenance: checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * matrix are attributable to this class.
  *
  * <p><strong>What is under test.</strong> One pseudo-conversational turn of a screen whose whole job is
  * a single keyed read of the 350-byte transaction record. The service decides, from the echoed

@@ -85,8 +85,7 @@ import com.carddemo.domain.enums.KeyAction;
  * n is the keystroke typed against screen row n, and a reordering or a silent truncation would move a
  * selection onto a different transaction.</p>
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
+ * <p>No COBOL statement is transcribed.</p>
  */
 @DisplayName("TransactionListRequest - the CT00 inbound contract")
 class TransactionListRequestSecurityTest {

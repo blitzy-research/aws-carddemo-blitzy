@@ -36,9 +36,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * surface, because forty-three of the components are operator-typed account and customer values, four of
  * them regulated. Its equality is a parity instrument, because the account-update parity suite compares
  * whole commands.
- *
- * <p>Provenance: {@code app/cbl/COACTUPC.cbl} and {@code app/cpy-bms/COACTUP.CPY}, read as read-only
- * reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
  */
 @DisplayName("AccountUpdateCommand :: the transmitted account-update screen the transaction reads")
 class AccountUpdateCommandTest {

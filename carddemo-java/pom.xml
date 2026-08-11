@@ -1162,18 +1162,17 @@
            WHY THIS PLUGIN IS DECLARED BEFORE THE COVERAGE PLUGIN
            Executions bound to the same phase run in the order their
            plugins are declared, so declaration order decides which
-           gate gets to run at all. This scan used to be declared last,
-           behind a coverage check that halts on failure, which meant a
-           project under the coverage floor never reached the scan and
-           produced no scan report - so the one run that most needed
-           supply chain evidence was the one run guaranteed not to have
-           any. Position is the fix: the scan now runs first among the
-           verify phase gates, so its report exists regardless of what
-           the coverage check later decides. Neither gate is softened by
-           the reordering; both still end the build on failure. Moving
-           this plugin has no other effect, because nothing it does
-           depends on coverage instrumentation and nothing the coverage
-           plugin does depends on the scan.
+           gate gets to run at all. THIS SCAN MUST BE DECLARED FIRST
+           AMONG THE VERIFY PHASE GATES. Declared behind a coverage
+           check that halts on failure, a project under the coverage
+           floor never reaches the scan and produces no scan report -
+           so the run that most needs supply chain evidence is the one
+           guaranteed not to have any. Declared first, its report
+           exists regardless of what the coverage check later decides.
+           Neither gate is softened by the ordering; both still end the
+           build on failure. The ordering has no other effect, because
+           nothing this plugin does depends on coverage instrumentation
+           and nothing the coverage plugin does depends on the scan.
 
            Reports are written in three formats. The machine readable
            ones let the recorded evidence document quote exact scores
@@ -1230,40 +1229,30 @@
            disarmed without a failing test.
 
            SO THE CLAIM IS NOT ZERO FINDINGS, AND MUST NOT BE WRITTEN
-           AS ONE. An earlier revision of this note made the stronger
-           claim - no qualifying finding of any kind and no analyst
-           determination of any kind - and described this plugin as
-           reading none. That was accurate when it was written and
-           stopped being accurate the moment the determination above
-           was configured, and a comment that overstates the gate is
-           the same class of defect as a gate that has been quietly
-           softened: both leave a reader believing something the build
-           does not enforce. The correction is to the wording only.
-           Nothing in the configuration below was relaxed, and neither
-           of the two findings named next was closed by relabelling it -
-           both were closed by upgrading, which is why neither is
-           suppressed and neither is counted here.
+           AS ONE. One analyst determination is configured above, so a
+           note claiming no qualifying finding and no determination of
+           any kind would overstate the gate - which is the same class
+           of defect as a gate quietly softened, because both leave a
+           reader believing something the build does not enforce. The
+           accurate claim is narrower: exactly one determination is
+           read, it is scoped and self-expiring, and every other
+           qualifying finding ends the build.
 
-           NOTHING WAS CLOSED BY RELABELLING IT, AND THE HISTORY OF
-           THE RULE FILE IS WHAT SHOWS IT. Three earlier entries,
-           each scoring 7.5 HIGH, were removed from
-           owasp-suppressions.xml by fixing the exposure rather than
-           by suppressing it, which is what leaves the one remaining
-           determination credible.
+           NOTHING IS CLOSED BY RELABELLING IT. A finding is closed by
+           removing the exposure, which is what leaves the one
+           remaining determination credible, and it is why neither of
+           the findings named next is suppressed or counted here.
 
-           The transport family finding, CVE-2026-56816, was closed by
-           upgrading. The network transport moved to the next minor
-           line, where the finding does not apply. That upgrade was
-           validated by execution rather than by reading a version
-           range: the full suite passes, and the thirty-nine
+           The transport family finding, CVE-2026-56816, is closed by
+           the pinned transport line, where the finding does not apply.
+           The pin is validated by execution rather than by reading a
+           version range: the full suite passes, and the thirty-nine
            container-backed integration tests that drive the messaging
            client through this transport all pass, which is the tier
-           that would break first if the module layout were wrong. It
-           also removed a second problem this file used to record - the
-           older line's direct-buffer fast path called a terminally
-           deprecated platform method and printed a runtime notice
-           whenever the integration tier exercised the transport, and
-           that notice is now absent.
+           that would break first if the module layout were wrong. The
+           same pin keeps the direct-buffer fast path off a terminally
+           deprecated platform method, so the integration tier prints
+           no runtime notice when it exercises the transport.
 
            The two HTTP Core findings, CVE-2026-54399 and
            CVE-2026-54428, were closed by replacing the shaded transport
@@ -1679,16 +1668,15 @@
          so it is only ever established by a full unscoped `verify`.
          Recorded as DL-206.
 
-         That corollary used to depend on the reader remembering it. The
-         profile relaxed the thresholds and then wrote its execution data
-         and its three reports over the canonical paths, so a scoped run
-         left a RELAXED merged report at exactly target/site/jacoco-merged,
-         where gate evidence is read from, and nothing about the artefact
-         said which run produced it. The two root overrides below remove
-         that possibility rather than warning about it: a scoped run's
-         evidence lands under target/scoped and target/scoped-site, and the
-         canonical paths stay reserved for an unscoped verify. Recorded as
-         DL-284.
+         THAT COROLLARY IS ENFORCED RATHER THAN REMEMBERED. A profile that
+         relaxed the thresholds and still wrote its execution data and its
+         three reports over the canonical paths would leave a RELAXED
+         merged report at exactly target/site/jacoco-merged, where gate
+         evidence is read from, with nothing about the artefact saying
+         which run produced it. The two root overrides below make that
+         impossible: a scoped run's evidence lands under target/scoped and
+         target/scoped-site, and the canonical paths stay reserved for an
+         unscoped verify. Recorded as DL-284.
 
          The relaxation and the relocation belong together. Relaxing
          without relocating is the defect; relocating without relaxing

@@ -68,10 +68,10 @@
 #   THE DATABASE ADDRESS IS THEREFORE NOT DECLARED IN THIS FILE AT ALL. It cannot be: an ephemeral
 #   port is unknowable ahead of the run, and any value written here that is REACHABLE is worse than
 #   no value, because it lets a test that forgot to extend the support base class connect somewhere
-#   real instead of failing. An earlier revision defaulted the address and credentials to the
-#   development compose stack for the sake of always having something to bind; the effect was that
-#   such a test silently used the DEVELOPER'S OWN database. With the keys absent, data-source
-#   resolution instead fails during context refresh and names the missing property.
+# real instead of failing. Defaulting the address and credentials to the development compose stack for
+# the sake of always having something to bind is what produces that outcome: such a test silently uses
+# the DEVELOPER'S OWN database. With the keys absent, data-source resolution instead fails during
+# context refresh and names the missing property.
 #
 #   AN AWS ENDPOINT IS DIFFERENT AND IS DECLARED BELOW. The emulator answers on a FIXED container
 #   port, 4566, so an endpoint written here is meaningful; and unlike an absent database, an absent
@@ -89,11 +89,11 @@
 #   identically whichever of the two profiles is active, so that a job exercised against containers
 #   is the same job that runs against the development stack.
 #
-#   THE AGREEMENT IS ON THE KEY SET, AND IT IS ASSERTED RATHER THAN COUNTED. An earlier revision
-#   claimed a leaf total here; a number in a comment cannot survive an edit to either file, and that
-#   one had already stopped being true of both. ConfigurationProfileBaselineTest compares the two key
-#   sets mechanically and permits exactly the documented divergences below, so this paragraph can
-#   no longer drift out of agreement with the files it describes.
+# THE AGREEMENT IS ON THE KEY SET, AND IT IS ASSERTED RATHER THAN COUNTED. No leaf total is stated
+# here and none may be added: a number in a comment cannot survive an edit to either file.
+# ConfigurationProfileBaselineTest compares the two key sets mechanically and permits exactly the
+# documented divergences below, so this paragraph cannot drift out of agreement with the files it
+# describes.
 #
 #     DIVERGENCE 1  application-local.yml declares spring.datasource.url, .username and .password;
 #                   this overlay declares none of them. Local addresses one fixed compose stack, so
@@ -148,10 +148,10 @@
 #                                  spring.cloud.aws region setting below derives from it rather than
 #                                  restating the value, so the region is stated once per profile and
 #                                  the two namespaces cannot name different regions.
-#                                  The six s3.prefix.* keys an earlier revision declared under this
-#                                  prefix are gone rather than inherited: BatchStagingArea is the one
-#                                  adapter for every staged input and output, and each job composes the
-#                                  key for its own dataset generation.
+#                              No s3.prefix.* key is declared under this prefix and
+#                              none is inherited: BatchStagingArea is the one adapter
+#                              for every staged input and output, and each job composes
+#                              the key for its own dataset generation.
 #     spring.batch.job.enabled     the baseline already sets it to false and this overlay leaves it
 #                                  alone, exactly as application-local.yml does. See the batch
 #                                  block for why the value matters and how it is guaranteed.
@@ -191,13 +191,14 @@ spring:
   # context at run time by src/test/java/com/carddemo/support/AbstractPostgresIT.java, from the
   # container it started, and a test obtains a database by EXTENDING that class.
   #
-  # An earlier revision declared jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/
-  # ${POSTGRES_DB:carddemo} with ${POSTGRES_USER:carddemo} and ${POSTGRES_PASSWORD:carddemo} so that
-  # context creation always had something to bind. Those defaults are exactly the address and
-  # credentials the development compose stack provisions, so a container-backed test that forgot to
-  # extend the support base class did not fail - it silently connected to the DEVELOPER'S OWN
-  # database and asserted against, or wrote into, real local data. A default that is reachable is not
-  # inert. The profile therefore FAILS CLOSED instead: with no url declared and no embedded database
+  # A DEFAULTED ADDRESS IS PROHIBITED HERE. Declaring
+  # jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:carddemo} with
+  # ${POSTGRES_USER:carddemo} and ${POSTGRES_PASSWORD:carddemo} so that context creation always has
+  # something to bind names exactly the address and credentials the development compose stack
+  # provisions, so a container-backed test that forgot to extend the support base class would not fail -
+  # it would silently connect to the DEVELOPER'S OWN database and assert against, or write into, real
+  # local data. A default that is reachable is not inert. The profile FAILS CLOSED instead: with no url
+  # declared and no embedded database
   # on the runtime class path, data-source resolution throws during context refresh and names the
   # missing property, so the fix - extend the support base class - is stated by the failure.
   #
@@ -432,21 +433,21 @@ spring:
   # entire AWS surface this module uses.
   #
   # THE TWIN DECLARES THE SAME FOUR ENDPOINTS, at the same shape, and that agreement is deliberate.
-  # An earlier revision left them out of the twin on the reasoning that a support base class would
-  # supply the container's address during a suite run - true only for a test that extends one, and
-  # only for a client that base class built itself. A test that extended neither, or a client the
-  # framework created, had no endpoint at all and would therefore have addressed a real account. Both
-  # copies now carry the floor; AbstractLocalStackIT raises it to the running container's ephemeral
-  # address for anything that boots a context. These values are what a packaged `test`-profile run
+  # LEAVING THEM OUT OF THE TWIN IS NOT AVAILABLE, and the reasoning that a support base class would
+  # supply the container's address during a suite run holds only for a test that extends one, and only
+  # for a client that base class built itself. A test that extends neither, or a client the framework
+  # created, would have no endpoint at all and would therefore address a real account. Both copies carry
+  # the floor; AbstractLocalStackIT raises it to the running container's ephemeral address for anything
+  # that boots a context.
   # resolves. See docs/decision-log.md DL-104.
   cloud:
     aws:
       region:
         static: ${carddemo.aws.region}
       credentials:
-        # ONLY LOCALSTACK_* MAY OVERRIDE THESE. An earlier revision read the standard AWS_ACCESS_KEY_ID
-        # and AWS_SECRET_ACCESS_KEY names here, which inverted the very protection the note above
-        # describes: declaring a static pair does keep the SDK's default credential chain out of the
+        # ONLY LOCALSTACK_* MAY OVERRIDE THESE, AND THE STANDARD AWS_ACCESS_KEY_ID AND AWS_SECRET_ACCESS_KEY
+        # NAMES MUST NEVER BE READ HERE. Reading them inverts the very protection the note above describes:
+        # declaring a static pair does keep the SDK's default credential chain out of the picture, but
         # picture, but reading that chain's own variable names to populate it hands the ambient value
         # straight back in. A developer machine or a build agent holding a real key would then send that
         # key - as an Authorization signature - to whatever the endpoint below resolves to. The emulator

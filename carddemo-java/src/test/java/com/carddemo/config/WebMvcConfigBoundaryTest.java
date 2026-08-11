@@ -84,11 +84,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * the low-level-code audit counts and reports. The annotation attribute that keeps it unproxied is
  * therefore part of the contract and not an incidental style choice.
  *
- * <p>Provenance: the legacy authority for the existence of a web tier at all is
- * {@code app/csd/CARDDEMO.CSD}, whose transaction and mapset definitions become this module's
- * endpoint groups, at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is
- * reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("WebMvcConfig - the web hook that declines every adjustment but one")
 class WebMvcConfigBoundaryTest {

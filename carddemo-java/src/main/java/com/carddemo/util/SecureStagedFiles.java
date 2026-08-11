@@ -68,7 +68,7 @@ import java.util.Set;
  *       is about to be written would otherwise let whoever planted it choose the file the job appends
  *       cardholder data to.</li>
  *   <li><strong>Never silently reused.</strong> A file is created with {@link
- *       StandardOpenOption#CREATE_NEW}, so an existing file cannot be opened and written through. The
+ * StandardOpenOption#CREATE_NEW}, so an existing file cannot be opened and written through. The
  *       legacy allocate-new disposition is preserved by <em>removing</em> what a previous run left and
  *       then creating afresh, which is what the disposition means, rather than by truncating in place -
  *       truncating in place keeps the previous run's mode and its owner.</li>
@@ -104,16 +104,6 @@ import java.util.Set;
  * <p>It sits in the utility layer because nine job configurations across the batch layer need the same
  * policy and one shared policy is the only way the nine cannot drift apart. It holds no state, reads no
  * configuration, declares no logger and depends on nothing above it.
- *
- * <h2>Provenance</h2>
- *
- * <p>This class has no legacy antecedent, and its absence in the legacy estate is itself the reason it
- * exists: a sequential dataset on z/OS is a catalogued object whose access is decided by an external
- * security product and not by the program that writes it, so no COBOL member in the migrated estate
- * expresses a permission at all. Reproducing that silence on a filesystem reproduces the umask instead
- * of the access control. Legacy estate read at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). See {@code docs/decision-log.md} DL-177.
  */
 public final class SecureStagedFiles {
 
@@ -467,15 +457,15 @@ public final class SecureStagedFiles {
      *       comparison is between two filesystem principals rather than against a system property,
      *       because a property is a weaker statement about the same thing and is absent on some
      *       platforms.</li>
-     *   <li><strong>Neither the root nor the candidate grants WRITE permission outside its owner's.</strong>
-     *       A group- or world-writable root is a root somebody else can create, rename and delete
-     *       entries in, so ownership of the artefact found today is no evidence about the artefact found
-     *       tomorrow; and a writable file inside a traversable root can be rewritten in place after it
-     *       was checked. Read and execute permission is deliberately <em>not</em> examined: a staging
-     *       root a deployment lets an operator or a monitoring account read is a legitimate arrangement,
-     *       and refusing it would refuse the job's own output for a reason that has nothing to do with
-     *       whether the output is genuine. This is the one place where narrowing the rule beyond what
-     *       {@link #isOwnerOnly(Path)} asserts is correct: that method states the mode this module
+     *   <li><strong>Neither the root nor the candidate grants WRITE permission outside its
+     * owner's.</strong>       A group- or world-writable root is a root somebody else can create, rename
+     * and delete       entries in, so ownership of the artefact found today is no evidence about the
+     * artefact found       tomorrow; and a writable file inside a traversable root can be rewritten in
+     * place after it       was checked. Read and execute permission is deliberately <em>not</em> examined:
+     * a staging       root a deployment lets an operator or a monitoring account read is a legitimate
+     * arrangement,       and refusing it would refuse the job's own output for a reason that has nothing to
+     * do with       whether the output is genuine. This is the one place where narrowing the rule beyond
+     * what       {@link #isOwnerOnly(Path)} asserts is correct: that method states the mode this module
      *       <em>creates</em> with, while this one states the minimum a path must satisfy to be
      *       <em>believed</em>.</li>
      * </ol>

@@ -95,19 +95,15 @@ import java.math.BigDecimal;
  * never set, and it round-trips byte for byte: neither collapsed to an empty value nor replaced by
  * {@code null}.</p>
  *
- * <p><strong>No formatting and no width enforcement live here.</strong>
- * {@code app/cbl/CBSTM03A.CBL} is the statement generator - 924 lines and 25 procedure paragraphs
- * driven by a hand-rolled state machine - and it includes this copybook at its line 51, holds up to
- * 51 cards with 10 transactions each (lines 226 and 228) and writes two output records, one 80 bytes
- * wide (line 45) and one 100 bytes wide (line 47). Those two fixed widths are assembled by
+ * <p><strong>No formatting and no width enforcement live here.</strong> The two fixed output widths of
+ * {@code app/cbl/CBSTM03A.CBL} - 80 bytes at its line 45 and 100 bytes at its line 47 - are assembled by
  * {@code com.carddemo.util.StatementTextTemplates} and
- * {@code com.carddemo.util.StatementHtmlTemplates}. This type carries data only: no banner text, no
- * markup, no template, no line assembly, no blank-filling to a fixed width, no page break and no
- * total. The thirteen measured widths - in declaration order 16, 16, 2, 4, 10, 100, 9, 50, 50, 10, 26
- * and 26, with the amount carrying a picture rather than a width - are recorded on the {@code @param}
- * tags as provenance and are deliberately not enforced at construction. The transport twin states
- * them as size bounds because a request or response is validated at the boundary; asserting them here
- * would reject a value the legacy record tolerates, at a point the legacy program had no check.</p>
+ * {@code com.carddemo.util.StatementHtmlTemplates}. This type carries data only. The thirteen measured
+ * widths - in declaration order 16, 16, 2, 4, 10, 100, 9, 50, 50, 10, 26 and 26, with the amount
+ * carrying a picture rather than a width - are recorded on the {@code @param} tags as provenance and are
+ * deliberately not enforced at construction. The transport twin states them as size bounds because a
+ * request or response is validated at the boundary; asserting them here would reject a value the legacy
+ * record tolerates, at a point the legacy program had no check.</p>
  *
  * <p>Every component is either text or a {@link BigDecimal}, both immutable, so an instance is
  * immutable and safe to share between threads, with canonical record equality, hashing and text

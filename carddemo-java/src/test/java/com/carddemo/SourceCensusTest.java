@@ -43,31 +43,26 @@ import org.junit.jupiter.api.io.TempDir;
  *
  * <h2>The defect this exists to remove</h2>
  *
- * <p>Twelve Java sources reached review carrying nothing but a licence header and a {@code package}
- * declaration — eleven under {@code src/main/java} and one, at zero bytes, under {@code src/test/java}.
- * Every one of them compiled without complaint, because a compilation unit that declares no type is legal
- * Java. What that legality bought was three separate untruths at once:
+ * <p>A compilation unit carrying nothing but a licence header and a {@code package} declaration is legal
+ * Java and compiles without complaint. That legality buys three separate untruths at once:
  *
  * <ul>
- *   <li><strong>The source count overstated the module.</strong> The build reported 252 production sources
- *       where 241 carried code, so every figure derived from that number — the zero-warning accounting, the
- *       audit denominators, the review's own file inventory — described a tree that did not exist.</li>
- *   <li><strong>The coverage rule was bypassed rather than met.</strong> The build fails when any class is
+ *   <li><strong>The source count overstates the module.</strong> Every figure derived from the compiler's
+ *       file count — the zero-warning accounting, the audit denominators, any published file inventory —
+ *       then describes a tree that does not exist.</li>
+ *   <li><strong>The coverage rule is bypassed rather than met.</strong> The build fails when any class is
  *       wholly untested ({@code jacoco.wholly.untested.classes.maximum} is zero). A source that emits no
- *       class contributes no class to count, so a file with no implementation satisfied the strictest rule
- *       in the build by having nothing in it. That is the exact inverse of what the rule is for.</li>
- *   <li><strong>A test name promised a test that did not exist.</strong> {@code ScreenContractAdapterTest}
- *       matched the unit runner's {@code **&#47;*Test.java} include, so the runner looked for it, found no
- *       class, and executed nothing. A reader auditing coverage by test name would have counted it.</li>
+ *       class contributes no class to count, so a file with no implementation satisfies the strictest rule
+ *       in the build by having nothing in it — the exact inverse of what the rule is for.</li>
+ *   <li><strong>A test name promises a test that does not exist.</strong> A name matching the unit
+ *       runner's {@code **&#47;*Test.java} include is looked for, found to declare no class, and silently
+ *       executes nothing, while a reader auditing coverage by test name counts it.</li>
  * </ul>
  *
- * <p>Ten of the twelve were also duplicates: they carried the names of transport records that are genuinely
- * implemented under {@code com.carddemo.api.dto}, in a package the specification does not place transport
- * types in at all. A reader following an import would have arrived at the empty one.
- *
- * <p>All twelve are deleted. This class is why they cannot come back: deletion removes the instances, and a
- * census removes the class of defect. Without it the next such file is invisible until somebody happens to
- * open it.
+ * <p>Such a file is also the ideal shadow of a real one: it can carry the name of a type genuinely
+ * implemented in another package, and a reader following an import arrives at the empty one. A census is
+ * what makes the whole class of defect visible, because otherwise the next such file goes unnoticed until
+ * somebody happens to open it.
  *
  * <h2>How the census is taken</h2>
  *
@@ -85,9 +80,7 @@ import org.junit.jupiter.api.io.TempDir;
  * otherwise read as compliance.
  *
  * <p>Provenance: this class has no legacy antecedent — the legacy estate carries no test harness of any
- * kind. It guards the shape of the migrated module's own sources, taken from checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * kind.
  */
 @DisplayName("Source census: every Java source declares a type, and every discovered test declares a test")
 class SourceCensusTest {

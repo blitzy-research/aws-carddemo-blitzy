@@ -84,9 +84,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * other way, and leaving it unexercised would leave a line of production code with no evidence behind
  * it at all.
  *
- * <p>Provenance: part of the migration of the AWS CardDemo z/OS application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("Static contracts of the fixed-width layer refuse instantiation")
 class StaticContractInstantiationTest {

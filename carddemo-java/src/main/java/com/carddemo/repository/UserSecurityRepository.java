@@ -31,247 +31,153 @@ import org.springframework.data.repository.query.Param;
 
 /**
  * Persistence gateway for the {@code user_security} table - the relational form of the 80-byte
- * {@code SEC-USER-DATA} record of copybook {@code CSUSR01Y}, keyed on the 8-character user
- * identifier the record carries at offset 0.
+ * {@code SEC-USER-DATA} record of copybook {@code CSUSR01Y}, keyed on the 8-character user identifier
+ * the record carries at offset 0. The key type is {@link String} because the seeded identifiers mix
+ * letters and digits; as everywhere else in this module the JPA identifier is the business key and no
+ * surrogate exists.
  *
- * <p><strong>This interface declares exactly the nine operations the module performs, and inherits
- * nothing else.</strong> It extends the bare {@link Repository} marker rather than
- * {@code JpaRepository}, so the only methods that exist on it are the nine written below. That is a
- * least-privilege decision about a table holding credentials, and it is worth stating what extending
- * {@code JpaRepository} would have handed to every injector instead:
+ * <h2>The declared surface is the whole surface</h2>
  *
- * <ul>
- *   <li>{@code findAll()} and {@code findAll(Sort)} - an <strong>unbounded</strong> read of every
- *       sign-on identity, each one a fully hydrated entity carrying its BCrypt digest. One call, every
- *       credential in the system in memory, and nothing in the signature to suggest it.</li>
- *   <li>{@code saveAll}, {@code saveAllAndFlush}, {@code saveAndFlush}, {@code flush} - bulk and
- *       flush-forcing writes over a table the legacy tier only ever rewrote one record at a time.</li>
- *   <li>{@code deleteAll}, {@code deleteAllInBatch}, {@code deleteAllById}, {@code deleteAllByIdInBatch},
- *       {@code delete}, {@code deleteInBatch} - a set of ways to remove <strong>every sign-on identity
- *       in one statement</strong>, including two that bypass the persistence context entirely. The
- *       legacy delete transaction removes one row that it has just read.</li>
- *   <li>{@code getReferenceById} - a lazy proxy whose dereference outside a transaction is a failure
- *       mode this entity cannot otherwise reach.</li>
- *   <li>{@code findAll(Example)} and the whole query-by-example family - a query surface over an entity
- *       whose attributes include the digest.</li>
- * </ul>
+ * <p>This interface extends the bare {@link Repository} marker rather than {@code JpaRepository}, so the
+ * only methods on it are the nine written below. That is a least-privilege decision about a table holding
+ * credentials: {@code JpaRepository} would hand every injector an unbounded {@code findAll()} that
+ * hydrates every stored digest, bulk and flush-forcing writes over a table the legacy tier rewrote one
+ * record at a time, several ways to remove every sign-on identity in one statement, a lazy
+ * {@code getReferenceById} proxy, and a query-by-example surface over the digest-bearing entity. None is
+ * used anywhere in the module, and an interface is a capability grant, so the grant is written out rather
+ * than inherited: what is not declared below cannot be called and cannot be reached by a future edit that
+ * "just uses what is there".
  *
- * <p>None of those is used anywhere in the module, and every one of them is reachable from any bean
- * that declares this type as a constructor parameter. An interface is a capability grant, so the grant
- * is written out rather than inherited: what is not declared below cannot be called, cannot be reached
- * by a future edit that "just uses what is there", and cannot appear in a stack trace.
+ * <h2>Two keyed reads, and the difference between them is the record hold</h2>
  *
- * <p><strong>The administrative browse returns a projection, not the entity.</strong>
- * The opening-page, exact-position and directional keyset methods all yield {@link AdminEntry}, a
- * closed projection over the four non-credential columns, so the digest column is
- * <strong>not named in the generated select</strong> and no digest is hydrated to serve a list of
- * users. The two keyed reads still return the entity, because sign-on and the administrative
- * maintenance transactions genuinely need the digest-bearing row.
- *
- * <p><strong>Two keyed reads exist, and the difference between them is the record hold.</strong>
- * {@link #findById(String)} serves sign-on, which reads and writes nothing. The administrative update
- * and delete transactions instead issue {@code EXEC CICS READ ... UPDATE}, which holds the record
- * exclusively until the rewrite or the delete that follows it in the same unit of work - the delete
- * verb in {@code app/cbl/COUSR03C.cbl} carries no record identifier at all and can only mean "the
- * record this task holds". {@link #findByIdForUpdate(String)} is that read, and it is a separate
- * method rather than a flag because a lock mode is a property of the statement and because sign-on
- * must never take a write lock on the row it authenticates against.
- *
- * <p>The sections below record why each additional finder a reader might reach for is either
- * unnecessary or actively forbidden.
- *
- * <p>{@code sec_usr_pwd} is {@code VARCHAR(60)} because it stores a BCrypt digest rather than the
- * legacy 8-byte cleartext field. It is one of three columns in the schema whose width deliberately
- * exceeds its legacy field - {@code customer.cust_ssn} and {@code customer.govt_issued_id} are the
- * other two, widened for protection at rest - and the only one taken to satisfy the
- * no-hardcoded-credential constraint in preference to behavioural parity; see
- * {@code docs/decision-log.md}. It must not be narrowed, which would truncate stored digests.
- *
- * <p>No finder may take a credential, hashed or otherwise: a salted digest differs on every
- * encoding of the same input, so an equality predicate over it could never match, and legacy
- * sign-on reads by key first and only then compares. Hashing, verification and redaction live in
- * the service and security-configuration layers, and nothing about this table is logged here.
- *
- * <p>{@code sec_usr_type} is an unconstrained {@link String} on purpose. Legacy sign-on tests only
- * the administrative code and routes every other value to the main menu through an unconditional
- * alternative, so a check constraint, converter or validation annotation here would reject data the
- * legacy system accepted and routed.
- *
- * <p><strong>How the dataset is provisioned, and why no character-set decode was ever needed.</strong>
- * The provisioning job {@code app/jcl/DUSRSECJ.jcl} is unlike the jobs behind the module's other
- * tables. It first discards any prior copy of the dataset, then runs a generic copy utility over ten
- * user records supplied <strong>in stream as ASCII card images</strong> - five of the administrative
- * type and five of the standard type - writing them to a <strong>physical sequential dataset</strong>
- * at {@code LRECL=80 RECFM=FB DSORG=PS}; only afterwards does it define the indexed cluster with
- * {@code KEYS(8,0)} and {@code RECORDSIZE(80,80)} and reproduce the sequential dataset into it. Two
- * corroborations of this mapping fall out of that: the key definition independently confirms a
- * single-part business key of width 8 at offset 0, and the record size independently confirms the
- * 80-byte width the copybook sums to. Because the seed content originates in stream in ASCII rather
- * than in the mainframe encoding, <strong>no EBCDIC decode is required</strong> to recover it - which
- * is precisely why it costs nothing that the corresponding EBCDIC sequential dataset is the one such
- * dataset in the estate with no ASCII twin. The CICS resource definition {@code app/csd/CARDDEMO.CSD}
- * <strong>does</strong> register this file, so the legacy system reads it online during sign-on; it is
- * not a batch-only dataset.
- *
- * <p>A note for the decision log, because the distinction is easy to get wrong: this dataset is
- * provisioned by <em>both</em> a sequential-staging step and a cluster definition, and it is the
- * in-stream ASCII staging step - not the absence of a cluster definition - that makes it unique among
- * the module's tables and that removes the decoding problem.
- *
- * <h2>The business key is the identifier itself</h2>
- *
- * <p>The key type is {@link String} because the legacy key is the 8-character alphanumeric user
- * identifier stored at offset 0, mapped to {@code VARCHAR(8)}, and the seeded identifiers mix letters
- * and digits, so no numeric type is even conceivable. As everywhere else in this module, the JPA
- * identifier is the business key and <strong>no surrogate key exists</strong> - nothing is generated,
- * sequenced or synthesised, so a row's identity in the table is the same identity the legacy record
- * had.
+ * <p>{@link #findById(String)} serves sign-on, which reads and writes nothing. The administrative update
+ * and delete transactions instead issue a read-for-update, which holds the record exclusively until the
+ * rewrite or delete that follows in the same unit of work - the legacy delete verb carries no record
+ * identifier at all and can only mean "the record this task holds".
+ * {@link #findByIdForUpdate(String)} is that read, and it is a separate method rather than a flag because
+ * a lock mode is a property of the statement and because sign-on must never take a write lock on the row
+ * it authenticates against.
  *
  * <h2>The credential column is one of the schema's three deliberate width divergences</h2>
  *
- * <p>The legacy field is eight bytes wide. The column {@code sec_usr_pwd} is {@code VARCHAR(60)},
- * sized for a BCrypt digest. Three columns across the eleven tables deliberately exceed their legacy
- * field width - this one, {@code customer.cust_ssn} and {@code customer.govt_issued_id}, the latter two
- * widened to hold a sealed envelope rather than cleartext - and this is the <strong>only one widened
- * for hashing rather than for protection at rest</strong>; every other column preserves its legacy
- * width exactly. It must not be narrowed back to the legacy width, which would truncate and destroy
- * every stored digest, and it must not be widened further. The divergence exists only because a binding requirement demands it,
- * and it is recorded in {@code docs/decision-log.md} rather than silently applied.
+ * <p>The legacy field is eight bytes wide; {@code sec_usr_pwd} is {@code VARCHAR(60)}, sized for a BCrypt
+ * digest. Three columns across the eleven tables deliberately exceed their legacy width - this one,
+ * {@code customer.cust_ssn} and {@code customer.govt_issued_id}, the latter two widened to hold a sealed
+ * envelope rather than cleartext - and this is the only one widened for hashing rather than for
+ * protection at rest. It must not be narrowed back, which would truncate and destroy every stored digest,
+ * and it must not be widened further. The divergence exists only because a binding requirement demands
+ * it, and it is recorded in {@code docs/decision-log.md} rather than silently applied.
  *
  * <h2>A documented parity exception, and an absolute prohibition</h2>
  *
- * <p>Legacy sign-on reads the record by key and then compares the stored credential to the entered
- * value <strong>as cleartext, for direct equality</strong>. Reproducing that comparison would satisfy
- * behavioral parity and would violate the binding constraint that no credential may be hardcoded, so
- * this is the one place in the migration where the credential requirement <em>overrides</em> parity.
- * The resolution is BCrypt hashing, and it is the flagship entry in {@code docs/decision-log.md}: a
- * deliberate, labelled parity exception in which the security posture is intentionally improved rather
- * than mirrored. Everywhere else in this migration faithful beats idiomatic; a tie-break rule with no
- * named exception would be either dishonest or unusable, and this is the named exception.
+ * <p>Legacy sign-on reads the record by key and then compares the stored credential to the entered value
+ * <strong>as cleartext, for direct equality</strong>. Reproducing that comparison would satisfy
+ * behavioural parity and would violate the binding constraint that no credential may be hardcoded, so
+ * this is the one place in the migration where the credential requirement <em>overrides</em> parity. The
+ * resolution is BCrypt hashing, recorded as a deliberate, labelled parity exception in which the security
+ * posture is intentionally improved rather than mirrored. Everywhere else faithful beats idiomatic; a
+ * tie-break rule with no named exception would be either dishonest or unusable, and this is the named
+ * exception.
  *
  * <p><strong>The prohibition that follows is absolute.</strong> The shared cleartext credential value
- * carried by the legacy provisioning job must never appear anywhere in this module - not in Java, not
- * in configuration or a profile overlay or an environment default, not in a log line or an exception
- * message, not in documentation or a comment, and not in a test fixture, test constant or assertion
- * message. It is not stated here, and it must not be introduced anywhere by a later change. Any test
- * that needs to demonstrate digest verification constructs its own throwaway value at run time.
+ * carried by the legacy provisioning job must never appear anywhere in this module - not in Java, not in
+ * configuration or a profile overlay or an environment default, not in a log line or an exception
+ * message, not in documentation or a comment, and not in a test fixture, constant or assertion message.
+ * It is not stated here and must not be introduced anywhere by a later change; a test needing to
+ * demonstrate digest verification constructs its own throwaway value at run time.
  *
  * <h2>No finder may take a credential</h2>
  *
- * <p>The attribute this table exposes is the <strong>60-character BCrypt digest</strong> and never a
- * cleartext value, and the attribute must never be renamed or re-typed to suggest otherwise.
- * Consequently <strong>no finder on this interface takes a credential</strong>, hashed or not. That is
- * a mechanical impossibility rather than a stylistic preference: a salted digest differs on every
- * encoding of the same input, so an equality predicate over it can never match, and a query that
- * appeared to authenticate would silently reject every valid request. It would not reproduce the legacy
- * flow either, which reads by key first and only then compares. Read-then-verify is therefore both the
- * faithful shape and the only workable one.
+ * <p>The attribute this table exposes is the 60-character BCrypt digest and never a cleartext value, and
+ * it must never be renamed or re-typed to suggest otherwise. No finder here takes a credential, hashed or
+ * not, and that is a mechanical impossibility rather than a preference: a salted digest differs on every
+ * encoding of the same input, so an equality predicate over it can never match and a query that appeared
+ * to authenticate would silently reject every valid request. Read-then-verify is both the faithful shape
+ * and the only workable one.
  *
- * <p>Hashing, verifying, comparing, masking and redacting all live outside this package, in the
- * authentication service and the security configuration. This interface performs none of them, declares
- * no encoder, imports nothing from the security framework, and neither extends nor implements any of its
- * contracts - the adapter that presents these rows as an authenticated principal belongs to the
- * configuration and service layers, not here.
- *
- * <p>Nothing about this table is logged from this package, at any level. A user identifier, a stored
- * digest and a submitted credential are all material that must not reach an appender, so no logger is
- * declared here and none should ever be added.
+ * <p>Hashing, verifying, comparing, masking and redacting all live in the authentication service and the
+ * security configuration. This interface declares no encoder, imports nothing from the security framework
+ * and neither extends nor implements any of its contracts. Nothing about this table is logged from this
+ * package at any level - a user identifier, a stored digest and a submitted credential are all material
+ * that must not reach an appender - so no logger is declared here and none should be added.
  *
  * <h2>Sign-on outcomes are messages, and the service produces them</h2>
  *
- * <p>The legacy sign-on program emits seven distinct externally observable message texts - two entry
- * prompts, a wrong-credential error, a user-not-found error, an unable-to-verify error, and two common
- * messages on the exit key and on an unmapped key - and those texts are verified character for
- * character as an interface contract. They are produced by the service, not here. This interface
- * declares <strong>no message, no exception type and no status enum</strong>; the repository-level
- * expression of "user not found" is simply the <strong>empty {@code Optional}</strong> returned by the
- * inherited {@code findById}, which the service maps to the user-not-found text. The two-level file
- * status model of the legacy tier - a raw status normalised into an OK, end-of-file or error outcome
- * before anything branches on it - likewise belongs to the service and batch layers.
+ * <p>The legacy sign-on program emits seven distinct externally observable message texts, verified
+ * character for character as an interface contract, and they are produced by the service. This interface
+ * declares no message, no exception type and no status enum; the repository-level expression of "user not
+ * found" is the empty {@code Optional} returned by {@link #findById(String)}, which the service maps to
+ * the user-not-found text. The two-level file status model of the legacy tier likewise belongs above this
+ * layer.
  *
  * <h2>The role split is an unconditional alternative, so persistence must not judge the value</h2>
  *
- * <p>On a successful read the legacy program tests <em>only</em> the administrative type and reaches
- * the main menu through an <strong>unconditional alternative</strong>. There is no third branch and no
- * validation of the value at all, so every non-administrative code - including one the estate never
- * declared - routes to the main menu without raising anything.
- *
- * <p>That is why {@code sec_usr_type} is a raw {@link String} with <strong>no check constraint, no
- * enumerated mapping, no attribute converter and no validation annotation</strong>. A value outside the
- * administrative and standard pair <strong>must load rather than fail at persistence</strong>, so that
- * the service's unconditional alternative can handle it exactly as the legacy program does. Adding a
- * constraint here would reject data the legacy system silently accepted and routed, which is a
- * behavioral regression dressed as rigour. The module does model the two codes as a domain enumeration,
- * but that type belongs to the service layer's use and is deliberately not referenced from this
- * package, which depends on the domain package alone.
+ * <p>On a successful read the legacy program tests <em>only</em> the administrative type and reaches the
+ * main menu through an unconditional alternative. There is no third branch and no validation of the value
+ * at all, so every non-administrative code - including one the estate never declared - routes to the main
+ * menu without raising anything. That is why {@code sec_usr_type} is a raw {@link String} with no check
+ * constraint, no enumerated mapping, no attribute converter and no validation annotation: a value outside
+ * the administrative and standard pair must load rather than fail at persistence, and adding a constraint
+ * here would reject data the legacy system silently accepted and routed. The module does model the two
+ * codes as a domain enumeration, but that type serves the service layer and is deliberately not
+ * referenced from this package.
  *
  * <h2>The administrative browse is a projected keyset read</h2>
  *
  * <p>The administrative user list presents a page of 10 rows, proven from the legacy screen table
- * declared as occurring 10 times rather than inferred. The opening page may use
- * {@link #findAllProjectedBy(Pageable)} at window zero; every continuation uses the strict greater-than
- * or less-than projected method and asks for the screen width plus the source's one-record probe.
- * {@link #findProjectedBySecUsrId(String)} supplies the inclusive boundary without hydrating a
- * credential, and {@link #countBySecUsrIdLessThan(String)} reconstructs the private page counter with
- * one range aggregate rather than an offset rescan.
+ * declared as occurring 10 times. The opening page may use {@link #findAllProjectedBy(Pageable)} at
+ * window zero; every continuation uses the strict greater-than or less-than projected method and asks for
+ * the screen width plus the source's one-record probe.
+ * {@link #findProjectedBySecUsrId(String)} supplies the inclusive boundary without hydrating a credential,
+ * and {@link #countBySecUsrIdLessThan(String)} reconstructs the private page counter with one range
+ * aggregate rather than an offset rescan.
  *
  * <p>The projection is what makes the list safe rather than merely tidy. The legacy screen shows an
- * identifier, a first name, a last name and a type; it has never shown a credential. Returning the
- * entity would nonetheless load one digest per row into memory, ten at a time, to render four columns -
- * and every one of those instances is then a candidate for an accidental rendering. A closed projection
- * makes the digest absent rather than merely unused, which is a stronger statement than any convention
- * about not calling an accessor.
+ * identifier, a first name, a last name and a type and has never shown a credential; returning the entity
+ * would load one digest per row to render four columns, and every such instance is a candidate for an
+ * accidental rendering. A closed projection makes the digest absent rather than merely unused, which is a
+ * stronger statement than any convention about not calling an accessor.
  *
- * <h2>Writes go through one save, one record at a time</h2>
+ * <h2>Writes, locking and the access paths that exist</h2>
  *
- * <p>The administrative add and update transactions both store a credential, and both <strong>hash on
- * write in the user-management service</strong> - never here. Add uses the module's explicit
- * create-only writer so a duplicate key cannot become a merge; {@link #save(UserSecurity)} serves the
- * rewrite-in-place update only. There is no bulk update or upsert method here, and the delete
- * transaction is served by {@link #deleteById(String)}, which removes the one row it is given and has
- * no counterpart that removes more.
+ * <p>The administrative add and update transactions both store a credential and both hash on write in the
+ * user-management service, never here. Add uses the module's explicit create-only writer so a duplicate
+ * key cannot become a merge; {@link #save(UserSecurity)} serves the rewrite-in-place update only. There is
+ * no bulk update or upsert, and {@link #deleteById(String)} removes the one row it is given.
  *
- * <h2>No version attribute, no association, and no index for a finder to serve</h2>
+ * <p>The entity declares no version attribute - the account and card entities are the only two versioned
+ * entities in the module, because they are the only two whose legacy programs compared a before image
+ * against an after image - and no association to any other entity, so deferred loading outside a
+ * transaction is impossible by construction and no entity graph or fetch join is needed or permitted. The
+ * index migration creates no foreign key and no secondary index touching this table, so every declared
+ * finder stays on the primary key: exact, strict ascending, strict descending or count-below. A finder
+ * over any other attribute would describe an access path the schema does not support.
  *
- * <p>The entity declares <strong>no version attribute</strong> - the account and card entities are the
- * only two versioned entities in the module, because they are the only two whose legacy programs
- * compared a before image against an after image - and it declares <strong>no association</strong> to
- * any other entity. Deferred loading outside a transaction is therefore impossible by construction,
- * which satisfies the closed view-layer session setting trivially and means no entity graph and no
- * fetch join is needed or permitted anywhere in the module.
+ * <p>This interface performs no trimming, padding or case folding. The columns are bounded
+ * {@code VARCHAR(n)} rather than {@code CHAR(n)} precisely so the store neither blank-pads on read nor
+ * trims on write, and whatever a caller supplies round-trips unchanged. Restoring a value to its fixed
+ * record width, and every other piece of fixed-width layout knowledge, belongs to the utility layer's
+ * mappers.
  *
- * <p>The index migration creates <strong>no foreign key and no secondary index</strong> touching this
- * table. Every declared finder therefore stays on the primary key: exact, strict ascending,
- * strict descending or count-below. A finder over any other attribute would describe an access path
- * the schema does not support.
+ * <h2>Provisioning and seeded volume</h2>
  *
- * <h2>Values are neither trimmed nor padded here</h2>
+ * <p>The provisioning job stages ten user records supplied <strong>in stream as ASCII card images</strong>
+ * - five administrative and five standard - into a physical sequential dataset at
+ * {@code LRECL=80 RECFM=FB DSORG=PS}, and only then defines the indexed cluster with {@code KEYS(8,0)}
+ * and {@code RECORDSIZE(80,80)} and reproduces the sequential dataset into it. Two corroborations fall
+ * out: a single-part business key of width 8 at offset 0, and the 80-byte record width the copybook sums
+ * to. Because the seed content originates in stream in ASCII, <strong>no EBCDIC decode is required</strong>
+ * to recover it - which is why it costs nothing that the corresponding EBCDIC sequential dataset is the
+ * one such dataset in the estate with no ASCII twin. The CICS resource definition does register this
+ * file, so the legacy system reads it online during sign-on; it is not a batch-only dataset.
  *
- * <p>This interface performs no trimming, no padding and no case folding of any value. The columns are
- * bounded {@code VARCHAR(n)} rather than {@code CHAR(n)} precisely so the store neither blank-pads on
- * read nor trims on write, so whatever a caller supplies round-trips unchanged. Restoring a value to
- * its fixed record width, and every other piece of fixed-width layout knowledge, belongs exclusively to
- * the utility layer's mappers; no offset arithmetic, parsing or formatting occurs in this package.
- *
- * <h2>Seeded volume</h2>
- *
- * <p>The table <strong>starts empty</strong>: the reference-data migration seeds zero rows here and
- * asserts that fact, exactly as it does for the transaction table. The <strong>ten</strong> identities -
- * five administrative and five standard - arrive in {@code V4__seed_user_security.sql}, whose credentials
- * are stored only as independently salted BCrypt digests of exactly 60 characters, all ten distinct, a
- * property the migration itself verifies. That migration reaches <strong>local and test execution
- * only</strong>: the shared and production configurations pin the migration target below its version, so
- * a production deployment migrates schema and indexes and can never inherit a seeded login. Anything
- * asserting against these rows must therefore run with the seed applied.
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source statement is transcribed
- * here: member names, dataset attributes, field names, byte offsets and widths, key definitions and
- * record lengths are metadata describing where a mapping came from, and the legacy tree remains
- * read-only reference that no production code reads at run time.
+ * <p>The table starts empty: the reference-data migration seeds zero rows here and asserts that fact,
+ * exactly as it does for the transaction table. The ten identities arrive in
+ * {@code V4__seed_user_security.sql}, whose credentials are stored only as independently salted BCrypt
+ * digests of exactly 60 characters, all ten distinct, a property the migration itself verifies. That
+ * migration reaches local and test execution only, because the shared and production configurations pin
+ * the migration target below its version, so a production deployment migrates schema and indexes and can
+ * never inherit a seeded login. Anything asserting against these rows must run with the seed applied.
  *
  * @see UserSecurity
  */
@@ -293,8 +199,8 @@ public interface UserSecurityRepository extends Repository<UserSecurity, String>
     /**
      * Reads one sign-on identity by its identifier and holds the row for the write that follows.
      *
-     * <p>The relational form of {@code EXEC CICS READ ... UPDATE}, which both administrative
-     * maintenance transactions issue: {@code app/cbl/COUSR02C.cbl} L322-L331 before its rewrite at
+     * <p>The relational form of the read for update that both administrative maintenance
+     * transactions issue: {@code app/cbl/COUSR02C.cbl} L322-L331 before its rewrite at
      * L360, and {@code app/cbl/COUSR03C.cbl} L269-L278 before its delete at L307. In the region that
      * read takes an exclusive hold on the record and the rewrite or delete happens while the hold is
      * still in place, which is what makes the pair one indivisible maintenance step. The delete verb is

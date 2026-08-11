@@ -41,10 +41,6 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * Unit tests for {@link UserSecurityRecordMapper}, which maps the eighty-byte {@code SEC-USER-DATA}
  * record declared by {@code app/cpy/CSUSR01Y.cpy} onto {@link UserSecurity} and back.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>This layout has no sample fixture, and that is deliberate.</strong> Every other
  * fixed-width layout in the module is decoded against a file under
  * {@code src/test/resources/fixtures/input/}. This one is not, because the legacy record carries a

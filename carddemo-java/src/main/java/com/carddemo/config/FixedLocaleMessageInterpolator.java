@@ -63,11 +63,7 @@ import org.hibernate.validator.messageinterpolation.ResourceBundleMessageInterpo
  *
  * <p>Decision {@code DL-118} records this rule and the two measurements behind it.
  *
- * <p>Provenance: the field-level error surface this governs derives from the {@code CSSETATY}
- * validation-flag macro expanded 39 times in {@code app/cbl/COACTUPC.cbl}, at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy screen carried one language, so
- * its migrated contract carries one language.</p>
+ * <p>The legacy screen carried one language, so its migrated contract carries one language.</p>
  */
 public final class FixedLocaleMessageInterpolator implements MessageInterpolator {
 

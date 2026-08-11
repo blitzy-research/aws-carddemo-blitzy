@@ -80,10 +80,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * is asserted by {@code EntityPersistenceMappingTest}, which compares the mapping the persistence
  * provider computes against the shipped migration {@code V1__create_schema.sql}, rather than here.
  *
- * <p><strong>Legacy provenance.</strong> Repository checkout
- * 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp CardDemo_v1.0-15-g27d6c6f-68
- * dated 2022-07-19. Recorded here as prose only. The stamp is never asserted against a source
- * member, because the estate does not carry it uniformly.
+ * <p>Recorded here as prose only. The stamp is never asserted against a source member, because the estate
+ * does not carry it uniformly.
  *
  * @see CardStatus
  */

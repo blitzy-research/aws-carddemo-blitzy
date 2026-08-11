@@ -23,15 +23,11 @@
 # SEVEN linear gates, every one of which ends the run where it is not satisfied - directly, by failing
 # its own step, with nothing recording a failure and carrying on.
 #
-# There is one inventory of those gates and it is the list below. It is written out because this file
-# previously carried three disagreeing counts - a header that said five, two step banners that said
-# "of 4", three that said "of 5", and a summary that listed six - and a reviewer signing the gates off
-# could not tell which was authoritative. The summary was the accurate one then, and the reason the
-# header undercounted is that the last gate was the only one with no banner at all.
-#
-# Seven is the count now. Six was the count when that disagreement was reconciled; the whitespace gate
-# below was added afterwards, and it was added to this list, to its own banner and to the summary in
-# one change, because adding it to fewer than all three is the defect DL-186 exists to prevent.
+# There is one inventory of those gates and it is the list below. It is written out because the count is
+# stated in three places - this header, each step's own banner, and the closing summary - and a reviewer
+# signing the gates off has to be able to tell which is authoritative. SEVEN is the count, and a gate
+# added to fewer than all three places is the defect DL-186 exists to prevent; config/BuildAndCiContractTest
+# fails the build when the three disagree, so the inventory cannot drift again.
 #
 # Three properties are carried by ONE gate, the Maven build gate, because they are bound to its verify
 # phase rather than invoked separately. Each remaining property is a gate of its own:
@@ -483,13 +479,13 @@ jobs:
       # uploaded artifacts would silently describe an ar-EG run while claiming to describe the
       # pinned one.
       #
-      # THREE DESTINATIONS, AND NO DISABLING SWITCH. An earlier revision redirected only the
-      # Surefire reports and dealt with the coverage collision by appending a property that switched
-      # the coverage agent off, together with one that switched off the vulnerability scan - and the
-      # latter did nothing whatsoever here, because the test phase never reaches verify, so that scan
-      # was never going to run in this invocation. Both are withdrawn. Disabling a gate mechanism in
-      # order to protect that mechanism's own evidence is the wrong trade when a destination override
-      # achieves the same thing with the agent still running and still recording. pom.xml exposes
+      # THREE DESTINATIONS, AND NO DISABLING SWITCH. Redirecting only the Surefire reports and dealing with
+      # the coverage collision by appending a property that switches the coverage agent off is prohibited, as
+      # is appending one that switches off the vulnerability scan - the latter would do nothing whatsoever
+      # here, because the test phase never reaches verify, so that scan was never going to run in this
+      # invocation. Disabling a gate mechanism in order to protect that mechanism's own evidence is the
+      # wrong trade when a destination override achieves the same thing with the agent still running and
+      # still recording. pom.xml exposes
       # jacoco.unit.exec and jacoco.unit.report.dir for exactly this purpose, alongside the
       # test.reports.dir it already exposed.
       #
@@ -512,15 +508,16 @@ jobs:
           done
 
       # ---- the supply chain gate is NOT a step of its own, and that is deliberate -------------
-      # It used to be one, invoked as `dependency-check:check` after the build gate had been asked
-      # to skip it. Two steps, one switch, one scan. It is now zero steps, no switch, and still one
-      # scan - because the plugin is bound to the verify phase in pom.xml, so gate 1 above executes
-      # it as part of `./mvnw -B clean verify`. That is the mechanism this module was designed
-      # around, and running the goal separately only ever existed to compensate for the skip
-      # property that ran it out of the build in the first place.
+      # A separate `dependency-check:check` step invoked after the build gate had been asked to skip the scan
+      # would be two steps, one switch and one scan. This is zero steps, no switch, and still one scan -
+      # because the plugin is bound to the verify phase in pom.xml, so the build, test, coverage and supply
+      # chain gate above executes it as part of `./mvnw -B clean verify`. It is named rather than numbered
+      # here so inserting a gate cannot silently repoint this sentence at another step. The phase binding
+      # is the mechanism this module is designed around; invoking the goal separately compensates for a
+      # skip property that has no reason to exist.
       #
-      # WHAT IS GIVEN UP, STATED RATHER THAN GLOSSED. The separate step needed only the resolved
-      # dependency graph, so it produced a scan report even when compilation failed. Inside verify,
+      # WHAT IS GIVEN UP, STATED RATHER THAN GLOSSED. A separate step needs only the resolved
+      # dependency graph, so it would produce a scan report even when compilation failed. Inside verify,
       # a build that never reaches verify produces no scan report. That is the correct trade: a run
       # that fails to compile has no artifact to assess and is already red, whereas a scan invoked
       # with the build's own scan switched off can report clean while nothing in the build enforced
@@ -823,7 +820,8 @@ jobs:
       #
       # THE LOCALE RUNS' COVERAGE EVIDENCE IS UPLOADED TOO, and it exists to be uploaded only because
       # the locale gate no longer switches the coverage agent off. Those files are NOT a contribution
-      # to the coverage figure - the check ran once, in gate 1, over the pinned execution - they are
+      # to the coverage figure - the check ran once, in the build, test, coverage and supply chain gate,
+      # over the pinned execution - they are
       # the record that each hostile-locale run genuinely instrumented and executed the tier it claims
       # to have executed. Without them a reviewer has the locale runs' test reports and no independent
       # evidence that the instrumented code was the same code.
@@ -876,8 +874,10 @@ jobs:
           retention-days: 30
 
       # THE GATE EVIDENCE IS THE ONE ARTEFACT SET THE RUN ITSELF AUTHORS, and it was the one set the
-      # run threw away. Three gates emit a run-scoped file into target/gate-evidence: gate 1's
-      # byte-equivalence comparison, gate 3's measured baselines and gate 8's sign-off checklist. No
+      # run threw away. Three of the PROJECT'S EIGHT VALIDATION GATES - a separate numbering from this
+      # workflow's linear gates, and the reason each is named as well as numbered here - emit a run-scoped
+      # file into target/gate-evidence: the Gate 1 byte-equivalence comparison, the Gate 3 measured
+      # performance baselines and the Gate 8 sign-off checklist. No
       # step uploaded them, and the reproducibility gate below runs a clean, so every recorded run
       # destroyed its own evidence and docs/gate-evidence.md quoted figures whose producing artefact
       # no longer existed anywhere. Uploaded here, before the clean, for the same reason the three
@@ -1417,7 +1417,8 @@ jobs:
       #
       # A DATABASE IS STARTED AND THE AWS EMULATOR DELIBERATELY IS NOT. This gate is about the
       # artifact, so it starts the one dependency the artifact cannot boot without and no more; the
-      # complete stack is gate 6's subject. The consequence is stated where it matters, at the
+      # complete stack is the container, Compose and monitoring gate's subject. The consequence is stated
+      # where it matters, at the
       # assertion below: with the emulator absent the aggregate health endpoint is DOWN by design, so
       # the group this step reads has to be one that does not consult it.
       #
@@ -1432,9 +1433,10 @@ jobs:
       # here without any secret. The production profile resolves all of its secrets from the
       # environment with no fallback and is therefore not a smoke-test profile by design.
       #
-      # The step carries no condition at all, and no longer needs one. It used to be guarded on the
-      # build gate's recorded outcome, because that gate was allowed to continue and there is no jar
-      # to start when it failed. Now that no gate above continues past its own failure, reaching this
+      # The step carries no condition at all, and needs none. A guard on the build gate's recorded
+      # outcome
+      # would be necessary only if that gate were allowed to continue, since there is no jar to start when it
+      # failed. Because no gate above continues past its own failure, reaching this
       # step already means every gate before it passed and the jar exists - the guard would be
       # restating the control flow rather than adding to it.
       - name: Smoke test the executable jar
@@ -1917,12 +1919,12 @@ jobs:
       # every gate passed - and then an absent file is a hard error, because a fully green run
       # that produced no artifact is a finding in its own right.
       #
-      # THIS STEP CARRIES NO CONDITION, AND THAT IS THE POINT OF THE LINEAR MODEL. It used to
-      # enumerate every gate outcome, because every gate was allowed to continue past its own
-      # failure and so the run could reach this step with a gate already red. That enumeration was a
-      # standing hazard: a gate added above and not added here would publish a jar from a run that
-      # was going to fail anyway, and the artifact outlives the run. Now no gate continues past its
-      # own failure, so reaching this step IS the proof that every one of them passed - including the
+      # THIS STEP CARRIES NO CONDITION, AND THAT IS THE POINT OF THE LINEAR MODEL. Enumerating every gate
+      # outcome here would be necessary only if a gate were allowed to continue past its own failure, so
+      # that the run could reach this step with a gate already red - and such an enumeration is a standing
+      # hazard: a gate added above and not added here would publish a jar from a run that was going to fail
+      # anyway, and the artifact outlives the run. No gate continues past its own failure, so reaching
+      # this step IS the proof that every one of them passed - including the
       # jar smoke test, the full Compose stack and the image scans. A gate added above needs no change
       # here, because the control flow states the condition instead of a list restating it.
       - name: Upload the executable jar
@@ -1934,12 +1936,11 @@ jobs:
           retention-days: 30
 
       # ---- the summary ----------------------------------------------------------------------
-      # THIS STEP NO LONGER DECIDES THE RUN, AND THAT IS THE WHOLE CHANGE. It used to: every gate
-      # above was allowed to continue past its own failure, so the job's status came from a final
-      # step that read every recorded outcome back and exited non-zero if any was not a pass.
-      # That design put the run's verdict at the end of a chain of recorded results rather than in
-      # the gates themselves, and it had to run unconditionally to be reached at all - which is the
-      # one thing this file may not do outside an evidence upload.
+      # THIS STEP DOES NOT DECIDE THE RUN, AND THAT IS THE POINT OF THE LINEAR MODEL. Letting every gate
+      # continue past its own failure and sourcing the job's status from a final step that reads every
+      # recorded outcome back would put the run's verdict at the end of a chain of recorded results rather
+      # than in the gates themselves, and such a step has to run unconditionally to be reached at all -
+      # which is the one thing this file may not do outside an evidence upload.
       #
       # Each gate now fails the run where it fails. The status is therefore decided by the failing
       # step directly and there is nothing left for a verdict step to decide, so this step carries no
@@ -1950,8 +1951,8 @@ jobs:
       # A gate added above needs no change here.
       # The seven lines below are the same seven gates, in the same order and under the same names, as
       # the inventory in this file's header and the "gate N of 7" banner on each step. Three places
-      # name them and all three must agree; they did not, and that is what this list is now checked
-      # against by BuildAndCiContractTest.
+      # name them and all three must agree, which is what BuildAndCiContractTest checks this list
+      # against.
       - name: Gate summary
         run: |
           echo 'gate 1 of 7  repository whitespace hygiene                   : passed'

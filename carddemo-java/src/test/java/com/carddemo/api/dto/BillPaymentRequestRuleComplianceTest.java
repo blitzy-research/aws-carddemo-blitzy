@@ -46,10 +46,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for {@link BillPaymentRequest}, the request body of legacy transaction {@code CB00}
  * implemented by {@code app/cbl/COBIL00C.cbl} over screen {@code app/cpy-bms/COBIL00.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Four components and no more.</strong> The bill-payment screen collects exactly two
  * operator values - an account identifier and a one-character confirmation - because the payment
  * amount is never entered. {@code COBIL00C} pays the whole outstanding balance and rejects the

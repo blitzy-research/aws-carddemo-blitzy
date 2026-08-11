@@ -32,12 +32,12 @@ import org.springframework.stereotype.Component;
  * The single, lossless conversion between the report-request transport contract and the report service's
  * own turn types.
  *
- * <p>Two problems are closed here at once. The transport request used to carry a derived period
- * enumeration while the service took the three raw screen markers, so the two contracts described
- * different screens and no code connected them - a client's submission could not be turned into a
- * service call without a consumer inventing the missing half. And the service returned a turn result
- * that overlapped the transport response heavily with no mapping between them, so the two could drift
- * apart and every future controller would have re-derived the mapping for itself.
+ * <p>Two problems are closed here at once. A transport request carrying a derived period enumeration
+ * while the service takes the three raw screen markers would leave the two contracts describing
+ * different screens with no code connecting them - a client's submission could not be turned into a
+ * service call without a consumer inventing the missing half. And a service turn result overlapping the
+ * transport response heavily with no mapping between them would let the two drift apart, with every
+ * future controller re-deriving the mapping for itself.
  *
  * <p><strong>Inbound is one-to-one, which is what makes it lossless.</strong> The request now carries
  * the three markers at their declared one-character widths, so the conversion is a straight
@@ -58,10 +58,10 @@ import org.springframework.stereotype.Component;
  * of the resolved period. The reset paragraph at {@code app/cbl/CORPT00C.cbl:L633-L646} blanks all ten
  * screen fields, so a successful submission and a declined confirmation both return a cleared screen
  * while every error path returns the marks that were transmitted. Publishing only the resolved period
- * would collapse the outbound half of the screen contract exactly as an earlier revision collapsed the
- * inbound half: a client could not re-present two surviving marks, and could not tell a cleared screen
- * from one whose single mark still stands. The marks are therefore taken from the result's own
- * end-of-turn screen, which is where the reset stage recorded what the operator will see.
+ * would collapse the outbound half of the screen contract just as publishing only the raw markers would
+ * collapse the inbound half: a client could not re-present two surviving marks, and could not tell a
+ * cleared screen from one whose single mark still stands. The marks are therefore taken from the
+ * result's own end-of-turn screen, which is where the reset stage recorded what the operator will see.
  *
  * <p><strong>Identity on the returned state is the authenticated identity.</strong> The navigation
  * record is built by {@link ConversationStateAdapter}, so the routing change the service made is merged

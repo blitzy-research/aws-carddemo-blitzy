@@ -60,11 +60,6 @@ import java.util.stream.Stream;
  * <p>Deeply immutable: the entry list is copied on construction and every mutation returns a new
  * accumulation, so an instance is safe for unsynchronised concurrent use.
  *
- * <p>Provenance: {@code app/cpy/CSSETATY.cpy} and its 39 expansion sites in
- * {@code app/cbl/COACTUPC.cbl}, read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook text is transcribed.
- *
  * @param markedFields the entries in marking sequence; never {@code null} and never modifiable
  * @since 1.0.0
  */

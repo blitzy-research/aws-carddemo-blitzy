@@ -82,10 +82,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * driven through a standalone servlet harness rather than a booted application so that request binding,
  * declarative validation, the shared failure handler and JSON rendering are all genuinely exercised.
  *
- * <p>Provenance of the behaviour being reproduced: {@code app/cbl/COBIL00C.cbl} with its symbolic map
- * {@code app/cpy-bms/COBIL00.CPY} and mapset {@code app/bms/COBIL00.bms}, read as read-only reference
- * at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL text is reproduced.
+ * <p>No COBOL text is reproduced.
  */
 @DisplayName("BillPaymentController :: the delivered bill-payment operation")
 class BillPaymentControllerTest {

@@ -114,12 +114,6 @@ import com.carddemo.util.SensitiveFieldCodec;
  * the production management values are asserted to equal the shared baseline's, because restating
  * them rather than narrowing them is the property under test.
  *
- * <h2>Provenance</h2>
- *
- * <p>The configuration under test derives from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.
- *
  * @since 1.0.0
  */
 @DisplayName("Shipped configuration profiles")
@@ -409,22 +403,26 @@ final class ConfigurationProfileBaselineTest {
     /** The migration location list, which is what excludes the seeds from production. */
     private static final String KEY_FLYWAY_LOCATIONS = "spring.flyway.locations";
 
-    /** The migration target, which every profile declares as {@code latest} and none as a number. */
+    /**
+     * The migration target. Production declares the numeric pin the schema location's highest version
+     * dictates; the two seeding profiles lift it to {@code latest} for themselves so the seeds apply.
+     */
     private static final String KEY_FLYWAY_TARGET = "spring.flyway.target";
 
     /** Whether the batch framework may create its own metadata tables at start-up. */
     private static final String KEY_BATCH_INITIALIZE_SCHEMA = "spring.batch.jdbc.initialize-schema";
 
     /**
-     * The one location production resolves, carrying the two schema migrations and no seed.
+     * The one location production resolves, carrying the three schema migrations and no seed.
      *
-     * <p>THE LOCATION LIST IS THE SEPARATION. The two schema scripts and the two seed scripts sit in
+     * <p>THE LOCATION LIST IS THE SEPARATION. The three schema scripts and the two seed scripts sit in
      * sibling directories whose shared parent holds no script at all, so a profile that never names
      * {@link #SEED_LOCATION} resolves no seed - the seeds do not appear in any state at all under that
-     * posture, neither applied nor pending nor resolved. That is a stronger boundary than the numeric
-     * ceiling this arrangement replaced, because a location a document never lists is not a value an
-     * operator can widen, and because a ceiling that excluded the seeds also froze the schema at its
-     * own version. See docs/decision-log.md DL-298.</p>
+     * posture, neither applied nor pending nor resolved. The list is the PRIMARY boundary because a
+     * location a document never lists is not a value an operator can widen: it produces no script to
+     * decline. The numeric ceiling is held ALONGSIDE it rather than in place of it, and is asserted
+     * against the versions the schema location actually delivers so that it cannot freeze the schema.
+     * See docs/decision-log.md DL-298 for the split and DL-334 for the ceiling.</p>
      */
     private static final String SCHEMA_LOCATION = "classpath:db/migration/schema";
 
@@ -474,8 +472,8 @@ final class ConfigurationProfileBaselineTest {
      * <p><strong>It still excludes the two seeds by their number as well as by their directory.</strong>
      * Every schema version sorts below every seed version: 1, 2 and 2.2 are structure and 3 and 4
      * are fixtures. The dotted version is the protected-value invariants, numbered below the seeds
-     * deliberately. An earlier revision numbered a schema script 5,
-     * above the seeds, which broke three separate controls; DL-343 records the reversal and DL-349 the
+     * deliberately. NUMBERING A SCHEMA SCRIPT 5, above the seeds, breaks three separate controls; DL-343
+     * records the numbering rule and DL-349 the
      * invariants script.</p>
      */
     private static final String PRODUCTION_TARGET = "2.2";
@@ -499,14 +497,14 @@ final class ConfigurationProfileBaselineTest {
      * while two sit in {@link #SEED_LOCATION} and reach local and test only. AAP 0.3.1 and 0.4.2 name
      * the first four; the fifth is the protected-value invariants, added by the security remediation
      * recorded in {@code docs/decision-log.md} DL-349, and it is a schema script because production is
-     * the profile that needs it most. A sixth script once held version 2.1 - the sign-on attempt ledger
-     * of a throttle the legacy transaction has no counterpart for - and was withdrawn with it (DL-352),
-     * so the gap in the sequence is deliberate.
+     * the profile that needs it most. Version 2.1 is absent: that number is retired with the sign-on
+     * attempt ledger of a throttle the legacy transaction has no counterpart for (DL-352), so the gap in
+     * the sequence is deliberate.
      *
      * <p><strong>The two sets are separated by their numbers as well as by their directories.</strong>
-     * Every schema version sorts below both seed versions, which three separate controls depend on. An
-     * earlier revision numbered a schema script 5, above the seeds, and broke all three; DL-343 records
-     * the measurement. The directory separation is what {@link #eachLocationCarriesExactlyItsOwnHalf()}
+     * Every schema version sorts below both seed versions, which three separate controls depend on.
+     * Numbering a schema script 5, above the seeds, breaks all three; DL-343 records the rule. The
+     * directory separation is what {@link #eachLocationCarriesExactlyItsOwnHalf()}
      * and the location assertions above hold.
      */
     private static final List<String> DELIVERED_MIGRATIONS = List.of(
@@ -2001,7 +1999,7 @@ final class ConfigurationProfileBaselineTest {
      * <p>Four separate things are asserted here and they fail for different reasons.</p>
      *
      * <p>The first is the exclusion itself, which rests entirely on the PROFILE-SCOPED LOCATION LIST.
-     * The two schema scripts ship from {@code classpath:db/migration/schema} and the two seeds from the
+     * The three schema scripts ship from {@code classpath:db/migration/schema} and the two seeds from the
      * sibling {@code classpath:db/migration/seed}; their shared parent carries no script at all. The
      * shared baseline and the production overlay declare the schema location ALONE, so a profile silent
      * about seeding resolves no seed - the seed scripts appear in no state whatsoever under that
@@ -2010,22 +2008,21 @@ final class ConfigurationProfileBaselineTest {
      * Both the declared and the RESOLVED value are asserted, because inheritance is what a running
      * application reads and a per-document reading cannot answer an inheritance question.</p>
      *
-     * <p>The location list is the PRIMARY separation and the version ceiling of
-     * {@code spring.flyway.target: 5} is held alongside it, and the reason for both is not tidiness. A
+     * <p>The location list is the PRIMARY separation, and the production ceiling is held alongside it. A
      * location a document never lists is not a value an operator can widen: it produces no script to
      * decline. A ceiling excludes by ARITHMETIC instead, which reaches a case the location list cannot -
-     * a look-alike location presenting a script numbered above the delivered schema - but which, left
-     * unchecked, freezes the schema: a further schema script above the pin would be resolved, skipped and
-     * reported as a successful migration, which is exactly what would have happened to the invariants
-     * script had the pin stayed at 2. That failure mode is closed by CHECKING the pin rather than by removing
-     * it, so the assertions below hold a location list AND a per-document ceiling, and
+     * a look-alike location presenting a script numbered above the delivered schema. Production pins
+     * {@code spring.flyway.target} at the highest version the schema location delivers, currently
+     * {@code 2.2}, and the two seeding profiles lift it to {@code latest} for themselves. Left unchecked
+     * a pin freezes the schema, because a schema script numbered above it would be resolved, skipped and
+     * reported as a successful migration. That failure mode is closed by CHECKING the pin rather than by
+     * removing it, so the assertions below hold a location list AND a per-document ceiling, and
      * {@code FlywayConfigTest} holds the pin to the versions the schema location delivers.</p>
      *
-     * <p><strong>What the ceiling no longer does is exclude the two seed versions.</strong> It did while
-     * the schema stopped at 2 and the seeds began at 3. The delivered schema now reaches 2.2, so
-     * versions 3 and 4 still sit above the pin and both the number and the directory keep them out of
-     * production. See docs/decision-log.md DL-298 for the split, DL-334 for the ceiling, DL-343 for the
-     * numbering rule and DL-349 for the protected-value invariants.</p>
+     * <p><strong>Both controls exclude the seeds, and neither is redundant.</strong> The delivered
+     * schema reaches 2.2 and the seeds are 3 and 4, so the seed versions sit above the pin as well as
+     * outside the resolved location. See docs/decision-log.md DL-298 for the split, DL-334 for the
+     * ceiling, DL-343 for the numbering rule and DL-349 for the protected-value invariants.</p>
      *
      * <p>The second is the parent, which is the one way this arrangement can be silently defeated. A
      * Flyway location is scanned RECURSIVELY, so {@code classpath:db/migration} reaches BOTH children:
@@ -2370,9 +2367,8 @@ final class ConfigurationProfileBaselineTest {
      * Every setting the production profile requires from its environment, taken from the guard itself.
      *
      * <p>Read from {@link ProductionConfigurationValidator#REQUIRED_SETTINGS} rather than restated here,
-     * so this class and the guard cannot disagree about what production requires. An earlier revision
-     * did restate a subset - three keys, then five - and the TLS, region and trace-collector settings
-     * went unasserted as a direct result.
+     * so this class and the guard cannot disagree about what production requires. RESTATING A SUBSET here -
+     * three keys, or five - is what leaves the TLS, region and trace-collector settings unasserted.
      *
      * @return one argument pair per required setting: the property key and the variable that supplies it
      */

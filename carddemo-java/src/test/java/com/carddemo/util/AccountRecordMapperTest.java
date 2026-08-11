@@ -86,9 +86,8 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * anomaly and the single scaling point are all recorded in the module's decision log; this class only
  * proves them.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Carried as a header string for traceability
- * only; no member asserts it, and no copybook, program or job-stream text is reproduced.
+ * <p>Carried as a header string for traceability only; no member asserts it, and no copybook, program or
+ * job-stream text is reproduced.
  */
 @DisplayName("AccountRecordMapper: the hand-verified 300-byte account layout")
 class AccountRecordMapperTest {

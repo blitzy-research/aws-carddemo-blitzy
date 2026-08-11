@@ -48,11 +48,6 @@ import java.util.List;
  * {@code MSG_UPDATE_USER_ID_EMPTY} and {@code MSG_DELETE_USER_ID_EMPTY} carry the same characters but come
  * from three programs, and collapsing them would lose the correspondence the traceability matrix records.
  *
- * <p>Provenance: {@code app/cbl/COUSR00C.cbl}, {@code COUSR01C.cbl}, {@code COUSR02C.cbl},
- * {@code COUSR03C.cbl} and their four mapsets, read as read-only reference at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook or program text is transcribed.
- *
  * @param rows the page of rows in the order the browse settled them, at most
  *     {@link BrowseWindow#USER_LIST_PAGE_SIZE}; normalised to an unmodifiable list
  * @param pageMetadata the browse window the turn assembled, or {@code null} when the turn presented no page
@@ -248,8 +243,8 @@ public record UserOutcome(
      * One row of the user-list page, as a type the service layer owns.
      *
      * <p>The five per-row items of {@code app/cpy-bms/COUSR00.CPY}: the operator's selection character
-     * followed by the four values the row displays. The counterpart of {@code api.dto.UserResponse.UserRow},
-     * component for component and name for name, without the width bounds the wire row declares.
+     * followed by the four values the row displays. The counterpart of {@code
+     * api.dto.UserResponse.UserRow}, component for component and name for name, without the width bounds the wire row declares.
      *
      * @param selector the one-character selection item as the turn leaves it
      * @param userId the eight-character identifier the row displays

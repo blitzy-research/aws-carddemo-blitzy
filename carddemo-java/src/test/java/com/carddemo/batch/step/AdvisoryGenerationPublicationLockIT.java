@@ -57,9 +57,6 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
  * finished, and an object store would add its own concurrency to the observation without changing the
  * question. The store's own obligation - to name every base it touches and to upload only inside the lock
  * - is asserted in {@code StagedGenerationStoreTest}.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("advisory publication lock: two concurrent publishers of one base are serialized")
 class AdvisoryGenerationPublicationLockIT extends AbstractPostgresIT {

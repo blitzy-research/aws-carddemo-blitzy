@@ -72,10 +72,7 @@ import ch.qos.logback.core.read.ListAppender;
  * carry and is useful only to someone reading the legacy layout. Both are driven here by setting the
  * level explicitly rather than by relying on whatever the ambient configuration happens to be.
  *
- * <p>Provenance: the legacy authorities are {@code app/cpy/CSMSG02Y.cpy}, which declares the
- * 134-byte {@code ABEND-DATA} context, and the batch and online abend call sites, at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced.</p>
+ * <p>No legacy source text is reproduced.</p>
  */
 @DisplayName("AbendService - the CEE3ABD and CICS ABEND terminal failure path")
 class AbendServiceBoundaryTest {
@@ -710,11 +707,11 @@ class AbendServiceBoundaryTest {
     /**
      * How one field of the record is rendered, now that a caller can influence one of them.
      *
-     * <h2>Why this became necessary</h2>
+     * <h2>Why the bound and the shape check are needed</h2>
      *
-     * <p>Every value that reached this record used to be a literal or a two-character status from a closed
-     * set, so the record's syntax was safe by provenance. That stopped being true when the navigation abend
-     * was centralised here, because the culprit it names is a destination a caller nominated, bounded to the
+     * <p>Every other value that reaches this record is a literal or a two-character status from a closed
+     * set, so the record's syntax is safe by provenance for those. The navigation abend is the exception,
+     * because the culprit it names is a destination a caller nominated, bounded to the
      * legacy field width. Eight characters is enough to attack a reader two ways: {@code route=CA} imitates
      * a field of the record it sits in, and a separator inside the same eight characters ends the record
      * early and presents the remainder as a second, invented entry.

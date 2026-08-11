@@ -66,10 +66,8 @@ import static org.mockito.Mockito.when;
 /**
  * Unit tests for {@link TransactionListService}, the Java translation of legacy CICS transaction
  * {@code CT00} whose sole implementing member is {@code app/cbl/COTRN00C.cbl} - 699 lines and
- * <strong>16 {@code PROCEDURE DIVISION} paragraphs</strong>. Provenance: the legacy estate is
- * read-only reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is
- * transcribed here; behaviour is cited by paragraph name and line number only.
+ * <strong>16 {@code PROCEDURE DIVISION} paragraphs</strong>. Behaviour is cited by paragraph name and
+ * line number only.
  *
  * <h2>The contract this class exists to defend</h2>
  *
@@ -118,29 +116,8 @@ import static org.mockito.Mockito.when;
  *
  * <h2>Paragraph traceability - all 16 units</h2>
  *
- * <ul>
- *   <li>{@code MAIN-PARA} line 95 - {@code AttentionKeyDispatch}, {@code Routing},
- *       {@code NullAndBoundaryInput}</li>
- *   <li>{@code PROCESS-ENTER-KEY} line 146 - {@code SelectionAndFilter}</li>
- *   <li>{@code PROCESS-PF7-KEY} line 234 - {@code AttentionKeyGuards}, {@code BackwardPagingOrder}</li>
- *   <li>{@code PROCESS-PF8-KEY} line 257 - {@code AttentionKeyGuards}, {@code PageMetadataFidelity}</li>
- *   <li>{@code PROCESS-PAGE-FORWARD} line 279 - {@code PageAssembly}</li>
- *   <li>{@code PROCESS-PAGE-BACKWARD} line 333 - {@code BackwardPagingOrder}</li>
- *   <li>{@code POPULATE-TRAN-DATA} line 381 - {@code PageAssembly}, {@code FieldFidelity},
- *       {@code PageMetadataFidelity}</li>
- *   <li>{@code INITIALIZE-TRAN-DATA} line 450 - {@code PageAssembly}</li>
- *   <li>{@code RETURN-TO-PREV-SCREEN} line 510 - {@code Routing}</li>
- *   <li>{@code SEND-TRNLST-SCREEN} line 527 - {@code ScreenLifecycleAndFailureArms}</li>
- *   <li>{@code RECEIVE-TRNLST-SCREEN} line 554 - {@code SelectionAndFilter}</li>
- *   <li>{@code POPULATE-HEADER-INFO} line 567 - {@code ScreenLifecycleAndFailureArms}</li>
- *   <li>{@code STARTBR-TRANSACT-FILE} line 591 - {@code PageAssembly},
- *       {@code ScreenLifecycleAndFailureArms}</li>
- *   <li>{@code READNEXT-TRANSACT-FILE} line 624 - {@code PageAssembly},
- *       {@code ScreenLifecycleAndFailureArms}</li>
- *   <li>{@code READPREV-TRANSACT-FILE} line 658 - {@code BackwardPagingOrder},
- *       {@code ScreenLifecycleAndFailureArms}</li>
- *   <li>{@code ENDBR-TRANSACT-FILE} line 692 - {@code RepositoryOwnership}</li>
- * </ul>
+ * <p>Each of the 16 units is named in the nested class that exercises it. The unit-to-test inventory is
+ * held once in {@code docs/traceability-matrix.md} and is not restated here.
  *
  * <h2>Harness</h2>
  *

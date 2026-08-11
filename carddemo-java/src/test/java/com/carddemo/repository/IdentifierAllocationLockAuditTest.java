@@ -59,10 +59,7 @@ import org.junit.jupiter.api.Test;
  * of the SET of participants, so membership of that set has to be asserted over the set. That is the whole
  * of this class's remaining job, and it is deliberately textual for exactly that reason.
  *
- * <p>Provenance: the rule is that of {@code app/cbl/COBIL00C.cbl} lines 212 to 219 and
- * {@code app/cbl/COTRN02C.cbl} lines 444 to 451, read as read-only reference at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ * <p>No COBOL statement is transcribed.
  */
 @DisplayName("Identifier allocation enrolment: only enrolled callers mint, and each carries the obligations")
 final class IdentifierAllocationLockAuditTest {

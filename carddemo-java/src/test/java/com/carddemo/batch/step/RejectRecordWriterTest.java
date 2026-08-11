@@ -144,22 +144,6 @@ import org.springframework.core.io.FileSystemResource;
  * operation appears anywhere in this file. The estate's truncating rounding policy has exactly one
  * home, the zoned-decimal codec, and this is not it, so the amount fixtures here are declared at the
  * scale a stored monetary field carries and the oracle simply renders them.
- *
- * <h2>Standards</h2>
- *
- * <p>{@code review_rules} reports that <strong>no user-specified rules were provided</strong> for
- * this migration, so this file is held to enterprise-standard best practice instead. Concretely: it
- * is a surefire-tier unit test that starts no Spring context, provisions no container and touches no
- * persistence; every temporary file it uses comes from JUnit's own temporary-directory support so the
- * run is hermetic and repeatable; it adds no dependency and no annotation processor; it names no
- * credential, no numeric performance figure and no wall-clock expectation; and it compiles under all
- * lint categories with warnings promoted to errors and no warning suppressed anywhere.
- *
- * <h2>Provenance</h2>
- *
- * <p>Legacy estate at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p>That stamp is a <strong>matrix-header string only and is never asserted per member</strong>,
  * because it is demonstrably not universal: a census of the legacy tree found 78 members carrying it,
  * 3 carrying later stamps, all 17 screen definitions carrying a different one again, and 25 carrying
@@ -750,8 +734,8 @@ class RejectRecordWriterTest {
      *
      * <p>The group above builds each entity by hand, so nothing it writes ever had an input image and every
      * one of its assertions is satisfied by a faithful rendering. That is a real property and it is not this
-     * one. The legacy write is {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA}
-     * [app/cbl/CBTRN02C.cbl:L447] - the record area the {@code READ} filled - so the contract is a byte
+     * one. The legacy write copies the daily-transaction record area - what the preceding read filled -
+     * into the reject record's leading segment [app/cbl/CBTRN02C.cbl:L447], so the contract is a byte
      * copy of the input, and a byte copy is only distinguishable from a faithful render where the decode
      * loses information.
      *

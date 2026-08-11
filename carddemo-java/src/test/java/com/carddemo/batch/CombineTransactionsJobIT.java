@@ -119,9 +119,7 @@ import org.springframework.test.context.DynamicPropertySource;
  * whose cause is a test that already passed - so the reserved range is restored after the run whatever
  * its outcome.
  *
- * <p>Provenance: the legacy combine job, the generation-group definitions and the transaction copybook
- * at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here.
+ * <p>No legacy source text is transcribed here.
  */
 @SpringBootTest(classes = CombineTransactionsJobIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

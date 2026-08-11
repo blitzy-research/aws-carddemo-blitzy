@@ -56,10 +56,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * belongs in a log line or an exception message. The rendering is therefore limited to the
  * identifier and the two classification codes, and a test below proves that no card
  * number, amount or merchant value reaches it.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("DailyTransaction: the three-hundred-fifty-byte daily-transaction record")
 class DailyTransactionBoundaryTest {

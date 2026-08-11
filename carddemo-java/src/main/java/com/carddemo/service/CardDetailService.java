@@ -41,27 +41,23 @@ import com.carddemo.util.PfKeyTranslator;
  * The card-detail screen, transaction {@code CCDL}: one read-only turn that resolves a single card
  * from an account number and a card number and presents it, or explains why it could not.
  *
- * <p>Translated from {@code app/cbl/COCRDSLC.cbl}, 887 lines, at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). The screen work area comes from
- * {@code app/cpy/CVCRD01Y.cpy} and the attention-key store from {@code app/cpy/CSSTRPFY.cpy}. No
- * legacy source text is copied into this module; every claim below cites a member and a line.
+ * <p>The screen work area comes from {@code app/cpy/CVCRD01Y.cpy} and the attention-key store from
+ * {@code app/cpy/CSSTRPFY.cpy}. No legacy source text is copied into this module; every claim below
+ * cites a member and a line.
  *
  * <h2>Paragraph count: 37 measured against 34 in the action plan</h2>
  *
- * <p>Both numbers are right and they count different things, so both are stated rather than one
- * being quietly preferred. <strong>34</strong> paragraph labels are declared literally in this
- * member's own procedure division, from {@code 0000-MAIN} at line 248 to {@code ABEND-ROUTINE} at
- * line 857, and that is the action plan's figure. The <strong>37</strong> of the file specification
- * additionally counts the in-line {@code COPY 'CSSTRPFY'} unit at lines 855 to 856 and the two
- * paragraphs that copybook expands into this same procedure division, {@code YYYY-STORE-PFKEY} at
- * line 17 of the copybook and {@code YYYY-STORE-PFKEY-EXIT} at line 80. 34 + 1 + 2 = 37.
+ * <p>Both numbers are right and they count different things. <strong>34</strong> paragraph labels are
+ * declared literally in this member's own procedure division, from {@code 0000-MAIN} at line 248 to
+ * {@code ABEND-ROUTINE} at line 857 - the action plan's figure. The <strong>37</strong> additionally
+ * counts the in-line {@code COPY 'CSSTRPFY'} unit at lines 855 to 856 and the two paragraphs that
+ * copybook expands into the same procedure division, at copybook lines 17 and 80. 34 + 1 + 2 = 37.
  *
  * <p>This class supplies a named method for all 37, so the traceability matrix resolves under either
- * count. The three copybook-boundary methods <em>delegate</em> to {@code PfKeyTranslator} instead of
- * restating its 28-clause selection: that selection is shared by five members and the matrix credits
- * its two paragraphs to the translator, which is where the fold of the upper program-function keys
- * onto the lower twelve also lives.
+ * count. The three copybook-boundary methods <em>delegate</em> to {@code PfKeyTranslator} rather than
+ * restating its 28-clause selection: that selection is shared by five members, the matrix credits its
+ * two paragraphs to the translator, and the fold of the upper program-function keys onto the lower
+ * twelve lives there too.
  *
  * <h2>Family membership, and why the abend path is wired here</h2>
  *
@@ -141,23 +137,15 @@ import com.carddemo.util.PfKeyTranslator;
  *
  * <h2>Boundaries</h2>
  *
- * <p>Read-only by contract: no write, no flush, no version manipulation, no optimistic-lock
- * conflict. No embossed-name folding - that belongs to the card-update service, which folds in place
- * before capturing its old image. No paging and no page size - that belongs to the card-list service.
- * No decimal scaling, no floating-point type, and no conversion of a stored timestamp string. Routes
- * are resolved through {@code NavigationService}; this class declares no route table. Rendering and
- * field-level decoration belong to the response layer, so what leaves here is a value and never a
- * transport object.
+ * <p>Read-only by contract: no write, no flush and no version manipulation, so no optimistic-lock
+ * conflict can arise here. Embossed-name folding belongs to the card-update service, which folds in
+ * place before capturing its old image; paging and page size belong to the card-list service; routes are
+ * resolved through {@code NavigationService}. What leaves here is a value, never a transport object -
+ * rendering and field-level decoration belong to the response layer.
  *
  * <p>Stateless and immutable: the working storage the member declares at lines 36 to 158 lives in a
  * per-turn {@code TurnState}, so one container-managed instance is safely shared and two concurrent
  * turns are wholly independent.
- *
- * <p>No user-specified rules were supplied for this engagement - the project's rules document
- * contains only a statement to that effect - so this class is held to enterprise-standard best
- * practice instead: pinned dependencies, a zero-warning build, one-way layering, no code generation
- * or reflection, no secret in source, structured logging with no hardcoded performance figure, the
- * licence header above, and full paragraph-level auditability.
  *
  * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
  * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
@@ -1677,10 +1665,10 @@ public class CardDetailService {
 
         // Lines 515 to 524 hold a multi-way selection. Arm order preserved; the catch-all is the last arm.
         if (state.accountFilterState.isNotOk() || state.accountFilterState.isBlank()) {
-            // MOVE -1 TO ACCTSIDL at line 518.
+            // Line 518 places the cursor on the account-identifier field.
             state.focusField = FIELD_ACCOUNT_ID;
         } else if (state.cardFilterState.isNotOk() || state.cardFilterState.isBlank()) {
-            // MOVE -1 TO CARDSIDL at line 521.
+            // Line 521 places the cursor on the card-number field.
             state.focusField = FIELD_CARD_NUMBER;
         } else {
             // WHEN OTHER at line 522.
@@ -1755,7 +1743,7 @@ public class CardDetailService {
         state.reEnter = true;
         state.context = state.context.withReEntry();
 
-        // EXEC CICS SEND MAP ... CURSOR ERASE FREEKB at lines 569 to 576.
+        // Lines 569 to 576 send the map, position the cursor, erase the screen and free the keyboard.
         state.screenSent = true;
 
         sendScreenExit(state);

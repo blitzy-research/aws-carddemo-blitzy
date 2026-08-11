@@ -21,18 +21,16 @@ package com.carddemo.util;
  * one raised at the dispatch boundary.
  *
  * <p><strong>Why the shape is not written where the refusal happens.</strong> Two refusals exist for
- * different reasons and in different places: the security chain refuses a request that carries no usable
+ * different reasons and in different places: the security chain refuses a request carrying no usable
  * credential or no entitlement, before any handler is reached, and the boundary's own failure handler
  * refuses one a handler rejected. A client must not be able to tell the two apart by the shape of what
- * came back, so both must render the one error contract - and that contract is a transport type owned by
- * the boundary package. The security chain may not import the boundary package, so it names this
- * interface instead and the boundary supplies the implementation. The shape therefore has exactly one
- * home, and it is the home that owns it.
+ * came back, so both must render the one error contract - a transport type owned by the boundary package.
+ * The security chain may not import that package, so it names this interface instead and the boundary
+ * supplies the implementation, which keeps the shape in the one home that owns it.
  *
- * <p><strong>The two texts are here for the same reason.</strong> Both refusals are answered with a fixed
- * summary that names neither the rule that refused nor the entitlement that would have satisfied it, and
- * both sites must use the same words for the same condition. They are declared once, here, and read by
- * both.
+ * <p>The two texts are here for the same reason: both refusals are answered with a fixed summary naming
+ * neither the rule that refused nor the entitlement that would have satisfied it, and both sites must use
+ * the same words for the same condition.
  *
  * <p>An implementation renders a body and nothing else: it sets no status, writes to no stream, reads no
  * request and consults no security context. Deciding the status, and writing the bytes, belongs to

@@ -102,15 +102,10 @@ import org.springframework.core.io.WritableResource;
  * description; and the job DD at {@code app/jcl/POSTTRAN.jcl} line 36 allocates the dataset at
  * {@code LRECL=430}. 350 + 80 = 430 in the program, and 430 in the allocation.
  *
- * <p><strong>There is no 500-byte reject layout.</strong> A targeted, case-inclusive search of
- * {@code app/cbl/CBTRN02C.cbl}, {@code app/jcl/POSTTRAN.jcl} and {@code app/jcl/DALYREJS.jcl} for a
- * 500-byte reject layout or allocation found no such declaration anywhere: no picture clause, no
- * record length, no record size and no space allocation of 500 exists in any of the three members.
- * The only matches on that digit sequence are paragraph-number prefixes - the transaction-balance
- * open and close paragraphs, the validation paragraph and its two lookup subparagraphs, and the
- * reject-write paragraph itself - which are statement labels and carry no width. A 500-byte reject
- * layout is therefore not a discrepancy that this class reconciles or annotates; it is an artefact
- * that does not exist, and no phantom anomaly is recorded for it.
+ * <p><strong>There is no 500-byte reject layout.</strong> A case-inclusive search of
+ * {@code app/cbl/CBTRN02C.cbl}, {@code app/jcl/POSTTRAN.jcl} and {@code app/jcl/DALYREJS.jcl} finds no
+ * picture clause, record length or space allocation of 500 - the only matches on that digit sequence are
+ * paragraph-number prefixes, which carry no width. Nothing here reconciles or annotates one.
  *
  * <p><strong>The reject dataset's own definition member carries misleading documentation, and it is
  * documentation only.</strong> {@code app/jcl/DALYREJS.jcl} line 19 carries a banner announcing the
@@ -198,24 +193,6 @@ import org.springframework.core.io.WritableResource;
  * is nonetheless a declared value of the trailer's reason field, it is distinct from the earlier code
  * that carries identical description text, and this writer emits either one faithfully when it is
  * given one. The two are not merged, aliased or collapsed.
- *
- * <h2>Standards</h2>
- *
- * <p>No user-specified rules were provided for this migration, so this file is held to
- * enterprise-standard best practice instead: constructor injection with no field injection, an
- * immutable public surface, explicit imports with no wildcard and no static import, no reflection and
- * no generated code, no raw or dynamically assembled query text, no process invocation, no console
- * stream, and compilation under all lint categories with warnings promoted to errors and with no
- * warning suppressed anywhere.
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL, JCL, BMS, copybook or CICS
- * resource text is transcribed here: the legacy source is cited by member, paragraph, field and line
- * number and its statements are described rather than quoted, and nothing in this class reads the
- * legacy tree at run time.
  */
 public final class RejectRecordWriter implements ItemStreamWriter<RejectRecordWriter.RejectedTransaction> {
 
@@ -529,8 +506,9 @@ public final class RejectRecordWriter implements ItemStreamWriter<RejectRecordWr
      * and the concatenation, and nothing else.
      *
      * <p><strong>&#9733; The leading segment is the input's own bytes, not a rendering of them.</strong>
-     * {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA} moves the record area the {@code READ} filled, so the
-     * legacy reject record carries the input verbatim - unaltered, and unexamined. This method therefore
+     * The legacy reject write copies the whole record area that the preceding read filled into the reject
+     * record's leading segment [app/cbl/CBTRN02C.cbl:L447], so it carries the input verbatim - unaltered,
+     * and unexamined. This method therefore
      * uses the image the mapper captured when it sliced the record, and re-renders only when there is no
      * such image because the item never came from one.
      *

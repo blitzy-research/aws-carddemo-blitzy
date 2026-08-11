@@ -46,10 +46,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for {@link TransactionAddRequest}, the request body of legacy transaction {@code CT02}
  * implemented by {@code app/cbl/COTRN02C.cbl} over screen {@code app/cpy-bms/COTRN02.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Either key, not both.</strong> The screen accepts an account identifier or a card
  * number and resolves the other through the cross-reference, which is why both are optional at this
  * layer and why the rejection for supplying neither is a whole-screen message rather than a per-field

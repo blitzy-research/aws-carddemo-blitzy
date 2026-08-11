@@ -214,8 +214,8 @@ public final class JobSubmissionService {
     private static final String NONCE_GROUP_SEPARATOR = "-";
 
     /*
-     * The bounds and substitutions that shape a failure diagnostic used to be declared here, five
-     * constants and four helpers of them. They now live in FailureDiagnostics, in the utility layer,
+     * The bounds and substitutions that shape a failure diagnostic are NOT declared here - five constants
+     * and four helpers of them. They live in FailureDiagnostics, in the utility layer,
      * because this class is no longer the only site that must decide what a failure may publish: the
      * REST boundary handler and the report-request service reached the same requirement and would
      * otherwise have carried a second copy of the same policy. Two copies of a disclosure rule are how
@@ -753,9 +753,9 @@ public final class JobSubmissionService {
      * Mints a new submission identity while retaining the reporting period as a readable prefix.
      *
      * <p>The nonce is what makes it new. Two calls for one period therefore produce two identities and
-     * two submissions; a deterministic period-only form was declared here by an earlier revision so that
-     * a repeated request would deduplicate onto the first, and it is withdrawn - the appending legacy
-     * queue ran the job again, and no caller ever reached the deterministic form. See
+     * two submissions, AND A DETERMINISTIC PERIOD-ONLY FORM MUST NOT BE DECLARED HERE. Deduplicating a
+     * repeated request onto the first submission is not the legacy behaviour - the appending legacy queue
+     * ran the job again - and no caller reaches such a form. See
      * {@code docs/decision-log.md} DL-314.
      *
      * @param startDate the fixed-width start-date slot

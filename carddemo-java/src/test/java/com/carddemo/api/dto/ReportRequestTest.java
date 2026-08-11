@@ -65,9 +65,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code CORPT00C} line 212 with the monthly clause immediately after it, tests them in the fixed
  *       order monthly, yearly, custom at lines 214, 240 and 256, acts on the first non-blank one, and
  *       falls to its catch-all clause at line 437 when none is marked. All three are carried as three
- *       separately markable one-character components. An earlier revision collapsed them into one
- *       enumerated component on the grounds that the positions are mutually exclusive and that a
- *       multiply-marked state should be unrepresentable; neither premise holds. Three independently
+ *       separately markable one-character components. COLLAPSING THEM INTO ONE enumerated component on
+ *       the grounds that the positions are mutually exclusive and that a multiply-marked state should be
+ *       unrepresentable rests on two premises, neither of which holds. Three independently
  *       markable fields mean a submission carrying two or three marks is a state the 3270 screen can
  *       actually produce, and the program does not reject it - it resolves it by that fixed order. One
  *       value cannot express "monthly and custom were both marked", so it cannot reproduce the
@@ -143,11 +143,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>Provenance</h2>
  *
- * <p>Every width, line number and count above was read from the CardDemo COBOL estate at checkout
- * commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The estate under {@code app/} is read-only
- * reference: it is cited by member name, item name, item width and line number only, and no COBOL,
- * screen-map or job-control text is reproduced anywhere in this file.
+ * <p>The estate under {@code app/} is read-only reference: it is cited by member name, item name, item
+ * width and line number only, and no COBOL, screen-map or job-control text is reproduced anywhere in this
+ * file.
  */
 @DisplayName("ReportRequest :: the inbound contract of legacy transaction CR00")
 class ReportRequestTest {
@@ -249,7 +247,7 @@ class ReportRequestTest {
             List.of("monthlySelection", "yearlySelection", "customSelection");
 
     /**
-     * The single collapsed property an earlier revision published in place of the three markers.
+     * The single collapsed property that must never be published in place of the three markers.
      * Asserted absent, because accepting a resolved report type here would relocate the program's own
      * first-match-wins decision onto the caller.
      */

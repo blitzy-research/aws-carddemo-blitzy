@@ -86,10 +86,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * fall back to the platform default zone; these tests inject a fixed UTC clock
  * and assert the resulting 26-character timestamp image exactly.</p>
  *
- * <p>Provenance: legacy sources read at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text
- * is reproduced here.</p>
+ * <p>No legacy source text is reproduced here.</p>
  */
 @DisplayName("AbstractCobolStep - the shared open, read-loop, close and abend skeleton")
 class AbstractCobolStepBaselineTest {

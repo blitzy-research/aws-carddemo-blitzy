@@ -48,10 +48,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Unit tests for {@link BillPaymentResponse}, the response body of legacy transaction {@code CB00}
  * implemented by {@code app/cbl/COBIL00C.cbl} over screen {@code app/cpy-bms/COBIL00.CPY}.
  *
- * <p><strong>Provenance.</strong> Read from the mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Two balances, both monetary and both truncating.</strong> {@code ACCT-CURR-BAL} is
  * {@code PIC S9(10)V99} in {@code app/cpy/CVACT01Y.cpy:L1-L30}, and the estate contains no
  * {@code ROUNDED} clause anywhere, so every store into a two-decimal field truncates. The response

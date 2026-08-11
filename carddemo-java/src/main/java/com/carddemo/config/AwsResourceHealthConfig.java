@@ -105,8 +105,8 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * happen, and the callers here are not all trusted: the aggregate health endpoint and the readiness
  * group are deliberately reachable without a credential, because an orchestrator and a Compose
  * dependent must be able to ask whether this instance can serve before they have any way to obtain one.
- * Every probe used to be its own bucket existence call, its own queue attribute resolution and its own
- * topic listing, so an unauthenticated caller chose the rate at which this deployment called its
+ * Were every probe its own bucket existence call, its own queue attribute resolution and its own topic
+ * listing, an unauthenticated caller would choose the rate at which this deployment called its
  * provider - which is provider throttling, metered request cost and, against a provider that answers
  * slowly, exhaustion of the very worker slots the deadline depends on, all driven from outside.
  *

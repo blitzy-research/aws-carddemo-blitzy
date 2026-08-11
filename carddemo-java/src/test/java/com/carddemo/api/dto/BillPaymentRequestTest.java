@@ -96,13 +96,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * such constraint fires on at least one of those inputs. Bounds are established the same way, by
  * measuring where the reported violation appears rather than by reading the bound back off the
  * annotation.
- *
- * <h2>Provenance</h2>
- *
- * <p>Every width and citation above is read from the CardDemo estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is not universal across the
- * estate and is recorded here as prose rather than as a constant.
  */
 @DisplayName("BillPaymentRequest :: bill-payment request contract of legacy transaction CB00")
 class BillPaymentRequestTest {

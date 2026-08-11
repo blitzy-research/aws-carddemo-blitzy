@@ -95,10 +95,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  * category balance.</strong> The misattribution has since been corrected at its source:
  * {@link FileMaintenanceService} now translates {@code CBACT03C} as the cross-reference reader it is, so
  * all four modes of this job delegate to that service and this configuration carries no reader of its own.
- * An earlier revision did carry one - a second translation of the same five paragraphs, written on the
- * batch tier's step template purely to avoid the misattributed entry point - and it is gone, because a
- * paragraph of a member must have exactly one Java owner or the traceability matrix has two answers for
- * one row. The correction is recorded in {@code docs/decision-log.md}.
+ * NO SUCH READER MAY BE DECLARED HERE - a second translation of the same five paragraphs, written on
+ * the batch tier's step template purely to avoid a misattributed entry point - because a paragraph of a
+ * member must have exactly one Java owner or the traceability matrix has two answers for one row. The
+ * correction is recorded in {@code docs/decision-log.md}.
  *
  * <h2>Sequential access on an indexed file is ascending primary-key order</h2>
  *
@@ -176,11 +176,9 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <h2>Provenance</h2>
  *
- * <p>Translated from the CardDemo mainframe estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Every figure above was measured by direct read
- * of that checkout. The legacy tree is cited and never transcribed: no job-control, program or copybook
- * statement text appears here, and nothing under {@code app/} is read at run time.
+ * <p>Every figure above was measured by direct read of that checkout. The legacy tree is cited and
+ * never transcribed: no job-control, program or copybook statement text appears here, and nothing
+ * under {@code app/} is read at run time.
  *
  * <p>Nothing in this class fires when the context starts. It contributes no start-up runner, lifecycle
  * participant, initialising callback, event listener or scheduled trigger, it declares no job name for

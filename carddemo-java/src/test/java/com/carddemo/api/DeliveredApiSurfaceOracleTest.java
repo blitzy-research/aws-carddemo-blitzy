@@ -118,9 +118,8 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * concerns a response body: what is under test is the surface, and each operation's behaviour is specified
  * by its own controller and service suites.
  *
- * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy transaction identifiers below are
- * metadata read from {@code app/csd/CARDDEMO.CSD}; no legacy source text is reproduced.
+ * <p>The legacy transaction identifiers below are metadata read from {@code app/csd/CARDDEMO.CSD} ; no
+ * legacy source text is reproduced.
  */
 @WebMvcTest(controllers = {
     AccountController.class,

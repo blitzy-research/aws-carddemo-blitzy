@@ -54,10 +54,6 @@ import java.util.Optional;
  * <p>Deeply immutable: every component is a {@code String} or an enumeration constant and every derived
  * view returns a fresh immutable value, so an instance is safe for unsynchronised concurrent use.
  *
- * <p>Provenance: {@code app/cpy/CVCRD01Y.cpy} and {@code app/cpy/CSSTRPFY.cpy}, read as read-only
- * reference at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No copybook text is transcribed.
- *
  * @param keyAction the resolved attention key, or {@code null} when the identifier resolved to none
  * @param nextProgram the declarative next-program field, never dispatched, or {@code null}
  * @param nextMapset the declarative next-mapset field, or {@code null}

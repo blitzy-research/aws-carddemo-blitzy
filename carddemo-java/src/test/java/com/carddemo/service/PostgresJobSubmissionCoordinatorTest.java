@@ -72,9 +72,6 @@ import org.springframework.transaction.TransactionSystemException;
  * the messages exist, a job stream will run from them, and reporting zero cards invites a resubmission that
  * runs the job twice. Nothing in the exception distinguishes them, so the coordinator has to remember, and
  * these tests drive the failure at each side of that line.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 @DisplayName("PostgresJobSubmissionCoordinator: bounded waiting and a verdict that matches the queue")
 class PostgresJobSubmissionCoordinatorTest {
@@ -348,8 +345,8 @@ class PostgresJobSubmissionCoordinatorTest {
         @DisplayName("a release failure returns what was published instead of claiming nothing was")
         void aReleaseFailureReportsWhatWasPublished() {
             final AtomicInteger submissionsRun = new AtomicInteger();
-            // The commit runs after the callback returns, so this is the failure that used to be
-            // reported as a submission that never happened.
+            // // The commit runs after the callback returns, so this is the failure a naive coordinator reports
+            // // as a submission that never happened.
             doThrow(new TransactionSystemException("the transaction could not be committed"))
                     .when(transactionManager).commit(transactionStatus);
 

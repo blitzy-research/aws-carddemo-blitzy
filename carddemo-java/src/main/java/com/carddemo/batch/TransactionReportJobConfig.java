@@ -83,15 +83,6 @@ import com.carddemo.util.ZonedDecimalCodec;
  * Declares the date-windowed transaction detail report job: unload the transaction master, filter and
  * order the unloaded generation, then emit the fixed-width report.
  *
- * <p>Legacy antecedents, all measured by direct read at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19: the 84-line job member
- * {@code app/jcl/TRANREPT.jcl}, its equivalent cataloged form {@code app/proc/TRANREPT.prc}, the
- * 649-line report program {@code app/cbl/CBTRN03C.cbl} that both drive, the single-step unload wrapper
- * {@code app/proc/REPROC.prc}, and the output generation bases declared in
- * {@code app/jcl/DEFGDGB.jcl} and re-declared in {@code app/jcl/REPTFILE.jcl}. The legacy source is
- * cited, never quoted, and is never read at run time.
- *
  * <h2>The measured job stream: three steps, and not one condition-code gate</h2>
  *
  * <p>The job member declares a procedure-library reference and then exactly three steps:
@@ -232,28 +223,23 @@ import com.carddemo.util.ZonedDecimalCodec;
  * <h2>What this configuration deliberately does not do</h2>
  *
  * <ul>
- *   <li><strong>No process is spawned.</strong> The legacy first step invokes a cataloged wrapper
- *       around a copy utility and the second invokes an external sort utility. Both become ordinary
- *       read-and-write steps: no shell is invoked, no command is composed, no external tool is
- *       addressed, and no statement text is assembled.</li>
- *   <li><strong>No concurrency.</strong> No task executor, partitioner, multi-threaded step or
- *       parallel flow, because ordering is the reason the second step exists and the report is
- *       compared byte for byte.</li>
- *   <li><strong>Nothing fires at context start.</strong> Job launching is disabled in configuration
- *       and this class declares no runner, no lifecycle callback and no schedule. The job is launched
- *       on demand by {@link #JOB_NAME} through the registry the shared batch infrastructure
- *       publishes.</li>
- *   <li><strong>No orchestration beyond this job.</strong> It chains to no other job and no aggregate
- *       job exists, because the estate has no master orchestrator.</li>
- *   <li><strong>No mutable shared state.</strong> Every field of this class is final and none of them
- *       accumulates. Each step execution builds a fresh program lifecycle, so a page counter, a
- *       running total, a file handle and a read position live only for the execution that owns them
- *       and cannot leak into the next run.</li>
- *   <li><strong>No storage resource is created and no retention is applied.</strong> Each generation
- *       is one output resource per job execution, resolved from configuration by logical name.</li>
- *   <li><strong>No performance figure of any kind</strong> - no throughput, latency, heap, timeout,
- *       pool size, skip limit, retry limit, commit interval or backoff. Every step is timed on the
- *       shared meter registry and the metrics endpoint is where a baseline is read from.</li>
+ *   <li><strong>No process is spawned.</strong> The legacy first step invokes a cataloged wrapper around a
+ *       copy utility and the second an external sort utility; both become ordinary read-and-write steps,
+ *       so no shell is invoked and no command is composed.</li>
+ *   <li><strong>No concurrency</strong> - no task executor, partitioner, multi-threaded step or parallel
+ *       flow, because ordering is the reason the second step exists and the report is compared byte for
+ *       byte.</li>
+ *   <li><strong>Nothing fires at context start.</strong> Job launching is disabled in configuration and
+ *       this class declares no runner, lifecycle callback or schedule; the job is launched on demand by
+ *       {@link #JOB_NAME} through the registry the shared batch infrastructure publishes. It chains to no
+ *       other job, because the estate has no master orchestrator.</li>
+ *   <li><strong>No mutable shared state.</strong> Every field is final and none accumulates, and each step
+ *       execution builds a fresh program lifecycle, so a page counter, running total, file handle and read
+ *       position live only for the execution that owns them and cannot leak into the next run.</li>
+ *   <li><strong>No storage resource is created, no retention applied and no performance figure set</strong>
+ *       - each generation is one output resource per job execution resolved from configuration by logical
+ *       name, and every step is timed on the shared meter registry, which is where a baseline is read
+ *       from.</li>
  * </ul>
  *
  * <h2>The report consumes the sort step's frozen generation</h2>
@@ -371,9 +357,9 @@ public final class TransactionReportJobConfig {
     // publishers each carrying their own copy of the depth is precisely how the retained set comes to
     // depend on which job ran last, so this file reads the store's constants at the point of use and
     // holds no retention figure of its own. The store is the one place a measured depth is written down,
-    // and the double declaration of the report base - an earlier limit of five with a scratch attribute,
-    // superseded by a later limit of ten without one - is resolved there and recorded in
-    // {@code docs/decision-log.md} rather than being carried here as a second, unread constant.
+    // // and the double declaration of the report base - a limit of five with a scratch attribute against a
+    // // later limit of ten without one - is resolved there and recorded in
+    // // {@code docs/decision-log.md} rather than being carried here as a second, unread constant.
     // -----------------------------------------------------------------------------------------------
 
     // -----------------------------------------------------------------------------------------------

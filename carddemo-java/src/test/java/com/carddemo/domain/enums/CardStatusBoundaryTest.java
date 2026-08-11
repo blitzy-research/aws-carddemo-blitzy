@@ -51,10 +51,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * one resolves to nothing rather than being trimmed or truncated, because trimming
  * would silently accept a padded value that the fixed-width record could never have
  * contained.</p>
- *
- * <p>Translated from the CardDemo COBOL estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
 @DisplayName("CardStatus: the one-character active-status vocabulary of the card record")
 class CardStatusBoundaryTest {

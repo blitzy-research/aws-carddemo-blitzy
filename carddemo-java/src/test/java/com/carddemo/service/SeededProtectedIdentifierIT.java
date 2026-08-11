@@ -60,12 +60,12 @@ import java.util.Locale;
  * the column to {@code VARCHAR(255)} to make room for it; {@link Customer} refuses any value that is
  * not shaped like one, in its constructor and in its mutator; and
  * {@link SensitiveFieldEncryptionService} exists to produce and read exactly that shape. All three
- * held, and an earlier revision of the seed nonetheless loaded fifty cleartext identifiers - because
+ * hold, AND A SEED THAT LOADS FIFTY CLEARTEXT IDENTIFIERS STILL PASSES ALL THREE - because
  * Hibernate hydrates fields directly rather than through the constructor, so a seeded row loads
- * silently and only fails at the moment something actually decrypts it. Nothing in the build noticed,
- * because nothing in the build looked. (The delivered seed embeds sealed envelopes; that is DL-103.
- * The failure mode is described in the past tense deliberately, because the same blindness recurs for
- * a mis-keyed envelope, which loads just as silently.)
+ * silently and only fails at the moment something actually decrypts it. Nothing in the build notices,
+ * because nothing in the build looks unless this specification does. (The delivered seed embeds sealed
+ * envelopes; that is DL-103. The same blindness applies to a mis-keyed envelope, which loads just as
+ * silently.)
  *
  * <p>This test is what looks. It reads the seeded rows out of a real migrated database and, for every
  * one of them, opens the stored value through the application's own service and compares the recovered
@@ -102,10 +102,8 @@ import java.util.Locale;
  *       against the entity that declares it rather than against a restatement of its rule.</li>
  * </ol>
  *
- * <p>Provenance: this test has no legacy antecedent; the legacy estate carries no test harness and
- * stores this identifier as twenty cleartext characters at offset 288 of the 500-byte customer record.
- * Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * <p>Provenance: this test has no legacy antecedent; the legacy estate carries no test harness and stores
+ * this identifier as twenty cleartext characters at offset 288 of the 500-byte customer record.
  */
 @DisplayName("seeded government-issued identifiers, opened against a real database")
 class SeededProtectedIdentifierIT extends AbstractPostgresIT {

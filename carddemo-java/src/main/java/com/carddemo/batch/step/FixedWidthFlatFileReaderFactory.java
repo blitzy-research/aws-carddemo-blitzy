@@ -70,12 +70,9 @@ import org.springframework.stereotype.Component;
  *
  * <h2>Provenance</h2>
  *
- * <p>The eleven layouts were measured by direct read of the legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose members carry the upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That estate is a read-only reference: no
- * COBOL, JCL or copybook text is reproduced anywhere in this module, nothing under {@code app/} is
- * read at run time, and the citations below name a member only so a reviewer can find the authority
- * for a width.
+ * <p>That estate is a read-only reference: no COBOL, JCL or copybook text is reproduced anywhere in
+ * this module, nothing under {@code app/} is read at run time, and the citations below name a
+ * member only so a reviewer can find the authority for a width.
  *
  * <h2>The eleven layouts</h2>
  *
@@ -120,10 +117,10 @@ import org.springframework.stereotype.Component;
  * data:
  *
  * <ul>
- *   <li><strong>Transaction and daily transaction are both 350 bytes and field-for-field identical</strong>,
- *       differing only in the field-name prefix their copybooks use. They are different datasets with
- *       different lifecycles: the daily transaction file is posting <em>input</em>, consumed once and
- *       superseded, while the transaction file is the master to which postings and synthesised
+ *   <li><strong>Transaction and daily transaction are both 350 bytes and field-for-field
+ * identical</strong>,       differing only in the field-name prefix their copybooks use. They are different
+ * datasets with       different lifecycles: the daily transaction file is posting <em>input</em>, consumed
+ * once and       superseded, while the transaction file is the master to which postings and synthesised
  *       interest records are written and from which reports and statements are produced. Two entities,
  *       two mappers, two readers, never an alias of one another;
  *   <li><strong>The card cross-reference, the transaction category balance and the disclosure group are

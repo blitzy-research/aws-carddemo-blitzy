@@ -45,12 +45,9 @@ import com.carddemo.util.PfKeyTranslator;
  * The account-view transaction {@code CAVW}: one read-only turn that resolves an account identifier to an
  * account and its customer and hands the screen state back for rendering.
  *
- * <p><strong>Provenance.</strong> Legacy authority {@code app/cbl/COACTVWC.cbl}, 941 lines, transaction
- * {@code CAVW}, read at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} whose members carry
- * the upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No line of COBOL is
- * transcribed here; the member, its paragraph names, its field names, its line numbers and its exact
- * message literals are cited, which is what keeps the traceability matrix verifiable against a tree this
- * module never reads at runtime.
+ * <p>No line of COBOL is transcribed here; the member, its paragraph names, its field names, its
+ * line numbers and its exact message literals are cited, which is what keeps the traceability
+ * matrix verifiable against a tree this module never reads at runtime.
  *
  * <p><strong>Paragraph count: 35 units, 34 distinct names, 36 methods.</strong> Thirty-five paragraph
  * labels are physically declared in the member's procedure division between lines 262 and 916, and only
@@ -65,8 +62,8 @@ import com.carddemo.util.PfKeyTranslator;
  * paragraphs it inserts, at lines 17 and 80 of {@code app/cpy/CSSTRPFY.cpy}, are units of that copybook,
  * which the matrix gives a section and two rows of its own. The copybook is included by five members, so
  * counting its paragraphs against each of them would report ten units for two and the frozen 544-row total
- * would no longer hold. An earlier revision of this class published a measured thirty-eight by adding the
- * directive's Area A slot and the two inserted paragraphs to its own count.
+ * would no longer hold. Adding the directive's Area A slot and the two inserted paragraphs to this
+ * class's own count would publish a measured thirty-eight, and must not.
  *
  * <p><strong>Anomaly: one paragraph name, two declarations.</strong> {@code 0000-MAIN-EXIT} is declared
  * twice, at line 408 and again at line 411, each with the same no-op body. Both declarations map to the
@@ -82,15 +79,14 @@ import com.carddemo.util.PfKeyTranslator;
  * {@code 9999} at line 934. That path is wired here, in {@code abendRoutine}, because the legacy wired it
  * here; the twelve online programs that register no handler must not acquire one.
  *
- * <p><strong>Read-only, and structurally so.</strong> This is a view transaction. It performs no write of
- * any kind: no save, no delete, no flush, no modifying query, no raw SQL. The single entry point is
- * annotated read-only and nothing else. The version attribute exists on the account entity but is never
- * read for a comparison and never incremented here, so no optimistic-lock conflict can arise from this
- * class. That the relational store gives this transaction READ COMMITTED isolation is a documented
- * <em>strict improvement</em> over the legacy posture, where every application file was defined
+ * <p><strong>Read-only, and structurally so.</strong> This is a view transaction: its single entry point
+ * is annotated read-only and it performs no write of any kind. The version attribute exists on the account
+ * entity but is never read for a comparison and never incremented here, so no optimistic-lock conflict can
+ * arise from this class. That the relational store gives this transaction READ COMMITTED isolation is a
+ * documented <em>strict improvement</em> over the legacy posture, where every application file was defined
  * uncommitted-read with no recovery and no journal: a reviewer should read the stronger isolation as an
  * upgrade and not as a behavioural regression, and it is recorded as such in the decision log even though
- * this particular service never writes.
+ * this service never writes.
  *
  * <p><strong>Three reads, in the legacy order, with no association between them.</strong> The customer is
  * reached through the card cross-reference, exactly as the legacy reaches it: the cross-reference is read
@@ -162,15 +158,13 @@ import com.carddemo.util.PfKeyTranslator;
  * <p><strong>What this class deliberately does not do.</strong> It applies no range check to the credit
  * score: the stored value is displayed exactly as held, because the 300-to-850 rule is screen-level input
  * validation owned by the account-update path and 21 of the 50 reference customers carry a score below
- * that floor, the lowest being three digits of {@code 001}. It performs no field-level error decoration
- * and writes no asterisk marker, both of which belong to the presentation layer. It scales no monetary
- * value, uses no binary floating-point type anywhere, and slices no fixed-width record image: layout
- * knowledge belongs to the record mappers in the utility layer. It converts none of the stored
- * 26-character timestamp strings into a temporal type. It reaches no card list or card detail behaviour.
- * It decodes no attention key itself and declares no route table, delegating both to the utility-layer key
- * translator and to the navigation service. Rendering - flattening this result into fixed-width screen
- * fields, and formatting the national identifier as the legacy formats it at lines 496 to 504 - belongs to
- * the presentation DTO layer and is absent here.
+ * that floor, the lowest being three digits of {@code 001}. Field-level error decoration and the asterisk
+ * marker belong to the presentation layer; monetary scaling and fixed-width slicing belong to the record
+ * mappers, so no binary floating-point type appears and no stored 26-character timestamp is converted to a
+ * temporal type. Attention-key decoding and route resolution are delegated to the utility-layer key
+ * translator and the navigation service. Rendering - flattening this result into fixed-width screen fields
+ * and formatting the national identifier as the legacy formats it at lines 496 to 504 - belongs to the
+ * presentation DTO layer.
  *
  * <p><strong>Regulated values pass through untouched and are never logged.</strong> The national
  * identifier and the government-issued identifier are held as protected values rather than as cleartext,
@@ -685,11 +679,11 @@ public final class AccountViewService {
      * <p>Three consequences are deliberate. A recognised but inactive key gets no message at all, so the
      * high and low program-function keys stay indistinguishable. Because the assignment observes the
      * legacy's own first-writer-wins guard, an unmapped identifier's message takes precedence over a later
-     * guarded validation message on the same turn. And <strong>the legacy input flag is left alone</strong>:
-     * the edit paragraph sets it in order at line 624 and would clear anything raised here, so this
-     * condition is carried separately and combined into the published error flag by the result assembly
-     * instead. That keeps the legacy flag's semantics exactly as the source writes them while still telling
-     * a client its key was not understood. The divergence is recorded in {@code docs/decision-log.md}.
+     * guarded validation message on the same turn. And <strong>the legacy input flag is left
+     * alone</strong>: the edit paragraph sets it in order at line 624 and would clear anything raised here,
+     * so this condition is carried separately and combined into the published error flag by the result
+     * assembly instead. That keeps the legacy flag's semantics exactly as the source writes them while
+     * still telling a client its key was not understood. The divergence is recorded in {@code docs/decision-log.md}.
      */
     private void reportUnmappedAttentionKey(final WorkingStorage state) {
         if (!state.attentionKeyUnmapped) {
@@ -914,12 +908,12 @@ public final class AccountViewService {
      * blank at line 466, and carrying the received identifier otherwise at line 468 - and two guarded
      * groups follow.
      *
-     * <p><strong>Both guards are reproduced exactly as written, including the one that looks wrong.</strong>
-     * The account group at lines 471 to 491 is guarded by <em>either</em> master having been found, not by
-     * the account master having been found, so an account miss whose customer read then succeeds still
-     * presents the account field group. The customer group at lines 493 to 523 is guarded by the customer
-     * master alone. Which entities are present is carried in the result together with both found flags, so
-     * a renderer can reproduce the legacy's own presentation decision rather than infer one.
+     * <p><strong>Both guards are reproduced exactly as written, including the one that looks
+     * wrong.</strong> The account group at lines 471 to 491 is guarded by <em>either</em> master having
+     * been found, not by the account master having been found, so an account miss whose customer read then
+     * succeeds still presents the account field group. The customer group at lines 493 to 523 is guarded by
+     * the customer master alone. Which entities are present is carried in the result together with both
+     * found flags, so a renderer can reproduce the legacy's own presentation decision rather than infer one.
      *
      * <p>The ten account fields moved at lines 473 to 490 and the seventeen customer fields moved at lines
      * 494 to 522 are not copied field by field here: the entities carry them, and flattening them into
@@ -1232,8 +1226,8 @@ public final class AccountViewService {
      *
      * <p>The three-arm decision at lines 737 to 769 is reproduced in its clause order, with the final arm
      * as the default. Found carries the customer identifier and the card number out of the row at lines 739
-     * to 740 - which is the <em>only</em> way a card number reaches this screen, since the card table has no
-     * access path in this transaction. Not found raises the error flag and the account filter flag and,
+     * to 740 - which is the <em>only</em> way a card number reaches this screen, since the card table has
+     * no access path in this transaction. Not found raises the error flag and the account filter flag and,
      * only if the message field is still off, composes the miss text. The default arm does the same and
      * composes the read-error text instead; it does not abend, because the legacy does not abend here.
      */
@@ -1272,12 +1266,12 @@ public final class AccountViewService {
      * Performs the read statement at lines 727 to 735 and classifies its outcome into one of the three the
      * decision above declares.
      *
-     * <p>A statement-level helper, not a paragraph: it owes no traceability row of its own and the paragraph
-     * that calls it owns the row. It exists so that the decision reads as the decision the source writes,
-     * with the response classification separated from the response handling.
+     * <p>A statement-level helper, not a paragraph: it owes no traceability row of its own and the
+     * paragraph that calls it owns the row. It exists so that the decision reads as the decision the source
+     * writes, with the response classification separated from the response handling.
      *
-     * <p>Absence is not failure. The repository reports a missing row as an absent result and a failing read
-     * by raising, which is what lets the two legacy arms stay distinct instead of collapsing into one.
+     * <p>Absence is not failure. The repository reports a missing row as an absent result and a failing
+     * read by raising, which is what lets the two legacy arms stay distinct instead of collapsing into one.
      */
     private ReadOutcome readCrossReferenceRow(final WorkingStorage state) {
         try {
@@ -1436,13 +1430,13 @@ public final class AccountViewService {
     }
 
     /**
-     * Ends the turn with plain text instead of the screen. Paragraph {@code SEND-PLAIN-TEXT}, line 877, whose
-     * own comment warns that it is not for production use.
+     * Ends the turn with plain text instead of the screen. Paragraph {@code SEND-PLAIN-TEXT}, line 877,
+     * whose own comment warns that it is not for production use.
      *
      * <p>The statements at lines 878 to 886 transmit the 75-character message field and then return
-     * <em>without</em> re-arming a transaction, so the conversation ends rather than continuing. That is why
-     * this path resolves no route: there is no next turn for a route to name, and the result reports the
-     * absence rather than substituting this screen's own destination.
+     * <em>without</em> re-arming a transaction, so the conversation ends rather than continuing. That is
+     * why this path resolves no route: there is no next turn for a route to name, and the result reports
+     * the absence rather than substituting this screen's own destination.
      */
     private AccountViewResult sendPlainText(final WorkingStorage state) {
         state.presentation = Presentation.PLAIN_TEXT;
@@ -1463,9 +1457,9 @@ public final class AccountViewService {
      *
      * <p><strong>This paragraph has no live caller.</strong> Both statements that would have performed it
      * are commented out - at line 768 in the cross-reference read-error arm and at line 818 in the
-     * account-master arm, with a third at line 867 in the customer arm - as is the statement that would have
-     * filled the field it transmits. It is retained as a defined-but-unwired unit for the same reason the
-     * action plan retains the batch program that no job stream invokes: a paragraph that exists owes a
+     * account-master arm, with a third at line 867 in the customer arm - as is the statement that would
+     * have filled the field it transmits. It is retained as a defined-but-unwired unit for the same reason
+     * the action plan retains the batch program that no job stream invokes: a paragraph that exists owes a
      * method, and deleting it would make the traceability count dishonest. It is visible to tests rather
      * than published, which is what "exercised by tests rather than by a live path" means in practice.
      *
@@ -1489,10 +1483,10 @@ public final class AccountViewService {
      * registration at lines 264 to 266.
      *
      * <p><strong>Emit first, then raise.</strong> The legacy defaults its terminal message at lines 918 to
-     * 920, names this member as the culprit at line 922, <em>transmits</em> the abend structure at lines 924
-     * to 928, deregisters itself at lines 930 to 932, and only then abends with code {@code 9999} at line
-     * 934. The ordering is the contract, so this method logs before it delegates and never the other way
-     * round: a diagnostic written after the raise would be written by whatever caught the raise, if
+     * 920, names this member as the culprit at line 922, <em>transmits</em> the abend structure at lines
+     * 924 to 928, deregisters itself at lines 930 to 932, and only then abends with code {@code 9999} at
+     * line 934. The ordering is the contract, so this method logs before it delegates and never the other
+     * way round: a diagnostic written after the raise would be written by whatever caught the raise, if
      * anything did.
      *
      * <p>What the diagnostic says is bounded deliberately. The raw two-character file status is included
@@ -1556,13 +1550,13 @@ public final class AccountViewService {
     /**
      * Composes the cross-reference miss text assembled at lines 747 to 757.
      *
-     * <p>Seven segments concatenated in that order: the eight-character prefix, the eleven-character account
-     * identifier, the thirteen-character middle, the twenty-three-character resource phrase, the ten-character
-     * response slot, the six-character reason phrase and the second ten-character response slot. Eighty-one
-     * characters into a seventy-five-character field, so the legacy assembly overflows and the last six
-     * characters never reach the screen. The overflow is reproduced rather than avoided: the field width is
-     * applied by the same helper every message here passes through, so the truncation is arithmetic and
-     * cannot drift.
+     * <p>Seven segments concatenated in that order: the eight-character prefix, the eleven-character
+     * account identifier, the thirteen-character middle, the twenty-three-character resource phrase, the
+     * ten-character response slot, the six-character reason phrase and the second ten-character response
+     * slot. Eighty-one characters into a seventy-five-character field, so the legacy assembly overflows and
+     * the last six characters never reach the screen. The overflow is reproduced rather than avoided: the
+     * field width is applied by the same helper every message here passes through, so the truncation is
+     * arithmetic and cannot drift.
      *
      * <p>The two response slots hold a CICS response and reason pair in the legacy, which the relational
      * store has no counterpart for. The first carries the migration's own two-character not-found status
@@ -1597,8 +1591,8 @@ public final class AccountViewService {
     /**
      * Composes the customer-master miss text assembled at lines 846 to 856.
      *
-     * <p>Seven segments again, but every one of the fixed ones differs from its account counterparts and the
-     * identifier is nine characters rather than eleven: seventy-eight characters into the same
+     * <p>Seven segments again, but every one of the fixed ones differs from its account counterparts and
+     * the identifier is nine characters rather than eleven: seventy-eight characters into the same
      * seventy-five-character field, so this text loses three rather than six. The reason phrase is upper
      * case here alone.
      */
@@ -1640,11 +1634,11 @@ public final class AccountViewService {
      *
      * <p>Every value here is one the legacy places somewhere observable: the route replaces a transfer or a
      * re-arm, the carried state replaces the communication area, the header and the two message fields
-     * replace map fields, the focus field replaces the cursor position, the error flag is the input flag and
-     * the re-entry flag is the context the next turn will read. The two entities are carried rather than
-     * flattened, because flattening them into fixed-width screen slots is the presentation layer's work and
-     * because this module declares no association that could make either of them a lazy proxy - so there is
-     * nothing here that can fail to initialise once the transaction has closed.
+     * replace map fields, the focus field replaces the cursor position, the error flag is the input flag
+     * and the re-entry flag is the context the next turn will read. The two entities are carried rather
+     * than flattened, because flattening them into fixed-width screen slots is the presentation layer's
+     * work and because this module declares no association that could make either of them a lazy proxy - so
+     * there is nothing here that can fail to initialise once the transaction has closed.
      *
      * <p>The published error flag is the legacy input flag <em>or</em> the migration-only unmapped-key
      * condition. Combining them here rather than in the flag itself is what lets the legacy flag keep its
@@ -1684,8 +1678,8 @@ public final class AccountViewService {
      * Renders a value at a fixed field width: space padded when it is shorter, truncated on the right when
      * it is longer, and a field of spaces when it is absent.
      *
-     * <p>This is the one place a width is applied, which is what makes every message in this class reach its
-     * declared width arithmetically rather than by counted whitespace, and what makes the four legacy
+     * <p>This is the one place a width is applied, which is what makes every message in this class reach
+     * its declared width arithmetically rather than by counted whitespace, and what makes the four legacy
      * overflows reproduce themselves instead of needing to be described. It performs no offset extraction
      * and takes no substring: a record image is sliced by the record mappers in the utility layer and never
      * here. Screen field widths, by contrast, are this screen's own contract.
@@ -1720,9 +1714,9 @@ public final class AccountViewService {
      * wholly low values.
      *
      * <p>This is deliberately narrower than the conventional emptiness test. A fixed-width field holds
-     * padding, and padding is a space or a low value and nothing else, so a field containing a tab or a line
-     * feed is <em>not</em> blank - it holds data this screen did not expect. Widening the test would accept
-     * values the legacy comparison rejects.
+     * padding, and padding is a space or a low value and nothing else, so a field containing a tab or a
+     * line feed is <em>not</em> blank - it holds data this screen did not expect. Widening the test would
+     * accept values the legacy comparison rejects.
      */
     private static boolean isFieldBlank(final String value) {
         if (value == null || value.isEmpty()) {
@@ -1779,8 +1773,8 @@ public final class AccountViewService {
     }
 
     /**
-     * Reports whether a numeric field holds nothing but zero digits - the zero test the edit applies at line
-     * 667, on a field its caller has already established is numeric.
+     * Reports whether a numeric field holds nothing but zero digits - the zero test the edit applies at
+     * line 667, on a field its caller has already established is numeric.
      *
      * <p>Expressed as a digit test rather than by parsing, so an eleven-digit identifier needs no numeric
      * type wide enough to hold it and no arithmetic is introduced where the source performs none.
@@ -1798,14 +1792,14 @@ public final class AccountViewService {
     }
 
     /**
-     * Strips the padding from a fixed-width field so its content can be compared, returning {@code null} for
-     * a field that holds only padding.
+     * Strips the padding from a fixed-width field so its content can be compared, returning {@code null}
+     * for a field that holds only padding.
      *
      * <p>Padding is a trailing space or low value and nothing else, for the reason given on the blank test.
      * Nothing is stripped from the front, and no other character is touched - which is why this is safe to
-     * apply to a program name and is applied to no value whose padding is data. The account group identifier
-     * is ten spaces in every reference row and is never passed through here, because for that field the
-     * spaces <em>are</em> the value.
+     * apply to a program name and is applied to no value whose padding is data. The account group
+     * identifier is ten spaces in every reference row and is never passed through here, because for that
+     * field the spaces <em>are</em> the value.
      */
     private static String stripFieldPadding(final String value) {
         if (value == null) {
@@ -1855,11 +1849,11 @@ public final class AccountViewService {
     }
 
     /**
-     * Records the account identifier into the carried state, reproducing the three assignments at lines 660,
-     * 675 and 678.
+     * Records the account identifier into the carried state, reproducing the three assignments at lines
+     * 660, 675 and 678.
      *
-     * <p>The legacy writes straight into the communication area, which is a field of its working storage. The
-     * carried state here is immutable, so the write becomes a rebuild of it - which is why this helper
+     * <p>The legacy writes straight into the communication area, which is a field of its working storage.
+     * The carried state here is immutable, so the write becomes a rebuild of it - which is why this helper
      * exists rather than a setter.
      */
     private static ScreenNavigationState withCarriedAccountId(final ScreenNavigationState context,
@@ -1884,9 +1878,9 @@ public final class AccountViewService {
      * Rebuilds the carried state with three of its sixteen fields replaced and the other thirteen carried
      * through unchanged.
      *
-     * <p>One rebuild point rather than one per assignment, so a field can never be dropped by an edit to one
-     * caller and preserved by another. The account status field is among the thirteen: this member declares
-     * it through its copybook and assigns it nowhere, so it is carried and not written.
+     * <p>One rebuild point rather than one per assignment, so a field can never be dropped by an edit to
+     * one caller and preserved by another. The account status field is among the thirteen: this member
+     * declares it through its copybook and assigns it nowhere, so it is carried and not written.
      */
     private static ScreenNavigationState rebuildCarriedState(final ScreenNavigationState context,
             final String accountId, final String customerId, final String cardNumber) {
@@ -2021,8 +2015,8 @@ public final class AccountViewService {
             boolean filterInError,
 
             /* Whether the filter is missing on a re-entry, which the presentation layer renders as the
-             * asterisk marker as well as a colour change - the two-state distinction between a field that is
-             * absent and a field that is merely wrong. */
+             * asterisk marker as well as a colour change - the two-state distinction between a field that
+             * is absent and a field that is merely wrong. */
             boolean filterMissingOnReEntry,
 
             /* Whether the informational field holds nothing, which the presentation layer renders by
@@ -2066,9 +2060,9 @@ public final class AccountViewService {
          * <p>The account identifier is replaced by a fixed stand-in and the two entities are reported as
          * present or absent rather than rendered, because between them they carry a national identifier, a
          * government-issued identifier, a date of birth, an address, two telephone numbers, five monetary
-         * amounts and a credit score. The carried state renders itself, and it withholds its own identifiers.
-         * The flags, the route, the presentation and the focus field are this module's own values and are
-         * rendered as they are.
+         * amounts and a credit score. The carried state renders itself, and it withholds its own
+         * identifiers. The flags, the route, the presentation and the focus field are this module's own
+         * values and are rendered as they are.
          */
         @Override
         public String toString() {
@@ -2122,8 +2116,8 @@ public final class AccountViewService {
     }
 
     /**
-     * The three states of a filter flag, from the condition names declared on the account filter at lines 58
-     * to 61 and on the customer filter at lines 62 to 65.
+     * The three states of a filter flag, from the condition names declared on the account filter at lines
+     * 58 to 61 and on the customer filter at lines 62 to 65.
      *
      * <p>Both legacy fields declare the same three values, so one type serves both. The initial state after
      * the initialising statement is a space, which is exactly the blank value, so a fresh turn starts blank
@@ -2186,11 +2180,11 @@ public final class AccountViewService {
     /**
      * The states of the input flag, from the condition names declared at lines 50 to 53.
      *
-     * <p>The pending name is declared for the low value, while the initialising statement leaves a space, so
-     * two different characters describe the same not-yet-decided state. Both are modelled by one constant
-     * because the distinction is unobservable: the pending name is referenced by no statement in the member,
-     * and it is in any case declared twice - once here and once on the key flag at line 57 - which would make
-     * an unqualified reference to it ambiguous.
+     * <p>The pending name is declared for the low value, while the initialising statement leaves a space,
+     * so two different characters describe the same not-yet-decided state. Both are modelled by one
+     * constant because the distinction is unobservable: the pending name is referenced by no statement in
+     * the member, and it is in any case declared twice - once here and once on the key flag at line 57 -
+     * which would make an unqualified reference to it ambiguous.
      */
     public enum InputFlag {
 
@@ -2311,8 +2305,8 @@ public final class AccountViewService {
      *
      * <p>Deliberately three rather than two. Collapsing a missing row and a failed read into one outcome
      * would erase the distinction the legacy draws between them - a miss composes one text and a failure
-     * composes another naming the operation and the resource - and it is the same distinction the batch tier
-     * depends on to tell end of file from error.
+     * composes another naming the operation and the resource - and it is the same distinction the batch
+     * tier depends on to tell end of file from error.
      */
     public enum ReadOutcome {
 
@@ -2404,17 +2398,17 @@ public final class AccountViewService {
      * <p>The legacy declares its state in a working-storage section that persists for the life of a task,
      * and every paragraph reads and writes it. Reproducing that as method parameters would give several
      * paragraphs more than a dozen arguments each and would obscure exactly the thing the translation is
-     * meant to preserve, so the section is modelled as one holder created per invocation instead. Because it
-     * is a local of the entry method and never a field of the service, two concurrent turns cannot see each
-     * other's state and the bean itself stays stateless.
+     * meant to preserve, so the section is modelled as one holder created per invocation instead. Because
+     * it is a local of the entry method and never a field of the service, two concurrent turns cannot see
+     * each other's state and the bean itself stays stateless.
      *
-     * <p>Every initial value below is the one the legacy holds after its initialising statement at lines 268
-     * to 270, which sets alphanumeric items to spaces and numeric items to zero. That is why both filter
-     * flags start blank - a space is precisely the blank value they declare - and why the message and
-     * informational fields start at their declared widths in spaces rather than absent.
+     * <p>Every initial value below is the one the legacy holds after its initialising statement at lines
+     * 268 to 270, which sets alphanumeric items to spaces and numeric items to zero. That is why both
+     * filter flags start blank - a space is precisely the blank value they declare - and why the message
+     * and informational fields start at their declared widths in spaces rather than absent.
      *
-     * <p>Visible to tests in the same package and to nothing beyond it, so the unwired long-text exit can be
-     * exercised without publishing either it or this holder.
+     * <p>Visible to tests in the same package and to nothing beyond it, so the unwired long-text exit can
+     * be exercised without publishing either it or this holder.
      */
     static final class WorkingStorage {
 
@@ -2422,9 +2416,9 @@ public final class AccountViewService {
          * This screen's transaction identifier, stored at line 274.
          *
          * <p>Written once and read by nothing, which is faithful rather than careless: the legacy field is
-         * referenced exactly twice in the whole member, by its own declaration at line 44 and by that single
-         * assignment. It is modelled so the assignment has somewhere to go and so a reader can see that the
-         * legacy never consults it either.
+         * referenced exactly twice in the whole member, by its own declaration at line 44 and by that
+         * single assignment. It is modelled so the assignment has somewhere to go and so a reader can see
+         * that the legacy never consults it either.
          */
         private String transactionId;
 
@@ -2503,10 +2497,10 @@ public final class AccountViewService {
         /**
          * The next program slot, set to this member's own name at line 602.
          *
-         * <p>Declarative only: nothing in the estate dispatches on it. Like the two slots below it, it lives
-         * in the screen work area rather than in the communication area, and the return at lines 402 to 406
-         * carries only the communication area - so these three are written, never read, and never carried.
-         * They are modelled because the assignments are real.
+         * <p>Declarative only: nothing in the estate dispatches on it. Like the two slots below it, it
+         * lives in the screen work area rather than in the communication area, and the return at lines 402
+         * to 406 carries only the communication area - so these three are written, never read, and never
+         * carried. They are modelled because the assignments are real.
          */
         private String nextProgram;
 
@@ -2550,10 +2544,10 @@ public final class AccountViewService {
          * The abend structure's message field, which the handler tests at line 918.
          *
          * <p>Initialised to spaces because that is what its declaration in the abend copybook gives it and
-         * because the initialising statement at lines 268 to 270 does not reach that structure. No statement
-         * in this member assigns it, so the handler's test against the low value never matches and its
-         * default text is never substituted - which is exactly the point of modelling the field rather than
-         * assuming the default.
+         * because the initialising statement at lines 268 to 270 does not reach that structure. No
+         * statement in this member assigns it, so the handler's test against the low value never matches
+         * and its default text is never substituted - which is exactly the point of modelling the field
+         * rather than assuming the default.
          */
         private String abendMessage = " ".repeat(AbendException.MESSAGE_LENGTH);
 

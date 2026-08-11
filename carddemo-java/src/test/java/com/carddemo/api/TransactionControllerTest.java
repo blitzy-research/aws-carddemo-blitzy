@@ -469,7 +469,7 @@ class TransactionControllerTest {
     /**
      * The four pieces of browse state the projection is obliged to publish rather than drop.
      *
-     * <p>Each was previously computed by the turn and then discarded at this boundary, and each has a
+     * <p>Each is computed by the turn and must not be dropped at this boundary, and each has a
      * consequence an operator can see. The slot a row occupies decides which row a selector addresses,
      * and the legacy screen fills a backward page from the bottom slot upward, so a slot cannot be
      * inferred from a row's position in the published list. The resolved identifier is what the next

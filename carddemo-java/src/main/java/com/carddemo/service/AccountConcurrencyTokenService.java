@@ -154,14 +154,6 @@ import com.carddemo.util.ZonedDecimalCodec;
  * <p>The service is stateless, holds no cache and is safe for concurrent use. Diagnostics name the
  * record type and the reason and never the key, the token, a digest or any field value, which is the same
  * rule decision D-16 applies to the decimal codec.
- *
- * <h2>Provenance</h2>
- *
- * <p>Derived from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Sealing the old image is a documented
- * divergence from the legacy design rather than a translation of it, and it is recorded as such in
- * {@code docs/decision-log.md}.
  */
 @Service
 public class AccountConcurrencyTokenService {

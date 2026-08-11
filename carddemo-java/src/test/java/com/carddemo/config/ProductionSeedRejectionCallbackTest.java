@@ -58,10 +58,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * row whose version it cannot parse, and it never presents a renamed history table to a run that did
  * not ask for one. Reaching either through a database would require breaking the tool first.
  *
- * <p>Provenance: this test has no legacy antecedent; the legacy estate carries no test harness. It
- * guards the control that keeps seeded fixture credentials out of a production deployment, for the
- * checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text appears here.
+ * <p>Provenance: this test has no legacy antecedent; the legacy estate carries no test harness. No legacy
+ * source text appears here.
  */
 @DisplayName("Production seeded-database refusal: the parts that need no database")
 final class ProductionSeedRejectionCallbackTest {

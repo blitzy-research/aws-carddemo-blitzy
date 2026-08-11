@@ -96,12 +96,10 @@ import org.mockito.InOrder;
  * step is {@code STEP040} and whose preceding sort, load and clear steps are {@code STEP010},
  * {@code STEP020} and {@code STEP030}.
  *
- * <p>Provenance, carried once as the traceability matrix header string:
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec / CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)}. That
- * stamp is <em>not universal</em> across the estate - 78 members carry it, 3 carry later stamps, all 17
- * screen definitions differ and 25 carry none at all - so it is a matrix-header string only and is never
- * asserted per member. No test in this file reads a legacy file, and nothing in this file transcribes a
- * legacy source statement; only measured metadata is carried, together with the contract literals that
+ * <p>That stamp is <em>not universal</em> across the estate - 78 members carry it, 3 carry later stamps,
+ * all 17 screen definitions differ and 25 carry none at all - so it is a matrix-header string only and is
+ * never asserted per member. No test in this file reads a legacy file, and nothing in this file transcribes
+ * a legacy source statement; only measured metadata is carried, together with the contract literals that
  * appear byte for byte in program output.
  *
  * <h2>Why the expectations here are all hand-built</h2>

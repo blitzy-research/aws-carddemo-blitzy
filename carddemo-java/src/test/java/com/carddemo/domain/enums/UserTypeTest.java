@@ -93,9 +93,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * database, queue or socket, reads no file, consults no clock or random source, and uses no mocking
  * framework, because the type under test is a value type with no collaborator.
  *
- * <p>Provenance of the legacy authorities cited above: checkout commit SHA
- * 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp CardDemo_v1.0-15-g27d6c6f-68
- * dated 2022-07-19. Recorded for traceability only; nothing below asserts it.
+ * <p>Recorded for traceability only; nothing below asserts it.
  *
  * @see UserType
  */
@@ -116,12 +114,6 @@ class UserTypeTest {
      * constant set stops at two with no synthetic default for an unrecognised byte, and an
      * unrecognised byte yields an empty result instead of the exception an idiomatic lookup would
      * raise.
-     *
-     * No user-specified rules govern this engagement - the project rules document records a
-     * verified absence rather than a partial read - so this file is held to enterprise-standard
-     * best practice instead: an independent oracle, a stated provenance, zero-warning
-     * compilation, no credential material of any kind, and faithful-over-idiomatic as the
-     * tie-break.
      *
      * The width assertions encode at an explicit US-ASCII boundary and pin the resulting code
      * point, because a one-character string is inherently one unit wide and measuring its character

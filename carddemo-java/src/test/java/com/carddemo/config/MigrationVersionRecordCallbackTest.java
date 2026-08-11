@@ -49,8 +49,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Local validation establishes two facts about a start-up before it believes anything else: that every
  * delivered migration was applied on a first start-up, and that the highest version applied is the highest
- * one the resolved locations deliver. Those two facts used to be read out of the migration tool's own log
- * text. The tool's opening announcement publishes
+ * one the resolved locations deliver. Reading those two facts out of the migration tool's own log text
+ * is what this callback exists to avoid. The tool's opening announcement publishes
  * the JDBC URL, the driver and the database type - the host, the port, the database name and an exact
  * server-and-driver version pair - so that category is now held above the level it speaks at, and this
  * callback exists so the validation need not depend on a third party's message text at all.

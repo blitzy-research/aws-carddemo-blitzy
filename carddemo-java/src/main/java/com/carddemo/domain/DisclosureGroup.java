@@ -105,7 +105,6 @@ import com.carddemo.domain.id.DisclosureGroupId;
  * utility layer. The rate attribute records why that division of responsibility is contractual rather
  * than merely tidy.
  *
- *
  * @see DisclosureGroupId
  */
 @Entity

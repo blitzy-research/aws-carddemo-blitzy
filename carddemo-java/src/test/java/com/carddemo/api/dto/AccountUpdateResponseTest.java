@@ -59,11 +59,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Unit tests for {@link AccountUpdateResponse}, the response contract for legacy CICS transaction
  * {@code CAUP}. The authorities are symbolic map {@code app/cpy-bms/COACTUP.CPY}, mapset
  * {@code app/bms/COACTUP.bms}, program {@code app/cbl/COACTUPC.cbl}, decoration macro
- * {@code app/cpy/CSSETATY.cpy} and record layout {@code app/cpy/CVACT01Y.cpy}. Provenance of the
- * read-only legacy tree these citations point into: checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No picture clause, copy directive, job card
- * or procedure-division fragment is transcribed anywhere below; every citation is a line reference.
+ * {@code app/cpy/CSSETATY.cpy} and record layout {@code app/cpy/CVACT01Y.cpy}. Every citation is a line
+ * reference into the read-only legacy tree.
  *
  * <p>This is a pure unit test. Nothing is started, no context is loaded, no container runs and no
  * database is reached: every instance under test is built by calling the constructor, and the

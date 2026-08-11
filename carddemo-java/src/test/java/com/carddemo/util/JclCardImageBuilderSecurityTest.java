@@ -105,9 +105,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * service and are deliberately absent from this test. There is no queue client, no messaging
  * dependency and no process invocation here.
  *
- * <p>Provenance: legacy checkout 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
- * CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. The stamp is recorded here as a plain header
- * string only; it is never asserted against any member of the class under test.
+ * <p>The stamp is recorded here as a plain header string only; it is never asserted against any member of
+ * the class under test.
  */
 @DisplayName("JclCardImageBuilder - the batch-trigger image is fixed, and a caller's dates cannot "
         + "reshape it")
