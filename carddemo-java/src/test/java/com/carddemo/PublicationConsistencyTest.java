@@ -23,9 +23,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -109,6 +111,53 @@ final class PublicationConsistencyTest {
 
     /** A vulnerability identifier, in the form the authority and every summary write it. */
     private static final Pattern VULNERABILITY_IDENTIFIER = Pattern.compile("CVE-\\d{4}-\\d{4,7}");
+
+    /** The architecture page, which the other publications link into by section. */
+    private static final Path ARCHITECTURE_PAGE = Path.of("..", "docs", "architecture.md");
+
+    /** The documentation site's landing page. */
+    private static final Path DOCUMENTATION_INDEX = Path.of("..", "docs", "index.md");
+
+    /** The traceability matrix, which the same publications link into. */
+    private static final Path TRACEABILITY_MATRIX = Path.of("..", "docs", "traceability-matrix.md");
+
+    /** Every publication whose links this class resolves. */
+    private static final List<Path> LINKING_PUBLICATIONS = List.of(
+            AUTHORITY, MODULE_MANUAL, REPOSITORY_FRONT_PAGE, ONBOARDING_GUIDE, DECISION_LOG,
+            ARCHITECTURE_PAGE, DOCUMENTATION_INDEX, TRACEABILITY_MATRIX, PRESENTATION);
+
+    /** An inline Markdown link, whose destination is captured. */
+    private static final Pattern MARKDOWN_LINK = Pattern.compile("\\[[^\\]]*\\]\\(([^)\\s]+)\\)");
+
+    /** An HTML link, which is how the deck writes the same thing. */
+    private static final Pattern HTML_LINK = Pattern.compile("href=\"([^\"]+)\"");
+
+    /** An ATX heading, whose level and text are captured. */
+    private static final Pattern HEADING = Pattern.compile("^(#{1,6})\\s+(.*?)\\s*$");
+
+    /** An explicit identifier written on a heading, which overrides the generated one. */
+    private static final Pattern EXPLICIT_HEADING_ID = Pattern.compile("\\{#([\\w-]+)}\\s*$");
+
+    /** An identifier declared by an HTML element, as the front page's own table of contents does. */
+    private static final Pattern HTML_ANCHOR = Pattern.compile("<[a-zA-Z]+[^>]*?\\b(?:name|id)=\"([^\"]+)\"");
+
+    /** Inline emphasis and code markers, which the site strips before generating an identifier. */
+    private static final Pattern INLINE_MARKUP = Pattern.compile("[`*_]");
+
+    /** A link written inside a heading, of which only the text survives into the identifier. */
+    private static final Pattern LINK_IN_HEADING = Pattern.compile("\\[([^\\]]*)\\]\\([^)]*\\)");
+
+    /** Everything the site's identifier generator discards outright. */
+    private static final Pattern NOT_IDENTIFIER_MATERIAL = Pattern.compile("[^\\w\\s-]");
+
+    /** A run of spacing or hyphens, which becomes a single hyphen. */
+    private static final Pattern IDENTIFIER_SEPARATOR = Pattern.compile("[-\\s]+");
+
+    /** Anything the ASCII fold leaves behind. */
+    private static final Pattern NON_ASCII = Pattern.compile("[^\\p{ASCII}]");
+
+    /** The fewest fragment links this class must find, below which it would be passing vacuously. */
+    private static final int FRAGMENT_FLOOR = 40;
 
     /** How far before the word "byte" a number still counts as describing that width. */
     private static final int BYTE_CONTEXT_WINDOW = 110;
@@ -374,6 +423,96 @@ final class PublicationConsistencyTest {
         }
     }
 
+    /**
+     * Resolves every cross-reference these publications make, fragment included.
+     *
+     * <h2>Why the fragment is the half that matters</h2>
+     *
+     * <p>A link into a document has two halves, and only one of them fails loudly. A wrong path is a missing
+     * file, which any link checker reports; a wrong fragment is a page that loads and then does not move,
+     * which nothing reports and a reader experiences as the section having been deleted. This module had one:
+     * the evidence page's own summary sent a reader to {@code #gate-8-integration-sign-off} while its Gate 8
+     * heading generates {@code #gate-8-integration-sign-off-checklist}, so the busiest link on the page landed
+     * nowhere. The path was right, which is exactly why it survived.</p>
+     *
+     * <h2>What is resolved, and against what</h2>
+     *
+     * <p>Every Markdown link and every HTML link in the publications, whose destination carries a fragment and
+     * whose path is a local Markdown file or the document itself, is resolved against that document's own
+     * identifiers: the ones the documentation site generates from its headings, any explicit identifier
+     * written on a heading, and any identifier an HTML element declares - which is how the front page's table
+     * of contents addresses itself. The generation rule is the site's own: fold to ASCII, discard everything
+     * that is neither word character, spacing nor hyphen, lower-case, and collapse spacing to single hyphens.
+     * A repeated heading is admitted under both suffix conventions, because that is the one place the site
+     * generator and the forge disagree and neither disagreement is this class's to arbitrate.</p>
+     */
+    @Nested
+    @DisplayName("the cross-references between publications")
+    class TheLinkFragments {
+
+        /** Creates the nested test class. */
+        TheLinkFragments() {
+        }
+
+        @Test
+        @DisplayName("every fragment a publication links to is an identifier the target document actually "
+                + "carries")
+        void everyLinkedFragmentResolves() throws IOException {
+            final Map<Path, SortedSet<String>> identifiers = new LinkedHashMap<>();
+            final List<String> unresolved = new ArrayList<>();
+            int resolved = 0;
+
+            for (final Path publication : LINKING_PUBLICATIONS) {
+                final String[] lines = read(publication).split("\n", -1);
+                for (int number = 1; number <= lines.length; number++) {
+                    for (final String destination : linkDestinations(lines[number - 1], publication)) {
+                        final int hash = destination.indexOf('#');
+                        if (hash < 0 || destination.startsWith("http") || destination.startsWith("mailto:")) {
+                            continue;
+                        }
+                        final String fragment = destination.substring(hash + 1);
+                        final String pathPart = destination.substring(0, hash);
+                        if (fragment.isEmpty() || !(pathPart.isEmpty() || pathPart.endsWith(".md"))) {
+                            continue;
+                        }
+                        final Path target = pathPart.isEmpty()
+                                ? publication
+                                : publication.resolveSibling(pathPart).normalize();
+                        if (!Files.isRegularFile(target)) {
+                            unresolved.add(publication + " line " + number + " links to " + destination
+                                    + ", whose document is not at " + target);
+                            continue;
+                        }
+                        resolved++;
+                        final SortedSet<String> carried = identifiers.computeIfAbsent(target, document -> {
+                            try {
+                                return identifiersOf(document);
+                            } catch (final IOException problem) {
+                                throw new AssertionError("cannot read " + document, problem);
+                            }
+                        });
+                        if (!carried.contains(fragment)) {
+                            unresolved.add(publication + " line " + number + " links to " + destination
+                                    + ", and " + target.getFileName() + " carries no identifier `"
+                                    + fragment + "`");
+                        }
+                    }
+                }
+            }
+
+            assertThat(resolved)
+                    .as("these publications cross-reference each other by section throughout, so a run that "
+                            + "found almost no fragment to resolve has stopped reading the links rather "
+                            + "than proved them sound")
+                    .isGreaterThanOrEqualTo(FRAGMENT_FLOOR);
+            assertThat(unresolved)
+                    .as("a fragment with no identifier behind it is a link that loads the page and does not "
+                            + "move, which reads to a reader as the section having been removed. Rename a "
+                            + "heading and this is what has to be corrected with it")
+                    .isEmpty();
+        }
+    }
+
     // ===================================================================================================
     // HELPERS
     // ===================================================================================================
@@ -544,6 +683,96 @@ final class PublicationConsistencyTest {
      */
     private static String collapseWhitespace(final String text) {
         return text.replaceAll("\\s+", " ");
+    }
+
+
+    /**
+     * Every link destination one line of one publication states.
+     *
+     * @param  line        the line to read
+     * @param  publication the document it belongs to, which decides whether HTML links count
+     * @return those destinations, in the order the line writes them
+     */
+    private static List<String> linkDestinations(final String line, final Path publication) {
+        final List<String> destinations = new ArrayList<>();
+        final Matcher markdown = MARKDOWN_LINK.matcher(line);
+        while (markdown.find()) {
+            destinations.add(markdown.group(1));
+        }
+        if (publication.getFileName().toString().endsWith(".html")) {
+            final Matcher html = HTML_LINK.matcher(line);
+            while (html.find()) {
+                destinations.add(html.group(1));
+            }
+        }
+        return destinations;
+    }
+
+    /**
+     * Every identifier one document carries, as the documentation site would generate them.
+     *
+     * <p>Fenced blocks are skipped, because a comment inside one can begin with a hash and is not a heading.
+     * A repeated heading contributes both suffix conventions, and an explicit identifier written on a heading
+     * replaces the generated one rather than joining it, which is what the site does.
+     *
+     * @param  document the document to read
+     * @return its identifiers
+     * @throws IOException if the document cannot be read
+     */
+    private static SortedSet<String> identifiersOf(final Path document) throws IOException {
+        final String text = read(document);
+        final SortedSet<String> identifiers = new TreeSet<>();
+        final Map<String, Integer> repeats = new LinkedHashMap<>();
+        boolean fenced = false;
+
+        for (final String line : text.split("\n", -1)) {
+            if (line.strip().startsWith("```")) {
+                fenced = !fenced;
+                continue;
+            }
+            if (fenced) {
+                continue;
+            }
+            final Matcher heading = HEADING.matcher(line);
+            if (!heading.matches()) {
+                continue;
+            }
+            final String written = heading.group(2).replaceAll("\\s+#+\\s*$", "");
+            final Matcher explicit = EXPLICIT_HEADING_ID.matcher(written);
+            if (explicit.find()) {
+                identifiers.add(explicit.group(1));
+                continue;
+            }
+            final String generated = siteIdentifier(written);
+            final int seen = repeats.merge(generated, 1, Integer::sum) - 1;
+            if (seen > 0) {
+                identifiers.add(generated + "_" + seen);
+                identifiers.add(generated + "-" + seen);
+            }
+            identifiers.add(generated);
+        }
+
+        final Matcher declared = HTML_ANCHOR.matcher(text);
+        while (declared.find()) {
+            identifiers.add(declared.group(1));
+        }
+        return identifiers;
+    }
+
+    /**
+     * Generates the identifier the documentation site gives one heading.
+     *
+     * @param  heading the heading as written, inline markup included
+     * @return the identifier a link must name to reach it
+     */
+    private static String siteIdentifier(final String heading) {
+        final String text = INLINE_MARKUP.matcher(
+                LINK_IN_HEADING.matcher(heading).replaceAll("$1")).replaceAll("");
+        final String folded = NON_ASCII.matcher(
+                Normalizer.normalize(text, Normalizer.Form.NFKD)).replaceAll("");
+        final String kept = NOT_IDENTIFIER_MATERIAL.matcher(folded).replaceAll("")
+                .strip().toLowerCase(Locale.ROOT);
+        return IDENTIFIER_SEPARATOR.matcher(kept).replaceAll("-");
     }
 
     /**

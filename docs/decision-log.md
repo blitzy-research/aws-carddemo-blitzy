@@ -1844,7 +1844,7 @@ the generic error boundary that does not differentiate.
 | D-44 | One DD is declared `LRECL=80` in one `app/jcl/CREASTMT.JCL` step and `LRECL=100` in the next | One hundred, matching the `PIC X(100)` record the emitting program declares for the HTML stream. |
 | D-45 | `app/jcl/TRANFILE.jcl` and `app/jcl/TRANIDX.jcl` both define an alternate index of the same name, over the same cluster, with the same key width and offset | One logical index described in two members, emitted exactly once. Emitting it twice fails on a duplicate name; renaming the second copy would leave a permanent redundant index behind. |
 | D-46 | Duplicate step names — `STEP05R` twice in `app/jcl/TRANREPT.jcl`, `STEP05` twice in `app/jcl/DEFCUST.jcl` | Distinct target step names, with the original names recorded here so the mapping stays findable. |
-| D-47 | Sample rows and sign-on identities must reach local and test but never production | All four migrations remain flat in `classpath:db/migration`. Local and test migrate through V4; production is fixed at target V2 and additionally refuses a database whose history or contents show that either seed was applied. |
+| D-47 | Sample rows and sign-on identities must reach local and test but never production | **Corrected, not carried forward. See DL-298, DL-343, DL-349 and DL-351.** The six delivered migrations ship from two sibling locations whose shared parent holds no script: the four schema scripts from `classpath:db/migration/schema`, which every profile resolves, and the two seeds from `classpath:db/migration/seed`, which only local and test resolve. Local and test therefore migrate through V4, while production resolves no seed at all, pins the ceiling at the highest schema version — `2.2` — beside that list, and additionally refuses a database whose history or contents show that either seed was applied. The earlier reading of this row — four migrations flat in `classpath:db/migration`, production fixed at target `2` — is the arrangement DL-298 withdrew. |
 | D-48 | Prior project documentation names test-plugin versions that the resolved build supersedes | The resolved versions govern. A version is recorded only after being read back out of an executed resolution. |
 
 ---
@@ -16303,6 +16303,18 @@ previously asserted that a success cleared both subjects.
 
 ### DL-343 - The sign-on attempt allowance is counted once per deployment rather than once per process, so the throttle state moves into the shared database
 
+**Correction — see DL-351.** *What the reversal cost*, below, concludes that "nothing in them needed
+correcting" about the headers of V1 through V4. That was right about the property it was reasoning over — the
+seeds are still excluded by number as well as by directory, whatever the pin is — and wrong as a statement
+about those headers as a whole. Each of the four also describes the schema location as carrying two scripts,
+names `spring.flyway.target: "2"` as the highest version that location delivers, and records production as
+applying V1 and V2 only; V4 additionally states that production refuses a numeric ceiling. Four schema scripts
+and a pin of `2.2` later, those statements are superseded, and V4's is now the opposite of what is delivered.
+The conclusion the entry reached about **not editing them** stands and is strengthened: they are applied,
+checksum validation is on, and two later headers rest their own reasoning on their immutability. DL-351 records
+the supersession, publishes it as an erratum in the module manual and on the architecture page, and derives the
+current topology in a check so no summary can drift from it again.
+
 *Context.* DL-268 delivers a bounded sign-on attempt allowance and DL-342 corrects what a success releases.
 Both are about *how* the allowance is counted. Neither says *where* the count lives, and it lived in one
 process's memory: a `ConcurrentHashMap` inside `SignOnAttemptGovernor`, with an `AtomicInteger` beside it
@@ -17161,6 +17173,94 @@ determination while documenting the review protocol.
 
 *Embodied in:* the container gate of `.github/workflows/carddemo-java-ci.yml` and
 `carddemo-java/container-scan-determinations.txt`.
+
+---
+
+### DL-351 - The four earliest migration headers are superseded rather than edited, and the current topology is published where a check can reach it
+
+*Context.* Schema evolution reached its delivered shape in three steps. DL-298 moved every script one level
+down into two sibling locations - `classpath:db/migration/schema` and `classpath:db/migration/seed` - and left
+their shared parent empty, so that a production profile which never lists the seed location cannot resolve a
+seed at all. DL-343 then added the sign-on attempt ledger as schema version 2.1 and DL-349 the protected-value
+invariants as 2.2, each numbered below the first seed version because three controls depend on every schema
+version sorting below every seed version. The delivered arrangement is therefore **six scripts, four of them
+schema and two of them seed, with the production ceiling pinned at `2.2`**, and the active configuration says
+exactly that: `application.yml` and `application-prod.yml` declare the schema location alone and
+`target: "2.2"`, and `FlywayConfig.PRODUCTION_TARGET` refuses every other production value.
+
+*The defect this entry records.* The four earliest scripts were written when the arrangement was smaller, and
+their headers describe **that** arrangement in the present tense. `V1__create_schema.sql` states that it ships
+from the schema location "together with V2", that the baseline and production declare
+`spring.flyway.target: "2"` as "the highest version this location delivers", and that "Production applies V1
+and V2 only". `V2__create_indexes.sql` states the same pair and the same pin. `V3__seed_reference_data.sql`
+draws a location map holding two schema scripts, records the production resolved set as `{1, 2}`, and states
+that the configuration guard "refuses any production target other than the pin of 2".
+`V4__seed_user_security.sql` states the two-script map and the same pin, and adds one further claim whose
+delivered truth is now its opposite: that the guard "refuses a NUMERIC target under production", where
+production in fact **requires** the numeric pin `2.2`. Each statement was accurate when it was authored. Read
+today, beside a schema location carrying four scripts, they are a maintainer's trap: the compliance summary
+they support describes a topology this module does not have, and a maintainer who trusted the pin they name
+would under-migrate a production database and be told the migration succeeded.
+
+*Why the headers are not corrected in place, which is the whole substance of this decision.* A Flyway checksum
+covers the whole script, comments included, and `validate-on-migrate` is `true` under every profile. All four
+are applied wherever this module has ever run - each per-run test container, and the local Compose volume,
+whose `flyway_schema_history` records versions 1, 2, 2.1, 2.2, 3 and 4 as successful with their current
+checksums. Editing one character of one header would therefore make an already-migrated database fail
+validation at start-up, and the only sanctioned remedy for that is the one the seeding profiles already carry:
+drop the database and re-migrate, which is available precisely because those databases are disposable and is
+**not** available for a database that is not. The edit would also falsify two headers that are themselves
+applied and immutable: `V2_1` states that the four earlier files "are already applied wherever they will ever
+be applied ... so none of them could have been edited in place", and `V2_2` rests its own existence on the
+same rule - that a change of intent to `V1` arrives as a new version because "no character of it may change -
+not a constraint, not a comment". A correction here would not remove one inaccuracy; it would create two.
+
+*Decision.* The six scripts stay byte-identical, and the supersession is published instead - explicitly, in
+the two places a reader meets the inventory: an erratum under **Database migrations** in
+`carddemo-java/README.md`, which names each superseded statement and why it stands, and a shorter erratum
+under **Schema evolution** in `docs/architecture.md`, which is the published page. Every other current-facing
+statement of the topology was brought to the delivered one in the same change: the module manual's
+enterprise-standard row, which had described four scripts flat in one location with production pinned at `2`;
+the ceiling narrative in `application-prod.yml`, which had refused any ceiling that was not exactly `2`;
+the delivered-inventory sentences in `application-prod.yml` and `application-test.yml`; the four Compose
+comments that counted four migrations; the profile table in `docs/onboarding-guide.md`, which had production
+stopping at `V2`; and the resolution recorded in this log's own conflict table at D-47, corrected in place
+with its correction labelled.
+
+*What stops this recurring, because prose alone did not.* The published topology is now derived rather than
+transcribed. `config/DocumentedSourceCountsTest` reads the two migration directories and
+`FlywayConfig.PRODUCTION_TARGET`, and then requires that every ceiling claim in the current-facing documents
+and profile documents names the delivered pin, that every migration-count claim names the delivered count,
+that every delivered-inventory claim names all six scripts or their count, that both inventory tables name
+exactly the delivered filenames, and that the README erratum names exactly those delivered scripts whose
+header still states a superseded pin. A fifth schema script therefore cannot be added quietly: it raises the
+pin, and the raised pin fails every document that still names the old one until each is corrected - the
+erratum included, which is what keeps this entry from becoming the next stale summary. The migration scripts
+themselves are excluded from that scan because they are immutable history, and this log is excluded because it
+is a historical record whose corrections are labelled where they are made; both exclusions are stated in the
+test rather than left as a gap for a reader to discover.
+
+*Alternatives considered and rejected.* **Editing the four headers and dropping the local volume** - rejected:
+it treats a checksum-protected artefact as a document, breaks any database not built this week, and falsifies
+`V2_1` and `V2_2` as described above. **Re-baselining the whole migration history under new checksums** -
+rejected for the same reason with a wider blast radius, and unnecessary, since no statement in delivered code
+or configuration depends on the headers' wording. **Deleting the superseded paragraphs from the four headers**
+- rejected: it is an edit, with the same checksum consequence, and it would remove the reasoning that explains
+why the seeds are excluded by number as well as by directory. **Leaving the headers to be read as current and
+correcting only the README row** - rejected: it is what the review found, and it leaves four files stating a
+production ceiling this module refuses.
+
+*Asserted by:* `config/DocumentedSourceCountsTest` - the derived migration inventory, the derived production
+pin, the ceiling and migration-count claims across the current-facing documents and profile documents, both
+inventory tables, and the erratum's completeness against the delivered scripts whose headers state a
+superseded pin.
+
+*Cited by:* `carddemo-java/README.md`, `docs/architecture.md` and
+`config/DocumentedSourceCountsTest.java`.
+
+*Embodied in:* the erratum under **Database migrations** in `carddemo-java/README.md`, the erratum under
+**Schema evolution** in `docs/architecture.md`, and the derived checks in
+`config/DocumentedSourceCountsTest`.
 
 ---
 

@@ -411,12 +411,14 @@ spring:
   #     the packaged directory from an operator-writable directory that merely ends in the same folder
   #     name, and such a directory could present its own V1 and V2 carrying seed content;
   #
-  #   * any ceiling that is not EXACTLY "2". ABOVE IT lie the seed versions, and an open marker such as
-  #     `latest` is a value above it: it would apply whatever a resolved location carried. BELOW IT LIES
-  #     AN UNDER-MIGRATED SCHEMA: a ceiling of "1.1" reaches no seed and so would satisfy a seeds-only
-  #     test, yet it stops before V2 and leaves the indexes and constraints V2 creates absent - a
-  #     database that reports a successful migration while missing the structures every alternate-index
-  #     query depends on;
+  #   * any ceiling that is not EXACTLY "2.2", the highest version the schema location delivers. ABOVE IT
+  #     lie the seed versions, and an open marker such as `latest` is a value above it: it would apply
+  #     whatever a resolved location carried. BELOW IT LIES AN UNDER-MIGRATED SCHEMA, and the withdrawn
+  #     pin is now itself an example of one: a lower ceiling reaches no seed and so would satisfy a
+  #     seeds-only test, yet it stops part way through the four schema scripts - short of the indexes and
+  #     foreign keys V2 creates, or of the sign-on attempt ledger V2_1 creates, or of the protected-value
+  #     invariants V2_2 adds - leaving a database that reports a successful migration while missing
+  #     structures the alternate-index queries, the sign-on throttle and the regulated columns depend on;
   #
   #   * migrations switched OFF. `enabled: false` builds no migration tool, which applies no
   #     configuration customizer and offers no callback event, so ONE property would otherwise switch
@@ -515,7 +517,8 @@ spring:
   # itself from its bundled PostgreSQL script: initialize-schema is `always` under EVERY profile,
   # inherited from application.yml and deliberately not overridden here. AAP 0.3.1 assigns that
   # metadata to Spring Batch and the eleven application tables to V1__create_schema.sql, so the two
-  # families have one owner each and the delivered migration inventory stays at exactly V1, V2, V3, V4.
+  # families have one owner each and the delivered migration inventory stays at exactly six scripts -
+  # V1, V2, V2_1, V2_2, V3 and V4.
   # The framework's initialiser is idempotent - it skips execution when the tables already exist - so a
   # restart against a provisioned database is a no-op rather than a failure.
   #

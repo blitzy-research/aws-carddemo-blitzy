@@ -1105,6 +1105,42 @@ docker compose exec -T postgres \
   "select count(*) from information_schema.tables where table_schema='public'"   # 18
 ```
 
+#### Erratum: the earliest migration headers describe the topology as it stood at their own version
+
+The table above is the current topology. **The headers of `V1__create_schema.sql`,
+`V2__create_indexes.sql`, `V3__seed_reference_data.sql` and `V4__seed_user_security.sql` are not, and they
+are deliberately left as written.** Each of the four states, in its own explanatory comment, one or more of
+the following, and every one of them was true when that script was authored:
+
+- that the schema location carries **two** scripts, `V1` and `V2` — superseded: it now carries four, the
+  sign-on attempt ledger `V2_1` and the protected-value invariants `V2_2` beside them;
+- that the shared baseline and `prod` declare `spring.flyway.target: "2"` as the highest version the schema
+  location delivers — superseded: the pin is `"2.2"`, which is what `application.yml`,
+  `application-prod.yml` and `FlywayConfig.PRODUCTION_TARGET` actually carry;
+- that a production migration resolves the set `{1, 2}` and applies V1 and V2 only — superseded: it applies
+  all four schema versions, `1`, `2`, `2.1` and `2.2`;
+- and, in `V4` alone, that the configuration guard "refuses a NUMERIC target under production" — superseded,
+  and by its opposite: production **requires** the numeric pin `2.2` and refuses every other value in either
+  direction.
+
+**Why they are not corrected in place.** `validate-on-migrate` is `true` under every profile, and all four
+are applied in every database this module has ever run against — the per-run test containers, and the local
+Compose volume, whose `flyway_schema_history` carries their checksums. A migration script is immutable once
+applied, comments included: editing one character of a header changes its Flyway checksum and makes an
+already-migrated database fail validation on start-up. Two of the other headers say so themselves and rest
+their own reasoning on it, so an edit here would not correct one inaccuracy but create two more. The
+property those four headers were written to assert is untouched by any of this: **every schema version still
+sorts below every seed version, so the seeds are still excluded by their number as well as by their
+directory**.
+
+**What holds this erratum honest.** The list above is not maintained by hand. `DocumentedSourceCountsTest`
+derives the delivered inventory from the two migration directories and the pin from
+`FlywayConfig.PRODUCTION_TARGET`, then requires this section, the architecture page, the profile documents
+and the Compose file to state that inventory and that pin — and requires this erratum to name exactly those
+delivered scripts whose header still states a superseded pin. A fifth schema script therefore fails the
+build until every published summary, this erratum included, has been brought up to date. Recorded as
+DL-351.
+
 ### AWS resources
 
 [`localstack/init/01-create-aws-resources.sh`](localstack/init/01-create-aws-resources.sh) runs once
@@ -1378,7 +1414,7 @@ true of an absent file and are false of a present one, so they are withdrawn rat
 |---|---|---|---|
 | 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for the four contractual widths**, compared as byte arrays from one seeded pipeline pass, **and for the supplemental 40-byte width**, compared as a byte array against its own committed golden from a dedicated job run in `batch/CategoryBalanceReportJobConfigIT`. Four of the five reject reason codes are still uncovered by a golden record |
 | 2 | Zero-warning build | `./mvnw -B clean verify` | **complete** — enforced by the compiler |
-| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **twenty-one** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
+| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **twenty-four** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
 | 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted, by name rather than by directory listing |
 | 5 | Interface contract verification | `./mvnw -B verify` (against a real queue and a real port) | **complete** — the card image drained back out of a real queue, and the sign-on texts and routing asserted against a booted context on a random port |
 | 6 | Unsafe and low-level code audit | the scoped grep list below | **complete** — mechanically re-runnable |
@@ -1631,7 +1667,7 @@ the JVM's own reservations, so it describes the process rather than the workload
 **Step 7 — write the figures down with their conditions.** Elapsed time, peak heap and records per second
 mean nothing without the fixture volumes, the heap bounds from step 1, the profile, and the commit they
 were taken at. [`../docs/gate-evidence.md`](../docs/gate-evidence.md) is the page they belong on, and its
-Gate 3 section carries the measured-runs table to add a row to. **Fifteen rows are recorded there**, each
+Gate 3 section carries the measured-runs table to add a row to. **Twenty-four rows are recorded there**, each
 dated and attributed to a named machine — so the row you add joins a baseline rather than starting one,
 and the rows already present are the comparison you read yours against. They differ from each other by
 nearly half again at the same volume on the same host, which is the first thing to know before quoting
@@ -1815,7 +1851,7 @@ first one changed, which is the failure mode recorded in
 | End-to-end verification | golden fixtures at the **four contractual widths** — 80, 100, 133 and 430 bytes, all four driven through one seeded pipeline pass — plus the **supplemental** 40-byte golden, driven through a dedicated run of the job that emits it | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte golden | **met** — the six-job pipeline runs against a Testcontainers PostgreSQL instance seeded from the fixtures and all four of its goldens are compared as byte arrays from that one run, with the comparison written to `target/gate-evidence/gate1-byte-equivalence.md`; the supplemental golden is compared as a byte array against a real dataset the category-balance job wrote after reading a real server |
 | Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `service/JobSubmissionServiceIT`, and `e2e/OnlineTransactionE2ETest` driving the submission endpoint over HTTP and draining the queue | **met** for the queue contract |
 | Interface contract verification | the seven sign-on literals and the admin/user routing rule | `e2e/OnlineTransactionE2ETest` — a booted context on a random port with a real datasource — backed by `api/AuthControllerIT` and `api/AuthControllerTest` at the narrower boundaries | **met** — the five direct texts compared character for character, the two shared texts at their full padded width, and the destination asserted for all ten delivered identities, because the legacy branch is an `ELSE` rather than a second equality test |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **twenty-one** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **twenty-four** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
 | Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
 | Zero **unsuppressed** critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included, reading exactly one analyst determination from [`owasp-suppressions.xml`](owasp-suppressions.xml) | `./mvnw -B clean verify`; `GateVerificationTest` asserts the determination's scope and reads both halves of the report | **met as stated, and the statement is the narrower one** — zero *unsuppressed* qualifying findings, plus **one** scoped HIGH determination that is part of the audited result rather than a silence. Set out below. Not "zero findings" |
@@ -2007,7 +2043,7 @@ These are checkable by inspection, which is the point:
 | Composite-key classes | **3** | category balance, disclosure group, transaction category |
 | Enums | **9** | user type, account status, card status, transaction source, key action, file status, reject reason, date format, report period |
 | Spring Data repositories | **11** | including the two derived finders that replace the online alternate indexes |
-| Service implementations | **38** | every concrete `*Service.java` in the `service` package, and the arithmetic closes: **26** translation-bearing services, one per program or program family and exactly the set the migration plan names, plus **12** focused support services — account and card concurrency tokens, credential digesting, field encryption, sign-on state, the three page-token services, batch launch and staging, job-completion notification and field-error translation. The package holds **65** files in all: those 38, plus **27** service-owned records, commands, outcomes, ports and view types, which are not `*Service.java` and are not counted here |
+| Service implementations | **38** | every concrete `*Service.java` in the `service` package, and the arithmetic closes: **26** translation-bearing services, one per program or program family and exactly the set the migration plan names, plus **12** focused support services — account and card concurrency tokens, credential digesting, field encryption, sign-on state, the three page-token services, batch launch and staging, job-completion notification and field-error translation. The package holds **68** files in all: those 38, plus **30** service-owned records, commands, outcomes, ports and view types — the sign-on attempt store's contract and its two implementations among them — which are not `*Service.java` and are not counted here |
 | Batch job configurations | **9** | plus eight step components and the shared step template |
 | Hand-written record mappers | **12** | every `*RecordMapper.java` in `util`: one per verified record layout plus the statement work-area mapper, all explicit offsets, no reflection |
 | Request/response DTO files | **32** | every file in `api/dto`, derived from the 17 symbolic maps plus the shared transport types they need |
@@ -2017,7 +2053,7 @@ Count any of them yourself rather than trusting the table:
 ```bash
 cd carddemo-java
 ls src/main/java/com/carddemo/service/*Service.java | wc -l      # 38
-ls src/main/java/com/carddemo/service/*.java | wc -l              # 65 — the package total
+ls src/main/java/com/carddemo/service/*.java | wc -l              # 68 — the package total
 ls src/main/java/com/carddemo/util/*RecordMapper.java | wc -l     # 12
 ls src/main/java/com/carddemo/api/dto/ | wc -l                    # 32
 ```
@@ -2364,7 +2400,7 @@ so a reviewer can check it rather than take it on trust.
 | 3 | **Layered separation with a strict downward dependency direction** | The package map above, enforced by `PackageLayeringTest` with a zero upward-edge budget and no exemption table; API adapters own every transport conversion, job launch crosses through `BatchJobLaunchService`, and fixed-width mapping stays isolated in `util`. |
 | 4 | **Constructor injection and immutability, without code generation** | Every collaborator arrives through a constructor; DTOs are records or final classes; no Lombok and no annotation processor of any kind. |
 | 5 | **No production secret in source, and none defaulted** | `application-prod.yml` resolves every secret from the environment with **no fallback**, so a missing secret fails startup, and stored credentials are BCrypt hashes. Non-production throwaway values do exist in the tree — in `docker-compose.yml`, in the local and test overlays, and as a sample password in the read-only estate and in test constants — and they are inventoried under [Where local and test values actually live](#where-local-and-test-values-actually-live) rather than glossed over. |
-| 6 | **Versioned, forward-only schema evolution** | Flyway `V1`–`V4` flat in one `db/migration` location, with production pinned to schema version `2` and `validate-on-migrate` on everywhere. `clean` is **disabled by the shared baseline and by `prod`**, and deliberately re-enabled by the profiles whose database is disposable — `local`, so a developer can drop and re-apply a migration they are editing, and both copies of `test`, whose database is a per-run container. The concession is taken in those overlays rather than inherited, so it cannot reach production by omission. |
+| 6 | **Versioned, forward-only schema evolution** | **Six** Flyway migrations from **two sibling locations whose shared parent holds no script**: the four schema scripts `V1`, `V2`, `V2_1` and `V2_2` in `db/migration/schema`, which every profile resolves, and the two seeds `V3` and `V4` in `db/migration/seed`, which only `local` and `test` resolve. Production resolves the schema location **alone** and pins `target: "2.2"`, the highest version that location delivers, asserted against the delivered scripts by `FlywayConfigTest` so a new schema script cannot be silently skipped. `validate-on-migrate` is on everywhere. `clean` is **disabled by the shared baseline and by `prod`**, and deliberately re-enabled by the profiles whose database is disposable — `local`, so a developer can drop and re-apply a migration they are editing, and both copies of `test`, whose database is a per-run container. The concession is taken in those overlays rather than inherited, so it cannot reach production by omission. The inventory above is the summary; [Database migrations](#database-migrations) is the authority, and `DocumentedSourceCountsTest` holds this row to it. |
 | 7 | **A test pyramid with an enforced floor** | Unit tests over mappers, validators and services; integration tests against real containers; end-to-end tests over the full pipeline. JaCoCo fails the build below 80% line coverage; branch coverage is reported, not gated. |
 | 8 | **Supply-chain hygiene** | `dependency-check-maven` bound to `verify` and **executed**, failing at CVSS 7.0 on the **compile, runtime and test** graph (`skipTestScope` is `false`), with reports emitted in three formats and uploaded by CI. The enforced invariant is zero **unsuppressed** critical or high findings plus **one** scoped, evidenced, self-expiring determination, disclosed with its three-state vocabulary under [Gate 8](#gate-8-integration-sign-off) rather than left implicit. An earlier revision of this row described a compile-and-runtime-only scan and two HIGH findings in an excluded test graph; both statements are withdrawn — the transport that carried them was replaced, not excluded. |
 | 9 | **Observability as a first-class concern** | Actuator health and metrics, Micrometer timers on every endpoint and every batch step, Prometheus and Grafana provisioned in the stack, OTLP tracing wired to Jaeger, structured JSON logging with correlation identifiers. |

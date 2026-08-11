@@ -328,9 +328,9 @@ widened only *inside* the container, behind a host mapping that is itself bound 
 
 | Profile | Binds to | What to know |
 | :------ | :------- | :----------- |
-| `local` | The Docker Compose endpoints | Every value is defaulted, so no secret is needed; Flyway runs `V1`–`V4`; the OpenAPI description is published |
-| `test` | Testcontainers-provided endpoints | Activated by the failsafe tier; container lifecycle belongs to the shared support base classes, never to an individual test; Flyway runs `V1`–`V4` |
-| `prod` | Externally provided endpoints | **Every secret comes from an environment variable with no fallback default**; Flyway stops at `V2` |
+| `local` | The Docker Compose endpoints | Every value is defaulted, so no secret is needed; Flyway resolves both locations and runs all six scripts, the two seeds included; the OpenAPI description is published |
+| `test` | Testcontainers-provided endpoints | Activated by the failsafe tier; container lifecycle belongs to the shared support base classes, never to an individual test; Flyway resolves both locations and runs all six scripts |
+| `prod` | Externally provided endpoints | **Every secret comes from an environment variable with no fallback default**; Flyway resolves the schema location alone and stops at the pin `2.2`, so it applies the four schema scripts and neither seed |
 
 ### The `prod` profile has no defaulted secrets
 

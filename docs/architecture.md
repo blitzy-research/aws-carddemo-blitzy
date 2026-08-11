@@ -292,7 +292,7 @@ job configurations inject, and the correction notes on decision-log entries DL-1
 move and the observation gap it left behind. The class is retained rather than removed because removing it
 would also decide DL-147's traced-boundary question, which belongs to a human.
 26 + 12 = 38, which is every concrete `*Service.java` in the
-package; the balance of the 65 files — **27** of them — are the service-owned records, enums and interfaces
+package; the balance of the 68 files — **30** of them — are the service-owned records, enums and interfaces
 those classes exchange, and they are not services. Counted directly:
 
 ```bash
@@ -406,9 +406,9 @@ translation. So the arithmetic closes twice over: **26 + 12 = 38** service class
 owning classes covering **544** rows. The two sums count different things and neither is a correction of the
 other: the first counts the classes in the package, the second counts the classes a traceability row names.
 
-The package holds **65** files in all: those 38 services plus **27** service-owned command, outcome,
-browse-window and turn-result types — the types the `api` adapters map from, and the reason `service` never
-imports `api`.
+The package holds **68** files in all: those 38 services plus **30** service-owned command, outcome,
+browse-window and turn-result types — the sign-on attempt store's contract and its two implementations
+among them — the types the `api` adapters map from, and the reason `service` never imports `api`.
 
 ### The file-status model needs two levels, not one enum
 
@@ -875,6 +875,22 @@ The two dotted versions are **schema** scripts, and each takes a version between
 fixtures so that every schema version sorts below every seed version: `2 < 2.1 < 2.2 < 3`. Three controls
 depend on that ordering; `docs/decision-log.md` DL-343 records what broke when a schema script was numbered
 above the seeds instead, and DL-349 records the invariants script.
+
+**Erratum — the four earliest headers describe the topology as it stood at their own version.** The table
+above is the current inventory. The explanatory headers of `V1__create_schema.sql`,
+`V2__create_indexes.sql`, `V3__seed_reference_data.sql` and `V4__seed_user_security.sql` still describe a
+schema location carrying two scripts and a production ceiling of `2` — both superseded — and `V4`'s further
+states that production refuses a numeric ceiling, which is now the opposite of what is delivered. Each was
+true when that script was written; the delivered arrangement is four schema scripts, a pin of `2.2`, and a
+production start-up that requires that numeric pin.
+They are **not** corrected in place: `validate-on-migrate` is on under every profile and all four are applied
+wherever this module has run, so a one-character comment edit changes a Flyway checksum and makes an
+already-migrated database fail validation — which is the rule those same headers state. The property they
+were written to assert is unaffected, because every schema version still sorts below every seed version. The
+module's own `DocumentedSourceCountsTest` derives this inventory and this pin from the delivered directories
+and from `FlywayConfig`, and fails the build if this page, the module manual, the profile documents or the
+Compose file states either of them stale. `docs/decision-log.md` DL-351 records the decision and its
+evidence.
 
 ### The two seeds can never reach production
 

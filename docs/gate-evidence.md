@@ -56,10 +56,10 @@ vulnerability threshold.
 
 | Property | Value |
 | --- | --- |
-| Date, in UTC | 2026-08-11, build finished 08:17:50Z |
+| Date, in UTC | 2026-08-11, build finished 10:57:47Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
-| Result | `BUILD SUCCESS`, total time 12:57 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 251 and 555 source counts, no compiler diagnostic of any kind, the same 27,157 and 1,677 test cases with no failure, the same 23,648 of 24,621 lines and 7,953 of 8,883 branches across the same 505 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 168 dependencies. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and between the previous recorded run and this one a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off) with its date rather than folded into this row |
+| Result | `BUILD SUCCESS`, total time 12:33 min |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 251 and 555 source counts, no compiler diagnostic of any kind, the same 27,166 and 1,677 test cases with no failure, the same 23,648 of 24,621 lines and 7,953 of 8,883 branches across the same 505 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 168 dependencies. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and between the previous recorded run and this one a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off-checklist) with its date rather than folded into this row |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -458,17 +458,18 @@ The lines that matter, quoted from the recorded run rather than paraphrased. Eve
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  12:57 min
-[INFO] Finished at: 2026-08-11T08:17:50Z
+[INFO] Total time:  12:33 min
+[INFO] Finished at: 2026-08-11T10:57:47Z
 ```
 
 **Warning accounting, stated precisely rather than rounded off.** 251 production sources and 555 test
 sources compiled and emitted **no compiler diagnostic of any kind** — no warning, no note, no error, and
 that part is a standing property because `-Werror` would have failed the build otherwise. Every
 `[WARNING]` line the log carries comes from the vulnerability scanner rather than the compiler. The run
-quoted above carried exactly **two**, and both are the `dependency-check` plugin: one advising that an
-update without an NVD API key is slow, which is a property of the machine, and one reporting the two
-below-threshold findings recorded under Gate 8, which is a property of the advisory feed on the day. How
+quoted above carried exactly **one**, and it is the `dependency-check` plugin reporting the two
+below-threshold findings recorded under Gate 8, which is a property of the advisory feed on the day. A run
+whose scan actually refreshes the feed carries a second such line, advising that an update without an NVD
+API key is slow, which is a property of the machine rather than of the code or the feed. How
 many such lines appear is therefore a property of the machine and the feed rather than of the code, which
 is why the standing claim made here is about compiler diagnostics and the scanner's lines are attributed
 rather than counted. They are named rather than netted out, because "zero warnings" is the sort of claim
@@ -478,9 +479,10 @@ that is worth only as much as the care taken over its exceptions.
 diagnostic of any kind, the same finding report from the scanner, and `BUILD SUCCESS`. A warning count that
 is a property of the code should not move between runs of the same code, and across repeated runs it did
 not. **The scanner's own line count did move, by one, and that is the distinction rather than an
-exception**: a repeat run minutes later carried one `[WARNING]` rather than two, because the no-API-key
-advisory is emitted only when the feed is actually updated. The advisory is a property of the machine and
-the moment; the compiler's silence is the property of the code, and it is the one this gate is about.
+exception**: runs over this same tree carried one `[WARNING]` and two respectively, because the no-API-key
+advisory is emitted only when the feed is actually refreshed and a cached feed stays valid for a day. The
+advisory is a property of the machine and the moment; the compiler's silence is the property of the code,
+and it is the one this gate is about.
 
 Two things make this a property of the code rather than of a reviewer's diligence. The wrapper is
 committed, so a clean checkout needs no preinstalled Maven and builds the same way everywhere. And
@@ -624,9 +626,12 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 
 | Date | Machine | Run | Records | Elapsed (ms) | Peak heap (bytes) | Records/second |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 08:17:50Z | `postTransactionJob` | 300 | 3047 | 323016224 | 98.44 |
-| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 08:17:50Z | `interestCalculationJob` | 100 | 370 | 188798496 | 269.83 |
-| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 08:17:50Z | `interestCalculationJob` | 3 | 26 | 376521568 | 114.01 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 10:57:47Z | `postTransactionJob` | 300 | 3659 | 263432048 | 81.97 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 10:57:47Z | `interestCalculationJob` | 100 | 534 | 122711592 | 187.15 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, recorded run finishing 10:57:47Z | `interestCalculationJob` | 3 | 85 | 333788624 | 35.01 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 08:17:50Z | `postTransactionJob` | 300 | 3047 | 323016224 | 98.44 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 08:17:50Z | `interestCalculationJob` | 100 | 370 | 188798496 | 269.83 |
+| 2026-08-11 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 08:17:50Z | `interestCalculationJob` | 3 | 26 | 376521568 | 114.01 |
 | 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 18:39:35Z | `postTransactionJob` | 300 | 3091 | 284161880 | 97.03 |
 | 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 18:39:35Z | `interestCalculationJob` | 100 | 377 | 140319384 | 265.00 |
 | 2026-08-10 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container on Linux 6.12.85+ x86_64, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers, earlier revision, run finishing 18:39:35Z | `interestCalculationJob` | 3 | 21 | 430584504 | 140.84 |
@@ -646,18 +651,20 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 100 | 2600 | 474827040 | 38.46 |
 | 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 3 | 107 | 235653920 | 27.91 |
 
-**Twenty-one rows, and the machine column is what tells them apart rather than the date.** The count is not
+**Twenty-four rows, and the machine column is what tells them apart rather than the date.** The count is not
 transcribed here: `config/DocumentedSourceCountsTest` derives it from this table and holds the module
 manual's published figure to it, so the next measured run updates the prose or breaks the build (DL-340).
-Rows 1 to 3 are the recorded run this page carries, taken on 2026-08-11 and finishing 08:17:50Z, and their
+Rows 1 to 3 are the recorded run this page carries, taken on 2026-08-11 and finishing 10:57:47Z, and their
 five figures are the ones the generated baselines of that run carry; rows 4 to 6 are the run this page
-carried previously, taken on 2026-08-10 at an earlier revision and relabelled here rather than dropped, so
-the row that was once "the recorded run" still says which run it was; rows 7 to 15 are three further full
-runs taken on 2026-08-09 and separated by the run label inside the machine column — "earlier revision",
-"earlier run" and "repeat run"; rows 16 to 21 are two earlier runs on 2026-08-08 whose machine descriptions
-differ. An earlier revision of this page grouped "the first nine rows" as one day's work, which was true of
-the table it was written against and is false of this one — the first rows now span three dates. The date
-alone therefore does not identify a run, and the label beside the host is what does.
+carried previously — the same date, an earlier revision, finishing 08:17:50Z — relabelled here rather than
+dropped, so the row that was once "the recorded run" still says which run it was; rows 7 to 9 are the run
+carried before that, taken on 2026-08-10; rows 10 to 18 are three further full runs taken on 2026-08-09 and
+separated by the run label inside the machine column — "earlier revision", "earlier run" and "repeat run";
+rows 19 to 24 are two earlier runs on 2026-08-08 whose machine descriptions differ. The first six rows now
+share a date and differ only by the label beside the host, which is the whole point: an earlier revision of
+this page grouped "the first nine rows" as one day's work, and a reader who trusted the date column alone
+would today read two runs of two different revisions as one. The date does not identify a run; the label
+beside the host is what does.
 
 The 2026-08-09 group is the clearest illustration on this page of what these figures are and are not: the
 same job at the same volume on the same machine posted the same 300 records in **2,577 ms, 2,545 ms and
@@ -1494,7 +1501,7 @@ point of this subsection: an earlier revision published 26,235 unit and 1,601 in
 time it was read the tree had moved underneath it — the numbers were a transcription of a run nobody could
 still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
 
-The suite behind those figures is the whole estate rather than a sample: the unit tier runs 27,157 test
+The suite behind those figures is the whole estate rather than a sample: the unit tier runs 27,166 test
 executions across 454 classes and the integration and end-to-end tier runs 1,677 across 81 classes,
 under the two inclusion rules stated above. Those class counts are the asserted half of the sentence —
 `config/DocumentedSourceCountsTest` measures both against this tree and fails the build on a
@@ -1512,7 +1519,7 @@ earlier attempt at exactly that is what prompted this paragraph.
 
 | Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Unit | `target/surefire-reports/` | 454 | 27,157 | 0 | 0 | 0 |
+| Unit | `target/surefire-reports/` | 454 | 27,166 | 0 | 0 | 0 |
 | Integration and end-to-end | `target/failsafe-reports/` | 77 | 1,677 | 0 | 0 | 0 |
 | **Whole suite** | both directories | **531** | **28,834** | **0** | **0** | **0** |
 
@@ -1704,7 +1711,7 @@ The executed result, from the recorded run:
 | Scanner | `dependency-check-maven` 12.1.3, bound to `verify` |
 | Report | `target/dependency-check-report.html`, with `.json` and `.xml` beside it |
 | Tree scanned | the module as it stands in the revision that carries this page; the scan reads `target/` artefacts of that build rather than a named commit |
-| Scan completed | **2026-08-11T08:17:50Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the figures below were read from |
+| Scan completed | **2026-08-11T10:57:44Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the figures below were read from |
 | Vulnerability data state | NVD API last checked 2026-08-11T08:17:35Z, last modified 2026-08-11T07:17:30Z |
 | Dependencies scanned | 168 |
 | **Unsuppressed critical** | **0** |

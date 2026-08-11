@@ -27,6 +27,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -181,6 +182,26 @@ final class DocumentedSourceCountsTest {
     private static final Pattern COUNT_COMMENT = Pattern.compile("#\\s*(\\d+)\\s*$",
             Pattern.MULTILINE);
 
+    /**
+     * The same count comment where the manual labels the figure, as {@code # 68 - the package total}.
+     *
+     * <p>Separate from {@link #COUNT_COMMENT} rather than a widening of it: that pattern anchors at the end
+     * of the line, and anchoring is what stops it matching a number that happens to sit in a command. The
+     * manual's block labels two of its four counts, so it needs the unanchored form, and the block it is
+     * applied to is extracted first - which is what keeps the looser shape safe.
+     */
+    private static final Pattern LABELLED_COUNT_COMMENT = Pattern.compile("#\\s*(\\d+)\\b");
+
+    /**
+     * A published count of the measured Gate 3 rows, in any of the shapes the manual writes one.
+     *
+     * <p>Matched against the emphasis-stripped text, because the manual bolds the figure in two of the three
+     * places and the whole sentence in the third — and it was the third that drifted to a count six rows
+     * behind the table while the two the assertion named stayed correct.
+     */
+    private static final Pattern PUBLISHED_ROW_COUNT =
+            Pattern.compile("(?i)\\b([a-z-]+)\\s+(?:measured\\s+)?rows?\\s+(?:are\\s+)?recorded");
+
     /** A published class count, as {@code across 448 classes} is written. */
     private static final Pattern CLASS_COUNT = Pattern.compile("across\\s+([\\d,]+)\\s+classes");
 
@@ -196,6 +217,108 @@ final class DocumentedSourceCountsTest {
      */
     private static final String PERFORMANCE_TABLE_HEADER = "| Date | Machine | Run | Records | "
             + "Elapsed (ms) | Peak heap (bytes) | Records/second |";
+
+    /**
+     * A published total of the files the service package holds, in either shape the documents write.
+     *
+     * <p>"holds **68** files in all" and "the balance of the 68 files" are the two, and both are matched so
+     * that neither shape can be the one nobody checks.
+     */
+    private static final Pattern SERVICE_FILE_TOTAL =
+            Pattern.compile("(?:holds|balance of the)\\s+\\*{0,2}(\\d+)\\*{0,2}\\s+files");
+
+    /** A published count of the package's files that are not services. */
+    private static final Pattern SERVICE_OWNED_BALANCE =
+            Pattern.compile("\\*\\*(\\d+)\\*\\*\\s+(?:of them|service-owned)");
+
+    /** The directory the schema migrations ship from, which every profile resolves. */
+    private static final Path SCHEMA_MIGRATIONS =
+            Path.of("src", "main", "resources", "db", "migration", "schema");
+
+    /** The sibling directory the seed migrations ship from, which only local and test resolve. */
+    private static final Path SEED_MIGRATIONS =
+            Path.of("src", "main", "resources", "db", "migration", "seed");
+
+    /**
+     * Every current-facing document and profile document that states the delivered migration topology.
+     *
+     * <p>Two families are deliberately absent. The migration scripts themselves are <em>immutable
+     * history</em> — a Flyway checksum covers a script's comments, and every delivered script is applied
+     * wherever this module has run — so their headers describe the topology as it stood at their own
+     * version and are answered by the README erratum instead, which {@link
+     * TheMigrationTopology#theErratumNamesEveryScriptWhoseHeaderStatesASupersededPin()} holds to the
+     * delivered scripts. The decision log is absent for the same reason in a different form: it is a
+     * historical record whose superseded readings are corrected in place <em>with the correction
+     * labelled</em>, so a stale sentence there is evidence rather than a defect. Both exclusions are stated
+     * here rather than left for a reader to infer from the list. Recorded in {@code docs/decision-log.md}
+     * DL-351.
+     */
+    private static final List<Path> TOPOLOGY_DOCUMENTS = List.of(
+            Path.of("README.md"),
+            Path.of("..", "README.md"),
+            Path.of("..", "docs", "architecture.md"),
+            Path.of("..", "docs", "onboarding-guide.md"),
+            Path.of("..", "docs", "gate-evidence.md"),
+            Path.of("..", "docs", "index.md"),
+            Path.of("docker-compose.yml"),
+            Path.of("src", "main", "resources", "application.yml"),
+            Path.of("src", "main", "resources", "application-prod.yml"),
+            Path.of("src", "main", "resources", "application-local.yml"),
+            Path.of("src", "main", "resources", "application-test.yml"),
+            Path.of("src", "test", "resources", "application-test.yml"));
+
+    /** A delivered migration filename, whose version is the part between the prefix and the separator. */
+    private static final Pattern MIGRATION_FILENAME =
+            Pattern.compile("V(\\d+(?:_\\d+)*)__[A-Za-z0-9_]+\\.sql");
+
+    /** The production pin a migration header states, written in the property's own shape. */
+    private static final Pattern HEADER_STATED_PIN =
+            Pattern.compile("spring\\.flyway\\.target:\\s*\"([^\"]+)\"");
+
+    /** A claim about how many migrations the module delivers. */
+    private static final Pattern MIGRATION_COUNT_CLAIM = Pattern.compile(
+            "(?i)\\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+migrations\\b");
+
+    /** A claim about the delivered inventory, whose window must name the scripts or their count. */
+    private static final Pattern INVENTORY_CLAIM = Pattern.compile("(?i)migration inventory");
+
+    /** How far either side of a claim its own sentence is taken to reach. */
+    private static final int CLAIM_WINDOW = 130;
+
+    /** How far past an inventory claim the scripts or the count must be named. */
+    private static final int INVENTORY_WINDOW = 220;
+
+    /**
+     * Wording that marks a version as historical or forward-looking rather than as the current pin.
+     *
+     * <p>Without it the erratum could not quote the pin it supersedes, and the architecture page could not
+     * name the version a further schema script would take. Every member is a phrase that says, in the
+     * sentence itself, that the number beside it is not what the module currently carries.
+     */
+    private static final Pattern HISTORICAL_WORDING = Pattern.compile("(?i)(supersede|withdrawn|erratum"
+            + "|historic|earlier revision|earlier reading|moves from|no longer|further schema script"
+            + "|next dotted version|had (?:refused|described)|as it stood|was true when)");
+
+    /**
+     * The vocabulary that makes a version a migration claim rather than a dependency pin.
+     *
+     * <p>The front page pins a JDBC driver "one patch above" the version the platform manages, in a table
+     * whose neighbouring rows name Flyway. Requiring this vocabulary beside the number is what separates the
+     * two claims, and the version shape below — one or two parts, the shape the delivered migration versions
+     * take — is what keeps a three-part dependency version out of the comparison entirely.
+     */
+    private static final Pattern MIGRATION_VOCABULARY =
+            Pattern.compile("(?i)(flyway|migrat|schema|seed|ceiling)");
+
+    /** The heading of the README erratum that answers the headers this module may not edit. */
+    private static final String ERRATUM_HEADING = "#### Erratum: the earliest migration headers "
+            + "describe the topology as it stood at their own version";
+
+    /** The heading of the README section that is the authority for the delivered inventory. */
+    private static final String README_MIGRATION_HEADING = "### Database migrations";
+
+    /** The heading of the architecture page's section that publishes the same inventory. */
+    private static final String ARCHITECTURE_MIGRATION_HEADING = "## Schema evolution";
 
     /** The root the compiler's production pass walks. */
     private static final Path MAIN_SOURCE_ROOT = Path.of("src", "main", "java");
@@ -218,7 +341,8 @@ final class DocumentedSourceCountsTest {
             "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
             "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
             "eighteen", "nineteen", "twenty", "twenty-one", "twenty-two", "twenty-three",
-            "twenty-four");
+            "twenty-four", "twenty-five", "twenty-six", "twenty-seven", "twenty-eight",
+            "twenty-nine", "thirty");
 
     /** Creates the test class. */
     DocumentedSourceCountsTest() {
@@ -371,6 +495,279 @@ final class DocumentedSourceCountsTest {
                     .as("the traceability matrix maps a paragraph onto `service." + service
                             + "`, which is not a class of the service package")
                     .isTrue());
+        }
+    }
+
+    /**
+     * Holds every published statement of the service package's size to the package itself.
+     *
+     * <p>Three figures describe that package — the concrete services, the files in all, and the balance of
+     * service-owned types that are not services — and each is published more than once: in the architecture
+     * page's table and twice more in its prose, and in the module manual's layer table and again in the
+     * command block beside it. {@link TheServiceFigures} already measured the table and the architecture
+     * page's own counted-directly block, and that was not enough: the sign-on attempt store added three
+     * files, the checked places were corrected, and the four unchecked ones went on publishing 65 and 27
+     * beside a command that printed 68.</p>
+     *
+     * <p>So the check is by occurrence rather than by place. Every occurrence of either figure in either
+     * document is measured against the directory, and each document must carry at least one of each, so a
+     * correction cannot be made by deleting the claim.</p>
+     */
+    @Nested
+    @DisplayName("the service-package inventory, wherever either document states it")
+    class TheServicePackageInventory {
+
+        /** Creates the nested test class. */
+        TheServicePackageInventory() {
+        }
+
+        @Test
+        @DisplayName("every published file total is the number of files the package holds")
+        void everyPublishedFileTotalIsMeasured() throws IOException {
+            final int measured = javaFileCount(serviceDirectory());
+            for (final Path document : List.of(Path.of("README.md"), ARCHITECTURE_PAGE)) {
+                final List<Integer> published = figuresIn(document, SERVICE_FILE_TOTAL);
+                assertThat(published)
+                        .as("%s states the service package's size, so the statement must be present to be "
+                                + "measured; a figure that vanished is a documentation regression of its "
+                                + "own", document)
+                        .isNotEmpty();
+                assertThat(published)
+                        .as("%s publishes the service package as holding %s files; the directory holds %d. "
+                                + "Every occurrence is measured here, because it was the unchecked "
+                                + "duplicates that drifted", document, published, measured)
+                        .containsOnly(measured);
+            }
+        }
+
+        @Test
+        @DisplayName("every published balance is the files that are not services")
+        void everyPublishedBalanceIsMeasured() throws IOException {
+            final int measured = javaFileCount(serviceDirectory()) - concreteServiceCount();
+            for (final Path document : List.of(Path.of("README.md"), ARCHITECTURE_PAGE)) {
+                final List<Integer> published = figuresIn(document, SERVICE_OWNED_BALANCE);
+                assertThat(published)
+                        .as("%s states how many of the package's files are not services, and that "
+                                + "statement is what makes its arithmetic checkable", document)
+                        .isNotEmpty();
+                assertThat(published)
+                        .as("%s publishes %s service-owned types beside the services; the directory holds "
+                                + "%d files that are not `*Service.java`", document, published, measured)
+                        .containsOnly(measured);
+            }
+        }
+
+        @Test
+        @DisplayName("the manual's counted-directly block reports what the tree holds, all four counts")
+        void theManualCountedBlockMatchesTheTree() throws IOException {
+            final List<Integer> reported = new ArrayList<>();
+            final Matcher count = LABELLED_COUNT_COMMENT.matcher(manualCountedBlock());
+            while (count.find()) {
+                reported.add(Integer.parseInt(count.group(1)));
+            }
+
+            assertThat(reported)
+                    .as("the manual invites a reader to run four counts and prints their answers; all four "
+                            + "are measured here, in the order the block runs them, so none can go stale "
+                            + "while the table beside it is corrected")
+                    .containsExactly(
+                            concreteServiceCount(),
+                            javaFileCount(serviceDirectory()),
+                            recordMapperCount(),
+                            javaFileCount(SOURCE_ROOT.resolve("api").resolve("dto")));
+        }
+    }
+
+    /**
+     * Holds every published statement of the Flyway topology to the topology this module delivers.
+     *
+     * <p>The topology is stated in eleven places — a compliance row and an inventory table in the module
+     * manual, an inventory table on the architecture page, a profile table in the onboarding guide, four
+     * Compose comments, and the explanatory comments of four profile documents — and it moved twice after
+     * most of them were written: the scripts split into two sibling locations, and two further schema
+     * scripts took dotted versions between the indexes and the seeds, which raised the production ceiling.
+     * A review found the summaries describing the arrangement <em>before</em> those moves: four scripts flat
+     * in one location, production pinned at the version the indexes carry. The active configuration was
+     * correct throughout, which is exactly why nothing failed.</p>
+     *
+     * <p>So the figures are derived here instead of transcribed. The inventory comes from the two migration
+     * directories and the pin from {@link FlywayConfig#PRODUCTION_TARGET}, and a further schema script
+     * therefore cannot be added quietly: it lands in the derived inventory, it raises the pin that
+     * {@code FlywayConfigTest} already ties to the delivered scripts, and every document still naming the
+     * old inventory or the old pin fails the build until it is corrected — the erratum included, so the
+     * erratum cannot become the next stale summary. Recorded in {@code docs/decision-log.md} DL-351.</p>
+     */
+    @Nested
+    @DisplayName("the Flyway topology the current-facing documents publish")
+    class TheMigrationTopology {
+
+        /** Creates the nested test class. */
+        TheMigrationTopology() {
+        }
+
+        @Test
+        @DisplayName("every published ceiling names the pin the configuration actually carries")
+        void everyPublishedCeilingClaimNamesTheDeliveredPin() throws IOException {
+            final List<String> offenders = new ArrayList<>();
+            for (final Path document : TOPOLOGY_DOCUMENTS) {
+                final String flowed = flattened(document);
+                for (final Pattern shape : pinClaimShapes()) {
+                    final Matcher claim = shape.matcher(flowed);
+                    while (claim.find()) {
+                        final String stated = claim.group(1);
+                        if (FlywayConfig.PRODUCTION_TARGET.equals(stated) || "latest".equals(stated)) {
+                            continue;
+                        }
+                        final String sentence = around(flowed, claim.start(), claim.end(), CLAIM_WINDOW);
+                        if (HISTORICAL_WORDING.matcher(sentence).find()
+                                || !MIGRATION_VOCABULARY.matcher(sentence).find()) {
+                            continue;
+                        }
+                        offenders.add(document + " states the ceiling as `" + stated + "`: " + sentence);
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("a document that names a ceiling other than %s is telling an operator to "
+                            + "under-migrate or over-reach; the pin is read from FlywayConfig here so the "
+                            + "documents follow the configuration rather than the other way round. A "
+                            + "genuinely historical mention stays legal by saying so in its own sentence",
+                            FlywayConfig.PRODUCTION_TARGET)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every published migration count is the number of scripts delivered")
+        void everyPublishedMigrationCountNamesTheDeliveredCount() throws IOException {
+            final int delivered = deliveredMigrations().size();
+            final String spelled = numberWord(delivered);
+            final List<String> offenders = new ArrayList<>();
+
+            for (final Path document : TOPOLOGY_DOCUMENTS) {
+                final String flowed = flattened(document);
+                final Matcher claim = MIGRATION_COUNT_CLAIM.matcher(flowed);
+                while (claim.find()) {
+                    final String stated = claim.group(1).toLowerCase(Locale.ROOT);
+                    if (spelled.equals(stated) || String.valueOf(delivered).equals(stated)) {
+                        continue;
+                    }
+                    final String sentence = around(flowed, claim.start(), claim.end(), CLAIM_WINDOW);
+                    if (HISTORICAL_WORDING.matcher(sentence).find()) {
+                        continue;
+                    }
+                    offenders.add(document + " counts " + stated + " migrations: " + sentence);
+                }
+            }
+
+            assertThat(offenders)
+                    .as("%d migrations are delivered, so a document counting a different number is "
+                            + "describing a tree that no longer exists — which is how a Compose comment "
+                            + "came to promise four start-up migrations beside a manual promising six",
+                            delivered)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every delivered-inventory claim names every script, or their measured count")
+        void everyDeliveredInventoryClaimNamesTheDeliveredScripts() throws IOException {
+            final TreeSet<String> delivered = new TreeSet<>(deliveredMigrations().values().stream()
+                    .map(TheMigrationTopology::versionToken)
+                    .toList());
+            final String count = numberWord(delivered.size()) + " scripts";
+            final List<String> offenders = new ArrayList<>();
+
+            for (final Path document : TOPOLOGY_DOCUMENTS) {
+                final String flowed = flattened(document);
+                final Matcher claim = INVENTORY_CLAIM.matcher(flowed);
+                while (claim.find()) {
+                    final String window = flowed.substring(claim.end(),
+                            Math.min(flowed.length(), claim.end() + INVENTORY_WINDOW));
+                    final TreeSet<String> missing = new TreeSet<>(delivered);
+                    missing.removeAll(namedVersionTokens(window));
+                    if (missing.isEmpty() || window.toLowerCase(Locale.ROOT).contains(count)) {
+                        continue;
+                    }
+                    offenders.add(document + " states the inventory without " + missing + ": " + window);
+                }
+            }
+
+            assertThat(offenders)
+                    .as("a sentence that says what the delivered inventory 'stays at' must name every "
+                            + "script or state their measured count; naming a subset reads as the whole, "
+                            + "which is what two profile documents did while the schema location grew")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("both inventory tables name exactly the delivered scripts, so a new script cannot "
+                + "ship unpublished")
+        void bothInventoryTablesNameExactlyTheDeliveredScripts() throws IOException {
+            final TreeSet<String> delivered = new TreeSet<>(deliveredMigrations().values());
+
+            final TreeSet<String> manual = namedMigrationFiles(
+                    section(read(Path.of("README.md")), README_MIGRATION_HEADING, "### "));
+            final TreeSet<String> page = namedMigrationFiles(section(
+                    read(Path.of("..", "docs", "architecture.md")),
+                    ARCHITECTURE_MIGRATION_HEADING, "## "));
+
+            assertThat(manual)
+                    .as("the module manual's migration section is the authority the compliance row points "
+                            + "at, so it names every delivered script and no script this module does not "
+                            + "deliver")
+                    .isEqualTo(delivered);
+            assertThat(page)
+                    .as("the architecture page publishes the same inventory to the documentation site, so "
+                            + "the published table and the delivered directories cannot diverge")
+                    .isEqualTo(delivered);
+        }
+
+        @Test
+        @DisplayName("the erratum names exactly those scripts whose header still states a superseded pin")
+        void theErratumNamesEveryScriptWhoseHeaderStatesASupersededPin() throws IOException {
+            final TreeSet<String> superseded = new TreeSet<>();
+            final TreeSet<String> current = new TreeSet<>();
+            for (final String script : deliveredMigrations().values()) {
+                final Matcher stated = HEADER_STATED_PIN.matcher(migrationText(script));
+                boolean stale = false;
+                while (stated.find()) {
+                    stale = stale || !FlywayConfig.PRODUCTION_TARGET.equals(stated.group(1));
+                }
+                if (stale) {
+                    superseded.add(script);
+                } else {
+                    current.add(script);
+                }
+            }
+
+            assertThat(superseded)
+                    .as("the erratum exists because some delivered header states a pin the configuration "
+                            + "no longer carries; if none did, the erratum would be describing nothing and "
+                            + "should be removed rather than left to rot")
+                    .isNotEmpty();
+
+            final String erratum = section(read(Path.of("README.md")), ERRATUM_HEADING, "#");
+            final TreeSet<String> named = namedMigrationFiles(erratum);
+
+            assertThat(named)
+                    .as("the erratum must name every script whose header states a superseded pin — a "
+                            + "header left unnamed reads as current — and must name no other, because "
+                            + "calling a correct header superseded is the same defect facing the other way")
+                    .isEqualTo(superseded);
+            assertThat(current)
+                    .as("the scripts written after the pin moved state it correctly, and the erratum "
+                            + "deliberately says nothing about them")
+                    .isNotEmpty();
+        }
+
+        /**
+         * Reduces a migration filename to the version token the documents write.
+         *
+         * @param  filename the delivered filename
+         * @return its version token, as {@code V2_1}
+         */
+        private static String versionToken(final String filename) {
+            return filename.substring(0, filename.indexOf("__"));
         }
     }
 
@@ -983,6 +1380,35 @@ final class DocumentedSourceCountsTest {
                             + "sentences or breaks the build", MODULE_README, rows)
                     .contains("**" + numberWord(rows) + "** measured rows recorded")
                     .contains("**" + numberWord(rows) + "** measured rows are recorded");
+
+            // Those two are the canonical sentences, and naming them was not enough: a third sentence, in
+            // the paragraph that tells a reader how to take their own measurement, bolds the whole phrase
+            // instead of the figure and had drifted six rows behind the table while both named sentences
+            // stayed correct. So every spelled-out row count in the manual is measured, whichever way it is
+            // emphasised.
+            final List<String> stale = new ArrayList<>();
+            final Matcher published = PUBLISHED_ROW_COUNT.matcher(read(MODULE_README).replace("**", ""));
+            int occurrences = 0;
+            while (published.find()) {
+                final String word = published.group(1).toLowerCase(Locale.ROOT);
+                if (!NUMBER_WORDS.contains(word)) {
+                    continue;
+                }
+                occurrences++;
+                if (!numberWord(rows).equals(word)) {
+                    stale.add("`" + published.group() + "`");
+                }
+            }
+
+            assertThat(occurrences)
+                    .as("the manual states this count in more than one place, so a run that found at most "
+                            + "one of them has stopped reading the sentences rather than proved them right")
+                    .isGreaterThanOrEqualTo(2);
+            assertThat(stale)
+                    .as("%s must state %s wherever it states the count, because the evidence table carries "
+                            + "%d rows; these sentences state something else", MODULE_README,
+                            numberWord(rows), rows)
+                    .isEmpty();
         }
 
         /**
@@ -1104,6 +1530,140 @@ final class DocumentedSourceCountsTest {
     // ----------------------------------------------------------------------------------------
     // Measurement helpers. Each reads the authority rather than a figure about it.
     // ----------------------------------------------------------------------------------------
+
+    /**
+     * Lists the delivered migrations, keyed by the version each carries.
+     *
+     * <p>Read off the two delivery directories rather than declared, so a script added to either one enters
+     * every figure this class derives from it without anybody remembering to say so.
+     *
+     * @return each delivered version, as Flyway orders it, mapped to the filename that carries it
+     * @throws IOException if either migration directory cannot be listed
+     */
+    private static Map<String, String> deliveredMigrations() throws IOException {
+        final Map<String, String> delivered = new TreeMap<>();
+        for (final Path directory : List.of(SCHEMA_MIGRATIONS, SEED_MIGRATIONS)) {
+            assertThat(Files.isDirectory(directory))
+                    .as("the delivered migrations ship from two sibling locations; %s is not a directory "
+                            + "of this module", directory)
+                    .isTrue();
+            try (Stream<Path> entries = Files.list(directory)) {
+                for (final Path script : entries.filter(Files::isRegularFile).sorted().toList()) {
+                    final String filename = script.getFileName().toString();
+                    final Matcher versioned = MIGRATION_FILENAME.matcher(filename);
+                    assertThat(versioned.matches())
+                            .as("%s sits in a migration location without being a versioned migration, so "
+                                    + "no figure derived here could account for it", script)
+                            .isTrue();
+                    delivered.put(versioned.group(1).replace('_', '.'), filename);
+                }
+            }
+        }
+        assertThat(delivered)
+                .as("a migration set this class could not read would make every assertion below vacuous")
+                .isNotEmpty();
+        return delivered;
+    }
+
+    /**
+     * Reads one delivered migration, whichever location it ships from.
+     *
+     * @param  filename the delivered filename
+     * @return the script's text, comments included
+     * @throws IOException if the script cannot be read
+     */
+    private static String migrationText(final String filename) throws IOException {
+        final Path schema = SCHEMA_MIGRATIONS.resolve(filename);
+        return read(Files.isRegularFile(schema) ? schema : SEED_MIGRATIONS.resolve(filename));
+    }
+
+    /**
+     * Builds the shapes in which a document states a production ceiling.
+     *
+     * <p>The version shape is derived rather than fixed: it admits as many dotted parts as the delivered
+     * versions themselves use and no more, which is what keeps a three-part dependency version — a driver
+     * pinned "one patch above" the managed one, in a table whose neighbouring rows name Flyway — out of a
+     * comparison it has no business in.
+     *
+     * @return one pattern per shape, each capturing the stated version in group one
+     * @throws IOException if the delivered versions cannot be read
+     */
+    private static List<Pattern> pinClaimShapes() throws IOException {
+        int parts = 1;
+        for (final String version : deliveredMigrations().keySet()) {
+            parts = Math.max(parts, version.split("\\.", -1).length);
+        }
+        final String version = "(\\d+(?:\\.\\d+){0," + (parts - 1) + "}(?!\\.?\\d)|latest)";
+        return List.of(
+                Pattern.compile("(?i)(?:spring\\.flyway\\.)?target\\s*[:=]\\s*[`\"]?" + version
+                        + "[`\"]?"),
+                Pattern.compile("(?i)ceiling\\b[^.;]{0,90}?[`\"]" + version + "[`\"]"),
+                Pattern.compile("(?i)\\bpin(?:ned|s)?\\b[^.;]{0,70}?[`\"]" + version + "[`\"]"),
+                Pattern.compile("(?i)stops? at\\b[^.;]{0,45}?[`\"]" + version + "[`\"]"),
+                Pattern.compile("(?i)schema version\\s+[`\"]" + version + "[`\"]"));
+    }
+
+    /**
+     * Returns the text surrounding one match, which stands in for the sentence the claim was made in.
+     *
+     * @param  flowed the document with its whitespace flattened
+     * @param  from   where the match starts
+     * @param  to     where the match ends
+     * @param  reach  how far either side to take
+     * @return that span of text
+     */
+    private static String around(final String flowed, final int from, final int to, final int reach) {
+        return flowed.substring(Math.max(0, from - reach), Math.min(flowed.length(), to + reach));
+    }
+
+    /**
+     * Collects the version tokens a span of text names, in the form the documents write them.
+     *
+     * @param  text the span to read
+     * @return those tokens, as {@code V2_1}, without duplicates
+     */
+    private static TreeSet<String> namedVersionTokens(final String text) {
+        final TreeSet<String> named = new TreeSet<>();
+        final Matcher token = Pattern.compile("\\bV\\d+(?:_\\d+)*\\b").matcher(text);
+        while (token.find()) {
+            named.add(token.group());
+        }
+        return named;
+    }
+
+    /**
+     * Collects the migration filenames a span of text names.
+     *
+     * @param  text the span to read
+     * @return those filenames, without duplicates
+     */
+    private static TreeSet<String> namedMigrationFiles(final String text) {
+        final TreeSet<String> named = new TreeSet<>();
+        final Matcher filename = MIGRATION_FILENAME.matcher(text);
+        while (filename.find()) {
+            named.add(filename.group());
+        }
+        return named;
+    }
+
+    /**
+     * Extracts one section of a document, from its heading to the next heading at or above its level.
+     *
+     * @param  document the document text
+     * @param  heading  the section's heading, in full
+     * @param  boundary the heading marker that ends the section
+     * @return the section's text, its own heading included
+     */
+    private static String section(final String document, final String heading, final String boundary) {
+        final int start = document.indexOf(heading);
+        assertThat(start)
+                .as("the document must keep the section headed \"%s\"; a figure derived from a section "
+                        + "that has been renamed away is derived from nothing", heading)
+                .isNotNegative();
+        final int body = start + heading.length();
+        final int next = document.indexOf("\n" + boundary, body);
+        return next < 0 ? document.substring(start) : document.substring(start, next);
+    }
 
     /**
      * Counts the java files a compiler run over the given source root would compile.
@@ -1526,6 +2086,61 @@ final class DocumentedSourceCountsTest {
      */
     private static Path serviceDirectory() {
         return SOURCE_ROOT.resolve("service");
+    }
+
+    /**
+     * Counts the hand-written fixed-width record mappers, one per verified record layout plus the
+     * statement work area.
+     *
+     * @return the number of {@code *RecordMapper.java} files in the utility package
+     */
+    private static int recordMapperCount() {
+        try (Stream<Path> entries = Files.list(SOURCE_ROOT.resolve("util"))) {
+            return (int) entries.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith("RecordMapper.java"))
+                    .count();
+        } catch (final IOException problem) {
+            throw new AssertionError("cannot count the record mappers", problem);
+        }
+    }
+
+    /**
+     * Collects every figure one document publishes in one shape, in the order it publishes them.
+     *
+     * @param  document the document to read
+     * @param  shape    the published shape, capturing the figure in group one
+     * @return those figures, one per occurrence
+     * @throws IOException if the document cannot be read
+     */
+    private static List<Integer> figuresIn(final Path document, final Pattern shape) throws IOException {
+        final List<Integer> figures = new ArrayList<>();
+        final Matcher occurrence = shape.matcher(flattened(document));
+        while (occurrence.find()) {
+            figures.add(Integer.valueOf(occurrence.group(1)));
+        }
+        return figures;
+    }
+
+    /**
+     * Extracts the fenced shell block the module manual offers as the way to count its own layers.
+     *
+     * @return the block's contents
+     * @throws IOException if the manual cannot be read
+     */
+    private static String manualCountedBlock() throws IOException {
+        final String manual = read(Path.of("README.md"));
+        final int invitation = manual.indexOf("Count any of them yourself rather than trusting the table:");
+        assertThat(invitation)
+                .as("the module manual must keep the block that shows how its layer counts are obtained; "
+                        + "without it the table is unfalsifiable prose")
+                .isNotNegative();
+        final int opening = manual.indexOf("```", invitation);
+        final int start = manual.indexOf('\n', opening) + 1;
+        final int end = manual.indexOf("```", start);
+        assertThat(end)
+                .as("the counted-directly block in the module manual is unterminated")
+                .isNotNegative();
+        return manual.substring(start, end);
     }
 
     /**

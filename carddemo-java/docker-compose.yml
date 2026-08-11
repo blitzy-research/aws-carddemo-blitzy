@@ -25,7 +25,7 @@
 #
 #   postgres     PostgreSQL 16       replaces the ten VSAM key-sequenced base clusters plus the
 #                                    transient work cluster that one job created and deleted inside
-#                                    its own stream. Eleven tables, evolved by four migrations.
+#                                    its own stream. Eleven tables, evolved by six migrations.
 #   localstack   S3 + SQS + SNS      S3 replaces sequential-dataset and generation-data-group
 #                                    staging; the FIFO queue replaces the estate's single
 #                                    online-to-batch bridge; the topic carries job completion.
@@ -38,7 +38,7 @@
 # Bring-up, teardown and the checks worth running:
 #   docker compose up -d --build                     # build the module image, start all six
 #   docker compose ps                                # every service reports (healthy)
-#   docker compose logs -f app                       # four migrations, then the listening port
+#   docker compose logs -f app                       # six migrations, then the listening port
 #   curl -s localhost:8080/actuator/health           # {"status":"UP"...}
 #   curl -s localhost:8080/actuator/prometheus       # the metric surface the baseline is read from
 #   open  localhost:9090/targets                     # the app target UP at /actuator/prometheus
@@ -305,7 +305,7 @@ services:
       - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-    # The application waits on this, because Flyway applies four migrations during start-up and
+    # The application waits on this, because Flyway applies six migrations during start-up and
     # would fail outright against a cluster still running initdb. pg_isready is the server's own
     # readiness answer rather than a guess at how long initialisation takes.
     healthcheck:
@@ -639,7 +639,7 @@ services:
     volumes:
       - batch-staging:/var/lib/carddemo/batch
     depends_on:
-      # Flyway applies four migrations during start-up and must not race initdb; the AWS clients
+      # Flyway applies six migrations during start-up and must not race initdb; the AWS clients
       # must not race the ready hook that creates the queue, the bucket and the topic. Both are
       # therefore gated on health rather than on the container merely having been started, and the
       # emulator's health includes all THREE resources - so this edge is what makes the topic's

@@ -402,8 +402,8 @@ spring:
   # baseline and deliberately not restated. They are NOT part of V1__create_schema.sql and must not be
   # added to it - they belong to the framework and they change with its version, so the framework
   # provisions them, which is what AAP 0.3.1 assigns and what keeps the delivered migration inventory
-  # at exactly V1, V2, V3, V4. The framework's initialiser skips execution when the tables already
-  # exist, so a re-used database is unaffected.
+  # at exactly six scripts - V1, V2, V2_1, V2_2, V3 and V4. The framework's initialiser skips execution
+  # when the tables already exist, so a re-used database is unaffected.
   #
   # A suite run is therefore the environment that PROVES the arrangement works: every container-backed
   # test that launches a job runs against framework-created metadata tables in exactly the way a
