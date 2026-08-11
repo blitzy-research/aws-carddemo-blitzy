@@ -76,20 +76,22 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  *
  * <p>The only versioned scripts are {@code V1__create_schema.sql},
  * {@code V2__create_indexes.sql}, {@code V3__seed_reference_data.sql},
- * {@code V4__seed_user_security.sql}, {@code V2_1__create_sign_on_attempt_ledger.sql} and
- * {@code V2_2__add_protected_value_invariants.sql}. Four of the
- * six - versions 1, 2, 2.1 and 2.2 - create the application schema and ship from
+ * {@code V4__seed_user_security.sql} and
+ * {@code V2_2__add_protected_value_invariants.sql}. Three of the
+ * five - versions 1, 2 and 2.2 - create the application schema and ship from
  * {@code classpath:db/migration/schema}; the other two provide non-production fixtures and ship from
  * the sibling {@code classpath:db/migration/seed}. Their shared parent {@code classpath:db/migration}
  * holds no script at all and is refused as a location under every profile, because Flyway scans a
  * location recursively.
  *
  * <p><strong>Every schema version sorts below every seed version, and the assertions here hold that
- * as an invariant rather than as a coincidence.</strong> The two schema scripts added after the indexes
- * take DOTTED versions between the indexes and the fixtures - 2 &lt; 2.1 &lt; 2.2 &lt; 3 - because three
- * separate controls depend on the ordering. An earlier revision numbered the sign-on attempt ledger 5,
+ * as an invariant rather than as a coincidence.</strong> The schema script added after the indexes
+ * takes a DOTTED version between the indexes and the fixtures - 2 &lt; 2.2 &lt; 3 - because three
+ * separate controls depend on the ordering. An earlier revision numbered a schema script 5,
  * above the seeds, and broke all three; the reversal and its evidence are recorded at
- * docs/decision-log.md DL-343, and the protected-value invariants script at DL-349.
+ * docs/decision-log.md DL-343, and the protected-value invariants script at DL-349. There is no 2.1:
+ * a sign-on attempt ledger held that version and was withdrawn with the throttle it served, so the gap
+ * is deliberate and a new schema script takes the next free dotted version below 3 (DL-352).
  *
  * <p>Production excludes the seed scripts by NOT RESOLVING THE LOCATION THEY LIVE IN, which is the
  * primary mechanism. The version ceiling is a second, independent control: it stops a resolved list
@@ -98,7 +100,7 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * operator can widen, which is why the
  * assertions here hold the location list by equality and hold the ceiling to the highest version the
  * schema location actually delivers. See docs/decision-log.md DL-298 for the split, DL-334 for the
- * ceiling, DL-343 for the ledger and DL-349 for the invariants.
+ * ceiling, DL-343 for the numbering rule and DL-349 for the invariants.
  *
  * <h3>Security rationale</h3>
  *
@@ -179,12 +181,12 @@ class FlywayConfigTest {
     }
 
     @Nested
-    @DisplayName("the delivered migration layout is the complete six-script contract")
+    @DisplayName("the delivered migration layout is the complete five-script contract")
     class TheDeliveredMigrationLayout {
 
         @Test
-        @DisplayName("exactly the six canonical versioned SQL filenames are delivered")
-        void exactlyTheSixCanonicalVersionedSqlFilenamesAreDelivered() {
+        @DisplayName("exactly the five canonical versioned SQL filenames are delivered")
+        void exactlyTheFiveCanonicalVersionedSqlFilenamesAreDelivered() {
             final List<String> actualPaths = migrationResourcePaths();
             final List<String> actualNames = actualPaths.stream()
                     .map(path -> path.substring(path.lastIndexOf('/') + 1))
@@ -192,18 +194,17 @@ class FlywayConfigTest {
                     .toList();
 
             assertThat(actualPaths)
-                    .as("expected exactly six SQL resources beneath db/migration, but resolved %s",
+                    .as("expected exactly five SQL resources beneath db/migration, but resolved %s",
                             actualPaths)
-                    .hasSize(6);
+                    .hasSize(5);
             assertThat(actualNames)
-                    .as("expected the six canonical filenames, including each double underscore; "
+                    .as("expected the five canonical filenames, including each double underscore; "
                             + "actual resource paths were %s", actualPaths)
                     .containsExactlyInAnyOrder(
                             "V1__create_schema.sql",
                             "V2__create_indexes.sql",
                             "V3__seed_reference_data.sql",
                             "V4__seed_user_security.sql",
-                            "V2_1__create_sign_on_attempt_ledger.sql",
                             "V2_2__add_protected_value_invariants.sql");
             assertThat(actualNames)
                     .as("every delivered migration resource must have the .sql extension; actual "
@@ -232,15 +233,14 @@ class FlywayConfigTest {
             assertThat(actualPaths.stream()
                     .filter(path -> path.startsWith("schema/"))
                     // By parsed VERSION rather than by text. A dotted version sorts BEFORE its undotted
-                    // sibling lexically, because '1' precedes '_', so a text sort would report
-                    // V2_1 ahead of V2 while the tool applies 2 before 2.1. The claim here is about
+                    // sibling lexically, because '2' precedes '_', so a text sort would report
+                    // V2_2 ahead of V2 while the tool applies 2 before 2.2. The claim here is about
                     // application order, so it is made against the order the tool uses.
                     .sorted(Comparator.comparing(path -> MigrationVersion.fromVersion(versionOf(path))))
                     .toList())
-                    .as("the schema location carries the four scripts production applies, in the order "
+                    .as("the schema location carries the three scripts production applies, in the order "
                             + "they are applied")
                     .containsExactly("schema/V1__create_schema.sql", "schema/V2__create_indexes.sql",
-                            "schema/V2_1__create_sign_on_attempt_ledger.sql",
                             "schema/V2_2__add_protected_value_invariants.sql");
             assertThat(actualPaths.stream().filter(path -> path.startsWith("seed/")).sorted().toList())
                     .as("and the seed location carries the two only local and test apply. A SEED in "
@@ -505,7 +505,7 @@ class FlywayConfigTest {
                                 + "fixture asserting against an empty result set", profile.getKey())
                         .containsExactly(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION);
                 assertThat(configurationLocations(effective))
-                        .as("%s must not reach for the parent either: it resolves the same six scripts "
+                        .as("%s must not reach for the parent either: it resolves the same five scripts "
                                 + "under names relative to itself", profile.getKey())
                         .doesNotContain(FlywayConfig.SHARED_PARENT_LOCATION);
             }
@@ -770,36 +770,6 @@ class FlywayConfigTest {
                                 + "intentionally not included in this diagnostic")
                         .isTrue();
             });
-        }
-
-        @Test
-        @DisplayName("V2_1 declares exactly one table and one index, which is the count its own header "
-                + "calls contractual")
-        void v2_1DeclaresOneTableAndOneIndex() {
-            final String sql = migrationSql("V2_1__create_sign_on_attempt_ledger.sql");
-            final String lowerSql = sql.toLowerCase(Locale.ROOT);
-
-            assertThat(capturedGroups(
-                    Pattern.compile("\\bcreate\\s+table\\s+([a-z_]+)\\s*\\("), lowerSql))
-                    .as("the ledger script creates the sign-on attempt table and no other. A twelfth "
-                            + "record table appearing here would break the eleven-table count every "
-                            + "container-backed assertion reads")
-                    .containsExactly("sign_on_attempt");
-            assertThat(capturedGroups(
-                    Pattern.compile("\\bcreate\\s+index\\s+([a-z_]+)\\s+on\\b"), lowerSql))
-                    .as("and the one index the sweep predicate needs")
-                    .containsExactly("ix_sign_on_attempt_sweep");
-            assertThat(executableStatementCount(sql))
-                    .as("the script's header states EXACTLY TWO EXECUTABLE STATEMENTS and calls the "
-                            + "count contractual, so the count is asserted here rather than left as a "
-                            + "claim no test reads")
-                    .isEqualTo(2);
-            assertThat(lowerSql)
-                    .as("no seed row, no trigger, no scheduled job and no function: the ledger is "
-                            + "correct empty and is swept by the application inside the transition that "
-                            + "would otherwise refuse a new subject")
-                    .doesNotContain("insert into", "create trigger", "create function",
-                            "create or replace");
         }
 
         @Test
@@ -1424,8 +1394,8 @@ class FlywayConfigTest {
                     .as("THIS is the assertion that makes pinning safe rather than a trap. A number "
                             + "written down and never checked freezes the schema: a further script added "
                             + "to %s above the pin would never be applied and the migration would still "
-                            + "report success - which is exactly what would have happened to the ledger "
-                            + "script had the pin stayed at 2. Checked here, adding one without raising "
+                            + "report success - which is exactly what would have happened to the "
+                            + "invariants script had the pin stayed at 2. Checked here, adding one without raising "
                             + "FlywayConfig.PRODUCTION_TARGET fails the BUILD instead, so raising the "
                             + "schema and raising the pin are one commit. Delivered schema versions: %s",
                             FlywayConfig.SCHEMA_LOCATION, schemaVersions)
@@ -1439,12 +1409,12 @@ class FlywayConfigTest {
                     .toList())
                     .as("EVERY seed version must sit ABOVE the pin, so the ceiling excludes the seeds by "
                             + "ARITHMETIC as well as by directory and a production migration stops "
-                            + "before the first of them. An earlier revision numbered the sign-on "
-                            + "attempt ledger 5, above both seeds, which left the pin at 5 with the "
+                            + "before the first of them. An earlier revision numbered a schema "
+                            + "script 5, above both seeds, which left the pin at 5 with the "
                             + "seeds beneath it and reduced this to the weaker claim that no seed sat "
                             + "above the pin - a claim that is true of any pin high enough and "
-                            + "therefore measures nothing. The ledger is 2.1 so that this assertion "
-                            + "means what it says. DL-343")
+                            + "therefore measures nothing. The invariants script is 2.2 so that this "
+                            + "assertion means what it says. DL-343")
                     .isEmpty();
         }
 
@@ -1841,12 +1811,12 @@ class FlywayConfigTest {
                                     version, ProductionSeedRejectionCallback.FIRST_SEED_VERSION)
                             .isTrue());
             // ORDERING, not membership, and the difference was measured. An earlier revision numbered
-            // the sign-on attempt ledger 5 - above both seeds - and weakened this to "no schema version
+            // a schema script 5 - above both seeds - and weakened this to "no schema version
             // is one of the seed versions", on the reasoning that the refusal watched for exact
             // versions. It does not: it refuses on a successful history row AT OR ABOVE the watched
             // version, so a schema script numbered 5 satisfied it and a correctly migrated production
-            // database refused to start, reporting seed data it did not hold. The ledger script is
-            // 2.1 for that reason and this assertion is the guard. DL-343.
+            // database refused to start, reporting seed data it did not hold. Every schema script is
+            // numbered below the seeds for that reason and this assertion is the guard. DL-343.
             assertThat(deliveredMigrationSchemaVersions())
                     .as("every version the SCHEMA location carries must sort BELOW the version the "
                             + "database-level refusal watches for. That refusal treats a successful "
@@ -1879,8 +1849,8 @@ class FlywayConfigTest {
 
             assertThat(schemaVersions)
                     .as("EVERY schema version must sort below the lowest seed version %s. Three "
-                            + "controls depend on it, and an earlier revision that numbered the "
-                            + "sign-on attempt ledger 5 broke all three, so this is a measured "
+                            + "controls depend on it, and an earlier revision that numbered a "
+                            + "schema script 5 broke all three, so this is a measured "
                             + "invariant rather than a tidiness rule. (1) The production ceiling "
                             + "excludes the seeds by NUMBER as well as by directory only while it sits "
                             + "below them. (2) The database-level seed refusal treats a successful "
@@ -1890,7 +1860,7 @@ class FlywayConfigTest {
                             + "resolving the seed location - an arrangement this module ships - would "
                             + "find the seeds pending BELOW an applied schema version, which the "
                             + "migration tool refuses as out-of-order. A dotted version is the way to "
-                            + "add a schema script here: 2 < 2.1 < 3. DL-343",
+                            + "add a schema script here: 2 < 2.2 < 3. DL-343",
                             lowestSeed.getVersion())
                     .allSatisfy(version -> assertThat(
                             MigrationVersion.fromVersion(version).compareTo(lowestSeed))

@@ -96,23 +96,23 @@ spring:
     enabled: true
     # TWO SETTINGS ADMIT THE SEEDS: the second location, and the lifted ceiling. The delivered scripts
     # sit in two sibling directories whose shared parent holds no script at all -
-    # classpath:db/migration/schema carries V1__create_schema.sql, V2__create_indexes.sql,
-    # V2_1__create_sign_on_attempt_ledger.sql and V2_2__add_protected_value_invariants.sql, and
+    # classpath:db/migration/schema carries V1__create_schema.sql, V2__create_indexes.sql and
+    # V2_2__add_protected_value_invariants.sql, and
     # classpath:db/migration/seed carries V3__seed_reference_data.sql and V4__seed_user_security.sql,
     # the reference-data and sign-on seeds the gate fixtures assert against. THE LOCATION LIST IS THE
     # SEPARATION: the shared baseline declares the schema location alone, which is the production
     # posture, and naming the seed location here is what makes V3 and V4 resolvable. Do not drop the
     # second entry - it leaves every fixture asserting against an empty result set. The baseline also
     # pins spring.flyway.target to "2.2", the highest version the schema location delivers, which stops
-    # BELOW both seeds - the reason the ledger script is numbered 2.1 and the invariants script 2.2
-    # rather than 5 and 6, per DL-343 and DL-349. So the `target: latest` below is load-bearing rather
+    # BELOW both seeds - the reason the invariants script is numbered 2.2
+    # rather than 5, per DL-343 and DL-349. So the `target: latest` below is load-bearing rather
     # than decorative: without it an inherited ceiling of 2.2 would migrate the schema and load none of
     # the fixtures every assertion here reads. Production resolves the schema location only and holds
     # the pin, and com.carddemo.config.FlywayConfig refuses anything else there. See
     # docs/decision-log.md DL-298 for the split and DL-334 for the ceiling.
     #
     # NEVER COLLAPSE THESE TWO INTO THEIR PARENT classpath:db/migration. A Flyway location is scanned
-    # RECURSIVELY, so the parent resolves the same six scripts - but it records each one under a name
+    # RECURSIVELY, so the parent resolves the same five scripts - but it records each one under a name
     # relative to itself, so the history would read schema/V1__create_schema.sql where the bring-up
     # check expects V1__create_schema.sql. FlywayConfig refuses the parent under every profile.
     #
@@ -146,7 +146,7 @@ spring:
       # of eleven is APPLICATION tables only - the eleven record layouts V1__create_schema.sql
       # creates - and framework metadata is neither counted nor owned by a migration. AAP 0.3.1
       # assigns the metadata to the framework and the eleven tables to V1, which is what keeps the
-      # delivered migration inventory at exactly six scripts. The initialiser is idempotent, so a
+      # delivered migration inventory at exactly five scripts. The initialiser is idempotent, so a
       # re-used database is unaffected.
       initialize-schema: always
 

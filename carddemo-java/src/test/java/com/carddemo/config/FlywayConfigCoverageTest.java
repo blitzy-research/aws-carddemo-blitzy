@@ -154,15 +154,13 @@ final class FlywayConfigCoverageTest {
     /**
      * The scripts that build the schema, which ship from the schema location.
      *
-     * <p>Four, and the last two take dotted versions between the indexes and the fixtures: the
-     * deployment-wide sign-on attempt ledger at 2.1 and the protected-value invariants at 2.2. Every
-     * schema version sorts below every seed version, which is an invariant three controls rest on - see
-     * {@code docs/decision-log.md} DL-343 and DL-349.
+     * <p>Three, and the last takes a dotted version between the indexes and the fixtures: the
+     * protected-value invariants at 2.2. Every schema version sorts below every seed version, which is an
+     * invariant three controls rest on - see {@code docs/decision-log.md} DL-343 and DL-349.
      */
     private static final List<String> SCHEMA_MIGRATIONS = List.of(
             "V1__create_schema.sql",
             "V2__create_indexes.sql",
-            "V2_1__create_sign_on_attempt_ledger.sql",
             "V2_2__add_protected_value_invariants.sql");
 
     /** The scripts that seed rows, which ship from the seed location. */
@@ -194,8 +192,8 @@ final class FlywayConfigCoverageTest {
      *
      * <p>Now BELOW the pin rather than above it, which is the same refusal reached from the other
      * direction: production refuses every value but the pin, and a ceiling of 4 would stop before the
-     * sign-on attempt ledger while reporting a successful migration. It reaches the seeds too, which is
-     * what the name says, but that is no longer why it is refused.
+     * protected-value invariants while reporting a successful migration. It reaches the seeds too, which
+     * is what the name says, but that is no longer why it is refused.
      */
     private static final String SEED_REACHING_CEILING = "4";
 
@@ -215,7 +213,7 @@ final class FlywayConfigCoverageTest {
                     .as("and it must be measured against the delivered scripts rather than written down: "
                             + "a pin that is never checked freezes the schema, so a script added here "
                             + "above the pin has to fail a build - which is what caught this constant "
-                            + "when the sign-on attempt ledger arrived")
+                            + "when the protected-value invariants arrived")
                     .isNotEmpty()
                     .allSatisfy(script -> assertThat(versionOf(script)
                             .compareTo(MigrationVersion.fromVersion(FlywayConfig.PRODUCTION_TARGET)))
@@ -308,12 +306,12 @@ final class FlywayConfigCoverageTest {
         }
 
         @Test
-        @DisplayName("the delivered inventory is exactly the six delivered scripts, split "
+        @DisplayName("the delivered inventory is exactly the five delivered scripts, split "
                 + "across the two locations with nothing interleaved and nothing hidden below")
         void theDeliveredInventoryIsExactlyTheSixNamedScripts() {
             assertThat(deliveredMigrations(EXPECTED_SHARED_PARENT_PATH))
-                    .as("a recursive scan of the whole migration tree must find exactly the six "
-                            + "delivered scripts and no seventh: an extra script is what would make the "
+                    .as("a recursive scan of the whole migration tree must find exactly the five "
+                            + "delivered scripts and no sixth: an extra script is what would make the "
                             + "delivered inventory stop describing what a profile applies")
                     .containsExactlyInAnyOrderElementsOf(Stream.concat(SCHEMA_MIGRATIONS.stream(),
                             SEED_MIGRATIONS.stream()).toList());
@@ -321,7 +319,7 @@ final class FlywayConfigCoverageTest {
             MigrationVersion first = versionOf("V1__create_schema.sql");
             MigrationVersion second = versionOf("V2__create_indexes.sql");
             MigrationVersion firstSeed = versionOf("V3__seed_reference_data.sql");
-            MigrationVersion ledger = versionOf("V2_1__create_sign_on_attempt_ledger.sql");
+            MigrationVersion invariants = versionOf("V2_2__add_protected_value_invariants.sql");
 
             assertThat(first)
                     .as("the delivered set is flatly numbered; a dotted version such as 1.1 would sort "
@@ -336,9 +334,10 @@ final class FlywayConfigCoverageTest {
                             + "orders by VERSION across every resolved location rather than by location, "
                             + "so a seed numbered V1_2 would be applied BEFORE the indexes it relies on")
                     .isLessThan(firstSeed);
-            assertThat(ledger)
-                    .as("and the ledger script is numbered below them too, by a DOTTED version between "
-                            + "the indexes and the fixtures. An earlier revision numbered it above the "
+            assertThat(invariants)
+                    .as("and the invariants script is numbered below them too, by a DOTTED version "
+                            + "between the indexes and the fixtures. An earlier revision numbered a "
+                            + "schema script above the "
                             + "seeds on the reasoning that a dotted version beneath already-applied "
                             + "seeds would be out-of-order. That traded one problem for three: the "
                             + "production ceiling stopped excluding the seeds by number, the "
@@ -607,7 +606,7 @@ final class FlywayConfigCoverageTest {
                         .target(MigrationVersion.fromVersion(EXPECTED_SEEDING_TARGET));
 
                 assertThatExceptionOfType(IllegalStateException.class)
-                        .as("the parent resolves the same six scripts under %s, so it looks like a "
+                        .as("the parent resolves the same five scripts under %s, so it looks like a "
                                 + "harmless simplification. It is not: Flyway records a script under a "
                                 + "name relative to its location, so the history would read "
                                 + "schema/V1__create_schema.sql where the bring-up check reads "
@@ -676,7 +675,7 @@ final class FlywayConfigCoverageTest {
      * directory beneath it.
      *
      * <p>This is what tells the two delivered locations apart from their shared parent. A recursive scan
-     * of the parent finds all six scripts because both children are beneath it; a direct listing of the
+     * of the parent finds all five scripts because both children are beneath it; a direct listing of the
      * parent must find none. The distinction is the load-bearing one, because a script left in the
      * parent is applied by any profile that names the parent and by no profile that names a child -
      * which is precisely the state two earlier attempts at this split were left in.</p>

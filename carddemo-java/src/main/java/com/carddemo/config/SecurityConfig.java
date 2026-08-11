@@ -606,9 +606,9 @@ public class SecurityConfig {
      * Shortest machine credential the management surface will start with, in characters.
      *
      * <p>Thirty-two, because this credential is the whole of the authentication on a surface that
-     * publishes health, metrics and environment detail, and because it is not rate limited: the
-     * management chain has no attempt allowance of its own - the sign-on governor counts sign-on
-     * attempts and nothing else - so what stands between a caller and this surface is the cost of
+     * publishes health, metrics and environment detail, and because it is not rate limited: no chain in
+     * this module counts attempts - the legacy estate has no attempt counter and the migration adds none
+     * (docs/decision-log.md DL-352) - so what stands between a caller and this surface is the cost of
      * guessing the value. Nothing bounded it before: the value need only have been non-blank, so a
      * single character was accepted and startup reported nothing unusual, leaving a surface that looked
      * authenticated and was not.

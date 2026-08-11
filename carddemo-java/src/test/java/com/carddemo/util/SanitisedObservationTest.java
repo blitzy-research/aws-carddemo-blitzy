@@ -354,17 +354,23 @@ class SanitisedObservationTest {
         }
 
         /**
-         * And the helper is actually used, at the five boundaries that make outbound calls.
+         * And the helper is actually used, at the four boundaries that make outbound calls.
          *
          * <p>The ban above is satisfiable by observing nothing at all, which would remove the disclosure
          * by removing the telemetry - the wrong reading of the finding, and one this assertion refuses.
          *
+         * <p>The roster was five. {@code service/BatchStagingService} was one of them and has been removed
+         * as dead surface: it was component-scanned, injected by nothing and reached by no configuration,
+         * so the observation it carried was never emitted by a run. The batch tier's durable object-store
+         * boundary is {@code batch/step/StagedGenerationStore}, which is on this roster and does observe.
+         * See decision-log entries DL-146 and DL-147.
+         *
          * @throws IOException if the production tree cannot be read
          */
         @Test
-        @DisplayName("and the five outbound boundaries do observe, so the disclosure was removed rather "
+        @DisplayName("and the four outbound boundaries do observe, so the disclosure was removed rather "
                 + "than the telemetry")
-        void theFiveBoundariesStillObserve() throws IOException {
+        void theFourBoundariesStillObserve() throws IOException {
             final List<String> observing = new ArrayList<>();
             for (final Path source : JavaSourceCensus.sourcesUnder(JavaSourceCensus.PRODUCTION_TREE)) {
                 final String code = JavaSourceCensus.codeOnly(Files.readString(source,
@@ -375,11 +381,10 @@ class SanitisedObservationTest {
             }
 
             assertThat(observing)
-                    .as("the queue publish, the notification publish, the two object-store families and "
-                            + "the batch publication callback")
+                    .as("the queue publish, the notification publish, the durable object-store boundary "
+                            + "and the batch publication callback")
                     .containsExactlyInAnyOrder("JobSubmissionService.java",
                             "JobCompletionNotificationService.java",
-                            "BatchStagingService.java",
                             "StagedGenerationStore.java",
                             "BatchConfig.java");
         }

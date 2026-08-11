@@ -198,17 +198,13 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
     /**
      * The three secondary indexes the index migration creates, named with their owning table.
      *
-     * <p>None of them is on this table, which is the point of holding the list here: an index added to
-     * {@code customer} would appear in the live reading and fail the comparison, and an index moved off
-     * one of these three tables would fail it as well.
+     * <p>One per legacy alternate index and nothing else. None of them is on this table, which is the
+     * point of holding the list here: an index added to {@code customer} would appear in the live reading
+     * and fail the comparison, and an index moved off one of these three tables would fail it as well.
      */
     private static final List<String> SECONDARY_INDEXES = List.of(
             "card -> idx_card_card_acct_id",
             "card_cross_reference -> idx_card_cross_reference_xref_acct_id",
-            // Not an alternate-index stand-in. The sign-on attempt ledger sweeps spent entries when it
-            // is at its tracked-subject ceiling, and this index is what keeps that sweep from scanning
-            // the table at the one moment it is busiest. Ordered by table name, so it sorts here.
-            "sign_on_attempt -> ix_sign_on_attempt_sweep",
             "transaction -> idx_transaction_tran_proc_ts");
 
     // =============================================================================================
@@ -953,18 +949,15 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
                             + "covers the whole of it")
                     .hasSize(APPLICATION_TABLE_COUNT);
             assertThat(database.queryForList(NULLABLE_APPLICATION_COLUMNS, String.class))
-                    .as("two columns in the schema admit a null and this is the first of them. It "
+                    .as("exactly one column in the whole schema admits a null, and this is it. It "
                             + "admits one because the legacy record permits a customer with no national "
                             + "identifier on file, and a column that refused absence would refuse a "
                             + "customer the legacy system stored. The delivered seed nonetheless "
                             + "fills all fifty rows: nullable is what the schema allows, not what the "
-                            + "seed does. The second is the sign-on attempt ledger's refusal "
-                            + "deadline, nullable because ABSENCE IS THE MEANING: no deadline is how "
-                            + "\"not currently refused\" is stored. Enumerated rather than excluded so "
-                            + "the control keeps its full strength - a THIRD nullable column still "
-                            + "fails this. DL-343")
-                    .containsExactly(TABLE + "." + NATIONAL_IDENTIFIER_COLUMN,
-                            "sign_on_attempt.refused_until");
+                            + "seed does. A second nullable column once existed - the refusal deadline "
+                            + "of the withdrawn sign-on attempt ledger - and the assertion is stronger "
+                            + "without it: a SECOND nullable column now fails this. DL-352")
+                    .containsExactly(TABLE + "." + NATIONAL_IDENTIFIER_COLUMN);
             assertThat(declaredColumn(NATIONAL_IDENTIFIER_COLUMN).nullable())
                     .as("read from the other side, the same column reports itself nullable")
                     .isTrue();
@@ -1254,11 +1247,10 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
                             + "through the cross-reference, and the keyed read needs no other index")
                     .containsExactly(PRIMARY_KEY_INDEX);
             assertThat(database.queryForList(SECONDARY_INDEXES_IN_SCHEMA, String.class))
-                    .as("four secondary indexes exist in the whole schema and not one of them is on "
-                            + "this table. Three stand in for the three legacy alternate indexes; the "
-                            + "fourth serves the sign-on attempt ledger's sweep and stands in for no "
-                            + "legacy index at all, which is why it is named separately rather than "
-                            + "folded into the count. DL-343")
+                    .as("three secondary indexes exist in the whole schema and not one of them is on "
+                            + "this table. Each stands in for one of the three legacy alternate indexes, "
+                            + "and nothing else in the delivered schema carries a secondary index: a "
+                            + "fourth once served the withdrawn sign-on attempt ledger's sweep. DL-352")
                     .containsExactlyElementsOf(SECONDARY_INDEXES)
                     .noneMatch(entry -> entry.startsWith(TABLE + " ->"));
         }

@@ -261,8 +261,8 @@ final class ConfigurationProfileBaselineTest {
     /**
      * The only strategy that consults the peer before believing a forwarded address.
      *
-     * <p>The alternative rewrites unconditionally, which is what let a caller choose the address the
-     * sign-on abuse governor counts it by.
+     * <p>The alternative rewrites unconditionally, which is what let a caller choose the address this
+     * deployment attributes a request to.
      */
     private static final String TRUSTED_PROXY_AWARE_STRATEGY = "native";
 
@@ -435,7 +435,7 @@ final class ConfigurationProfileBaselineTest {
      * The shared parent of the two delivered locations, which NO document may declare.
      *
      * <p>A Flyway location is scanned RECURSIVELY, so the parent reaches both children: declaring it
-     * would resolve all six scripts under every profile and defeat the separation outright. It would
+     * would resolve all five scripts under every profile and defeat the separation outright. It would
      * also record each script under a name relative to itself, so the history would read
      * {@code schema/V1__create_schema.sql} where every bring-up check reads {@code
      * V1__create_schema.sql}. {@code FlywayConfig} refuses it under every profile, and the assertions
@@ -468,13 +468,13 @@ final class ConfigurationProfileBaselineTest {
      * - that a number freezes the schema, so a script above it would never be applied while the migration
      * still reported success - is answered by CHECKING the number: {@code FlywayConfigTest} asserts it
      * against the versions the schema location delivers, so raising the schema without raising the pin
-     * fails the build. That check is what caught this constant when the ledger script arrived. Recorded
-     * in docs/decision-log.md DL-334.</p>
+     * fails the build. That check is what caught this constant when the invariants script arrived.
+     * Recorded in docs/decision-log.md DL-334.</p>
      *
      * <p><strong>It still excludes the two seeds by their number as well as by their directory.</strong>
-     * Every schema version sorts below every seed version: 1, 2, 2.1 and 2.2 are structure and 3 and 4
-     * are fixtures. The two dotted versions are the sign-on attempt ledger and the protected-value
-     * invariants, each numbered below the seeds deliberately. An earlier revision numbered the ledger 5,
+     * Every schema version sorts below every seed version: 1, 2 and 2.2 are structure and 3 and 4
+     * are fixtures. The dotted version is the protected-value invariants, numbered below the seeds
+     * deliberately. An earlier revision numbered a schema script 5,
      * above the seeds, which broke three separate controls; DL-343 records the reversal and DL-349 the
      * invariants script.</p>
      */
@@ -484,8 +484,8 @@ final class ConfigurationProfileBaselineTest {
      * The version at which the seeds begin, which is what keeps cross-location apply order correct.
      *
      * <p>Flyway orders by VERSION across every resolved location rather than by location, so a seeding
-     * profile applies {@code V1}, {@code V2}, {@code V2_1}, {@code V2_2}, {@code V3}, {@code V4} in that
-     * order even though four come from one directory and two from another. A seed numbered below this
+     * profile applies {@code V1}, {@code V2}, {@code V2_2}, {@code V3}, {@code V4} in that
+     * order even though three come from one directory and two from another. A seed numbered below this
      * version would therefore be applied BEFORE the table it inserts into exists. Placement is the
      * production control; this numbering is what keeps the two locations composable in the one direction
      * that matters - no seed before its schema, and no schema script above a seed.</p>
@@ -495,32 +495,31 @@ final class ConfigurationProfileBaselineTest {
     /**
      * Every migration this module delivers, in the order a migration applies them.
      *
-     * <p>Four sit in {@link #SCHEMA_LOCATION} and reach every profile - versions 1, 2, 2.1 and 2.2 -
+     * <p>Three sit in {@link #SCHEMA_LOCATION} and reach every profile - versions 1, 2 and 2.2 -
      * while two sit in {@link #SEED_LOCATION} and reach local and test only. AAP 0.3.1 and 0.4.2 name
-     * the first four; the fifth is the deployment-wide sign-on attempt ledger and the sixth the
-     * protected-value invariants, both added by the security remediation recorded in
-     * {@code docs/decision-log.md} DL-343 and DL-349, and both are schema scripts because production is
-     * the profile that needs them most.
+     * the first four; the fifth is the protected-value invariants, added by the security remediation
+     * recorded in {@code docs/decision-log.md} DL-349, and it is a schema script because production is
+     * the profile that needs it most. A sixth script once held version 2.1 - the sign-on attempt ledger
+     * of a throttle the legacy transaction has no counterpart for - and was withdrawn with it (DL-352),
+     * so the gap in the sequence is deliberate.
      *
      * <p><strong>The two sets are separated by their numbers as well as by their directories.</strong>
      * Every schema version sorts below both seed versions, which three separate controls depend on. An
-     * earlier revision numbered the ledger 5, above the seeds, and broke all three; DL-343 records the
-     * measurement. The directory separation is what {@link #eachLocationCarriesExactlyItsOwnHalf()} and
-     * the location assertions above hold.
+     * earlier revision numbered a schema script 5, above the seeds, and broke all three; DL-343 records
+     * the measurement. The directory separation is what {@link #eachLocationCarriesExactlyItsOwnHalf()}
+     * and the location assertions above hold.
      */
     private static final List<String> DELIVERED_MIGRATIONS = List.of(
             "V1__create_schema.sql",
             "V2__create_indexes.sql",
             "V3__seed_reference_data.sql",
             "V4__seed_user_security.sql",
-            "V2_1__create_sign_on_attempt_ledger.sql",
             "V2_2__add_protected_value_invariants.sql");
 
     /** The delivered migrations production applies, being those in the schema location. */
     private static final List<String> SCHEMA_MIGRATIONS = List.of(
             "V1__create_schema.sql",
             "V2__create_indexes.sql",
-            "V2_1__create_sign_on_attempt_ledger.sql",
             "V2_2__add_protected_value_invariants.sql");
 
     /** The delivered migrations only local and test apply, being those in the seed location. */
@@ -1181,32 +1180,33 @@ final class ConfigurationProfileBaselineTest {
         /**
          * Forwarded headers are honoured only from a peer this deployment names.
          *
-         * <p><strong>Why this is a security assertion and not a configuration detail.</strong> The
-         * sign-on abuse governor's second subject is the caller address, and it is the only subject that
-         * catches an enumeration sweep - a sweep never repeats an identifier, so the per-identity
-         * allowance never accumulates. This profile previously selected the framework strategy, which
-         * rewrites the request's address from a caller-supplied header <em>whatever the peer</em>.
+         * <p><strong>Why this is a security assertion and not a configuration detail.</strong> A
+         * request's address is read as a fact by everything operational - an access log, a diagnostic,
+         * an answer to where a request came from. This profile previously selected the framework
+         * strategy, which rewrites that address from a caller-supplied header <em>whatever the peer</em>.
          * Because transport security terminates in this process, a client can reach it directly, rotate
-         * that header and present every attempt as a new source. The native strategy is the
-         * trusted-proxy-aware form: the container honours the header only from a peer matching the
-         * allow-list, and otherwise leaves the connection's own address in place.
+         * that header and present every request as a new source, so the deployment reports whatever the
+         * caller chose. The native strategy is the trusted-proxy-aware form: the container honours the
+         * header only from a peer matching the allow-list, and otherwise leaves the connection's own
+         * address in place.
          *
          * <p>Both halves are asserted, because either alone is satisfiable by the wrong configuration.
          * A strategy with no allow-list would trust the framework's broad private-range default; an
-         * allow-list under a strategy that rewrites unconditionally would be inert. The runtime
-         * behaviour is proved separately over a bound port by
-         * {@code api.SignOnSourceAttributionUntrustedProxyIT} and its trusted-peer companion; this
-         * assertion is what ties the shipped document to the mechanism those two exercise. Recorded as
-         * DL-282.
+         * allow-list under a strategy that rewrites unconditionally would be inert.
+         *
+         * <p>Recorded as DL-282, whose correction notes that the sign-on attempt governor this setting
+         * was first justified by has since been withdrawn as feature expansion (DL-352). The setting
+         * stays on its own merits, and so does this assertion: a deployment that believes any caller's
+         * headers cannot be trusted to report where anything came from.
          */
         @Test
         @DisplayName("honours forwarded headers only from a named proxy, so a caller cannot choose the "
-                + "address the sign-on abuse governor counts it by")
+                + "address this deployment attributes its request to")
         void honoursForwardedHeadersOnlyFromANamedProxy() {
             assertThat(text(PRODUCTION, KEY_FORWARD_HEADERS_STRATEGY))
                     .as("the framework strategy rewrites the request's address from a caller-supplied"
-                            + " header whatever the peer, which hands the abuse governor's source"
-                            + " subject to the abuser. Only the container's trusted-proxy-aware"
+                            + " header whatever the peer, which lets a caller decide what this"
+                            + " deployment believes about it. Only the container's trusted-proxy-aware"
                             + " strategy consults the peer first")
                     .isEqualTo(TRUSTED_PROXY_AWARE_STRATEGY);
 
@@ -1220,8 +1220,8 @@ final class ConfigurationProfileBaselineTest {
                     .as("the allow-list is not a secret, so it carries a default - but a fail-closed"
                             + " one. Loopback alone means that until a deployment names its balancer,"
                             + " a forwarded header is ignored rather than believed. The trade-off - a"
-                            + " shared allowance behind an unnamed balancer - is recorded in the"
-                            + " document and in DL-282")
+                            + " request attributed to the balancer behind an unnamed one - is recorded"
+                            + " in the document and in DL-282")
                     .contains(LOOPBACK_ADDRESS_PATTERN);
         }
     }
@@ -2016,8 +2016,8 @@ final class ConfigurationProfileBaselineTest {
      * decline. A ceiling excludes by ARITHMETIC instead, which reaches a case the location list cannot -
      * a look-alike location presenting a script numbered above the delivered schema - but which, left
      * unchecked, freezes the schema: a further schema script above the pin would be resolved, skipped and
-     * reported as a successful migration, which is exactly what would have happened to the ledger script
-     * had the pin stayed at 2. That failure mode is closed by CHECKING the pin rather than by removing
+     * reported as a successful migration, which is exactly what would have happened to the invariants
+     * script had the pin stayed at 2. That failure mode is closed by CHECKING the pin rather than by removing
      * it, so the assertions below hold a location list AND a per-document ceiling, and
      * {@code FlywayConfigTest} holds the pin to the versions the schema location delivers.</p>
      *
@@ -2025,11 +2025,11 @@ final class ConfigurationProfileBaselineTest {
      * the schema stopped at 2 and the seeds began at 3. The delivered schema now reaches 2.2, so
      * versions 3 and 4 still sit above the pin and both the number and the directory keep them out of
      * production. See docs/decision-log.md DL-298 for the split, DL-334 for the ceiling, DL-343 for the
-     * ledger's placement and DL-349 for the protected-value invariants.</p>
+     * numbering rule and DL-349 for the protected-value invariants.</p>
      *
      * <p>The second is the parent, which is the one way this arrangement can be silently defeated. A
      * Flyway location is scanned RECURSIVELY, so {@code classpath:db/migration} reaches BOTH children:
-     * a document that named the parent would resolve all six scripts under every profile while looking
+     * a document that named the parent would resolve all five scripts under every profile while looking
      * like a simplification, and would additionally record each script under a name relative to the
      * parent, so the history would read {@code schema/V1__create_schema.sql} where every bring-up check
      * reads {@code V1__create_schema.sql}. {@link #noDocumentDeclaresTheSharedParent(String)} refuses
@@ -2325,7 +2325,7 @@ final class ConfigurationProfileBaselineTest {
             assertThat(resolvedAcrossSharedThen(document, KEY_BATCH_INITIALIZE_SCHEMA))
                     .as("AAP 0.3.1 assigns the six framework tables and three sequences to Spring Batch "
                             + "and the eleven application tables to V1__create_schema.sql, which is what "
-                            + "keeps the delivered migration inventory at exactly six scripts. The value "
+                            + "keeps the delivered migration inventory at exactly five scripts. The value "
                             + "must be the SAME under every profile: setting a different one for "
                             + "production alone is what previously made production the single environment "
                             + "in which a job launch could fail on a missing relation, with local and test "

@@ -227,6 +227,16 @@ final class DocumentedSourceCountsTest {
     private static final Pattern SERVICE_FILE_TOTAL =
             Pattern.compile("(?:holds|balance of the)\\s+\\*{0,2}(\\d+)\\*{0,2}\\s+files");
 
+    /**
+     * A stated count of the package's concrete service classes, in either emphasis the documents use.
+     *
+     * <p>Matched over the flattened document, so a figure separated from its noun by a line break is still
+     * found. The bold markers are optional because the two documents differ on them and neither shape may
+     * be the one nobody checks.
+     */
+    private static final Pattern CONCRETE_SERVICE_FIGURE =
+            Pattern.compile("\\*{0,2}(\\d+)\\*{0,2} concrete `\\*Service\\.java`");
+
     /** A published count of the package's files that are not services. */
     private static final Pattern SERVICE_OWNED_BALANCE =
             Pattern.compile("\\*\\*(\\d+)\\*\\*\\s+(?:of them|service-owned)");
@@ -252,6 +262,17 @@ final class DocumentedSourceCountsTest {
      * labelled</em>, so a stale sentence there is evidence rather than a defect. Both exclusions are stated
      * here rather than left for a reader to infer from the list. Recorded in {@code docs/decision-log.md}
      * DL-351.
+     *
+     * <p><strong>One production source is on this list, and it belongs here.</strong>
+     * {@code config/BatchConfig}'s class comment states the delivered migration inventory and the count of
+     * migrations that absorb the estate's dataset-definition steps, in current tense, as facts a reader is
+     * expected to rely on. That makes it a document about the topology whatever else the file is, and it
+     * drifted exactly as an unmeasured document does: it published a count of five while six scripts were
+     * delivered, and separately a count of four in a sentence the count check could not see. Both are now
+     * measured here. A Javadoc claim has to survive {@link #flattened(Path)}, which collapses whitespace
+     * but leaves the leading asterisks in place, so a claim split across two comment lines reads as
+     * {@code migration * inventory} and matches nothing — which is why the sentence in that file is written
+     * on one line and must stay there.
      */
     private static final List<Path> TOPOLOGY_DOCUMENTS = List.of(
             Path.of("README.md"),
@@ -265,7 +286,8 @@ final class DocumentedSourceCountsTest {
             Path.of("src", "main", "resources", "application-prod.yml"),
             Path.of("src", "main", "resources", "application-local.yml"),
             Path.of("src", "main", "resources", "application-test.yml"),
-            Path.of("src", "test", "resources", "application-test.yml"));
+            Path.of("src", "test", "resources", "application-test.yml"),
+            Path.of("src", "main", "java", "com", "carddemo", "config", "BatchConfig.java"));
 
     /** A delivered migration filename, whose version is the part between the prefix and the separator. */
     private static final Pattern MIGRATION_FILENAME =
@@ -275,9 +297,16 @@ final class DocumentedSourceCountsTest {
     private static final Pattern HEADER_STATED_PIN =
             Pattern.compile("spring\\.flyway\\.target:\\s*\"([^\"]+)\"");
 
-    /** A claim about how many migrations the module delivers. */
+    /**
+     * A claim about how many migrations the module delivers.
+     *
+     * <p>The tool's own name is admitted between the count and the noun, because "four Flyway migrations"
+     * is the same claim as "four migrations" and the narrower pattern could not see it. Two documents were
+     * stating a stale count in exactly that shape while every count the pattern did match was correct.
+     */
     private static final Pattern MIGRATION_COUNT_CLAIM = Pattern.compile(
-            "(?i)\\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+migrations\\b");
+            "(?i)\\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)"
+                    + "\\s+(?:flyway\\s+)?migrations\\b");
 
     /** A claim about the delivered inventory, whose window must name the scripts or their count. */
     private static final Pattern INVENTORY_CLAIM = Pattern.compile("(?i)migration inventory");
@@ -440,6 +469,92 @@ final class DocumentedSourceCountsTest {
                     .containsExactly(concreteServiceCount(), javaFileCount(serviceDirectory()));
         }
 
+        /**
+         * The design-pattern table's Service Layer row states the same two figures the rest of the page
+         * states, and both are measured here.
+         *
+         * <p><strong>Why this row needed its own assertion.</strong> Every other service figure on the page
+         * was already derived — the package row, the prose arithmetic, the counted-directly block — and this
+         * one was not, because it sits in a table about patterns rather than about counts and reads as
+         * background. It drifted for exactly that reason: it published a total behind the tree while every
+         * derived figure beside it stayed correct, and a reader comparing the two rows could not tell which
+         * had been measured. Review found it, which is the failure mode a transcribed count has and a
+         * derived one does not.
+         *
+         * <p>The row is matched by its own leading cell rather than by line number, so it can move on the
+         * page. Both of its figures are recomputed here from the directory and from the support-service
+         * enumeration, so the row cannot disagree with the package row, the prose sum or the shell block.
+         *
+         * @throws IOException if the architecture page cannot be read
+         */
+        @Test
+        @DisplayName("the design-pattern table's Service Layer row states the measured pair, not a "
+                + "transcribed one")
+        void theDesignPatternServiceRowStatesTheMeasuredPair() throws IOException {
+            final int concrete = concreteServiceCount();
+            final int translationBearing = concrete - namedSupportServices().size();
+            final String row = read(ARCHITECTURE_PAGE).lines()
+                    .filter(line -> line.startsWith("| Service Layer |"))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "the architecture page has no Service Layer row in its design-pattern table"));
+
+            assertThat(row)
+                    .as("the design-pattern table restates the service figures, so it is measured for "
+                            + "the same reason the package row is; it published a stale total while every "
+                            + "derived figure beside it was correct")
+                    .contains(translationBearing + " translation-bearing services")
+                    .contains("of " + concrete + " `*Service.java` in all");
+        }
+
+        /**
+         * Wherever either document says "<em>N</em> concrete {@code *Service.java}", <em>N</em> is the
+         * measured count.
+         *
+         * <p>Closing the class rather than the instance. The row above was found stale by review, and a
+         * sweep for the same figure in the same shape found a second occurrence — in the paragraph that
+         * introduces the traceability census — which had drifted for the identical reason and which a
+         * row-specific assertion would have left free to drift again. So the figure is measured wherever
+         * it is written, in either of the two documents allowed to write it, in bold or in plain text.
+         *
+         * <p>Deliberately not restricted to a known list of sentences: a new sentence stating this figure
+         * is exactly the case that needs catching, and a list would have to be extended by whoever wrote it.
+         *
+         * @throws IOException if either document cannot be read
+         */
+        @Test
+        @DisplayName("every stated concrete-service figure on the architecture page is the directory's own")
+        void everyStatedConcreteServiceFigureIsMeasured() throws IOException {
+            final int concrete = concreteServiceCount();
+            final List<String> stale = new ArrayList<>();
+            final Matcher stated = CONCRETE_SERVICE_FIGURE.matcher(flattened(ARCHITECTURE_PAGE));
+            int occurrences = 0;
+            while (stated.find()) {
+                occurrences++;
+                if (Integer.parseInt(stated.group(1)) != concrete) {
+                    stale.add(ARCHITECTURE_PAGE + " states `" + stated.group() + "`");
+                }
+            }
+
+            assertThat(occurrences)
+                    .as("%s states this figure in more than one sentence, which is the whole reason for "
+                            + "sweeping rather than naming one of them", ARCHITECTURE_PAGE)
+                    .isGreaterThanOrEqualTo(2);
+            assertThat(stale)
+                    .as("the service directory holds %d files ending `Service.java`, so every sentence "
+                            + "stating that figure states %d; these state something else", concrete,
+                            concrete)
+                    .isEmpty();
+
+            // The manual states the same figure in a table cell rather than beside the noun, so its shape
+            // is asserted directly rather than by the sweep above. Its shell block is measured separately
+            // by TheManualCountedBlock.
+            assertThat(read(MODULE_README))
+                    .as("%s publishes the same figure in its layer-count table, and a reader comparing "
+                            + "the two documents must not find two numbers", MODULE_README)
+                    .contains("| Service implementations | **" + concrete + "** |");
+        }
+
         @Test
         @DisplayName("every support service the prose names exists as a class")
         void theSupportServicesNamedInTheProseAllExist() throws IOException {
@@ -505,9 +620,10 @@ final class DocumentedSourceCountsTest {
      * service-owned types that are not services — and each is published more than once: in the architecture
      * page's table and twice more in its prose, and in the module manual's layer table and again in the
      * command block beside it. {@link TheServiceFigures} already measured the table and the architecture
-     * page's own counted-directly block, and that was not enough: the sign-on attempt store added three
-     * files, the checked places were corrected, and the four unchecked ones went on publishing 65 and 27
-     * beside a command that printed 68.</p>
+     * page's own counted-directly block, and that was not enough: a sign-on attempt store added three
+     * files, the checked places were corrected, and the four unchecked ones went on publishing figures the
+     * command beside them contradicted. The store has since been withdrawn (DL-352) and the figures moved
+     * again, which is the same lesson from the other direction.</p>
      *
      * <p>So the check is by occurrence rather than by place. Every occurrence of either figure in either
      * document is measured against the directory, and each document must carry at least one of each, so a
@@ -764,7 +880,7 @@ final class DocumentedSourceCountsTest {
          * Reduces a migration filename to the version token the documents write.
          *
          * @param  filename the delivered filename
-         * @return its version token, as {@code V2_1}
+         * @return its version token, as {@code V2_2}
          */
         private static String versionToken(final String filename) {
             return filename.substring(0, filename.indexOf("__"));
@@ -1620,7 +1736,7 @@ final class DocumentedSourceCountsTest {
      * Collects the version tokens a span of text names, in the form the documents write them.
      *
      * @param  text the span to read
-     * @return those tokens, as {@code V2_1}, without duplicates
+     * @return those tokens, as {@code V2_2}, without duplicates
      */
     private static TreeSet<String> namedVersionTokens(final String text) {
         final TreeSet<String> named = new TreeSet<>();

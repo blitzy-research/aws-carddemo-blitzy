@@ -147,7 +147,7 @@ same eight-character width. All ten are seeded, with their identifiers, names an
 exactly, and every credential stored as a **BCrypt hash**. The seeding migration reaches the local and
 test profiles only, so a production deployment migrates schema and indexes without inheriting a seeded
 credential of any kind. **The delivered mechanism is a profile-scoped location split, with a production
-version ceiling beside it**: the four schema scripts ship from `classpath:db/migration/schema` and the two
+version ceiling beside it**: the three schema scripts ship from `classpath:db/migration/schema` and the two
 seed scripts from `classpath:db/migration/seed`, local and test resolve both locations and migrate through
 V4, production resolves the schema location alone — so it does not resolve a seed script at all — and
 additionally declares `spring.flyway.target: "2.2"` and refuses a database whose history or contents show a
@@ -1844,7 +1844,7 @@ the generic error boundary that does not differentiate.
 | D-44 | One DD is declared `LRECL=80` in one `app/jcl/CREASTMT.JCL` step and `LRECL=100` in the next | One hundred, matching the `PIC X(100)` record the emitting program declares for the HTML stream. |
 | D-45 | `app/jcl/TRANFILE.jcl` and `app/jcl/TRANIDX.jcl` both define an alternate index of the same name, over the same cluster, with the same key width and offset | One logical index described in two members, emitted exactly once. Emitting it twice fails on a duplicate name; renaming the second copy would leave a permanent redundant index behind. |
 | D-46 | Duplicate step names — `STEP05R` twice in `app/jcl/TRANREPT.jcl`, `STEP05` twice in `app/jcl/DEFCUST.jcl` | Distinct target step names, with the original names recorded here so the mapping stays findable. |
-| D-47 | Sample rows and sign-on identities must reach local and test but never production | **Corrected, not carried forward. See DL-298, DL-343, DL-349 and DL-351.** The six delivered migrations ship from two sibling locations whose shared parent holds no script: the four schema scripts from `classpath:db/migration/schema`, which every profile resolves, and the two seeds from `classpath:db/migration/seed`, which only local and test resolve. Local and test therefore migrate through V4, while production resolves no seed at all, pins the ceiling at the highest schema version — `2.2` — beside that list, and additionally refuses a database whose history or contents show that either seed was applied. The earlier reading of this row — four migrations flat in `classpath:db/migration`, production fixed at target `2` — is the arrangement DL-298 withdrew. |
+| D-47 | Sample rows and sign-on identities must reach local and test but never production | **Corrected, not carried forward. See DL-298, DL-343, DL-349, DL-351 and DL-352.** The five delivered migrations ship from two sibling locations whose shared parent holds no script: the three schema scripts from `classpath:db/migration/schema`, which every profile resolves, and the two seeds from `classpath:db/migration/seed`, which only local and test resolve. Local and test therefore migrate through V4, while production resolves no seed at all, pins the ceiling at the highest schema version — `2.2` — beside that list, and additionally refuses a database whose history or contents show that either seed was applied. The earlier reading of this row — four migrations flat in `classpath:db/migration`, production fixed at target `2` — is the arrangement DL-298 withdrew. |
 | D-48 | Prior project documentation names test-plugin versions that the resolved build supersedes | The resolved versions govern. A version is recorded only after being read back out of an executed resolution. |
 
 ---
@@ -5439,6 +5439,16 @@ written correctly rather than written against the defect.
 > `StagedResourceNames` and the staging-store key contracts.
 > The original single-service/no-directory design is retained below as the intermediate implementation
 > that was superseded when durable generation publication and restart-safe local buffers were combined.
+>
+> **Further correction — the superseded service is now gone, not merely bypassed.** For one checkpoint
+> after the move above, `service/BatchStagingService` remained on the component path: annotated
+> `@Service`, injected by nothing, reached by no configuration, and named in this entry's citation list as
+> though it were still the owner of the rule. Review found it as dead surface and it was removed, together
+> with its dedicated test and a test-support double of it. Nothing in the reasoning below changes — the
+> positive name rule, the per-artefact contracts and the diagnostic restriction are all still in force —
+> but they are enforced by `StagedResourceNames`, `batch/BatchStagingArea` and
+> `batch/step/StagedGenerationStore`, which is what the citation list now names. See DL-147 for what the
+> removal settled about the traced boundary.
 
 
 **Context.** The migration plan replaces sequential-dataset and generation-group staging with object
@@ -5483,7 +5493,8 @@ store has no container to make, and an object comes into existence by being writ
 caller-influenced path a location is a value a caller supplied. No diagnostic renders it. What is logged is
 the logical key and, for a failure, a bounded failure chain.
 
-*Cited by:* `service/BatchStagingService.java`, and the seven consumers
+*Cited by:* `util/StagedResourceNames.java`, `batch/BatchStagingArea.java` and
+`batch/step/StagedGenerationStore.java`, which hold the rule between them, and the seven consumers
 `batch/PostTransactionJobConfig.java`, `batch/InterestCalculationJobConfig.java`,
 `batch/CreateStatementJobConfig.java`, `batch/CategoryBalanceReportJobConfig.java`,
 `batch/TransactionReportJobConfig.java`, `batch/CombineTransactionsJobConfig.java` and
@@ -5493,17 +5504,33 @@ the logical key and, for a failure, a bounded failure chain.
 
 ### DL-147 - Every outbound object-store call is observed where the call is made, because a boundary is traced once or not at all
 
-> **Correction - integrated state.** The reasoning below stands, but its premise - that the staging service
-> is "the one place in the module that addresses the object store" - no longer holds, for the same reason
-> recorded in the correction to DL-146: the durable staging contract moved to `BatchStagingArea` and
-> `StagedGenerationStore`, and those two make the object-store calls the batch tier actually performs.
-> `BatchStagingService` retains the observation described below and is no longer reached from any
-> configuration, so the observation it carries is not emitted by a run. Neither of the two live boundaries
-> observes its calls today. This is recorded as an open gap rather than closed silently: what the module
-> emits for a batch run remains the per-step timers of Gate 3, and an outbound object-store failure is
-> reported by the failing step rather than by a span of its own. Closing it means moving this decision's
-> observation onto the two live boundaries, which is a change to the traced surface and is therefore left
-> as a decision for a human rather than made while remediating a documentation finding.
+> **Correction - integrated state.** The reasoning below stands. Its premise - that the staging service is
+> "the one place in the module that addresses the object store" - does not, for the reason recorded in the
+> correction to DL-146: the durable staging contract moved to `BatchStagingArea` and
+> `StagedGenerationStore`, and those two make every object-store call the batch tier actually performs.
+> `BatchStagingService` kept the observation described below while being reached from no configuration, so
+> the observation it carried was never emitted by a run; the class has since been removed as dead surface
+> and the observation went with it.
+>
+> **Where the decision now lives, and what it covers.** One of the two live boundaries observes its calls
+> and one does not, and the split is deliberate rather than half-finished. `StagedGenerationStore` - the
+> durable generation boundary, and the consequential one, because its calls allocate a generation number,
+> publish it, and version-qualify the deletes that compensate a failed pass and enforce retention - wraps
+> **every** outbound call in an observation named `carddemo.batch.generation`, tagged with a fixed store
+> word, a fixed operation word and the key as a high-cardinality attribute, exactly in the shape this entry
+> specifies. It goes through `util/SanitisedObservation` rather than the observation API's own
+> `observe`, so a refused call is visible as a failure and the span carries only this module's bounded
+> failure chain instead of the raw store message that named the bucket, the key and the endpoint. DL-305
+> records the move onto that boundary and DL-341 records the sanitising wrapper.
+>
+> **The residual gap, stated rather than implied.** `BatchStagingArea` makes exactly two object-store
+> calls - an existence probe and a download of the one named staging object a step reads - and **neither is
+> observed**. An outbound failure there is reported by the failing step and by Gate 3's per-step timer, not
+> by a span of its own. It is left unobserved on purpose: a step that cannot read its input fails the step,
+> so the failure is never silent, and adding a second observation family for those two calls would average
+> a step's read into the publication metrics this entry's family exists to isolate. Closing it would be a change to the traced surface rather than a
+> correction to this record, so it stays open and named here rather than being made while remediating a
+> documentation finding.
 
 **Context.** The archive step's upload was the module's only object-store call and it carried no
 observation, so the trace ended at the boundary and an outbound failure set no error attribute on any
@@ -5527,8 +5554,9 @@ of the handle, not the byte transfer, because the transfer happens when the call
 whole-image write observes the transfer itself, which is why the archive path uses it. The limitation is
 inherent to a streaming API and is stated rather than papered over.
 
-*Cited by:* `service/BatchStagingService.java`. The registry it observes against is configured by
-`config/ObservabilityConfig.java`.
+*Cited by:* `batch/step/StagedGenerationStore.java`, which carries the observation this entry specifies,
+and `util/SanitisedObservation.java`, which is how it is opened and closed. The registry both observe
+against is configured by `config/ObservabilityConfig.java`.
 
 ---
 
@@ -9935,6 +9963,20 @@ printable markup byte for byte at the declared width.
 
 ### DL-268 - The sign-on surface keeps its two distinct refusal messages and bounds how many attempts a caller may spend, and the not-found path now does the same work as the wrong-secret path
 
+> **Correction — withdrawn in part; the allowance is gone and the messages and the equalised work remain.**
+> Part 1 and part 2 of the decision below stand. **Part 3 — the bounded attempt allowance — has been
+> removed**, together with the governor, the ledger, the ledger's table and the production setting that
+> chose where its state lived. Transaction `CC00` has no attempt counter, no lockout and no refusal
+> period in the estate being translated, so an allowance is a behaviour the migration invented, which
+> the frozen preservation boundary (AAP §0.8.1, "migrate what exists, do not add new business features")
+> does not permit however sound the security reasoning was. What that costs, stated plainly rather than
+> left for a reader to infer: the *unbounded channel* named under "The defect this entry records" is
+> unbounded again, and bounding it belongs to a deployment control outside this module — an edge rate
+> limit or a network control — rather than to this transaction. The two message literals and the
+> inert-digest verification on the not-found path are untouched, because neither is a behaviour the
+> legacy screen lacks: the messages are its own frozen text, and the equalised work changes no decision,
+> no message and no field nomination. See DL-352.
+
 **Context.** Transaction `CC00` is the module's one anonymous route. It reproduces the legacy screen
 faithfully, and two of the properties it reproduces are harmless on a 3270 terminal and are not harmless
 on an open network.
@@ -11413,6 +11455,17 @@ declaration order, passing together.
 ---
 
 ### DL-282 — A forwarded header may set the caller address only from a proxy the deployment names, because the abuse governor counts by it
+
+> **Correction — the setting stays; the reason it was first given for has gone.** The abuse governor this
+> entry reasons about has been removed as feature expansion (DL-352), so the sentence in the heading — that
+> a forwarded header matters "because the abuse governor counts by it" — no longer describes anything the
+> module does. `server.forward-headers-strategy: native` and its fail-closed allow-list are **retained**,
+> on reasons of their own that were always present and are now the whole of the justification: generated
+> redirect and location URLs must follow the scheme, host and port the client actually used, and a request's
+> address is read as a fact by every operational answer to "where did this come from". A deployment that
+> rewrites that address from any caller's headers reports whatever the caller chose. What is no longer true
+> is the enumeration-sweep argument and the shared-allowance trade-off described under the allow-list
+> default; a deployment that has not named its balancer now loses attribution detail rather than protection.
 
 The sign-on governor keeps two allowances. One is per identity and catches a run of secrets driven at a
 single identifier. The other is per **caller address**, and it is the only one that can catch an
@@ -16228,29 +16281,38 @@ and this build treats as an error - the same reason `util/ObservationPropagation
 
 *Cited by:* `src/main/java/com/carddemo/service/JobSubmissionService.java`,
 `src/main/java/com/carddemo/service/JobCompletionNotificationService.java`,
-`src/main/java/com/carddemo/service/BatchStagingService.java`,
 `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`,
 `src/main/java/com/carddemo/config/BatchConfig.java`,
-`src/main/java/com/carddemo/util/SanitisedObservation.java`.
+`src/main/java/com/carddemo/util/SanitisedObservation.java`. The roster was six: a staging service was one
+of the five boundaries and has since been removed as dead surface, so the family it belonged to is now the
+one durable object-store boundary. See DL-147.
 
 *Asserted by:* `util/SanitisedObservationTest` - the recorded error is the classification and not the
 provider's object, carries no cause, no frames and no suppressed throwable, and its message excludes
 planted provider text while still naming the type chain; the observation is stopped and the scope closed on
 both paths; an `Error` is classified the same way. The same class carries the **canary**: it reads every
 production source with comments and literals blanked and fails if any `.observe(` or `.observeChecked(`
-call on an observation remains, so a sixth boundary written later cannot reintroduce the family, and it
-positively requires the five named files to observe through the helper so the disclosure cannot be removed
-by removing the telemetry. The five per-boundary suites -
-`service/BatchStagingServiceTest`, `service/JobSubmissionServiceObservationTest`,
-`service/JobCompletionNotificationServiceTest`, `batch/step/StagedGenerationStoreTest` and
-`config/BatchConfigTest` - each plant provider text in the failure and assert it cannot reach the recorded
-error. Every one of those five previously asserted the opposite, which is why the canary exists.
+call on an observation remains, so a further boundary written later cannot reintroduce the family, and it
+positively requires the named files to observe through the helper so the disclosure cannot be removed
+by removing the telemetry. The per-boundary suites -
+`service/JobSubmissionServiceObservationTest`, `service/JobCompletionNotificationServiceTest`,
+`batch/step/StagedGenerationStoreTest` and `config/BatchConfigTest` - each plant provider text in the
+failure and assert it cannot reach the recorded error. Every one of them previously asserted the opposite,
+which is why the canary exists. A fifth suite covered the staging service that has since been removed, so
+the roster the canary requires is four rather than five.
 
-*Embodied in:* `util/SanitisedObservation` and the five boundary call sites.
+*Embodied in:* `util/SanitisedObservation` and the four surviving boundary call sites.
 
 ---
 
 ### DL-342 - A successful sign-on releases the authenticated identity and never the source, because the source record is what catches a sweep
+
+> **Correction — withdrawn entirely with the mechanism it corrected.** This entry describes what
+> `recordSuccess` releases. The governor that method belonged to has been removed as feature expansion
+> (DL-352): the sign-on transaction counts no attempts, releases nothing on success, and has no source
+> subject or identity subject to release. Nothing in this entry describes delivered behaviour, and it is
+> retained rather than deleted because the reasoning — that a counter resettable by the party it counts is
+> not a counter — is the kind of finding a future control at the right layer should not have to rediscover.
 
 *Context.* Failures are counted under two independent subjects (DL-268): the identity, which catches a
 stuffing run against one identifier, and the source, which catches an enumeration sweep that never repeats
@@ -16302,6 +16364,18 @@ previously asserted that a success cleared both subjects.
 ---
 
 ### DL-343 - The sign-on attempt allowance is counted once per deployment rather than once per process, so the throttle state moves into the shared database
+
+> **Correction — withdrawn entirely with the mechanism it corrected, and one artefact of it is deliberately
+> not reused.** This entry moved the sign-on attempt state from process memory into the shared database. The
+> throttle it served has been removed as feature expansion (DL-352), so `SignOnThrottleConfig`, both ledger
+> implementations, the `sign_on_attempt` table and the `carddemo.security.sign-on.state-scope` setting are all
+> gone. Two consequences are recorded here rather than left to be worked out. **The migration version 2.1 is
+> withdrawn and the gap is deliberate**: the delivered schema is V1, V2, V2_2, V3 and V4, and a new schema
+> script takes the next free dotted version below 3 rather than back-filling 2.1, so no database can hold two
+> different scripts under one version. **The numbering rule this entry established survives the removal** —
+> every schema version sorts below every seed version — and it is still the reason V2_2 is dotted rather than
+> numbered 5; the reversal reasoning under *What the reversal cost* is unaffected and is still what the
+> `FlywayConfigTest` invariant asserts.
 
 **Correction — see DL-351.** *What the reversal cost*, below, concludes that "nothing in them needed
 correcting" about the headers of V1 through V4. That was right about the property it was reasoning over — the
@@ -17261,6 +17335,101 @@ superseded pin.
 *Embodied in:* the erratum under **Database migrations** in `carddemo-java/README.md`, the erratum under
 **Schema evolution** in `docs/architecture.md`, and the derived checks in
 `config/DocumentedSourceCountsTest`.
+
+---
+
+### DL-352 - The sign-on attempt throttle is withdrawn, because the transaction it guards has no attempt counter and the preservation boundary is frozen
+
+*Context.* A security remediation delivered a bounded sign-on attempt allowance (DL-268), corrected what a
+success releases (DL-342), moved its state into the shared database so one allowance was one allowance across
+every instance (DL-343), and hardened the caller-address attribution the second subject was keyed on (DL-282).
+The reasoning in all four entries was sound about the risk: transaction `CC00` is the one anonymous route,
+it answers an unknown identifier and a wrong secret with different frozen literals, and it verifies a secret
+with a deliberately expensive digest.
+
+*The defect this entry records.* None of it is a behaviour of the program being migrated.
+`app/cbl/COSGN00C.cbl` has six paragraphs, reads the credential master exactly once per submitted turn, and
+has no attempt counter, no lockout, no refusal period and no per-caller state of any kind. The delivered
+service consulted a governor **before** the credential read and could answer a nonblank submission without
+performing it, which is a decision path the legacy cascade does not contain. The migration's scope is frozen
+at what the estate does (AAP §0.8.1 - "migrate what exists, do not add new business features", and §0.8.6's
+prohibition on inventing behaviour), and a security improvement is subject to that boundary exactly as a
+convenience feature is. Judged against the boundary rather than against the risk, the whole family is
+feature expansion, and its most visible symptom - a refusal reported as the screen's `UNABLE_TO_VERIFY`
+catch-all - was a message the legacy program emits only for a failed file access.
+
+*Decision.* Withdraw the mechanism entirely and restore the legacy cascade. Every submitted turn now reaches
+`verifyCredential`, and the only tests in front of the read are the program's own ordered blank cascade.
+Removed: `service/SignOnAttemptGovernor`, `service/SignOnAttemptLedger` and both implementations,
+`config/SignOnThrottleConfig`, the `sign_on_attempt` table at migration version 2.1, the
+`carddemo.security.sign-on.state-scope` setting in the production profile, and the caller-address
+attribution that existed only to be the governor's second subject - `AuthController` no longer reads
+`getRemoteAddr()` and `AuthenticationService` no longer carries the four-argument overloads that passed it.
+Their dedicated tests are removed with them, including the two source-attribution integration tests whose
+subject was the governor counting by peer address.
+
+*What is deliberately kept, and why each survives the removal.*
+
+- *Both refusal messages.* Frozen contract text of the legacy screen; DL-268 part 1 was never the problem.
+- *The inert-digest verification on the not-found path.* It changes no decision, no message and no field
+  nomination - only how long an answer takes - so it adds no behaviour the screen lacks while closing a
+  timing oracle the open network introduces. DL-268 part 2 stands.
+- *`server.forward-headers-strategy: native` and its fail-closed allow-list.* Justified now by generated
+  URLs and truthful request attribution rather than by an abuse counter. See the correction on DL-282.
+
+*What this costs, stated rather than hidden.* The sign-on surface is again unbounded: a caller may spend
+attempts at whatever rate it can drive, and each one costs a BCrypt verification. That is the legacy
+system's own posture, and bounding it belongs to a control outside this module - an edge rate limit, a
+network control, or a WAF - which is also where the AAP places infrastructure provisioning (§0.2.2). This is
+recorded as an accepted, documented residual risk rather than as an oversight, so that a deployment reading
+this log knows the property is not provided and knows where to provide it.
+
+*The migration-history consequence, and the decision taken on it.* Version 2.1 has been applied to any
+database this module was run against before the withdrawal, and `validate-on-migrate` is on everywhere, so
+such a database reports an applied version that resolves to no script. The decision is to **recreate the
+database rather than to relax validation**: every database this module has run against is disposable - a
+per-run Testcontainers instance or a local Compose volume - and no production deployment exists, so
+`docker compose down -v` followed by `docker compose up -d` is the whole of the procedure. An
+`ignoreMigrationPatterns` entry was rejected: it would weaken validation permanently for one transitional
+state, and the guard it weakens is the one that catches a genuinely diverged schema. Version 2.1 is
+**withdrawn rather than reused**: a new schema script takes the next free dotted version below 3, so no two
+scripts can ever share a version across databases.
+
+*Alternatives considered and rejected.* **Keeping the throttle and recording it as a sanctioned exception** -
+rejected: the AAP's preservation boundary is frozen and names no exception for security features, and the one
+parity exception it does sanction (hashed credentials) is sanctioned because it changes representation
+without changing observable behaviour, which a refusal does not. **Keeping the governor but never refusing** -
+rejected: dead production surface, which is the same defect as the one recorded against the withdrawn
+staging service, and a counter that refuses nobody is a cost with no property. **Moving the allowance to the
+web layer as a filter** - rejected: it is the same invented behaviour one layer out, and it would still
+answer a submitted turn without reading the file. **Keeping the `sign_on_attempt` table for a future
+control** - rejected: an empty operational table nothing reads is exactly the extra surface this checkpoint
+required to be removed.
+
+*Two other entries name version 2.1 in passing, and they are history rather than error.* The correction on
+DL-334 records that the pin moved to `2.2` because the ledger script and then the invariants script arrived
+between the indexes and the seeds, and DL-349 explains its own dotted number with the ordering
+`2 < 2.1 < 2.2 < 3`. Both sentences were true of the tree they were written against, and both remain the
+authority on what they are about - the pin, and why a schema script may not be numbered above it. Neither is
+restated here and neither is edited: read every mention of 2.1 in them as a version that existed and has
+since been withdrawn by this entry. The delivered ordering is now `2 < 2.2 < 3`, which excludes the seeds by
+number exactly as before, and `FlywayConfig.PRODUCTION_TARGET` is unaffected because `V2_2` remains the
+highest version the schema location delivers.
+
+*Asserted by:* `service/AuthenticationServiceTest` - every nonblank submission reaches the credential read
+and the outcome cascade; `support/AbstractPostgresIT` and `e2e/GateVerificationTest` - the delivered schema
+creates the eleven record-layout tables and **no** operational table; `config/FlywayConfigTest`,
+`config/FlywayConfigCoverageTest` and `config/DocumentedSourceCountsTest` - the delivered inventory is five
+scripts and every published count of it is measured rather than transcribed.
+
+*Cited by:* `service/AuthenticationService.java`, `api/AuthController.java`, `config/SecurityConfig.java`,
+`src/main/resources/application.yml`, `src/main/resources/application-prod.yml`,
+`e2e/GateVerificationTest.java`, `support/AbstractPostgresIT.java` and the corrections on DL-268, DL-282,
+DL-342 and DL-343.
+
+*Embodied in:* the absence of any attempt counter in `service/AuthenticationService`, the five-script
+migration inventory under `src/main/resources/db/migration`, and the empty operational-table roster in
+`support/AbstractPostgresIT`.
 
 ---
 

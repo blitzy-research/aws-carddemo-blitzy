@@ -266,18 +266,17 @@ public final class StagedGenerationStore {
      *
      * <h2>Why this class needed its own</h2>
      *
-     * <p>{@code service/BatchStagingService} observes every call it makes, but it is a different surface:
-     * it serves a step that reads or writes one named staging object. The durable generation boundary is
-     * this class, and every call it makes - the listing that allocates the next generation number, the
-     * upload that publishes it, the version listing and version-qualified deletes that compensate a failed
-     * pass and enforce retention - was unobserved. That is the whole of the object-store work a batch job
+     * <p>Every call this class makes - the listing that allocates the next generation number, the upload
+     * that publishes it, the version listing and version-qualified deletes that compensate a failed pass
+     * and enforce retention - was unobserved. That is the whole of the object-store work a batch job
      * performs at its most consequential moment, and none of it appeared in a trace.
      *
-     * <p>A separate name from the staging family rather than a shared one, because the two answer different
-     * questions: one is "how is the staging area behaving", the other is "how is generation publication
-     * behaving". Merging them would average a retention prune into a step's read.
-     *
-     * <p>See {@code docs/decision-log.md} entry DL-305.
+     * <p>A name of its own rather than one shared with the batch tier's other object-store boundary,
+     * {@code batch/BatchStagingArea}, which resolves one named staging object for a step to read. The two
+     * answer different questions: one is "how is the staging area behaving", the other is "how is
+     * generation publication behaving", and merging them would average a retention prune into a step's
+     * read. That the staging boundary is not itself observed is recorded as a residual gap rather than
+     * closed here; see {@code docs/decision-log.md} entries DL-305 and DL-147.
      */
     public static final String OBSERVATION_NAME = "carddemo.batch.generation";
 
@@ -1119,8 +1118,8 @@ public final class StagedGenerationStore {
      * this module composed. The observation's own {@code observe} was used here and recorded the raw
      * object-store failure instead, which the tracing bridge exported message and stack trace included:
      * the bucket, the key and the endpoint the refusal named all left the process that way. The shape is
-     * the one {@code service/BatchStagingService} already uses for the staging surface, so the two
-     * families read alike even though they answer different questions. See decision log DL-341.
+     * the one every observed outbound boundary in this module uses, so a reader of one span learns how to
+     * read them all. See decision log DL-341.
      *
      * @param  <T>       the call's result type
      * @param  operation the operation tag value

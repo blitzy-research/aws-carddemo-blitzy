@@ -265,7 +265,7 @@ final class SeedMigrationIT extends AbstractPostgresIT {
      * The location list the two SEEDING profiles resolve: the schema location plus the seed location.
      *
      * <p>The shared parent of the two is deliberately never used, even though it would resolve the same
-     * six scripts: Flyway records a script under a name relative to its location, so the parent would
+     * five scripts: Flyway records a script under a name relative to its location, so the parent would
      * write {@code schema/V1__create_schema.sql} into the history where every shipped profile writes
      * {@code V1__create_schema.sql}.</p>
      */
@@ -742,14 +742,14 @@ final class SeedMigrationIT extends AbstractPostgresIT {
 
             assertThat(states.keySet())
                     .as("a production-shaped scope resolves the schema location alone, so only the "
-                            + "four schema versions exist for it. THIS IS STRONGER THAN THE CEILING ON "
-                            + "ITS OWN: under a ceiling alone all six scripts are resolved and the seeds "
+                            + "three schema versions exist for it. THIS IS STRONGER THAN THE CEILING ON "
+                            + "ITS OWN: under a ceiling alone all five scripts are resolved and the seeds "
                             + "are reported ABOVE_TARGET, which means the tool holds a pending "
                             + "instruction to apply them that one property could release. A script in a "
                             + "location the deployment does not resolve is not pending anything, which "
                             + "is why the location list is the primary control and the ceiling is the "
                             + "second one")
-                    .containsExactly("1", "2", "2.1", "2.2");
+                    .containsExactly("1", "2", "2.2");
             assertThat(states.get("1")).isEqualTo(MigrationState.SUCCESS);
             assertThat(states.get("2")).isEqualTo(MigrationState.SUCCESS);
             assertThat(states)
@@ -821,9 +821,9 @@ final class SeedMigrationIT extends AbstractPostgresIT {
             }
 
             assertThat(states.keySet())
-                    .as("the seeding list resolves all six versions, so the two the production scope "
+                    .as("the seeding list resolves all five versions, so the two the production scope "
                             + "cannot see are demonstrably there to be seen")
-                    .containsExactly("1", "2", "2.1", "2.2", "3", "4");
+                    .containsExactly("1", "2", "2.2", "3", "4");
             assertThat(states.get("3")).isEqualTo(MigrationState.SUCCESS);
             assertThat(states.get("4")).isEqualTo(MigrationState.SUCCESS);
             assertThat(count(schema, "user_security")).isEqualTo(10L);
@@ -883,7 +883,7 @@ final class SeedMigrationIT extends AbstractPostgresIT {
                             + "all - which is the measurement that makes the ceiling defence in depth "
                             + "rather than the seed boundary. The future script takes version 5, above "
                             + "everything delivered, which is what makes it a future script")
-                    .containsExactly("1", "2", "2.1", "2.2", "5");
+                    .containsExactly("1", "2", "2.2", "5");
             assertThat(states.get("5")).isEqualTo(MigrationState.SUCCESS);
             for (final String table : ALL_TABLES) {
                 assertThat(count(withoutCeiling, table))

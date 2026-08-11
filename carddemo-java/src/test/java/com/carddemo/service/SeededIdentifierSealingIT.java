@@ -64,7 +64,7 @@ import com.carddemo.util.SensitiveFieldCodec;
  *
  * <p>{@link AbstractPostgresIT} migrates the two delivered locations,
  * {@code classpath:db/migration/schema} and {@code classpath:db/migration/seed}, the two sibling
- * locations the six delivered scripts split across, to the head of the
+ * locations the five delivered scripts split across, to the head of the
  * sequence, and shares one server
  * across every integration test in the run, so applying the seeds to it would leave fifty customer
  * rows, fifty cross-reference rows and ten sign-on identities behind for whichever test ran next.

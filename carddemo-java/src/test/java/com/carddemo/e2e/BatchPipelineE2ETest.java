@@ -962,18 +962,18 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
 
     @Test
     @Order(1)
-    @DisplayName("the schema is the migrations' own: exactly the six delivered versions applied, and "
+    @DisplayName("the schema is the migrations' own: exactly the five delivered versions applied, and "
             + "exactly the eleven application tables they create")
     void theMigratedSchemaIsTheOneTheGoldensWereProducedAgainst() {
         // From the snapshot, so this is the schema the run ACTUALLY read from rather than the schema as it
         // stands now - which is the claim the goldens depend on.
         assertThat(run().appliedMigrations())
-                .as("the six delivered migrations, and no seventh version, are what the run read from. "
-                        + "Versions 1, 2, 2.1 and 2.2 are schema and 3 and 4 are seeds, so every "
-                        + "schema version sorts below every seed version - the sign-on attempt ledger "
-                        + "and the protected-value invariants are both schema scripts taking a dotted "
+                .as("the five delivered migrations, and no sixth version, are what the run read from. "
+                        + "Versions 1, 2 and 2.2 are schema and 3 and 4 are seeds, so every "
+                        + "schema version sorts below every seed version - the protected-value "
+                        + "invariants are a schema script taking a dotted "
                         + "version below the seeds, per docs/decision-log.md DL-343 and DL-349")
-                .containsExactly("1", "2", "2.1", "2.2", "3", "4");
+                .containsExactly("1", "2", "2.2", "3", "4");
         assertThat(run().applicationTables())
                 .as("the framework's own metadata tables and the migration history are excluded by the "
                         + "shared base, so this count is the record schema and nothing else")

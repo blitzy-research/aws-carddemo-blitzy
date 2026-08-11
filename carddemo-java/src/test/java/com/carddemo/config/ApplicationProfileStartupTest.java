@@ -203,8 +203,8 @@ final class ApplicationProfileStartupTest {
      *
      * <p>It stops BELOW the two seed versions, which is what makes the ceiling a second, independent
      * statement of the seed exclusion rather than a restatement of the location list. The delivered
-     * schema carries two dotted versions - {@code V2_1__create_sign_on_attempt_ledger.sql} and
-     * {@code V2_2__add_protected_value_invariants.sql} - precisely so that every schema version sorts
+     * schema carries one dotted version - {@code V2_2__add_protected_value_invariants.sql} -
+     * precisely so that every schema version sorts
      * below every seed version. See {@code docs/decision-log.md} DL-343 and DL-349.
      */
     private static final String SCHEMA_CEILING = "2.2";
@@ -212,22 +212,21 @@ final class ApplicationProfileStartupTest {
     /**
      * The complete delivered numbering, asserted rather than assumed.
      *
-     * <p>Strings rather than integers because two schema scripts carry dotted versions - the sign-on
-     * attempt ledger at 2.1 and the protected-value invariants at 2.2. Every schema version must sort
-     * below every seed version, so each takes a dotted version between the indexes and the fixtures.
+     * <p>Strings rather than integers because a schema script carries a dotted version - the
+     * protected-value invariants at 2.2. Every schema version must sort
+     * below every seed version, so it takes a dotted version between the indexes and the fixtures.
      * See {@code docs/decision-log.md} DL-343 and DL-349.
      */
     private static final List<String> EXPECTED_DELIVERED_VERSIONS =
-            List.of("1", "2", "2.1", "2.2", "3", "4");
+            List.of("1", "2", "2.2", "3", "4");
 
     /** The two migrations a production migration must never apply. */
     private static final List<String> SEEDS_WITHHELD_FROM_PRODUCTION =
             List.of("V3__seed_reference_data.sql", "V4__seed_user_security.sql");
 
-    /** The four migrations production must apply, being the ones the schema location carries. */
+    /** The three migrations production must apply, being the ones the schema location carries. */
     private static final List<String> SCHEMA_APPLIED_IN_PRODUCTION =
             List.of("V1__create_schema.sql", "V2__create_indexes.sql",
-                    "V2_1__create_sign_on_attempt_ledger.sql",
                     "V2_2__add_protected_value_invariants.sql");
 
     /** The production document, read as text for the exhaustiveness assertion. */
@@ -495,7 +494,7 @@ final class ApplicationProfileStartupTest {
                         .containsExactly(SCHEMA_LOCATION, SEED_LOCATION);
                 assertThat(bound.getLocations())
                         .as("and %s must not reach for the parent either: it would resolve the same "
-                                + "six scripts and record each one under a name relative to itself, so "
+                                + "five scripts and record each one under a name relative to itself, so "
                                 + "the history would stop matching what the bring-up check reads",
                                 profile)
                         .doesNotContain(SHARED_PARENT_LOCATION);
@@ -563,8 +562,8 @@ final class ApplicationProfileStartupTest {
                                 + "location delivers. A number written down and never checked is the "
                                 + "shape that silently stops applying scripts: a script above the pin "
                                 + "would be resolved, skipped and reported as a successful migration - "
-                                + "which is what would have happened to the sign-on attempt ledger had "
-                                + "the pin stayed at 2. That is closed by CHECKING the number rather "
+                                + "which is what would have happened to the protected-value "
+                                + "invariants had the pin stayed at 2. That is closed by CHECKING the number rather "
                                 + "than by removing it: FlywayConfigTest asserts the pin against the "
                                 + "delivered scripts, so adding a script above it without raising it "
                                 + "fails the build, and that is how this constant was caught",
@@ -1178,8 +1177,8 @@ final class ApplicationProfileStartupTest {
                     .filter(name -> name != null)
                     .map(MIGRATION_VERSION::matcher)
                     .filter(Matcher::find)
-                    // A file name spells a dotted version with an underscore, so V2_1 is version
-                    // 2.1. Compared as a parsed version rather than as text, because "2.1" sorts
+                    // A file name spells a dotted version with an underscore, so V2_2 is version
+                    // 2.2. Compared as a parsed version rather than as text, because "2.2" sorts
                     // after "2" numerically and before "3" - which text ordering also happens to
                     // give here, but would not once a version reached two digits.
                     .map(matcher -> matcher.group(1).replace('_', '.'))

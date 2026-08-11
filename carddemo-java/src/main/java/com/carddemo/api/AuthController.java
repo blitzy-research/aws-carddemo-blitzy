@@ -27,7 +27,6 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -221,22 +220,13 @@ public final class AuthController {
      * the decision's own enumerated name, or the fixed failure constant when the turn reached no
      * decision at all, so it cannot become a high-cardinality label.
      *
-     * <p>One value that is <em>not</em> part of the screen is read here and handed on: the caller
-     * address. It is the second subject the service's abuse-resistance governor counts against, and this
-     * is the only layer that has one. It is not a field of the published contract, does not appear in the
-     * schema, and is never echoed, validated, stored or logged.
-     *
-     * <p><strong>It must be the connection's address and not a header's, and that is a deployment
-     * requirement as much as a code one.</strong> The value is read from the request rather than from any
-     * forwarding header, but a forwarded-header mechanism that rewrote unconditionally would have replaced
-     * the request's own address with a caller-supplied one before this method ran. Production therefore
-     * selects the container's trusted-proxy-aware strategy, which honours a forwarded address only from a
-     * peer that deployment names; the comment at the call site records the requirement and
-     * {@code docs/decision-log.md} entry DL-282 records the decision.
+     * <p>Nothing outside the request body reaches the service. An earlier revision additionally read the
+     * caller address and handed it on as the second subject of an abuse-resistance governor; that
+     * governor was removed as feature expansion - the legacy transaction has no attempt counter - and the
+     * attribution went with it, because a value nothing consumes is dead plumbing at a boundary that must
+     * stay readable. {@code docs/decision-log.md} entry DL-352 records the removal.
      *
      * @param request the operator's entry and the attention key they pressed
-     * @param httpRequest the servlet request, read only for the caller address, possibly {@code null}
-     *                    when this handler is driven without a servlet container
      * @return the screen the turn produces, carrying a bearer session when the credential verified
      */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -255,30 +245,12 @@ public final class AuthController {
         @ApiResponse(responseCode = "400",
                 description = "The request exceeded the widths the sign-on map declares.")})
     public ResponseEntity<SignOnResponse> signOn(
-            @Valid @RequestBody(required = false) final SignOnRequest request,
-            final HttpServletRequest httpRequest) {
+            @Valid @RequestBody(required = false) final SignOnRequest request) {
         if (request == null) {
             return initialEntry();
         }
-        // The caller address is attributed here because this is the only layer that has one, and it is
-        // handed on as the governor's second subject rather than as a screen field: it is never echoed,
-        // never validated, never stored and never logged.
-        //
-        // WHAT THIS VALUE MUST BE, AND WHAT ENFORCES IT. An abuse counter keyed on a value the abuser
-        // chooses is no counter at all, so this must be the address the connection came from and never a
-        // value read out of a request header. This layer cannot enforce that on its own: a forwarded-header
-        // mechanism configured to rewrite unconditionally would already have replaced the peer address
-        // with a caller-supplied one before this method runs, and nothing here could tell the two apart.
-        // The enforcement is therefore a deployment setting and is stated as a requirement of this call
-        // site: production selects the container's TRUSTED-PROXY-AWARE strategy, which honours a forwarded
-        // address only from a peer the deployment has named and otherwise leaves the connection's own
-        // address in place. A deployment that instead rewrites from any caller's headers reopens the
-        // cross-identity sweep this subject exists to catch. See docs/decision-log.md DL-282, and
-        // api.SignOnSourceAttributionUntrustedProxyIT, which drives two forwarded addresses at a real
-        // untrusted peer and requires them to share one allowance.
-        final String sourceKey = httpRequest == null ? null : httpRequest.getRemoteAddr();
         return serveTurn(() -> this.authenticationService.handle(
-                request.keyAction(), request.userId(), request.password(), sourceKey));
+                request.keyAction(), request.userId(), request.password()));
     }
 
     /**

@@ -123,10 +123,10 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
     /**
      * The eleven record-layout tables the framework must not disturb.
      *
-     * <p>Eleven rather than twelve: the delivered schema also creates the operational sign-on attempt
-     * ledger, which the base class's roster excludes by name because it carries no record layout. This
-     * class's subject is the framework's own family, so the figure it measures against is the record
-     * inventory. See {@code docs/decision-log.md} DL-343.</p>
+     * <p>Eleven, and eleven is the whole delivered schema: every table the migrations create carries a
+     * verified record layout, so this figure and the delivered inventory are the same figure. This
+     * class's subject is the framework's own family, which is additional to those eleven and is excluded
+     * by the base class's roster. See {@code docs/decision-log.md} DL-352.</p>
      */
     private static final int APPLICATION_TABLE_COUNT = 11;
 
@@ -232,7 +232,7 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
 
         @Test
         @DisplayName("no delivered migration creates a metadata object, so the framework is the single "
-                + "owner and the delivered inventory stays at six scripts")
+                + "owner and the delivered inventory stays at five scripts")
         void noDeliveredMigrationCreatesAMetadataObject() throws IOException {
             List<String> offending = new ArrayList<>();
             for (final Resource migration : deliveredMigrations()) {
@@ -253,23 +253,21 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the delivered migrations are exactly the six named, so the framework taking the "
+        @DisplayName("the delivered migrations are exactly the five named, so the framework taking the "
                 + "metadata has not changed the inventory")
-        void theDeliveredMigrationsAreExactlyTheSixNamed() {
+        void theDeliveredMigrationsAreExactlyTheFiveNamed() {
             assertThat(deliveredMigrations())
                     .extracting(Resource::getFilename)
                     .as("AAP 0.3.1 and 0.4.2 name the first four scripts, in two profile-scoped "
-                            + "locations; the fifth is the deployment-wide sign-on attempt ledger and "
-                            + "the sixth the protected-value invariants, both added as schema scripts "
-                            + "by the security remediation and recorded in docs/decision-log.md DL-343 "
-                            + "and DL-349. A SEVENTH would mean something took on work this arrangement "
-                            + "assigns elsewhere")
+                            + "locations; the fifth is the protected-value invariants, added as a schema "
+                            + "script by the security remediation and recorded in "
+                            + "docs/decision-log.md DL-349. A SIXTH would mean something took on work "
+                            + "this arrangement assigns elsewhere")
                     .containsExactlyInAnyOrder(
                             "V1__create_schema.sql",
                             "V2__create_indexes.sql",
                             "V3__seed_reference_data.sql",
                             "V4__seed_user_security.sql",
-                            "V2_1__create_sign_on_attempt_ledger.sql",
                             "V2_2__add_protected_value_invariants.sql");
         }
     }
@@ -390,11 +388,10 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
      * @throws SQLException when the catalogue read fails
      */
     private static int applicationTableCount() throws SQLException {
-        // Delegated rather than re-queried. The exclusion list this figure depends on has three entries
-        // now - the framework's own family, the migration history, and the operational sign-on attempt
-        // ledger - and a second copy of it drifts from the first the moment a fourth is added. The base
-        // class is the one authority; the local queryNames below still serves the metadata rosters, which
-        // are this class's own subject.
+        // Delegated rather than re-queried. The exclusion list this figure depends on has two entries -
+        // the framework's own family and the migration history - and a second copy of it drifts from the
+        // first the moment a third is added. The base class is the one authority; the local queryNames
+        // below still serves the metadata rosters, which are this class's own subject.
         return applicationTableNames().size();
     }
 

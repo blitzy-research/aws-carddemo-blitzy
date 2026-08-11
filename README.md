@@ -58,7 +58,7 @@ entirely by citation.
 | **Scope migrated** | all 28 COBOL programs (19,254 lines); 28 copybooks accounted for, of which **27 are translated and 1 is a deliberate exclusion** — `UNUSED1Y.cpy` has no `COPY` reference anywhere in the estate, so migrating it would have created dead Java code and it is recorded as a decision rather than an omission; 17 BMS mapsets with their 17 generated symbolic-map copybooks; 29 job members; 2 cataloged procedures; and the single CICS CSD |
 | **Traceability** | **544** procedure units — 528 program paragraphs plus 14 and 2 from the two procedural copybooks — each mapped to its Java class, method and covering test |
 | **Delivered surface** | 20 HTTP operations over 19 paths, and 9 independently launchable batch jobs |
-| **Data** | 11 tables from the 11 verified record layouts, plus one operational table holding the deployment-wide sign-on attempt allowance, evolved by 6 Flyway migrations |
+| **Data** | 11 tables from the 11 verified record layouts — the whole delivered schema, with no operational table beside them — evolved by 5 Flyway migrations |
 | **Preserved to the byte** | the four contractual output widths — 80, 100, 133 and 430 bytes — compared as byte arrays, never semantically, plus a supplemental 40-byte category-balance golden compared the same way |
 | **No feature expansion** | **no business functionality was added** that the COBOL did not already do, including an empty-but-invoked fee paragraph that survives as a documented no-op. Technical and operational mechanisms the platform requires *are* added deliberately — credential hashing, a production profile with no defaulted secrets, transport security, observability and a test estate — and each is recorded as a labelled exception in [the decision log](./docs/decision-log.md) rather than presented as parity |
 
@@ -252,9 +252,9 @@ and **Jaeger**. Three things happen on the way up:
   `JOBS.fifo`, because Amazon SQS requires the `.fifo` suffix on a first-in-first-out queue. The suffix is
   part of the name the bootstrap script creates and the name the application configuration resolves, not a
   decoration on it.
-* **The schema is evolved by Flyway**, whose six migrations `V1__create_schema.sql` through
+* **The schema is evolved by Flyway**, whose five migrations `V1__create_schema.sql` through
   `V4__seed_user_security.sql` replace the ten legacy `DEFINE CLUSTER` provisioning jobs. They ship in two
-  sibling locations — the four schema scripts in `db/migration/schema/` and the two seeds in
+  sibling locations — the three schema scripts in `db/migration/schema/` and the two seeds in
   `db/migration/seed/` — and what separates the environments is the **profile-scoped location list**. The
   baseline and `prod` configurations declare `classpath:db/migration/schema` alone, so a production
   migration does not resolve the two seeds at all and **can never reach them** — a production deployment
@@ -262,9 +262,10 @@ and **Jaeger**. Three things happen on the way up:
   `test` add the seed location, and only they declare `target: latest`. The baseline and `prod` pin
   `target: "2.2"`, the highest version the schema location delivers, and the pin is asserted against the
   delivered scripts so a schema migration added above it fails the build rather than being silently
-  skipped. The two schema scripts after the indexes take **dotted** versions — `V2_1` the deployment-wide
-  sign-on attempt ledger, `V2_2` the protected-value `CHECK` constraints — so that every schema version
-  sorts below both seed versions.
+  skipped. The schema script after the indexes takes a **dotted** version — `V2_2`, the protected-value
+  `CHECK` constraints — so that every schema version sorts below both seed versions. There is no `V2_1`: a
+  sign-on attempt ledger held that version and was withdrawn with the sign-on throttle it served, because
+  the legacy transaction has no attempt counter, so the gap in the sequence is deliberate.
 * **Observability comes up with the application**, not after it. Actuator exposes health, info, metrics and
   a Micrometer Prometheus registry at `/actuator/prometheus`, which the Compose-provisioned Prometheus
   scrapes and the provisioned Grafana dashboard displays; traces export over OTLP to Jaeger; and SLF4J

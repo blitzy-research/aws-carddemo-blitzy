@@ -26,9 +26,7 @@ import com.carddemo.domain.enums.UserType;
 import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.support.TestDataFactory;
 import java.nio.charset.StandardCharsets;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -285,20 +283,6 @@ class AuthenticationServiceTest {
     @Captor
     private ArgumentCaptor<String> roleCodeCaptor;
 
-    /**
-     * The abuse-resistance governor, at the figures the shipped defaults declare.
-     *
-     * <p>A real instance rather than a double, and built fresh per test so no specification inherits
-     * another's accumulated count. The allowance is far above what any specification here spends, so the
-     * governor refuses nothing in this file - which is the point: every assertion below is about the
-     * legacy cascade, and the governor's own behaviour is asserted by {@code SignOnAttemptGovernorTest}
-     * and by the abuse-resistance slice at the end of this file.
-     */
-    private SignOnAttemptGovernor attemptGovernor;
-
-    /** Where the governor's counters are registered, so a test can read what it counted. */
-    private SimpleMeterRegistry governorMeters;
-
     /** Subject under test, wired by constructor exactly as the container wires it. */
     private AuthenticationService subject;
 
@@ -317,9 +301,6 @@ class AuthenticationServiceTest {
      */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
-
-    /** Failures the governor in this file allows, well above what any specification here spends. */
-    private static final int GOVERNOR_ALLOWANCE = 10;
 
     /** The header date the fixed clock renders, in the screen's own two-digit-year form. */
     private static final String EXPECTED_HEADER_DATE = "07/19/22";
@@ -358,12 +339,8 @@ class AuthenticationServiceTest {
         when(messageCatalogService.screenTitle01()).thenReturn(MSG_THANK_YOU);
         when(messageCatalogService.screenTitle02()).thenReturn(MSG_INVALID_KEY);
 
-        governorMeters = new SimpleMeterRegistry();
-        attemptGovernor = new SignOnAttemptGovernor(true, GOVERNOR_ALLOWANCE,
-                Duration.ofMinutes(5), Duration.ofMinutes(1), 10_000, FIXED_CLOCK, governorMeters,
-                new InMemorySignOnAttemptLedger());
         subject = new AuthenticationService(userSecurityRepository, credentialDigestService,
-                navigationService, messageCatalogService, FIXED_CLOCK, attemptGovernor);
+                navigationService, messageCatalogService, FIXED_CLOCK);
         // The stored column holds a digest in every case this class describes. Stated leniently because
         // most of these turns never reach the credential comparison at all - a refused key, a blank
         // field or an unknown identifier answers first - and a strict stub would then be reported as
@@ -1552,34 +1529,25 @@ class AuthenticationServiceTest {
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the credential master")
                             .isThrownBy(() -> new AuthenticationService(null, credentialDigestService,
-                                    navigationService, messageCatalogService, FIXED_CLOCK,
-                                    attemptGovernor)),
+                                    navigationService, messageCatalogService, FIXED_CLOCK)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the digest verifier")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository, null,
-                                    navigationService, messageCatalogService, FIXED_CLOCK,
-                                    attemptGovernor)),
+                                    navigationService, messageCatalogService, FIXED_CLOCK)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the destination resolver")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
-                                    credentialDigestService, null, messageCatalogService, FIXED_CLOCK,
-                                    attemptGovernor)),
+                                    credentialDigestService, null, messageCatalogService,
+                                    FIXED_CLOCK)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the shared catalogue")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
-                                    credentialDigestService, navigationService, null, FIXED_CLOCK,
-                                    attemptGovernor)),
+                                    credentialDigestService, navigationService, null, FIXED_CLOCK)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the clock behind the header")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
                                     credentialDigestService, navigationService, messageCatalogService,
-                                    null, attemptGovernor)),
-                    () -> assertThatExceptionOfType(NullPointerException.class)
-                            .as("the abuse-resistance governor, without which the surface has no bound "
-                                    + "on how many attempts an unauthenticated caller may spend")
-                            .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
-                                    credentialDigestService, navigationService, messageCatalogService,
-                                    FIXED_CLOCK, null)));
+                                    null)));
         }
     }
 }

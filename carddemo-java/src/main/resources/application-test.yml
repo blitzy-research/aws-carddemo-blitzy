@@ -242,8 +242,6 @@ spring:
   #   classpath:db/migration/schema                                       EVERY profile
   #     V1__create_schema.sql          the eleven application tables
   #     V2__create_indexes.sql         keys and alternate-index equivalents
-  #     V2_1__create_sign_on_attempt_ledger.sql
-  #                                    deployment-wide sign-on throttle state
   #     V2_2__add_protected_value_invariants.sql
   #                                    ciphertext and digest CHECK constraints
   #   classpath:db/migration/seed                                         local and test ONLY
@@ -252,10 +250,10 @@ spring:
   #   ------------------------------ the shared baseline's ceiling: target 2.2 stops below the seeds
   #
   # The production overlay declares the schema location alone AND pins spring.flyway.target at "2.2", so
-  # V3 and V4 are not resolved there - it migrates the schema, the indexes, the sign-on attempt ledger
+  # V3 and V4 are not resolved there - it migrates the schema, the indexes
   # and the protected-value invariants without inheriting sample rows or seeded identities. The ceiling
   # excludes the seeds by NUMBER as well as by DIRECTORY, because every schema version sorts below both
-  # seed versions: 2 < 2.1 < 2.2 < 3. docs/decision-log.md DL-343 records what happened when a schema
+  # seed versions: 2 < 2.2 < 3. docs/decision-log.md DL-343 records what happened when a schema
   # script was numbered above them instead, and DL-349 records the invariants script. See DL-298 for the
   # location split and DL-334 for the ceiling. This profile adds the seed location and raises the
   # ceiling, and it needs both. Any seed script added must live in db/migration/seed and must store a
@@ -352,14 +350,14 @@ spring:
   # clean-disabled is relaxed here and in the development profile only, so a test that needs a
   # pristine schema can drop and re-apply; the baseline and the production overlay both forbid it.
   # `target: latest` lifts the version ceiling the shared baseline pins at "2.2", so a migration under
-  # this overlay applies every delivered version in number order: V1, V2, the sign-on attempt ledger at
-  # V2_1, the protected-value invariants at V2_2, then the two seeds. The baseline and the production
+  # this overlay applies every delivered version in number order: V1, V2,
+  # the protected-value invariants at V2_2, then the two seeds. The baseline and the production
   # overlay both pin `target: "2.2"`, and
   # com.carddemo.config.FlywayConfig re-applies that pin - and the schema-only location list -
   # unconditionally whenever the production profile is active, so seeded reference rows and seeded
   # sign-on identities cannot reach a production migration however this file is edited. The pin stops
-  # BELOW both seeds, which is the reason the ledger script is numbered 2.1 and the invariants script
-  # 2.2 rather than 5 and 6. See docs/decision-log.md DL-343 and DL-349.
+  # BELOW both seeds, which is the reason the invariants script is numbered
+  # 2.2 rather than 5. See docs/decision-log.md DL-343 and DL-349.
   flyway:
     enabled: true
     # See docs/decision-log.md DL-298.
@@ -402,7 +400,7 @@ spring:
   # baseline and deliberately not restated. They are NOT part of V1__create_schema.sql and must not be
   # added to it - they belong to the framework and they change with its version, so the framework
   # provisions them, which is what AAP 0.3.1 assigns and what keeps the delivered migration inventory
-  # at exactly six scripts - V1, V2, V2_1, V2_2, V3 and V4. The framework's initialiser skips execution
+  # at exactly five scripts - V1, V2, V2_2, V3 and V4. The framework's initialiser skips execution
   # when the tables already exist, so a re-used database is unaffected.
   #
   # A suite run is therefore the environment that PROVES the arrangement works: every container-backed

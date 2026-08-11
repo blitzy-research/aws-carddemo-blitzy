@@ -72,7 +72,7 @@ import com.carddemo.util.SanitisedObservation;
  * (in-stream copy) and one names {@code DFHCSDUP} (the online resource-definition utility).
  *
  * <p>Those seventy do not become steps in any form. Dataset definition and unload are absorbed by the
- * four Flyway migrations and by the Compose stack; external ordering becomes a comparator or a query
+ * five Flyway migrations and by the Compose stack; external ordering becomes a comparator or a query
  * predicate inside the one job that needs it; spool inspection, the null program and the resource
  * utility have no runtime equivalent at all once the indexed files are replaced. <strong>No step in this
  * module runs a utility</strong>, and none may be added that does.
@@ -163,8 +163,14 @@ import com.carddemo.util.SanitisedObservation;
  * <p><strong>No schema work.</strong> The framework provisions its own metadata tables under the prefix
  * the shared configuration declares; those tables are additional to, never instead of, the eleven
  * application tables that {@code db/migration/schema/V1__create_schema.sql} creates, and a table census
- * must exclude that prefix. {@code config/FlywayConfig} owns migration behaviour, the delivered migration
- * inventory stays at exactly five scripts, and none of them may define a metadata table.
+ * must exclude that prefix. {@code config/FlywayConfig} owns migration behaviour, and none of the delivered
+ * scripts may define a metadata table.
+ *
+ * <p>The delivered migration inventory stays at exactly five scripts, and that sentence is measured rather
+ * than transcribed: {@code config/DocumentedSourceCountsTest} reads this file among the documents whose
+ * migration claims it holds to the directory, so a sixth script either updates this line or fails the
+ * build. It sat at six for one checkpoint while a withdrawn sign-on attempt ledger held version 2.1, and
+ * nothing noticed because nothing was measuring it. See {@code docs/decision-log.md} DL-352.
  *
  * <p><strong>No tuning of any kind.</strong> No chunk size, commit interval, task executor, thread count,
  * skip limit, retry limit, time-out or pool setting appears here, in code or in a comment. No numeric

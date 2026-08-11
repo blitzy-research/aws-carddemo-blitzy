@@ -774,7 +774,7 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("holds exactly ten rows once all six migrations have been applied, which is the "
+        @DisplayName("holds exactly ten rows once all five migrations have been applied, which is the "
                 + "count V4 owns and V3 deliberately leaves at zero")
         void holdsExactlyTenIdentities() {
             runner().run(context -> assertThat(

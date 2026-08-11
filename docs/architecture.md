@@ -261,14 +261,14 @@ are of the source files actually present in the module.
 
 | Package | Files | Responsibility | Legacy antecedent |
 | :------ | ----: | :------------- | :---------------- |
-| `config` | 19 | Wiring: security, JWT, batch, AWS clients, observability, JPA auditing, schema migration, the menu catalog, the published interface description, the scope of the sign-on attempt allowance | the CICS resource definition's transaction and program tables; the sign-on program's role split |
+| `config` | 18 | Wiring: security, JWT, batch, AWS clients, observability, JPA auditing, schema migration, the menu catalog, the published interface description | the CICS resource definition's transaction and program tables; the sign-on program's role split |
 | `api` | 21 | REST controllers, the global error surface, and the contract adapters that map service turn results onto the transport contract | the 17 3270 screen transactions |
 | `api.dto` | 32 | Request and response contracts, navigation context, page metadata, the field-error contract | the 17 generated symbolic maps |
 | `domain` | 12 | The 11 JPA entities, plus the shared natural-key and stored-amount shape rules | the 11 verified record layouts |
 | `domain.id` | 3 | The three composite primary keys | the three multi-field cluster keys |
 | `domain.enums` | 9 | Typed state: account and card status, user type, transaction source, key action, file status, reject reason, date format, report period | the 508 level-88 condition names |
 | `repository` | 18 | 11 entity-facing Spring Data interfaces, plus 4 batch scan projections and the insert and write seams | the 10 VSAM base clusters plus the daily-transaction sequential input |
-| `service` | 68 | 38 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 12 focused support services — and 30 further files holding their command, outcome and turn-result types, together with the sign-on attempt store: its contract and the two implementations whose difference is where the throttle's state lives | the 28 programs and 2 procedural copybooks |
+| `service` | 63 | 37 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 11 focused support services — and 26 further files holding their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
 | `batch` | 13 | 9 job configurations, the shared parameter contract, the launch coordinator, staging and completion notification | the 9 application job steps |
 | `batch.step` | 11 | The step template, the item processors, the reject writer, the reader factory and the publication locks | the batch programs' read-process-write skeletons |
 | `util` | 38 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters, and the three diagnostic primitives — failure-chain rendering, observation propagation and the sanitised observation every outbound boundary is observed through | the record layouts, the string verbs, the function-key copybook |
@@ -277,27 +277,28 @@ are of the source files actually present in the module.
 The `service` row is the one whose two figures are easiest to confuse, so both are stated and both are
 countable. The **26** translation-bearing services are the ones a paragraph maps to, and every row of
 [`traceability-matrix.md`](traceability-matrix.md) that names a service names one of them. The other
-**12** carry no COBOL paragraph and exist because a translated service needed a collaborator it should
+**11** carry no COBOL paragraph and exist because a translated service needed a collaborator it should
 not itself be: `AccountConcurrencyTokenService` and `CardConcurrencyTokenService`,
 `FieldErrorTranslationService`, `SignOnStateService`, `UserListPageTokenService`,
 `CardListPageTokenService`, `TransactionListPageTokenService`, `CredentialDigestService`,
 `SensitiveFieldEncryptionService`,
-`BatchJobLaunchService`, `BatchStagingService` and `JobCompletionNotificationService`.
+`BatchJobLaunchService` and `JobCompletionNotificationService`.
 The first two are described under
 [Optimistic locking](#optimistic-locking-in-two-mechanisms-because-the-legacy-check-spans-two-windows).
-`BatchStagingService` is named here because the file is present, and one thing about it has to be said
-plainly rather than left for a reader to discover: **no configuration reaches it**. The durable staging
-contract moved to `batch.BatchStagingArea` and `batch.step.StagedGenerationStore`, which are what the nine
-job configurations inject, and the correction notes on decision-log entries DL-146 and DL-147 record that
-move and the observation gap it left behind. The class is retained rather than removed because removing it
-would also decide DL-147's traced-boundary question, which belongs to a human.
-26 + 12 = 38, which is every concrete `*Service.java` in the
-package; the balance of the 68 files — **30** of them — are the service-owned records, enums and interfaces
+There is no staging service among them, and its absence is deliberate rather than an oversight: the
+batch tier's object-store boundary is `batch.BatchStagingArea` for the named staging object a step reads
+and `batch.step.StagedGenerationStore` for durable generation publication, and those two are what the nine
+job configurations inject. A `service.BatchStagingService` sat beside them for one checkpoint, reached by
+no configuration and injected by nothing; it was removed as dead surface rather than retained pending a
+decision, and the correction notes on decision-log entries DL-146 and DL-147 record the move and what it
+leaves observed and unobserved.
+26 + 11 = 37, which is every concrete `*Service.java` in the
+package; the balance of the 63 files — **26** of them — are the service-owned records, enums and interfaces
 those classes exchange, and they are not services. Counted directly:
 
 ```bash
-ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 38
-ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 68
+ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 37
+ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 63
 ```
 
 Every figure in the table above and in this paragraph is now **asserted against the directory it describes**
@@ -368,7 +369,7 @@ The mapping unit is the paragraph: each of the 528 program paragraphs and 16 pro
 becomes a named method, which is what makes a 544-row traceability matrix possible in the first place.
 
 **Where those 544 methods actually live, counted from the matrix rather than assumed.** The package holds
-**38** concrete `*Service.java` classes, of which **26** are the translation-bearing services — one per
+**37** concrete `*Service.java` classes, of which **26** are the translation-bearing services — one per
 legacy program or program family. But the 544 rows resolve to **22 distinct owning classes**, not 26:
 **21 services plus one utility class**, `util.PfKeyTranslator`, which owns the two paragraphs of the
 attention-key copybook and is a utility precisely because five online programs include that copybook rather
@@ -399,16 +400,16 @@ paragraph; these five have none to claim. Saying "26 services own all 544 units"
 in two directions at once — it would credit five classes with rows they do not have, and it would hide the
 one utility class that does own rows.
 
-The remaining **12** of the 38 are focused support services with no legacy antecedent — account and card
+The remaining **11** of the 37 are focused support services with no legacy antecedent — account and card
 concurrency tokens, credential digesting, sensitive-field encryption, sign-on state, the user-list, card-list
-and transaction-list page tokens, batch launch and staging, and job-completion notification and field-error
-translation. So the arithmetic closes twice over: **26 + 12 = 38** service classes, and **21 + 1 = 22**
+and transaction-list page tokens, batch launch, and job-completion notification and field-error
+translation. So the arithmetic closes twice over: **26 + 11 = 37** service classes, and **21 + 1 = 22**
 owning classes covering **544** rows. The two sums count different things and neither is a correction of the
 other: the first counts the classes in the package, the second counts the classes a traceability row names.
 
-The package holds **68** files in all: those 38 services plus **30** service-owned command, outcome,
-browse-window and turn-result types — the sign-on attempt store's contract and its two implementations
-among them — the types the `api` adapters map from, and the reason `service` never imports `api`.
+The package holds **63** files in all: those 37 services plus **26** service-owned command, outcome,
+browse-window and turn-result types — the types the `api` adapters map from, and the reason `service` never
+imports `api`.
 
 ### The file-status model needs two levels, not one enum
 
@@ -859,30 +860,38 @@ sits at offset 304 and the origin timestamp at 278, which is exactly what the so
 
 ## Schema evolution
 
-Schema evolution is **versioned and forward-only**, in six migrations under
+Schema evolution is **versioned and forward-only**, in five migrations under
 `carddemo-java/src/main/resources/db/migration/`, split across two sibling locations:
 
 | Migration | Location | Contents |
 | :-------- | :------- | :------- |
 | `V1__create_schema.sql` | `db/migration/schema/` | the 11 tables, one per verified record layout |
 | `V2__create_indexes.sql` | `db/migration/schema/` | the three alternate-index equivalents, plus primary and foreign keys |
-| `V2_1__create_sign_on_attempt_ledger.sql` | `db/migration/schema/` | the deployment-wide sign-on attempt ledger and its sweep index — one operational table, not a twelfth record table |
 | `V2_2__add_protected_value_invariants.sql` | `db/migration/schema/` | three `CHECK` constraints: an `ENC1` envelope on each regulated customer identifier, a BCrypt digest on the stored credential |
 | `V3__seed_reference_data.sql` | `db/migration/seed/` | the nine reference and sample datasets |
 | `V4__seed_user_security.sql` | `db/migration/seed/` | the ten known sign-on identities, credentials hashed |
 
-The two dotted versions are **schema** scripts, and each takes a version between the indexes and the
-fixtures so that every schema version sorts below every seed version: `2 < 2.1 < 2.2 < 3`. Three controls
+The dotted version is a **schema** script, and it takes a version between the indexes and the
+fixtures so that every schema version sorts below every seed version: `2 < 2.2 < 3`. Three controls
 depend on that ordering; `docs/decision-log.md` DL-343 records what broke when a schema script was numbered
 above the seeds instead, and DL-349 records the invariants script.
+
+**There is no `V2_1`, and the gap is deliberate.** A sign-on attempt ledger held that version — the
+deployment-wide state of a sign-on throttle — and was withdrawn with the throttle it served, because the
+legacy transaction being translated has no attempt counter and the preservation boundary is frozen. A new
+schema script therefore takes the next free dotted version below `3` rather than back-filling `2.1`, so no
+two scripts can ever share a version across databases. Any database that had already applied `2.1` is
+recreated rather than having validation relaxed for it. `docs/decision-log.md` DL-352 records the removal,
+what it costs and the migration-history decision.
 
 **Erratum — the four earliest headers describe the topology as it stood at their own version.** The table
 above is the current inventory. The explanatory headers of `V1__create_schema.sql`,
 `V2__create_indexes.sql`, `V3__seed_reference_data.sql` and `V4__seed_user_security.sql` still describe a
 schema location carrying two scripts and a production ceiling of `2` — both superseded — and `V4`'s further
 states that production refuses a numeric ceiling, which is now the opposite of what is delivered. Each was
-true when that script was written; the delivered arrangement is four schema scripts, a pin of `2.2`, and a
-production start-up that requires that numeric pin.
+true when that script was written; the delivered arrangement is three schema scripts, a pin of `2.2`, and a
+production start-up that requires that numeric pin. `V2_2`'s own header additionally reasons about a `V2_1`
+that has since been withdrawn (DL-352), and is not corrected either, for the same checksum reason.
 They are **not** corrected in place: `validate-on-migrate` is on under every profile and all four are applied
 wherever this module has run, so a one-character comment edit changes a Flyway checksum and makes an
 already-migrated database fail validation — which is the rule those same headers state. The property they
@@ -959,7 +968,7 @@ Each pattern below is named for the legacy construct it replaces, not for its ow
 | Pattern | Realized by | Legacy construct replaced |
 | :------ | :---------- | :------------------------ |
 | Repository | 11 Spring Data interfaces | 10 VSAM base clusters plus the daily-transaction sequential input; the browse triad becomes `Pageable` with direction preserved |
-| Service Layer | 26 translation-bearing services, of 36 `*Service.java` in all | 528 program paragraphs plus 16 procedural-copybook paragraphs, each a named method |
+| Service Layer | 26 translation-bearing services, of 37 `*Service.java` in all | 528 program paragraphs plus 16 procedural-copybook paragraphs, each a named method |
 | Template Method | `AbstractCobolStep` | the open, read-loop, status-check, close and abend skeleton shared by all ten batch programs |
 | Strategy | `switch` over `domain.enums` | 111 multi-way selections, with clause order preserved |
 | Adapter | `JobSubmissionService` | the single transient-data-queue write — the estate's only online-to-batch bridge |
@@ -1278,7 +1287,7 @@ running mainframe.
 
 | Service | Role |
 | :------ | :--- |
-| PostgreSQL 16 | the relational store the eleven record tables and the sign-on attempt ledger live in |
+| PostgreSQL 16 | the relational store the eleven record tables live in |
 | LocalStack Community | object storage, the FIFO queue and the notification topic; **Community edition only, no licence token** |
 | Jaeger | the OTLP trace collector and its query interface |
 | Prometheus | scrapes `/actuator/prometheus` |
@@ -1327,7 +1336,7 @@ page describes:
 | Layered separation of concerns | the strict downward dependency direction, verified by import census, and the confinement of fixed-width record knowledge to `util` |
 | Constructor injection and immutability without code generation | constructor injection throughout, records and final classes for transport types, and no code-generating annotation processor in the build |
 | No **production** secret in source, and none defaulted | the production profile's **fourteen** no-fallback values, the startup validator that enforces them, hashed seeded credentials, and no production secret value printed on this page. The intentional non-production values are inventoried under [Secrets](#secrets) rather than glossed over, because the unqualified version of this standard would be false |
-| Versioned, forward-only schema evolution | four Flyway migrations across two profile-scoped locations, an open target that leaves the schema sequence free to grow, and a startup callback that refuses a seeded production database |
+| Versioned, forward-only schema evolution | five Flyway migrations across two profile-scoped locations, an open target that leaves the schema sequence free to grow, and a startup callback that refuses a seeded production database |
 | Observability as a first-class concern | Actuator, Micrometer timers on every endpoint and step, Prometheus and Grafana provisioning, OTLP tracing, and structured JSON logging |
 
 Two further bodies of mandatory content govern this migration and are **not** rules, so they are named

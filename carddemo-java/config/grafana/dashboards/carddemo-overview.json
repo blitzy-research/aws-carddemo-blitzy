@@ -3224,7 +3224,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "One observation per call this module makes to the object store that replaces the sequential-dataset staging of the legacy job streams, split by operation, by which store implementation answered, and by outcome. The object key travels as a high-cardinality key value and is not a tag.",
+      "description": "The versioned-object operations the statement and report publication path performs - listing, uploading, enumerating versions and deleting a version. The delete series is the compensation path: it runs when a publication fails after bytes were already sent, so a delete rate above zero with an upload failure beside it is the ledger doing its job rather than a fault.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3277,100 +3277,6 @@
         "w": 12,
         "x": 12,
         "y": 133
-      },
-      "id": 38,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "carddemo-prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (operation, store, error) (rate(carddemo_batch_staging_seconds_count{job=\"$job\"}[5m]))",
-          "format": "time_series",
-          "instant": false,
-          "legendFormat": "{{operation}} / {{store}} {{error}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Batch staging store calls by operation and outcome",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "carddemo-prometheus"
-      },
-      "description": "The versioned-object operations the statement and report publication path performs - listing, uploading, enumerating versions and deleting a version. The delete series is the compensation path: it runs when a publication fails after bytes were already sent, so a delete rate above zero with an upload failure beside it is the ledger doing its job rather than a fault.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 141
       },
       "id": 39,
       "options": {
@@ -3463,7 +3369,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
+        "x": 0,
         "y": 141
       },
       "id": 40,
@@ -3570,8 +3476,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 149
+        "x": 12,
+        "y": 141
       },
       "id": 41,
       "options": {
@@ -3677,7 +3583,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
+        "x": 0,
         "y": 149
       },
       "id": 42,
@@ -3784,8 +3690,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 157
+        "x": 12,
+        "y": 149
       },
       "id": 43,
       "options": {
@@ -3878,7 +3784,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
+        "x": 0,
         "y": 157
       },
       "id": 44,
@@ -3985,8 +3891,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 165
+        "x": 12,
+        "y": 157
       },
       "id": 45,
       "options": {
@@ -4092,7 +3998,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
+        "x": 0,
         "y": 165
       },
       "id": 46,

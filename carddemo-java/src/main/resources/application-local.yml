@@ -210,9 +210,6 @@ spring:
   #   classpath:db/migration/schema                            EVERY profile, including production
   #     V1__create_schema.sql          the eleven application tables
   #     V2__create_indexes.sql         keys and alternate-index equivalents
-  #     V2_1__create_sign_on_attempt_ledger.sql
-  #                                    the deployment-wide sign-on throttle state, numbered BELOW the
-  #                                    seeds; see the note below
   #     V2_2__add_protected_value_invariants.sql
   #                                    the ciphertext and digest CHECK constraints, also below the seeds
   #   classpath:db/migration/seed                              local and test ONLY
@@ -222,11 +219,11 @@ spring:
   #                                    standard, each credential stored only as a hash
   #   ------------------------------------- the shared baseline's ceiling: target 2.2 stops below both
   #
-  # THE SCHEMA SET IS ENTIRELY BELOW THE SEEDS, AND THAT IS DELIBERATE. V2_1 and V2_2 are schema
-  # scripts - production needs the deployment-wide sign-on throttle and the protected-value invariants
-  # more than any other profile does - and each takes a DOTTED version between the indexes and the
-  # fixtures so the ordering holds: 2 < 2.1 < 2.2 < 3. Under this profile, which resolves both locations,
-  # Flyway applies 1, 2, 2.1, 2.2, 3, 4 in that order. Three controls depend on the ordering - the
+  # THE SCHEMA SET IS ENTIRELY BELOW THE SEEDS, AND THAT IS DELIBERATE. V2_2 is a schema
+  # script - production needs the protected-value invariants
+  # more than any other profile does - and it takes a DOTTED version between the indexes and the
+  # fixtures so the ordering holds: 2 < 2.2 < 3. Under this profile, which resolves both locations,
+  # Flyway applies 1, 2, 2.2, 3, 4 in that order. Three controls depend on the ordering - the
   # production ceiling, the seeded-database refusal, and the ability to add the seed location to a
   # schema-only database - and numbering a schema script above the seeds broke all three.
   # FlywayConfigTest.noSchemaScriptIsNumberedAboveASeedScript asserts the invariant. See

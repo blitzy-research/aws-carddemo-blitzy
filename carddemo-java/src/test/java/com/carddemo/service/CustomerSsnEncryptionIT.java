@@ -220,15 +220,13 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
         }
 
         assertThat(nullable)
-                .as("exactly two columns in the schema permit a null, and each is a reviewed one. The"
-                        + " first is the national identifier, which the seed declines to carry at all;"
-                        + " The second is the sign-on attempt ledger's refusal deadline, and it is"
-                        + " nullable because ABSENCE IS THE MEANING: no deadline is how \"this subject"
-                        + " is not currently refused\" is stored. A sentinel timestamp would have kept"
-                        + " this count at one and made every comparison read against a magic value."
-                        + " Enumerated rather than excluded so the control keeps its full strength - a"
-                        + " THIRD nullable column still fails this. DL-343")
-                .containsExactly("customer.cust_ssn", "sign_on_attempt.refused_until");
+                .as("exactly one column in the schema permits a null, and it is a reviewed one: the"
+                        + " national identifier, which the legacy copybook permits a customer to have"
+                        + " no value for. A second nullable column once existed - the refusal deadline"
+                        + " of the withdrawn sign-on attempt ledger, absent when a subject was not"
+                        + " being refused - and its removal makes this control stronger rather than"
+                        + " weaker: a SECOND nullable column now fails this. DL-352")
+                .containsExactly("customer.cust_ssn");
         assertThat(nullable.stream().filter(column -> column.startsWith("customer.")).toList())
                 .as("and among the eleven RECORD-LAYOUT tables it is still exactly one, which is the"
                         + " claim the legacy contract makes: the copybook permits a customer with no"

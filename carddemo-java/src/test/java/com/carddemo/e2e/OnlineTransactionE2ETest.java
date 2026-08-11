@@ -38,7 +38,6 @@ import com.carddemo.config.AwsProperties;
 import com.carddemo.config.JwtProperties;
 import com.carddemo.config.JwtTokenProvider;
 import com.carddemo.config.SecurityConfig;
-import com.carddemo.config.SignOnThrottleConfig;
 import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.UserType;
@@ -51,7 +50,6 @@ import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.PostgresJobSubmissionCoordinator;
 import com.carddemo.service.ReportRequestService;
-import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.AbstractPostgresAndLocalStackIT;
 import com.carddemo.support.SensitiveValues;
@@ -3026,7 +3024,7 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     @Import({AuthController.class, ReportController.class, ModuleErrorController.class,
             SignOnContractAdapter.class, ReportContractAdapter.class, ConversationStateAdapter.class,
             ScreenStateAdapter.class, GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class,
-            AuthenticationService.class, SignOnAttemptGovernor.class, SignOnThrottleConfig.class,
+            AuthenticationService.class,
             CredentialDigestService.class, SignOnStateService.class,
             MessageCatalogService.class, NavigationService.class, DateValidationService.class,
             ReportRequestService.class, JobSubmissionService.class,

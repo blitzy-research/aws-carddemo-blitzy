@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.carddemo.config.JwtProperties;
 import com.carddemo.config.JwtTokenProvider;
 import com.carddemo.config.SecurityConfig;
-import com.carddemo.config.SignOnThrottleConfig;
 import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.UserType;
@@ -30,7 +29,6 @@ import com.carddemo.service.AuthenticationService;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
-import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.util.ApiRoutePaths;
@@ -469,7 +467,7 @@ class ErrorDispatchContractIT extends AbstractPostgresIT {
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({AuthController.class, ModuleErrorController.class, SignOnContractAdapter.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, AuthenticationService.class,
-        SignOnAttemptGovernor.class, SignOnThrottleConfig.class, NavigationService.class,
+        NavigationService.class,
         MessageCatalogService.class,
         CredentialDigestService.class, SignOnStateService.class, SecurityConfig.class,
         JwtTokenProvider.class, WebMvcConfig.class})

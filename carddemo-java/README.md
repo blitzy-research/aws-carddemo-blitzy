@@ -561,7 +561,7 @@ export SOURCE_REVISION="$(git rev-parse HEAD)"
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 docker compose up -d --build     # build the module image and start all six services
 docker compose ps                # every service should report (healthy)
-docker compose logs -f app       # six migrations, then the listening port
+docker compose logs -f app       # five migrations, then the listening port
 docker compose down              # stop and remove the containers — VOLUMES SURVIVE
 docker compose down -v           # …and delete the named volumes with them
 ```
@@ -876,31 +876,27 @@ the legacy program-to-program transfer. Wrong credentials answer with the legacy
 character for character, because those strings are an external contract. A refused sign-on is answered
 without an `Authorization` header, so `$AUTH` simply comes back empty.
 
-#### Repeated sign-on is bounded, and in production the bound is deployment-wide
+#### Repeated sign-on is NOT bounded by this module, and that is a preservation decision
 
-The sign-on surface distinguishes an unknown identifier from a wrong secret, and verifies a secret with a
-deliberately expensive digest, so without a limit it is an enumeration oracle, a credential-stuffing
-channel and a processor-budget drain at once. A spent allowance is therefore refused **before any
-credential is read**, counted separately per identity and per caller address.
+Legacy transaction `CC00` has no attempt counter, no lockout and no refusal period: it reads the
+credential master once per submitted turn and answers. This module reproduces that, so **every submitted
+sign-on reaches the credential read** and a caller may spend attempts at whatever rate it can drive.
 
-Three properties of it are worth knowing before you deploy, because two of them are not defaults:
+An earlier revision did bound it — an allowance counted per identity and per caller address, refused
+before the credential read, with its state in a `sign_on_attempt` table at migration version `2.1`. The
+security reasoning was sound and the behaviour was still invented: the migration's scope is frozen at what
+the estate does, so the whole family was withdrawn. DL-352 records the removal, and DL-268, DL-342 and
+DL-343 carry corrections marking what in them no longer describes delivered behaviour.
 
-* **A successful sign-on releases the identity alone.** The caller address keeps its history and decays
-  only by its own window, so one valid low-privilege login cannot clear a sweep that is walking generated
-  identifiers from the same address. DL-342.
-* **Where the count lives is a setting, and production must not take the default.**
-  `carddemo.security.sign-on.state-scope` is `instance` by default — correct for one process, wrong for
-  anything else, because N instances would grant N times the attempts and every restart would return
-  every allowance to full without anyone authenticating. `application-prod.yml` pins it to `deployment`,
-  which holds the count in the shared database under a ledger-wide advisory lock, so one allowance is one
-  allowance however many instances run and a refusal survives all of them restarting.
-  `config/SignOnThrottleConfig` **refuses to create the bean** under `prod` with any other value, so this
-  cannot be misconfigured quietly. DL-343.
-* **It needs nothing provisioned and it fails open.** The table ships as `V2_1` in the schema location
-  every profile already resolves, it is correct empty, it holds no business record, and it removes a
-  spent entry inside the same serialized transition that would otherwise extend it. If the store is
-  unreachable the governor reports that and **refuses nobody** — an outage of the throttle must not
-  become an outage of sign-on.
+**What that means for a deployment, stated so it is not discovered later.** The sign-on surface
+distinguishes an unknown identifier from a wrong secret — frozen contract text — and verifies a secret with
+a deliberately expensive digest, so it is an enumeration and credential-stuffing surface with a processor
+cost per attempt. Bounding it belongs to a control **outside** this module: an edge rate limit, a WAF, or a
+network control in front of the deployment. Two properties that were part of the withdrawn work are kept,
+because neither adds behaviour the legacy screen lacks: the not-found path performs the same digest
+verification the wrong-secret path does, so the two cannot be told apart by timing, and
+`server.forward-headers-strategy: native` still refuses a forwarded address from an unnamed peer so that a
+request is attributed truthfully.
 
 #### Launching a job over HTTP, and asking after it
 
@@ -1045,7 +1041,7 @@ for which command actually discards it.
 
 ### Database migrations
 
-Flyway runs on start-up and replaces the ten legacy dataset-provisioning job streams. The six
+Flyway runs on start-up and replaces the ten legacy dataset-provisioning job streams. The five
 migrations ship from **two sibling locations whose shared parent holds no script at all**, and the
 *location list* — not the version ceiling — is the primary profile scoping mechanism:
 
@@ -1053,21 +1049,20 @@ migrations ship from **two sibling locations whose shared parent holds no script
 |---|---|---|
 | `V1__create_schema.sql` | every profile | **11 tables**, one per verified record layout |
 | `V2__create_indexes.sql` | every profile | The three alternate-index equivalents as B-tree indexes, plus primary and **six** foreign keys. It **creates no table** — the migration says so at its head — and it records there which three relationships are deliberately left unconstrained and why |
-| `V2_1__create_sign_on_attempt_ledger.sql` | every profile | The deployment-wide sign-on attempt ledger and its sweep index. **One operational table, not a twelfth record table** — it holds no business record and derives from no copybook. DL-343 |
 | `V2_2__add_protected_value_invariants.sql` | every profile | Three named `CHECK` constraints: an `ENC1` envelope on each of the two regulated customer identifiers, and a structural BCrypt digest with a cost inside 10–31 on the stored credential. It **creates, alters and writes nothing**. DL-349 |
 | `V3__seed_reference_data.sql` | `local`, `test` | Reference and sample data at the measured fixture counts |
 | `V4__seed_user_security.sql` | `local`, `test` | The ten seed users — five administrator, five standard — stored as **BCrypt hashes** |
 
-The four schema scripts sit in `db/migration/schema`, the two seeds in `db/migration/seed`, and the
+The three schema scripts sit in `db/migration/schema`, the two seeds in `db/migration/seed`, and the
 shared parent `db/migration` holds neither. The baseline and `prod` resolve the schema location **alone**,
 so the seeds appear in no migration state whatsoever under production — not applied, not pending, not
 resolved. `local` and `test` resolve both. A **version ceiling sits beside** the location list rather than
 in place of it: the baseline and `prod` pin `target: "2.2"`, the highest version the schema location
 delivers, and the two seeding profiles lift it to `latest` in the same block where they add the seed
-location. So **a production deployment migrates the schema, the indexes, the ledger and the invariants
+location. So **a production deployment migrates the schema, the indexes and the invariants
 without inheriting sample data or seeded credentials**, and the seeds are excluded twice over — by their
 directory and by their number, because every schema version sorts below both seed versions
-(`2 < 2.1 < 2.2 < 3`). The pin is asserted against the versions the schema location actually delivers, so a
+(`2 < 2.2 < 3`). The pin is asserted against the versions the schema location actually delivers, so a
 schema script added above it fails the build rather than being silently skipped. `clean` is disabled
 outside the profiles whose database is disposable, and `validate-on-migrate` is on everywhere — which is
 why a migration already applied is immutable and a change of intent arrives as a new version. DL-298 for
@@ -1112,13 +1107,13 @@ The table above is the current topology. **The headers of `V1__create_schema.sql
 are deliberately left as written.** Each of the four states, in its own explanatory comment, one or more of
 the following, and every one of them was true when that script was authored:
 
-- that the schema location carries **two** scripts, `V1` and `V2` — superseded: it now carries four, the
-  sign-on attempt ledger `V2_1` and the protected-value invariants `V2_2` beside them;
+- that the schema location carries **two** scripts, `V1` and `V2` — superseded: it now carries three, the
+  protected-value invariants `V2_2` beside them;
 - that the shared baseline and `prod` declare `spring.flyway.target: "2"` as the highest version the schema
   location delivers — superseded: the pin is `"2.2"`, which is what `application.yml`,
   `application-prod.yml` and `FlywayConfig.PRODUCTION_TARGET` actually carry;
 - that a production migration resolves the set `{1, 2}` and applies V1 and V2 only — superseded: it applies
-  all four schema versions, `1`, `2`, `2.1` and `2.2`;
+  all three schema versions, `1`, `2` and `2.2`;
 - and, in `V4` alone, that the configuration guard "refuses a NUMERIC target under production" — superseded,
   and by its opposite: production **requires** the numeric pin `2.2` and refuses every other value in either
   direction.
@@ -1414,7 +1409,7 @@ true of an absent file and are false of a present one, so they are withdrawn rat
 |---|---|---|---|
 | 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for the four contractual widths**, compared as byte arrays from one seeded pipeline pass, **and for the supplemental 40-byte width**, compared as a byte array against its own committed golden from a dedicated job run in `batch/CategoryBalanceReportJobConfigIT`. Four of the five reject reason codes are still uncovered by a golden record |
 | 2 | Zero-warning build | `./mvnw -B clean verify` | **complete** — enforced by the compiler |
-| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **twenty-four** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
+| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **twenty-seven** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
 | 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted, by name rather than by directory listing |
 | 5 | Interface contract verification | `./mvnw -B verify` (against a real queue and a real port) | **complete** — the card image drained back out of a real queue, and the sign-on texts and routing asserted against a booted context on a random port |
 | 6 | Unsafe and low-level code audit | the scoped grep list below | **complete** — mechanically re-runnable |
@@ -1667,7 +1662,7 @@ the JVM's own reservations, so it describes the process rather than the workload
 **Step 7 — write the figures down with their conditions.** Elapsed time, peak heap and records per second
 mean nothing without the fixture volumes, the heap bounds from step 1, the profile, and the commit they
 were taken at. [`../docs/gate-evidence.md`](../docs/gate-evidence.md) is the page they belong on, and its
-Gate 3 section carries the measured-runs table to add a row to. **Twenty-four rows are recorded there**, each
+Gate 3 section carries the measured-runs table to add a row to. **Twenty-seven rows are recorded there**, each
 dated and attributed to a named machine — so the row you add joins a baseline rather than starting one,
 and the rows already present are the comparison you read yours against. They differ from each other by
 nearly half again at the same volume on the same host, which is the first thing to know before quoting
@@ -1798,7 +1793,7 @@ report the opposite of the truth.
 **The scoping rule matters and must be stated explicitly: the audit is scoped to `src/main/java/**`
 only.** The Flyway migration files under `src/main/resources/db/migration/` are `.sql` schema
 artifacts, not application code performing string concatenation. Without that scoping rule an auditor
-would report **six raw-SQL "violations"** that are in fact the versioned schema definition this
+would report **five raw-SQL "violations"** that are in fact the versioned schema definition this
 design requires — one per delivered migration script. Test sources are excluded for the same kind of reason — assertion helpers legitimately
 use casts that production code does not.
 
@@ -1851,7 +1846,7 @@ first one changed, which is the failure mode recorded in
 | End-to-end verification | golden fixtures at the **four contractual widths** — 80, 100, 133 and 430 bytes, all four driven through one seeded pipeline pass — plus the **supplemental** 40-byte golden, driven through a dedicated run of the job that emits it | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte golden | **met** — the six-job pipeline runs against a Testcontainers PostgreSQL instance seeded from the fixtures and all four of its goldens are compared as byte arrays from that one run, with the comparison written to `target/gate-evidence/gate1-byte-equivalence.md`; the supplemental golden is compared as a byte array against a real dataset the category-balance job wrote after reading a real server |
 | Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `service/JobSubmissionServiceIT`, and `e2e/OnlineTransactionE2ETest` driving the submission endpoint over HTTP and draining the queue | **met** for the queue contract |
 | Interface contract verification | the seven sign-on literals and the admin/user routing rule | `e2e/OnlineTransactionE2ETest` — a booted context on a random port with a real datasource — backed by `api/AuthControllerIT` and `api/AuthControllerTest` at the narrower boundaries | **met** — the five direct texts compared character for character, the two shared texts at their full padded width, and the destination asserted for all ten delivered identities, because the legacy branch is an `ELSE` rather than a second equality test |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **twenty-four** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **twenty-seven** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
 | Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
 | Zero **unsuppressed** critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included, reading exactly one analyst determination from [`owasp-suppressions.xml`](owasp-suppressions.xml) | `./mvnw -B clean verify`; `GateVerificationTest` asserts the determination's scope and reads both halves of the report | **met as stated, and the statement is the narrower one** — zero *unsuppressed* qualifying findings, plus **one** scoped HIGH determination that is part of the audited result rather than a silence. Set out below. Not "zero findings" |
@@ -2043,7 +2038,7 @@ These are checkable by inspection, which is the point:
 | Composite-key classes | **3** | category balance, disclosure group, transaction category |
 | Enums | **9** | user type, account status, card status, transaction source, key action, file status, reject reason, date format, report period |
 | Spring Data repositories | **11** | including the two derived finders that replace the online alternate indexes |
-| Service implementations | **38** | every concrete `*Service.java` in the `service` package, and the arithmetic closes: **26** translation-bearing services, one per program or program family and exactly the set the migration plan names, plus **12** focused support services — account and card concurrency tokens, credential digesting, field encryption, sign-on state, the three page-token services, batch launch and staging, job-completion notification and field-error translation. The package holds **68** files in all: those 38, plus **30** service-owned records, commands, outcomes, ports and view types — the sign-on attempt store's contract and its two implementations among them — which are not `*Service.java` and are not counted here |
+| Service implementations | **37** | every concrete `*Service.java` in the `service` package, and the arithmetic closes: **26** translation-bearing services, one per program or program family and exactly the set the migration plan names, plus **11** focused support services — account and card concurrency tokens, credential digesting, field encryption, sign-on state, the three page-token services, batch launch, job-completion notification and field-error translation. The package holds **63** files in all: those 37, plus **26** service-owned records, commands, outcomes, ports and view types, which are not `*Service.java` and are not counted here |
 | Batch job configurations | **9** | plus eight step components and the shared step template |
 | Hand-written record mappers | **12** | every `*RecordMapper.java` in `util`: one per verified record layout plus the statement work-area mapper, all explicit offsets, no reflection |
 | Request/response DTO files | **32** | every file in `api/dto`, derived from the 17 symbolic maps plus the shared transport types they need |
@@ -2052,8 +2047,8 @@ Count any of them yourself rather than trusting the table:
 
 ```bash
 cd carddemo-java
-ls src/main/java/com/carddemo/service/*Service.java | wc -l      # 38
-ls src/main/java/com/carddemo/service/*.java | wc -l              # 68 — the package total
+ls src/main/java/com/carddemo/service/*Service.java | wc -l      # 37
+ls src/main/java/com/carddemo/service/*.java | wc -l              # 63 — the package total
 ls src/main/java/com/carddemo/util/*RecordMapper.java | wc -l     # 12
 ls src/main/java/com/carddemo/api/dto/ | wc -l                    # 32
 ```
@@ -2214,7 +2209,6 @@ carddemo-java/
 │   ├── application.yml  application-local.yml  application-test.yml  application-prod.yml
 │   ├── logback-spring.xml  banner.txt
 │   ├── db/migration/schema/  V1__create_schema.sql   V2__create_indexes.sql
-│   │                         V2_1__create_sign_on_attempt_ledger.sql
 │   │                         V2_2__add_protected_value_invariants.sql
 │   ├── db/migration/seed/    V3__seed_reference_data.sql   V4__seed_user_security.sql
 │   └── lookup/     nanpa-area-codes.json  us-state-codes.json  state-zip-prefixes.json
@@ -2400,7 +2394,7 @@ so a reviewer can check it rather than take it on trust.
 | 3 | **Layered separation with a strict downward dependency direction** | The package map above, enforced by `PackageLayeringTest` with a zero upward-edge budget and no exemption table; API adapters own every transport conversion, job launch crosses through `BatchJobLaunchService`, and fixed-width mapping stays isolated in `util`. |
 | 4 | **Constructor injection and immutability, without code generation** | Every collaborator arrives through a constructor; DTOs are records or final classes; no Lombok and no annotation processor of any kind. |
 | 5 | **No production secret in source, and none defaulted** | `application-prod.yml` resolves every secret from the environment with **no fallback**, so a missing secret fails startup, and stored credentials are BCrypt hashes. Non-production throwaway values do exist in the tree — in `docker-compose.yml`, in the local and test overlays, and as a sample password in the read-only estate and in test constants — and they are inventoried under [Where local and test values actually live](#where-local-and-test-values-actually-live) rather than glossed over. |
-| 6 | **Versioned, forward-only schema evolution** | **Six** Flyway migrations from **two sibling locations whose shared parent holds no script**: the four schema scripts `V1`, `V2`, `V2_1` and `V2_2` in `db/migration/schema`, which every profile resolves, and the two seeds `V3` and `V4` in `db/migration/seed`, which only `local` and `test` resolve. Production resolves the schema location **alone** and pins `target: "2.2"`, the highest version that location delivers, asserted against the delivered scripts by `FlywayConfigTest` so a new schema script cannot be silently skipped. `validate-on-migrate` is on everywhere. `clean` is **disabled by the shared baseline and by `prod`**, and deliberately re-enabled by the profiles whose database is disposable — `local`, so a developer can drop and re-apply a migration they are editing, and both copies of `test`, whose database is a per-run container. The concession is taken in those overlays rather than inherited, so it cannot reach production by omission. The inventory above is the summary; [Database migrations](#database-migrations) is the authority, and `DocumentedSourceCountsTest` holds this row to it. |
+| 6 | **Versioned, forward-only schema evolution** | **Five** Flyway migrations from **two sibling locations whose shared parent holds no script**: the three schema scripts `V1`, `V2` and `V2_2` in `db/migration/schema`, which every profile resolves, and the two seeds `V3` and `V4` in `db/migration/seed`, which only `local` and `test` resolve. Production resolves the schema location **alone** and pins `target: "2.2"`, the highest version that location delivers, asserted against the delivered scripts by `FlywayConfigTest` so a new schema script cannot be silently skipped. `validate-on-migrate` is on everywhere. `clean` is **disabled by the shared baseline and by `prod`**, and deliberately re-enabled by the profiles whose database is disposable — `local`, so a developer can drop and re-apply a migration they are editing, and both copies of `test`, whose database is a per-run container. The concession is taken in those overlays rather than inherited, so it cannot reach production by omission. The inventory above is the summary; [Database migrations](#database-migrations) is the authority, and `DocumentedSourceCountsTest` holds this row to it. |
 | 7 | **A test pyramid with an enforced floor** | Unit tests over mappers, validators and services; integration tests against real containers; end-to-end tests over the full pipeline. JaCoCo fails the build below 80% line coverage; branch coverage is reported, not gated. |
 | 8 | **Supply-chain hygiene** | `dependency-check-maven` bound to `verify` and **executed**, failing at CVSS 7.0 on the **compile, runtime and test** graph (`skipTestScope` is `false`), with reports emitted in three formats and uploaded by CI. The enforced invariant is zero **unsuppressed** critical or high findings plus **one** scoped, evidenced, self-expiring determination, disclosed with its three-state vocabulary under [Gate 8](#gate-8-integration-sign-off) rather than left implicit. An earlier revision of this row described a compile-and-runtime-only scan and two HIGH findings in an excluded test graph; both statements are withdrawn — the transport that carried them was replaced, not excluded. |
 | 9 | **Observability as a first-class concern** | Actuator health and metrics, Micrometer timers on every endpoint and every batch step, Prometheus and Grafana provisioned in the stack, OTLP tracing wired to Jaeger, structured JSON logging with correlation identifiers. |

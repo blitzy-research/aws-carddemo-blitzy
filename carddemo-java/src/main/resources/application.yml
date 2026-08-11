@@ -115,7 +115,6 @@ spring:
   #   classpath:db/migration/schema                        THIS BASELINE, and the production posture
   #     V1__create_schema.sql        the eleven application tables
   #     V2__create_indexes.sql       keys and alternate-index equivalents
-  #     V2_1__create_sign_on_attempt_ledger.sql   the deployment-wide sign-on throttle state
   #     V2_2__add_protected_value_invariants.sql  ciphertext and digest CHECK constraints
   #   classpath:db/migration/seed                          THE local AND test OVERLAYS ONLY
   #     V3__seed_reference_data.sql  the sample reference rows
@@ -130,9 +129,9 @@ spring:
   # applies the delivered schema and declines everything above it.
   #
   # THE CEILING STILL EXCLUDES THE SEEDS BY ARITHMETIC AS WELL AS BY DIRECTORY, and holding that
-  # property is why the two schema scripts after the indexes carry DOTTED versions. Every schema
-  # version sorts below every seed version - 2 < 2.1 < 2.2 < 3 - so the pin at 2.2 stops below 3
-  # whatever the location list says. An earlier revision numbered the ledger script 5, above the
+  # property is why the schema script after the indexes carries a DOTTED version. Every schema
+  # version sorts below every seed version - 2 < 2.2 < 3 - so the pin at 2.2 stops below 3
+  # whatever the location list says. An earlier revision numbered a schema script 5, above the
   # seeds, and three separate controls broke on it at once: the ceiling stopped excluding the seeds
   # arithmetically, ProductionSeedRejectionCallback read a correctly-migrated production database as
   # seeded because its rule is "at or above version 3", and adding the seed location to a schema-only
@@ -144,12 +143,14 @@ spring:
   # schema location fails the build; and ProductionSeedRejectionCallback refuses a production start-up
   # against a database that actually HOLDS seeded content, which is the outcome the arithmetic is only
   # ever a proxy for. See docs/decision-log.md DL-298 for the location split, DL-334 for the ceiling,
-  # DL-343 for the ledger and the numbering rule, and DL-349 for the invariants script.
+  # DL-343 for the numbering rule, and DL-349 for the invariants script.
   #
   # NEVER DECLARE THE PARENT classpath:db/migration. A Flyway location is scanned RECURSIVELY, so the
   # parent reaches both children; it is also the reason both directories exist as siblings rather than
-  # the seeds alone being moved down. The delivered inventory is exactly V1, V2, V2_1, V2_2, V3, V4 -
-  # there is no V1.1, because the batch metadata tables are owned by Spring Batch.
+  # the seeds alone being moved down. The delivered inventory is exactly V1, V2, V2_2, V3, V4 - there
+  # is no V1.1, because the batch metadata tables are owned by Spring Batch, and no V2_1: a sign-on
+  # attempt ledger once held that number and was withdrawn with the throttle it served (DL-352), so the
+  # gap in the sequence is deliberate and must not be back-filled.
   #
   # THE CONSEQUENCE FOR A NEW SCRIPT, stated once here and repeated at each profile: a script that
   # production MUST run belongs in db/migration/schema; a script production must NEVER run belongs in
@@ -190,7 +191,6 @@ spring:
     # parent, classpath:db/migration, holds no script at all:
     #
     #   classpath:db/migration/schema  V1__create_schema.sql, V2__create_indexes.sql,
-    #                                  V2_1__create_sign_on_attempt_ledger.sql,
     #                                  V2_2__add_protected_value_invariants.sql
     #   classpath:db/migration/seed    V3__seed_reference_data.sql, V4__seed_user_security.sql
     #
@@ -210,14 +210,14 @@ spring:
     # profile silent about migrations inherits the PRODUCTION posture; only the local and test overlays
     # lift it, and each lifts it explicitly for itself. FlywayConfig refuses any other value under the
     # production profile - a higher one applies scripts production was never measured against, a lower
-    # one stops before the indexes, the sign-on attempt ledger or the protected-value invariants are
+    # one stops before the indexes or the protected-value invariants are
     # created and reports success anyway - and it LIFTS an inherited "2.2" for a seeding profile, which
     # is what makes pinning the baseline safe. The pin still stops BELOW the two seed versions, which is
-    # why the ledger script is numbered 2.1 and the invariants 2.2 rather than 5 and 6: every schema
+    # why the invariants script is numbered 2.2 rather than 5: every schema
     # version sorts below every seed version, so a seed is excluded by its number as well as by its
     # directory. The number cannot go stale: FlywayConfigTest asserts it against the versions
     # classpath:db/migration/schema actually delivers.
-    # See docs/decision-log.md DL-334 for the ceiling, DL-343 for the ledger's placement and DL-349 for
+    # See docs/decision-log.md DL-334 for the ceiling, DL-343 for the numbering rule and DL-349 for
     # the protected-value invariants.
     target: "2.2"
     baseline-on-migrate: false

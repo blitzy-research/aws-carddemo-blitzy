@@ -435,7 +435,7 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
 
     /** The versions the delivered migration set applies, in the order it applies them. */
     private static final List<String> DELIVERED_MIGRATION_VERSIONS =
-            List.of("1", "2", "2.1", "2.2", "3", "4");
+            List.of("1", "2", "2.2", "3", "4");
 
     /** The configuration's own source, read for the postures that are textual by nature. */
     private static final Path CONFIGURATION_SOURCE = Path.of("src", "main", "java", "com",
@@ -909,7 +909,7 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
 
     @Test
     @DisplayName("absorbs the provisioning half of the third legacy step: the schema, its eleven "
-            + "application tables and its six migrations are exactly as they were")
+            + "application tables and its five migrations are exactly as they were")
     void absorbsTheProvisioningHalfOfTheThirdLegacyStep() throws Exception {
         final List<String> tablesBefore = applicationTableNames();
 
@@ -1512,7 +1512,7 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
      * evolution is switched off for the same reason: the shared server this class inherits has already
      * been migrated, so migrating again would be a second opinion about the schema rather than a test of
      * this job - and the migration history is read back through the shared base's own connection, which
-     * is what keeps the assertion about the six delivered versions honest.
+     * is what keeps the assertion about the five delivered versions honest.
      *
      * <p>No enabling annotation for batch appears here or anywhere in the module: under this framework
      * generation the batch auto-configuration backs off when that annotation is present, so adding it

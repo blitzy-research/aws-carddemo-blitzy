@@ -85,7 +85,7 @@ import com.carddemo.support.AbstractPostgresIT;
  *   <li><strong>The context refreshes and publishes the entry point.</strong> A component scan
  *       narrowed by hand does not fail - it silently stops wiring whichever package was left out, and
  *       the application starts perfectly well with a layer missing.</li>
- *   <li><strong>All six delivered migrations are applied, and the application's own migration
+ *   <li><strong>All five delivered migrations are applied, and the application's own migration
  *       component agrees with the server.</strong> A location that resolves to nothing produces a
  *       clean start over an empty database rather than an error, so "the migration ran" has to be read
  *       back rather than assumed.</li>
@@ -162,19 +162,20 @@ import com.carddemo.support.AbstractPostgresIT;
 class CardDemoApplicationIT extends AbstractPostgresIT {
 
     /**
-     * The six delivered migration versions, in the order they must be applied.
+     * The five delivered migration versions, in the order they must be applied.
      *
      * <p>Restated as literals rather than derived from the files on disk, which is the point: a derived
      * expectation moves whenever the thing it describes moves, and would keep passing if a migration
      * were renumbered, merged or dropped.</p>
      *
-     * <p>Versions 1, 2, 2.1 and 2.2 are schema and 3 and 4 are seeds, so every schema version sorts
-     * below every seed version. The two dotted versions are the deployment-wide sign-on attempt ledger
-     * and the protected-value invariants, each numbered BELOW the seeds deliberately, for the reasons
-     * {@code docs/decision-log.md} DL-343 and DL-349 record.</p>
+     * <p>Versions 1, 2 and 2.2 are schema and 3 and 4 are seeds, so every schema version sorts
+     * below every seed version. The dotted version is the protected-value invariants, numbered BELOW the
+     * seeds deliberately, for the reasons {@code docs/decision-log.md} DL-343 and DL-349 record. Version
+     * 2.1 is absent: it belonged to a sign-on attempt ledger withdrawn with the throttle it served, and
+     * the gap in the sequence is deliberate (DL-352).</p>
      */
     private static final List<String> DELIVERED_MIGRATION_VERSIONS =
-            List.of("1", "2", "2.1", "2.2", "3", "4");
+            List.of("1", "2", "2.2", "3", "4");
 
     /**
      * The catalogue pattern matching the framework's own job-repository tables.
@@ -245,13 +246,12 @@ class CardDemoApplicationIT extends AbstractPostgresIT {
     /**
      * Reads back the job-repository tables the framework provisions for itself.
      *
-     * <p>These are the framework's own tables, one of the three things
+     * <p>These are the framework's own tables, one of the two things
      * {@link AbstractPostgresIT#applicationTableNames()} filters out. Reading them here is what turns
      * that filter from an unexamined clause into a demonstrated one: if the family were absent the filter
      * would be excluding nothing, and the eleven-table count would be passing for the wrong reason. The
-     * other two exclusions are the migration history table and the operational sign-on attempt ledger,
-     * and the ledger is demonstrated the same way by
-     * {@link AbstractPostgresIT#operationalTableNames()}.</p>
+     * other exclusion is the migration history table; nothing this module itself delivers is filtered,
+     * which {@link AbstractPostgresIT#operationalTableNames()} holds the server to.</p>
      *
      * @return the names of the metadata tables present on the shared server, in name order
      * @throws SQLException if the catalogue cannot be read
@@ -581,8 +581,8 @@ class CardDemoApplicationIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("holds the eleven record-layout tables and no twelfth record table, plus the one "
-                + "operational table and no second")
+        @DisplayName("holds the eleven record-layout tables, no twelfth record table and no "
+                + "operational table at all")
         void holdsTheElevenApplicationTables() throws SQLException {
             assertThat(applicationTableNames())
                     .as("the eleven record layouts of the estate become eleven tables. The comparison"
@@ -590,11 +590,10 @@ class CardDemoApplicationIT extends AbstractPostgresIT {
                             + " catalogue is read in name order")
                     .containsExactlyInAnyOrderElementsOf(APPLICATION_TABLES);
             assertThat(operationalTableNames())
-                    .as("and exactly one delivered table carries no record layout: the deployment-wide"
-                            + " sign-on attempt ledger. It is excluded from the roster above BY NAME"
-                            + " rather than by pattern, so any other unexpected table still fails that"
-                            + " assertion - and it is asserted here so that excluding it cannot become"
-                            + " a way for it to disappear. DL-343")
+                    .as("and no delivered table carries no record layout. One did - the sign-on attempt"
+                            + " ledger of a throttle the legacy transaction has no counterpart for - and"
+                            + " it was withdrawn with that throttle, so this census exists to prove the"
+                            + " schema stayed that way rather than to name an exception. DL-352")
                     .containsExactlyInAnyOrderElementsOf(OPERATIONAL_TABLES);
         }
 

@@ -30,6 +30,8 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.stream.Collectors;
 
 import org.flywaydb.core.Flyway;
 import org.springframework.batch.core.JobParameters;
@@ -117,9 +119,9 @@ import org.testcontainers.utility.DockerImageName;
  * per class also removes a source of ordering surprise.
  *
  * <h2>Why the migration runs to the head and is not pinned</h2>
- * The six delivered migrations ship from two sibling locations: {@code db/migration/schema} carries
- * {@code V1} and {@code V2}, which create the schema and the indexes, and {@code V2_1} and {@code V2_2},
- * which add the sign-on attempt ledger and the protected-value invariants; {@code db/migration/seed}
+ * The five delivered migrations ship from two sibling locations: {@code db/migration/schema} carries
+ * {@code V1} and {@code V2}, which create the schema and the indexes, and {@code V2_2},
+ * which adds the protected-value invariants; {@code db/migration/seed}
  * carries {@code V3} and {@code V4}, which seed sample reference rows and ten sign-on identities. Two
  * controls separate them - production resolves the schema location alone AND pins
  * {@code spring.flyway.target: 2.2}, so the two seed scripts are neither resolved nor reachable there.
@@ -231,7 +233,7 @@ public abstract class AbstractPostgresIT {
      * the seed location from the list rather than by imposing a version ceiling.
      *
      * <p>Their shared parent {@code classpath:db/migration} is deliberately NOT used, even though it
-     * would resolve the same six scripts: Flyway records a script under a name relative to its
+     * would resolve the same five scripts: Flyway records a script under a name relative to its
      * location, so migrating from the parent would write {@code schema/V1__create_schema.sql} into the
      * history where every shipped profile writes {@code V1__create_schema.sql} - and a context booted
      * by a subclass, which migrates from the two children, would then validate against a history that
@@ -330,10 +332,10 @@ public abstract class AbstractPostgresIT {
      * should be written against; {@link #applicationTableNames()} is the live counterpart read back
      * from the running server.</p>
      *
-     * <p>The job-repository tables, the migration history table and the operational sign-on attempt
-     * ledger are deliberately absent - see {@link #applicationTableNames()} for why counting any of them
-     * here would be wrong, and {@link #OPERATIONAL_TABLES} for the one that is a delivered table rather
-     * than a framework's.</p>
+     * <p>The job-repository tables and the migration history table are deliberately absent - see
+     * {@link #applicationTableNames()} for why counting either here would be wrong. Nothing else is
+     * absent, because the delivered schema creates no other table: {@link #OPERATIONAL_TABLES} is
+     * empty and {@link #operationalTableNames()} holds the server to that.</p>
      */
     protected static final List<String> APPLICATION_TABLES = List.of(
             "account",
@@ -351,18 +353,18 @@ public abstract class AbstractPostgresIT {
     /**
      * The operational tables the schema migration creates, which are not record layouts.
      *
-     * <p>Exactly one today: the deployment-wide sign-on attempt ledger created by
-     * {@code V2_1__create_sign_on_attempt_ledger.sql}. It holds no business record and derives from no
-     * copybook - it holds the running count of failed sign-on attempts per subject, so that the
-     * allowance is counted once across every instance rather than once per process. See
-     * {@code docs/decision-log.md} DL-343.
+     * <p><strong>Empty, and deliberately kept rather than deleted.</strong> One such table existed - a
+     * sign-on attempt ledger holding a per-subject failure count for a deployment-wide sign-on throttle.
+     * The throttle was removed as feature expansion, because the legacy transaction it translates has no
+     * attempt counter, and its table went with it ({@code docs/decision-log.md} DL-352). The delivered
+     * schema therefore creates the eleven record-layout tables and nothing else.
      *
-     * <p>Held apart from {@link #APPLICATION_TABLES} rather than folded into it, because that roster
-     * means something precise - the eleven verified record layouts, in record-layout order - and a
-     * twelfth entry with no record image would quietly falsify every assertion written against it.
-     * {@link #operationalTableNames()} is the live counterpart.
+     * <p>The roster stays because an empty roster is an assertion: {@link #operationalTableNames()} reads
+     * back every delivered table that is not one of the eleven and not a framework's, and comparing that
+     * against this list fails the moment a table with no record layout reappears. Deleting the concept
+     * would have left that reappearance to be noticed by a reader.
      */
-    protected static final List<String> OPERATIONAL_TABLES = List.of("sign_on_attempt");
+    protected static final List<String> OPERATIONAL_TABLES = List.of();
 
     /**
      * The one server every subclass shares, started and migrated before any subclass is constructed.
@@ -380,7 +382,7 @@ public abstract class AbstractPostgresIT {
     /**
      * Starts the server and brings it to the head of the migration set.
      *
-     * <p>Both delivered locations are declared and no ceiling is set, so all six delivered
+     * <p>Both delivered locations are declared and no ceiling is set, so all five delivered
      * migrations are applied in version order and the seeded reference rows and sign-on identities are
      * present. That matches the test profile the module ships and is what the container-backed
      * assertions read.
@@ -544,19 +546,17 @@ public abstract class AbstractPostgresIT {
     /**
      * Reads back the application tables that actually exist on the shared server, in name order.
      *
-     * <p>Three exclusions, and making them is the whole point of this method. Spring Batch provisions
+     * <p>Two exclusions, and making them is the whole point of this method. Spring Batch provisions
      * its own job-repository tables from its bundled script because every shipped profile asks it to,
      * and the migration tool keeps a history table of its own; both are real and expected and neither
-     * belongs to the eleven-table business inventory. The third is the module's own
-     * {@code sign_on_attempt} ledger, which IS a delivered table but is not a record layout: it holds
-     * the deployment-wide count of failed sign-on attempts and derives from no copybook. Counting any of
-     * the three here would fail an assertion for a reason that has nothing to do with the record schema.
+     * belongs to the eleven-table business inventory. Counting either here would fail an assertion for a
+     * reason that has nothing to do with the record schema.
      *
-     * <p><strong>The third exclusion is by exact name, not by pattern, and that is what preserves the
-     * property this method exists for.</strong> Only {@code sign_on_attempt} is excluded, so any OTHER
-     * table appearing here is still a genuine schema regression and still surfaces loudly. A pattern
-     * would have hidden the next one too. The excluded table is not merely dropped either - it is
-     * asserted to exist by {@link #operationalTableNames()}, so it cannot vanish unnoticed.</p>
+     * <p><strong>Nothing this module itself delivers is excluded, and that is stronger than it was.</strong>
+     * A third exclusion once named the {@code sign_on_attempt} ledger of the withdrawn sign-on throttle;
+     * with that table gone, every table the migrations create is a record layout, so this method now
+     * returns the delivered schema in full and any unexpected table fails here as well as in
+     * {@link #operationalTableNames()}.</p>
      *
      * <p>Every exclusion is written against lower-case names because the server folds unquoted
      * identifiers, so the job-repository tables land lower-cased however they were declared.</p>
@@ -573,7 +573,6 @@ public abstract class AbstractPostgresIT {
                  WHERE table_schema = 'public'
                    AND table_name NOT LIKE 'batch\\_%'
                    AND table_name <> 'flyway_schema_history'
-                   AND table_name <> 'sign_on_attempt'
                  ORDER BY table_name
                 """);
     }
@@ -581,10 +580,14 @@ public abstract class AbstractPostgresIT {
     /**
      * Reads back the operational tables that actually exist on the shared server, in name order.
      *
-     * <p>The counterpart of {@link #applicationTableNames()} for the tables that carry no record layout.
-     * It exists so the one table that method filters out is <em>asserted</em> rather than merely hidden:
-     * a delivered table excluded from one roster and named in no other could be dropped from the
-     * migration set and nothing would notice.
+     * <p>The counterpart of {@link #applicationTableNames()} for a table that carries no record layout:
+     * every table the server holds that is neither one of the eleven nor a framework's. The delivered
+     * schema creates none, so the expected answer is empty - and asking the question is what makes that
+     * emptiness a <em>measured</em> property rather than an assumption. A reinstated throttle ledger, or
+     * any other operational table, appears here immediately.
+     *
+     * <p>The roster is inlined from {@link #APPLICATION_TABLES} rather than restated, so the two cannot
+     * drift; only identifiers from that roster are interpolated and no caller input reaches the query.
      *
      * <p>Compare against {@link #OPERATIONAL_TABLES}.
      *
@@ -592,12 +595,17 @@ public abstract class AbstractPostgresIT {
      * @throws SQLException if the catalogue cannot be read
      */
     protected static List<String> operationalTableNames() throws SQLException {
-        return queryOneColumn("""
+        final String recordTables = APPLICATION_TABLES.stream()
+                .map(table -> "'" + table + "'")
+                .collect(Collectors.joining(", "));
+        return queryOneColumn(String.format(Locale.ROOT, """
                 SELECT table_name FROM information_schema.tables
                  WHERE table_schema = 'public'
-                   AND table_name = 'sign_on_attempt'
+                   AND table_name NOT LIKE 'batch\\_%%'
+                   AND table_name <> 'flyway_schema_history'
+                   AND table_name NOT IN (%s)
                  ORDER BY table_name
-                """);
+                """, recordTables));
     }
 
     /**
@@ -663,8 +671,8 @@ public abstract class AbstractPostgresIT {
      * <p><strong>The seed scripts are executed directly, and the migration history is never touched.
      * That is a correction.</strong> This method used to delete the seed versions' history rows and run
      * the migration tool again to make it re-apply them. That worked only while every schema version sat
-     * below every seed version: once the delivered schema reached version 5 - the sign-on attempt ledger,
-     * numbered above the already-applied seeds for the reason {@code docs/decision-log.md} DL-343
+     * below every seed version: once a delivered schema script was numbered 5 - above the
+     * already-applied seeds, for the reason {@code docs/decision-log.md} DL-343
      * records - forgetting versions 3 and 4 left them pending <em>below</em> an applied 5. The tool
      * reported that as a validation failure and applied nothing, so every seeded row went missing and the
      * next assertion failed for a reason unrelated to what it tested. Allowing it instead, by declaring
@@ -679,9 +687,10 @@ public abstract class AbstractPostgresIT {
      * migration state untouched. Neither script carries a placeholder or any other construct that needs
      * the tool to interpret it, so running them is not an approximation of migrating them.</p>
      *
-     * <p>The operational tables are emptied too, because a fresh migration leaves them empty: the
-     * sign-on attempt ledger ships no row and is correct with none. Leaving accumulated throttle state
-     * behind would let one test's refused sign-ons refuse another test's admitted one.</p>
+     * <p>{@link #truncateOperationalTables()} is called for completeness and is a no-op while
+     * {@link #OPERATIONAL_TABLES} is empty, which it is: the delivered schema creates no table outside
+     * the eleven record layouts. It stays on this path so that a future operational table is emptied
+     * with the rest rather than leaking state between tests.</p>
      *
      * <p>Afterwards {@link #appliedMigrationVersions()} again reports every delivered version as
      * successfully applied.</p>
@@ -705,6 +714,12 @@ public abstract class AbstractPostgresIT {
      * @throws SQLException if the tables cannot be emptied
      */
     protected static void truncateOperationalTables() throws SQLException {
+        if (OPERATIONAL_TABLES.isEmpty()) {
+            // No delivered table sits outside the eleven record layouts, so there is nothing to empty.
+            // Returning is the correct answer rather than a skipped step: a TRUNCATE naming no table is
+            // a syntax error, and reporting one here would read as a schema fault.
+            return;
+        }
         // Identifiers come from the roster above; no value and no caller input is interpolated.
         final String truncate = "TRUNCATE TABLE " + String.join(", ", OPERATIONAL_TABLES);
         try (Connection connection = connect();

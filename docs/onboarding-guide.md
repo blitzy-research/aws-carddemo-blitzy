@@ -182,7 +182,7 @@ only removing.
 
 | Service | Role | Host port |
 | :------ | :--- | --------: |
-| `postgres` | PostgreSQL 16 — the relational store the eleven migrated tables and the sign-on attempt ledger live in | 5432 |
+| `postgres` | PostgreSQL 16 — the relational store the eleven migrated tables live in | 5432 |
 | `localstack` | LocalStack Community — the S3 staging bucket, the SQS FIFO job queue and the SNS topic | 4566 |
 | `jaeger` | OTLP trace collection and its query interface | 16686 |
 | `prometheus` | Scrapes `/actuator/prometheus` | 9090 |
@@ -230,21 +230,24 @@ cannot be produced here by accident, which is the whole point of the friction.
 
 ### Schema evolution
 
-Flyway migrates the database forward only — there is no rollback script — from six scripts under
+Flyway migrates the database forward only — there is no rollback script — from five scripts under
 `carddemo-java/src/main/resources/db/migration/`, in two sibling locations:
 
 | Migration | Location | What it creates |
 | :-------- | :------- | :-------------- |
 | `V1__create_schema.sql` | `schema/` | The eleven tables derived from the eleven verified record layouts |
 | `V2__create_indexes.sql` | `schema/` | The three alternate-index equivalents as B-tree indexes, plus the primary and foreign keys |
-| `V2_1__create_sign_on_attempt_ledger.sql` | `schema/` | The deployment-wide sign-on attempt ledger and its sweep index — one operational table, not a twelfth record table. DL-343 |
 | `V2_2__add_protected_value_invariants.sql` | `schema/` | Three `CHECK` constraints requiring the two regulated customer identifiers to be `ENC1` envelopes and the stored credential to be a BCrypt digest. DL-349 |
 | `V3__seed_reference_data.sql` | `seed/` | The sample reference and transaction data |
 | `V4__seed_user_security.sql` | `seed/` | The ten seeded identities, stored as BCrypt hashes |
 
-**The two dotted versions are schema scripts and are numbered deliberately.** Every schema version sorts
-below every seed version — `2 < 2.1 < 2.2 < 3` — because three separate controls depend on it. DL-343 records
-what happened when a schema script was numbered above the seeds instead.
+**The dotted version is a schema script and is numbered deliberately.** Every schema version sorts
+below every seed version — `2 < 2.2 < 3` — because three separate controls depend on it. DL-343 records
+what happened when a schema script was numbered above the seeds instead. There is no `V2_1`: a sign-on
+attempt ledger held it and was withdrawn with the sign-on throttle it served, so the gap is deliberate and a
+new schema script takes the next free dotted version below `3`. If a local database was created before that
+withdrawal it still records version `2.1` and Flyway will refuse to validate against it — recreate it with
+`docker compose down -v && docker compose up -d`. DL-352.
 
 **`V3` and `V4` apply under the `local` and `test` profiles only.** Both profiles declare BOTH locations;
 the shared configuration and the `prod` profile declare `classpath:db/migration/schema` alone, so a
@@ -328,9 +331,9 @@ widened only *inside* the container, behind a host mapping that is itself bound 
 
 | Profile | Binds to | What to know |
 | :------ | :------- | :----------- |
-| `local` | The Docker Compose endpoints | Every value is defaulted, so no secret is needed; Flyway resolves both locations and runs all six scripts, the two seeds included; the OpenAPI description is published |
-| `test` | Testcontainers-provided endpoints | Activated by the failsafe tier; container lifecycle belongs to the shared support base classes, never to an individual test; Flyway resolves both locations and runs all six scripts |
-| `prod` | Externally provided endpoints | **Every secret comes from an environment variable with no fallback default**; Flyway resolves the schema location alone and stops at the pin `2.2`, so it applies the four schema scripts and neither seed |
+| `local` | The Docker Compose endpoints | Every value is defaulted, so no secret is needed; Flyway resolves both locations and runs all five scripts, the two seeds included; the OpenAPI description is published |
+| `test` | Testcontainers-provided endpoints | Activated by the failsafe tier; container lifecycle belongs to the shared support base classes, never to an individual test; Flyway resolves both locations and runs all five scripts |
+| `prod` | Externally provided endpoints | **Every secret comes from an environment variable with no fallback default**; Flyway resolves the schema location alone and stops at the pin `2.2`, so it applies the three schema scripts and neither seed |
 
 ### The `prod` profile has no defaulted secrets
 
@@ -460,7 +463,7 @@ What each one returns today, so you can tell a clean run from a broken command:
 | Command | Measured result |
 | :------ | :-------------- |
 | 1 — forbidden constructs | **no output**. No `Runtime.exec`, no `ProcessBuilder`, no `java.lang.reflect`, no `Class.forName` and no `createNativeQuery` |
-| 2 — cast candidates | **exactly six lines**, which is the budget rather than a coincidence: `service/PostgresJobSubmissionCoordinator.java`, `service/PostgresSignOnAttemptLedger.java`, `batch/step/AdvisoryGenerationPublicationLock.java`, `batch/BatchLaunchCoordinator.java`, `repository/TransactionInsertRepositoryImpl.java` and `config/FlywayConfig.java`. All six cast a lambda onto a parameterised `ConnectionCallback` or `PreparedStatementCallback` so the JDBC template resolves the right overload. **None is an unchecked operation** — the compiler would have made it an error, because every warning is one. The budget was five and was met with nothing to spare until the shared sign-on attempt ledger arrived and took its advisory lock through the same idiom as the other coordination points; raising the cap to six was recorded as a decision rather than absorbed — see [Gate Evidence](gate-evidence.md#gate-6-unsafe-and-low-level-code-audit) and DL-343 |
+| 2 — cast candidates | **exactly five lines**, which is the budget rather than a coincidence: `service/PostgresJobSubmissionCoordinator.java`, `batch/step/AdvisoryGenerationPublicationLock.java`, `batch/BatchLaunchCoordinator.java`, `repository/TransactionInsertRepositoryImpl.java` and `config/FlywayConfig.java`. All five cast a lambda onto a parameterised `ConnectionCallback` or `PreparedStatementCallback` so the JDBC template resolves the right overload. **None is an unchecked operation** — the compiler would have made it an error, because every warning is one. The budget was six while a shared sign-on attempt ledger took its advisory lock through the same idiom as the other coordination points; that ledger was withdrawn with the sign-on throttle it served, so the cap follows the tree back to five — see [Gate Evidence](gate-evidence.md#gate-6-unsafe-and-low-level-code-audit) and DL-352 |
 | 3 — verb-only SQL shape | **exactly one line**, and it is a false positive rather than a finding: `service/MenuService.java`'s `"SELECT OPTION " + optionNumber`, the legacy 3270 menu prompt joined to the option the user typed. Nothing about it reaches a database. It is published rather than filtered out, because a command whose output is edited to agree with a claim is no longer evidence for the claim |
 | 3b — census-shaped SQL assembly | **no output**. Requiring a clause keyword beside the verb is what separates a query from a prompt, and it is the shape the gated census uses. Every query string in the production tree is a compile-time literal; a variable reaches a statement as a bound `?` or a named JPQL parameter, never joined into the text |
 | 4 — warning suppression | **exactly twelve lines over both trees, and none over `src/main/java` alone.** All twelve are in test sources and every one is a *mention* — a comment, a string literal or an assertion argument saying the annotation must not appear. **Not one is an annotation**, so the whole-source budget of three is unspent. The gated figure of zero is measured over source with comments, literals and text blocks blanked, by `GateVerificationTest.noWarningSuppressionExistsInEitherSourceTree`; a `grep` cannot tell a mention from a use, which is why the raw population and the gated figure are published as two numbers rather than one |
@@ -472,10 +475,10 @@ one of them an English diagnostic message containing a word like "from" or "valu
 resolves that by stripping comments and string literals before matching, which is what makes its figures
 the authoritative ones — and after that filtering the two searches above are exact.
 
-The same test also publishes the census behind row 3: **23 query-string literals** exist in the production
+The same test also publishes the census behind row 3: **17 query-string literals** exist in the production
 tree — a literal counts when it opens with a statement verb *and* carries a clause keyword — comprising the
-seven JPQL `@Query` declarations on the repositories, ten native-SQL constants in the two Flyway callbacks
-and six in the shared sign-on attempt ledger, and **zero** of the 23 is joined to a non-literal on either
+seven JPQL `@Query` declarations on the repositories and ten native-SQL constants in the two Flyway
+callbacks, and **zero** of the 17 is joined to a non-literal on either
 side. Every variable reaches a statement as a
 bound `?` parameter or a named JPQL parameter.
 
