@@ -1673,7 +1673,7 @@ public class ReportControllerIT extends AbstractPostgresIT {
 
         @Test
         @DisplayName("no preview, hand-over inspection, payload rendering, progress or retry operation "
-                + "exists beside it")
+                + "exists beside it, and none of those addresses is even reachable")
         void noSiblingOperationIsPublished() throws Exception {
             final List<String> absentOperations = List.of(
                     ReportController.REPORT_REQUEST_PATH + "/preview",
@@ -1692,9 +1692,15 @@ public class ReportControllerIT extends AbstractPostgresIT {
                                 .content("{}"))
                         .andReturn();
 
+                // REFUSED, not reported absent, and that is a stronger answer than the 404 this used to
+                // assert. The chain grants the eleven delivered ordinary addresses individually and
+                // refuses the rest of the API root, so a sibling nobody serves is answered by
+                // authorization before a handler is looked for - and a caller cannot tell an address that
+                // is missing from one it is merely not entitled to. See docs/decision-log.md DL-345.
                 assertThat(probe.getResponse().getStatus())
-                        .as("%s names no operation this boundary publishes", absent)
-                        .isEqualTo(HttpStatus.NOT_FOUND.value());
+                        .as("%s names no operation this boundary publishes, and no rule names it either",
+                                absent)
+                        .isEqualTo(HttpStatus.FORBIDDEN.value());
                 assertThat(bodyOf(probe))
                         .as("and the refusal echoes neither the path nor anything else about it")
                         .doesNotContain(absent);
@@ -1708,8 +1714,9 @@ public class ReportControllerIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     /**
-     * The route is classified as reachable by any signed-on caller: it sits outside the administrative
-     * prefix, so the closing authenticated rule answers it, and no reply carries anything about an
+     * The route is classified as reachable by either sign-on authority: it sits outside the administrative
+     * prefix and the chain names this exact address among the ordinary ones it grants, and no reply carries
+     * anything about an
      * identity beyond what the screen itself needs.
      */
     @Nested

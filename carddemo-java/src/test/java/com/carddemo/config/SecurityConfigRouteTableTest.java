@@ -24,6 +24,7 @@ import com.carddemo.config.SecurityConfig.TransactionRoute;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.InMemoryCredentialMaster;
+import com.carddemo.util.ApiRoutePaths;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -481,19 +482,30 @@ class SecurityConfigRouteTableTest {
     class Entitlements {
 
         @Test
-        @DisplayName("give the ordinary entitlement a rule of its own over the API root, so an ordinary "
-                + "route requires one of the two sign-on authorities by name rather than merely an "
-                + "identity")
-        void giveTheOrdinaryEntitlementARuleOverTheApiRoot() {
-            // This entitlement used to name no pattern at all and was answered by the chain's closing
-            // authenticated() rule, which asks whether an identity exists and not whose. That admitted any
-            // authority minted anywhere in the process to every ordinary business route. Naming the region
-            // is what lets the chain state the two authorities that may pass.
-            assertThat(Gating.AUTHENTICATED.enforcementPattern())
-                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
+        @DisplayName("give the ordinary entitlement one rule per delivered address, so an ordinary route "
+                + "requires one of the two sign-on authorities by name and an address no controller "
+                + "serves is granted to nobody")
+        void giveTheOrdinaryEntitlementOneRulePerDeliveredAddress() {
+            // Two defects were closed here in turn. This entitlement first named no pattern at all and was
+            // answered by the chain's closing authenticated() rule, which asks whether an identity exists
+            // and not whose - admitting any authority minted anywhere in the process to every ordinary
+            // business route. It was then given one rule over the API root, which still granted either
+            // sign-on authority every address beneath the root including the ones nothing serves. The
+            // patterns are now the delivered addresses themselves.
+            assertThat(Gating.AUTHENTICATED.enforcementPatterns())
+                    .as("the eleven ordinary addresses, and no region containing them")
+                    .isEqualTo(ApiRoutePaths.ORDINARY_ROUTE_PATHS)
+                    .hasSize(11)
+                    .doesNotContain(SecurityConfig.API_PATH_PREFIX + "/**");
             assertThat(TransactionRoute.enforcementPatternsFor(Gating.AUTHENTICATED))
-                    .as("the twelve ordinary entries share one region, so they yield one rule between them")
-                    .containsExactly(SecurityConfig.API_PATH_PREFIX + "/**");
+                    .as("the twelve ordinary entries name the same eleven addresses between them, so the "
+                            + "chain installs eleven rules and not twelve")
+                    .isEqualTo(ApiRoutePaths.ORDINARY_ROUTE_PATHS);
+            assertThat(Gating.AUTHENTICATED.enforcementPatterns())
+                    .as("a pattern with a wildcard would re-admit whatever is mapped beneath it next")
+                    .allSatisfy(pattern -> assertThat(pattern)
+                            .startsWith(SecurityConfig.API_PATH_PREFIX + "/")
+                            .doesNotContain("*"));
         }
 
         @Test
@@ -501,10 +513,11 @@ class SecurityConfigRouteTableTest {
                 + "a boundary for unmapped addresses rather than the gate on a business route")
         void leaveNoEntitlementWithoutANamedRule() {
             assertThat(Gating.values())
-                    .allSatisfy(gating -> assertThat(gating.enforcementPattern())
-                            .as("%s would otherwise be enforced by whatever the closing rule happens to "
+                    .allSatisfy(gating -> assertThat(gating.enforcementPatterns())
+                            .as("%s would otherwise be enforced by whatever the closing rules happen to "
                                     + "say", gating)
-                            .isNotBlank());
+                            .isNotEmpty()
+                            .allSatisfy(pattern -> assertThat(pattern).isNotBlank()));
         }
 
         @Test
@@ -519,16 +532,25 @@ class SecurityConfigRouteTableTest {
         }
 
         @Test
-        @DisplayName("name a pattern for each of the three entitlements, narrowest first")
-        void nameAPatternForEachOfTheThreeEntitlements() {
-            assertThat(Gating.ANONYMOUS.enforcementPattern())
-                    .isEqualTo(SecurityConfig.SIGN_ON_PATH);
-            assertThat(Gating.ADMINISTRATIVE.enforcementPattern())
-                    .isEqualTo(SecurityConfig.ADMIN_PATH_PREFIX + "/**");
-            assertThat(Gating.AUTHENTICATED.enforcementPattern())
-                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
-            // The ordinary region contains the other two, which is why chain order rather than pattern
-            // disjointness is what keeps the sign-on route anonymous and the administrative prefix gated.
+        @DisplayName("name the patterns of all three entitlements, and keep the ordinary addresses clear "
+                + "of the two surfaces that are gated differently")
+        void nameThePatternsOfAllThreeEntitlements() {
+            assertThat(Gating.ANONYMOUS.enforcementPatterns())
+                    .containsExactly(SecurityConfig.SIGN_ON_PATH);
+            assertThat(Gating.ADMINISTRATIVE.enforcementPatterns())
+                    .containsExactly(SecurityConfig.ADMIN_PATH_PREFIX + "/**");
+            assertThat(Gating.AUTHENTICATED.enforcementPatterns())
+                    .isEqualTo(ApiRoutePaths.ORDINARY_ROUTE_PATHS);
+            // The ordinary patterns are now exact addresses, so they no longer contain the other two
+            // surfaces and their disjointness is assertable rather than something chain order has to
+            // rescue. Chain order still decides, because the closing refusal spans the root.
+            assertThat(Gating.AUTHENTICATED.enforcementPatterns())
+                    .as("an ordinary grant naming the sign-on route would make the anonymous permit "
+                            + "redundant; one beneath the administrative prefix would widen it")
+                    .doesNotContain(SecurityConfig.SIGN_ON_PATH)
+                    .allSatisfy(pattern -> assertThat(pattern)
+                            .doesNotStartWith(SecurityConfig.ADMIN_PATH_PREFIX)
+                            .doesNotStartWith(SecurityConfig.BATCH_CONTROL_PATH_PREFIX));
             assertThat(SecurityConfig.SIGN_ON_PATH)
                     .startsWith(SecurityConfig.API_PATH_PREFIX + "/");
             assertThat(SecurityConfig.ADMIN_PATH_PREFIX)
@@ -582,8 +604,9 @@ class SecurityConfigRouteTableTest {
             assertThat(TransactionRoute.registeredTransactions())
                     .as("a fabricated row would corrupt an audit whose value is matching the resource "
                             + "definition exactly")
-                    .noneSatisfy(route -> assertThat(route.getGating().enforcementPattern())
-                            .startsWith(SecurityConfig.BATCH_PATH_PREFIX));
+                    .allSatisfy(route -> assertThat(route.getGating().enforcementPatterns())
+                            .allSatisfy(pattern -> assertThat(pattern)
+                                    .doesNotStartWith(SecurityConfig.BATCH_PATH_PREFIX)));
         }
     }
 

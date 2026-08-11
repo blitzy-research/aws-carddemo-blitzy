@@ -29,6 +29,7 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.service.TransactionAddService;
 import com.carddemo.service.TransactionListService;
 import com.carddemo.service.TransactionViewService;
+import com.carddemo.util.ApiRoutePaths;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -134,28 +135,29 @@ public final class TransactionController {
     /**
      * Root of the three transaction routes.
      *
-     * <p>Declared here, and read from here by anything that needs it, for the reason the sign-on route
-     * constant is declared on its own controller: a route and the rules that protect it must name one
-     * authority. It deliberately sits outside the administrative prefix and is named by the separate
-     * online-data operator rule. The resource definition classifies {@code CT00}, {@code CT01} and
-     * {@code CT02} as ordinary transactions, so both CardDemo user types retain access; an unrelated
-     * authenticated principal does not inherit transaction-wide access merely from the catch-all. The
+     * <p>Read from the neutral route contract, which anything that needs it reads as well, for the reason
+     * the sign-on route constant is: a route and the rules that protect it must name one authority. It
+     * deliberately sits outside the administrative prefix, and each of the three composed addresses is
+     * named by its own online-data operator rule. The resource definition classifies {@code CT00},
+     * {@code CT01} and {@code CT02} as ordinary transactions, so both CardDemo user types retain access;
+     * an unrelated authenticated principal reaches none of them, and neither does a caller addressing
+     * anything else beneath this root, which the chain's closing refusal covers. The
      * sign-on record carries no account ownership relation, so the boundary deliberately does not invent
      * one from a caller-supplied transaction or account identifier.
      *
      * <p>It shadows neither the management endpoints nor the API-description endpoints, both of which
      * are published under roots of their own.
      */
-    public static final String TRANSACTION_PATH = "/api/transactions";
+    public static final String TRANSACTION_PATH = ApiRoutePaths.TRANSACTIONS_PATH_PREFIX;
 
     /** Route of one transaction-list turn, legacy transaction {@code CT00}. */
-    public static final String LIST_PATH = "/list";
+    public static final String LIST_PATH = ApiRoutePaths.LIST_SUBPATH;
 
     /** Route of one transaction-view turn, legacy transaction {@code CT01}. */
-    public static final String VIEW_PATH = "/view";
+    public static final String VIEW_PATH = ApiRoutePaths.VIEW_SUBPATH;
 
     /** Route of one transaction-add turn, legacy transaction {@code CT02}. */
-    public static final String ADD_PATH = "/add";
+    public static final String ADD_PATH = ApiRoutePaths.ADD_SUBPATH;
 
     /** Diagnostic channel. Carries outcomes and counts only, never a record value. */
     private static final Logger LOG = LoggerFactory.getLogger(TransactionController.class);

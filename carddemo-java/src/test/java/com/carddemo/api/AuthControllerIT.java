@@ -23,6 +23,7 @@ import com.carddemo.api.dto.SignOnResponse;
 import com.carddemo.config.JwtProperties;
 import com.carddemo.config.JwtTokenProvider;
 import com.carddemo.config.SecurityConfig;
+import com.carddemo.config.SignOnThrottleConfig;
 import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.KeyAction;
@@ -1764,7 +1765,7 @@ public class AuthControllerIT extends AbstractPostgresIT {
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({AuthController.class, ModuleErrorController.class, SignOnContractAdapter.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, AuthenticationService.class,
-        SignOnAttemptGovernor.class,
+        SignOnAttemptGovernor.class, SignOnThrottleConfig.class,
         NavigationService.class, MessageCatalogService.class, CredentialDigestService.class,
         SignOnStateService.class, SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class})
     @EnableConfigurationProperties(JwtProperties.class)

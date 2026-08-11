@@ -30,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashSet;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -42,6 +43,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.flywaydb.core.api.MigrationVersion;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
 import org.springframework.boot.autoconfigure.flyway.FlywayProperties;
@@ -198,19 +200,35 @@ final class ApplicationProfileStartupTest {
     /**
      * The ceiling the shared baseline and the production overlay pin, which is the highest version the
      * schema location delivers and the value the resolution refuses every alternative to.
+     *
+     * <p>It stops BELOW the two seed versions, which is what makes the ceiling a second, independent
+     * statement of the seed exclusion rather than a restatement of the location list. The delivered
+     * schema carries two dotted versions - {@code V2_1__create_sign_on_attempt_ledger.sql} and
+     * {@code V2_2__add_protected_value_invariants.sql} - precisely so that every schema version sorts
+     * below every seed version. See {@code docs/decision-log.md} DL-343 and DL-349.
      */
-    private static final String SCHEMA_CEILING = "2";
+    private static final String SCHEMA_CEILING = "2.2";
 
-    /** The complete delivered numbering, asserted rather than assumed. */
-    private static final List<Integer> EXPECTED_DELIVERED_VERSIONS = List.of(1, 2, 3, 4);
+    /**
+     * The complete delivered numbering, asserted rather than assumed.
+     *
+     * <p>Strings rather than integers because two schema scripts carry dotted versions - the sign-on
+     * attempt ledger at 2.1 and the protected-value invariants at 2.2. Every schema version must sort
+     * below every seed version, so each takes a dotted version between the indexes and the fixtures.
+     * See {@code docs/decision-log.md} DL-343 and DL-349.
+     */
+    private static final List<String> EXPECTED_DELIVERED_VERSIONS =
+            List.of("1", "2", "2.1", "2.2", "3", "4");
 
     /** The two migrations a production migration must never apply. */
     private static final List<String> SEEDS_WITHHELD_FROM_PRODUCTION =
             List.of("V3__seed_reference_data.sql", "V4__seed_user_security.sql");
 
-    /** The two migrations production must apply, being the ones the schema location carries. */
+    /** The four migrations production must apply, being the ones the schema location carries. */
     private static final List<String> SCHEMA_APPLIED_IN_PRODUCTION =
-            List.of("V1__create_schema.sql", "V2__create_indexes.sql");
+            List.of("V1__create_schema.sql", "V2__create_indexes.sql",
+                    "V2_1__create_sign_on_attempt_ledger.sql",
+                    "V2_2__add_protected_value_invariants.sql");
 
     /** The production document, read as text for the exhaustiveness assertion. */
     private static final String PRODUCTION_DOCUMENT = "application-prod.yml";
@@ -219,7 +237,7 @@ final class ApplicationProfileStartupTest {
     private static final Pattern NO_FALLBACK_REFERENCE = Pattern.compile("\\$\\{([A-Z0-9_]+)}");
 
     /** How a versioned migration file name opens. */
-    private static final Pattern MIGRATION_VERSION = Pattern.compile("^V(\\d+)__");
+    private static final Pattern MIGRATION_VERSION = Pattern.compile("^V(\\d+(?:_\\d+)*)__");
 
     // Configuration keys whose resolution is asserted.
 
@@ -436,8 +454,11 @@ final class ApplicationProfileStartupTest {
                         .doesNotContain(SHARED_PARENT_LOCATION, SEED_LOCATION);
                 assertThat(bound.getTarget())
                         .as("and the ceiling is the SECOND control: pinned at %s, the highest version "
-                                + "the schema location delivers, so a seed-numbered script is excluded "
-                                + "by its number as well as by its directory", SCHEMA_CEILING)
+                                + "the schema location delivers, so anything ABOVE the delivered schema "
+                                + "is excluded by its number as well as by its directory. It does not "
+                                + "exclude the two seed versions any more - they sit below this pin, "
+                                + "and the location list above is what holds them out. DL-343",
+                                SCHEMA_CEILING)
                         .isEqualTo(SCHEMA_CEILING);
                 assertThat(bound.isCleanDisabled())
                         .as("a production migration must not be able to drop the schema it manages")
@@ -474,7 +495,7 @@ final class ApplicationProfileStartupTest {
                         .containsExactly(SCHEMA_LOCATION, SEED_LOCATION);
                 assertThat(bound.getLocations())
                         .as("and %s must not reach for the parent either: it would resolve the same "
-                                + "four scripts and record each one under a name relative to itself, so "
+                                + "six scripts and record each one under a name relative to itself, so "
                                 + "the history would stop matching what the bring-up check reads",
                                 profile)
                         .doesNotContain(SHARED_PARENT_LOCATION);
@@ -496,7 +517,7 @@ final class ApplicationProfileStartupTest {
                 + "half, asserted against the scripts that ship rather than against their names "
                 + "restated")
         void theResolvedLocationCarriesTheSchemaHalfAlone() {
-            List<Integer> delivered = deliveredMigrationVersions();
+            List<String> delivered = deliveredMigrationVersions();
 
             assertThat(delivered)
                     .as("the delivered numbering is the basis of every claim below; a migration added "
@@ -509,16 +530,18 @@ final class ApplicationProfileStartupTest {
 
                 assertThat(resolved).containsExactly(SCHEMA_LOCATION);
                 assertThat(deliveredMigrationsUnder(SCHEMA_LOCATION))
-                        .as("production applies the schema pair, and it applies them because they are "
-                                + "IN the location it resolves rather than because a number let them "
-                                + "through")
+                        .as("production applies the three schema scripts, and it applies them because "
+                                + "they are IN the location it resolves rather than because a number let "
+                                + "them through. The number excludes the seeds too - every schema version "
+                                + "sorts below both - but the location is the control that does not "
+                                + "depend on a renumbering")
                         .containsExactlyInAnyOrderElementsOf(SCHEMA_APPLIED_IN_PRODUCTION);
                 assertThat(deliveredMigrationsUnder(SCHEMA_LOCATION))
                         .as("and it reaches neither of %s. For the second of those, applying it would "
                                 + "mean ten known sign-on identities in production. Note that this "
-                                + "holds however the seeds are NUMBERED - renumber one below the "
-                                + "ceiling of %s and it is still excluded, because the location list "
-                                + "does not depend on a number",
+                                + "holds however the seeds are NUMBERED, which is no longer a "
+                                + "hypothetical: both sit BELOW the ceiling of %s and both are still "
+                                + "excluded, because the location list does not depend on a number",
                                 SEEDS_WITHHELD_FROM_PRODUCTION, SCHEMA_CEILING)
                         .doesNotContainAnyElementsOf(SEEDS_WITHHELD_FROM_PRODUCTION);
                 assertThat(deliveredMigrationsUnder(SEED_LOCATION))
@@ -538,11 +561,14 @@ final class ApplicationProfileStartupTest {
                 assertThat(bound.getTarget())
                         .as("the ceiling must be exactly %s, which is the highest version the schema "
                                 + "location delivers. A number written down and never checked is the "
-                                + "shape that silently stops applying scripts: a V5 script would be "
-                                + "resolved, skipped and reported as a successful migration. That is "
-                                + "closed by CHECKING the number rather than by removing it - "
-                                + "FlywayConfigTest asserts the pin against the delivered scripts, so "
-                                + "adding V5 without raising the pin fails the build", SCHEMA_CEILING)
+                                + "shape that silently stops applying scripts: a script above the pin "
+                                + "would be resolved, skipped and reported as a successful migration - "
+                                + "which is what would have happened to the sign-on attempt ledger had "
+                                + "the pin stayed at 2. That is closed by CHECKING the number rather "
+                                + "than by removing it: FlywayConfigTest asserts the pin against the "
+                                + "delivered scripts, so adding a script above it without raising it "
+                                + "fails the build, and that is how this constant was caught",
+                                SCHEMA_CEILING)
                         .isEqualTo(SCHEMA_CEILING);
                 assertThat(bound.getTarget())
                         .as("and it must not be the head sentinel, which would apply whatever a resolved "
@@ -909,8 +935,9 @@ final class ApplicationProfileStartupTest {
                         .isFalse();
                 assertThat(environment.getProperty(KEY_FLYWAY_TARGET))
                         .as("the ceiling, pinned at the highest version the schema location delivers, so "
-                                + "the seeds are excluded by their NUMBER as well as by the location "
-                                + "asserted immediately below. The pin is asserted against the delivered "
+                                + "nothing above the delivered schema is applied. The seeds are excluded "
+                                + "by the location asserted immediately below rather than by this "
+                                + "number: they sit below it. The pin is asserted against the delivered "
                                 + "scripts by FlywayConfigTest, so it cannot freeze a later release")
                         .isEqualTo(SCHEMA_CEILING);
                 assertThat(environment.getProperty(KEY_FLYWAY_LOCATIONS))
@@ -1142,7 +1169,7 @@ final class ApplicationProfileStartupTest {
      *
      * @return the delivered versions, ascending; never {@code null}
      */
-    private static List<Integer> deliveredMigrationVersions() {
+    private static List<String> deliveredMigrationVersions() {
         try {
             Resource[] found = new PathMatchingResourcePatternResolver()
                     .getResources("classpath*:db/migration/**/V*__*.sql");
@@ -1151,8 +1178,12 @@ final class ApplicationProfileStartupTest {
                     .filter(name -> name != null)
                     .map(MIGRATION_VERSION::matcher)
                     .filter(Matcher::find)
-                    .map(matcher -> Integer.valueOf(matcher.group(1)))
-                    .sorted()
+                    // A file name spells a dotted version with an underscore, so V2_1 is version
+                    // 2.1. Compared as a parsed version rather than as text, because "2.1" sorts
+                    // after "2" numerically and before "3" - which text ordering also happens to
+                    // give here, but would not once a version reached two digits.
+                    .map(matcher -> matcher.group(1).replace('_', '.'))
+                    .sorted(Comparator.comparing(MigrationVersion::fromVersion))
                     .toList();
         } catch (IOException failure) {
             throw new UncheckedIOException("migration location is unreadable", failure);

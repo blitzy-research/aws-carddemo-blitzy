@@ -23,6 +23,7 @@ import static org.mockito.Mockito.when;
 
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.util.JclCardImageBuilder;
+import com.carddemo.util.SanitisedObservation;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
@@ -103,9 +104,11 @@ class JobSubmissionServiceObservationTest {
     }
 
     @Test
-    @DisplayName("records a send failure on the outbound observation before returning it non-fatally")
+    @DisplayName("records a sanitised classification of a send failure on the outbound observation before "
+            + "returning it non-fatally")
     void recordsTheBoundaryFailure() {
-        final IllegalStateException refused = new IllegalStateException("refused");
+        final IllegalStateException refused =
+                new IllegalStateException("refused queue=" + QUEUE + " endpoint=sqs.internal.example");
         when(this.operations.send(JobSubmissionServiceObservationTest.<String>anyConfigurer()))
                 .thenThrow(refused);
 
@@ -114,7 +117,18 @@ class JobSubmissionServiceObservationTest {
 
         assertThat(result.failed()).isTrue();
         assertThat(this.observed).hasSize(1);
-        assertThat(this.observed.getFirst().getError()).isSameAs(refused);
+        final Throwable recorded = this.observed.getFirst().getError();
+        assertThat(recorded)
+                .as("the span must still show that the boundary failed")
+                .isNotNull()
+                .as("and must not show the queue client's own failure, whose message the exporter "
+                        + "publishes verbatim")
+                .isNotSameAs(refused)
+                .isInstanceOf(SanitisedObservation.SanitisedBoundaryFailure.class);
+        assertThat(recorded.getMessage())
+                .doesNotContain("sqs.internal.example")
+                .contains(SanitisedObservation.FAILURE_CHAIN_LABEL + "IllegalStateException");
+        assertThat(recorded.getCause()).isNull();
     }
 
     @Test

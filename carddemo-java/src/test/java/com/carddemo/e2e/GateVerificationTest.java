@@ -369,8 +369,18 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** Application tables the schema migration creates, one per verified record layout. */
     private static final int APPLICATION_TABLE_COUNT = 11;
 
-    /** The four delivered migrations, flat, in one location. */
-    private static final List<String> MIGRATION_VERSIONS = List.of("1", "2", "3", "4");
+    /**
+     * The six delivered migrations, in the order a migration applies them.
+     *
+     * <p>Four are schema and two are seeds, and every schema version sorts below every seed version:
+     * versions 1, 2, 2.1 and 2.2 ship from {@code db/migration/schema} and 3 and 4 from
+     * {@code db/migration/seed}. The two dotted versions are the deployment-wide sign-on attempt ledger
+     * and the protected-value invariants, each taking a version between the indexes and the fixtures for
+     * the reasons {@code docs/decision-log.md} DL-343 and DL-349 record. Flyway applies by version across
+     * the resolved locations, so a profile resolving both applies them in exactly this order.
+     */
+    private static final List<String> MIGRATION_VERSIONS =
+            List.of("1", "2", "2.1", "2.2", "3", "4");
 
     /**
      * The ten batch programs, which is what distinguishes an application step from a utility step in the
@@ -457,12 +467,39 @@ class GateVerificationTest extends AbstractPostgresIT {
     /**
      * Casts to a parameterised type or a type variable the production tree may carry.
      *
-     * <p>The plan budgets five. All five that exist are lambda-target casts onto a parameterised
-     * functional interface, which the compiler does not treat as an unchecked operation - and it could
-     * not, because every warning is an error here and the build compiles. The budget is asserted as a
-     * ceiling and the measured figure is recorded, so a sixth site cannot appear unnoticed.
+     * <p>All six that exist are lambda-target casts onto a parameterised functional interface, which the
+     * compiler does not treat as an unchecked operation - and it could not, because every warning is an
+     * error here and the build compiles. What bounds the risk is therefore the unchecked count, which
+     * {@code -Werror} holds at zero; this figure bounds the population that could contain one.
+     *
+     * <p><strong>The ceiling was five and is six, and that is a recorded decision rather than a figure
+     * that drifted.</strong> The shared sign-on attempt ledger acquires a PostgreSQL advisory lock exactly
+     * as the three existing lock sites do, through {@code JdbcTemplate.execute(ConnectionCallback)}, and
+     * the cast selects that overload against {@code execute(StatementCallback)}. Writing that one site
+     * differently - assigning the lambda to a typed local needs no cast - would have held the figure at
+     * five and made the fifth advisory lock read unlike the other four. The idiom was kept and the figure
+     * published. See {@code docs/decision-log.md} DL-343 and the census in {@code docs/gate-evidence.md}.
+     *
+     * <p>The ceiling alone is a weak control, because it admits a new site whenever an old one is removed.
+     * {@link CastCensus#castsToAParameterisedTypeStayWithinBudget()} therefore also pins the set of
+     * classes that may carry one.
      */
-    private static final int GENERIC_CAST_BUDGET = 5;
+    private static final int GENERIC_CAST_BUDGET = 6;
+
+    /**
+     * The classes permitted to carry a cast to a parameterised type.
+     *
+     * <p>Four acquire a PostgreSQL advisory lock, one issues a prepared-statement callback, and one drives
+     * a Flyway callback's connection. Named rather than counted so that a seventh site cannot arrive under
+     * cover of a sixth being deleted.
+     */
+    private static final List<String> GENERIC_CAST_CLASSES = List.of(
+            "AdvisoryGenerationPublicationLock.java",
+            "BatchLaunchCoordinator.java",
+            "FlywayConfig.java",
+            "PostgresJobSubmissionCoordinator.java",
+            "PostgresSignOnAttemptLedger.java",
+            "TransactionInsertRepositoryImpl.java");
 
     /**
      * Suppressed-warning budget the plan sets; the measured figure is zero across both source trees.
@@ -569,7 +606,7 @@ class GateVerificationTest extends AbstractPostgresIT {
      * layout survived the migration.
      *
      * <p>Nothing is stubbed and no boundary is substituted. The server is the shared containerised
-     * PostgreSQL the base class migrated with the four delivered scripts, so the schema under assertion
+     * PostgreSQL the base class migrated with the six delivered scripts, so the schema under assertion
      * is the schema the migration produces.
      */
     @Configuration(proxyBeanMethods = false)
@@ -2841,7 +2878,8 @@ class GateVerificationTest extends AbstractPostgresIT {
      * failed halfway.
      */
     @Nested
-    @DisplayName("Gate 8 - the migrated schema on a real server: 11 tables, 4 migrations, exact decimals")
+    @DisplayName("Gate 8 - the migrated schema on a real server: 11 record tables, 1 operational "
+            + "table, 6 migrations, exact decimals")
     class MigratedSchemaState {
 
         MigratedSchemaState() {
@@ -2850,10 +2888,13 @@ class GateVerificationTest extends AbstractPostgresIT {
         /**
          * Eleven application tables, one per verified record layout.
          *
-         * <p>The job-repository tables and the migration history table are excluded, and the exclusion is
-         * part of the figure rather than a convenience: the batch schema is created by the framework on
-         * request, so counting it would make the number depend on a framework setting instead of on the
-         * estate's record layouts.
+         * <p>The job-repository tables, the migration history table and the operational sign-on attempt
+         * ledger are excluded, and each exclusion is part of the figure rather than a convenience. The
+         * batch schema is created by the framework on request, so counting it would make the number
+         * depend on a framework setting instead of on the estate's record layouts; and the ledger is a
+         * delivered table that derives from no record layout at all, so counting it would make the
+         * layout figure depend on a security control. The ledger is asserted separately below rather
+         * than merely filtered away.
          *
          * @throws SQLException if the catalogue cannot be read
          */
@@ -2874,16 +2915,45 @@ class GateVerificationTest extends AbstractPostgresIT {
         }
 
         /**
-         * All four migrations applied, in order, successfully.
+         * The one delivered table that is not a record layout exists, and is exactly one.
+         *
+         * <p>Asserted rather than left implicit, because the count above reaches its figure by excluding
+         * this table by name. An exclusion with nothing on the other side of it is a table that could be
+         * dropped from the migration set without any assertion noticing - and this one carries the
+         * deployment-wide sign-on allowance, so losing it would silently return the throttle to a
+         * per-process count.
+         *
+         * @throws SQLException if the catalogue cannot be read
+         */
+        @Test
+        @DisplayName("exactly one operational table, the deployment-wide sign-on attempt ledger, which "
+                + "the eleven-table figure excludes by name rather than by pattern")
+        void thereIsExactlyOneOperationalTable() throws SQLException {
+            assertThat(operationalTableNames())
+                    .as("the ledger V5 creates must be present. It holds no business record and derives "
+                            + "from no copybook: it holds the running count of failed sign-on attempts "
+                            + "per subject, so one allowance is one allowance across every instance "
+                            + "rather than one per process. DL-343")
+                    .containsExactlyInAnyOrderElementsOf(OPERATIONAL_TABLES)
+                    .hasSize(1);
+            assertThat(OPERATIONAL_TABLES)
+                    .as("and it must not overlap the record-layout roster, or one of the two figures "
+                            + "would be counting the other's table")
+                    .doesNotContainAnyElementsOf(APPLICATION_TABLES);
+        }
+
+        /**
+         * All six migrations applied, in order, successfully.
          *
          * @throws SQLException if the history cannot be read
          */
         @Test
-        @DisplayName("the four delivered migrations are applied in order, and only successful ones count")
-        void theFourMigrationsAreApplied() throws SQLException {
+        @DisplayName("the six delivered migrations are applied in order, and only successful ones count")
+        void theSixMigrationsAreApplied() throws SQLException {
             assertThat(appliedMigrationVersions())
-                    .as("schema, then indexes, then reference data, then identities. A migration that "
-                            + "failed does not appear, so it cannot masquerade as applied")
+                    .as("schema, then indexes, then the sign-on attempt ledger, then the protected-value "
+                            + "invariants, then reference data, then identities. A migration that failed "
+                            + "does not appear, so it cannot masquerade as applied")
                     .containsExactlyElementsOf(MIGRATION_VERSIONS);
         }
 
@@ -2993,12 +3063,21 @@ class GateVerificationTest extends AbstractPostgresIT {
                        AND tc.constraint_type = 'PRIMARY KEY'
                        AND tc.table_name NOT LIKE 'batch\\_%'
                        AND tc.table_name <> 'flyway_schema_history'
+                       AND tc.table_name <> 'sign_on_attempt'
                      ORDER BY tc.table_name, kcu.ordinal_position
                     """);
             assertThat(keyColumns)
                     .as("the eleven tables carry eight single-column business keys and three composite "
                             + "ones, which is sixteen key columns in total")
                     .hasSize(16);
+            assertThat(keyColumns)
+                    .as("the sign-on attempt ledger is excluded by name rather than by pattern, because "
+                            + "it is an operational table and not one of the eleven record layouts: it "
+                            + "has no COBOL antecedent, no fixed-width image and nothing to slice at an "
+                            + "offset. Its key is a business key too - the prefixed subject - so its "
+                            + "presence would not falsify the surrogate-key claim, only the count of "
+                            + "record-layout key columns this figure is about")
+                    .noneMatch(column -> column.startsWith("sign_on_attempt:"));
             assertThat(keyColumns)
                     .as("the account key is the account identifier itself, not a generated column")
                     .contains("account:acct_id")
@@ -3141,7 +3220,7 @@ class GateVerificationTest extends AbstractPostgresIT {
      *
      * <h2>The scoping rule is part of the measurement</h2>
      * The unsafe-code audit examines {@code src/main/java} and nothing else, and both exclusions are
-     * deliberate rather than convenient. The four migration scripts are versioned schema definitions: an
+     * deliberate rather than convenient. The six migration scripts are versioned schema definitions: an
      * unscoped search for statement text would report them as dynamic query assembly and produce four
      * violations that are in fact the deliverable. Test sources are excluded for the converse reason - an
      * assertion helper may legitimately open a process, load a class by name or cast to a type variable in
@@ -3436,21 +3515,32 @@ class GateVerificationTest extends AbstractPostgresIT {
          *
          * <p>The compiler is what makes the <em>unchecked</em> count zero: every warning is an error, so
          * an unchecked operation cannot survive a build. What this measures is the population that could
-         * contain one - a cast whose target is a parameterised type or a type variable - so a sixth site
-         * cannot appear without being seen. All five that exist cast a lambda onto a parameterised
+         * contain one - a cast whose target is a parameterised type or a type variable - so a seventh site
+         * cannot appear without being seen. All six that exist cast a lambda onto a parameterised
          * functional interface, which carries no unchecked operation at all.
+         *
+         * <p>Both the ceiling and the roster are asserted. A ceiling alone would let a new site arrive
+         * whenever an old one was deleted, which is the failure a census is supposed to prevent.
          *
          * @throws IOException if the tree cannot be walked
          */
         @Test
-        @DisplayName("casts to a parameterised type stay within the budget of five, and the compiler is "
-                + "what makes the unchecked count zero")
+        @DisplayName("casts to a parameterised type stay within the budget of six and occur only in the "
+                + "six classes named, and the compiler is what makes the unchecked count zero")
         void castsToAParameterisedTypeStayWithinBudget() throws IOException {
             final List<String> casts = genericCastSites();
 
             assertThat(casts)
                     .as("the plan budgets %d such casts. Sites: %s", GENERIC_CAST_BUDGET, casts)
                     .hasSizeLessThanOrEqualTo(GENERIC_CAST_BUDGET);
+            assertThat(casts.stream()
+                            .map(site -> site.substring(0, Math.max(site.indexOf(".java") + 5, 0)))
+                            .distinct()
+                            .sorted()
+                            .toList())
+                    .as("a cast to a parameterised type belongs only to the classes that coordinate "
+                            + "through a JDBC callback. Sites: %s", casts)
+                    .allMatch(GENERIC_CAST_CLASSES::contains);
             assertThat(configuredList(activePlugin("maven-compiler-plugin"),
                             "configuration", "compilerArgs"))
                     .as("and the reason the unchecked count is zero rather than merely small: an unchecked "
@@ -3472,7 +3562,7 @@ class GateVerificationTest extends AbstractPostgresIT {
          * @throws IOException if the tree cannot be walked
          */
         @Test
-        @DisplayName("the migrations are the four the plan delivers and are excluded from the audit by "
+        @DisplayName("the migrations are the six the plan delivers and are excluded from the audit by "
                 + "scope, not by pretending they are not SQL")
         void theMigrationsAreExcludedByScopeRatherThanBySilence() throws IOException {
             final Path migrations = Path.of("src/main/resources/db/migration");
@@ -3490,11 +3580,18 @@ class GateVerificationTest extends AbstractPostgresIT {
                         .toList();
             }
             assertThat(scripts)
-                    .as("four scripts, in the two profile-scoped locations the delivered arrangement "
+                    .as("six scripts, in the two profile-scoped locations the delivered arrangement "
                             + "uses - which is what lets the audit's scoping rule stay a single line, "
                             + "since it excludes src/main/resources wholesale rather than naming "
-                            + "directories")
-                    .containsExactly("schema/V1__create_schema.sql", "schema/V2__create_indexes.sql",
+                            + "directories. Compared without regard to order: this walk is sorted by "
+                            + "PATH, and a dotted version sorts before its undotted sibling as text "
+                            + "because '1' precedes '_', so V2_1 comes back ahead of V2. The claim here "
+                            + "is which scripts ship and in which directory, and neither depends on the "
+                            + "order a directory walk returns")
+                    .containsExactlyInAnyOrder("schema/V1__create_schema.sql",
+                            "schema/V2__create_indexes.sql",
+                            "schema/V2_1__create_sign_on_attempt_ledger.sql",
+                            "schema/V2_2__add_protected_value_invariants.sql",
                             "seed/V3__seed_reference_data.sql", "seed/V4__seed_user_security.sql");
             assertThat(scripts)
                     .as("the reference seed and the identity seed are separate versions, because the "
@@ -4712,8 +4809,10 @@ class GateVerificationTest extends AbstractPostgresIT {
                     artefacts.narrative()));
             rows.add(rowFor("Schema parity on a real server",
                     "src/main/resources/db/migration + " + POSTGRES_IMAGE,
-                    applicationTableNames().size() == APPLICATION_TABLE_COUNT,
-                    APPLICATION_TABLE_COUNT + " tables, migrations "
+                    applicationTableNames().size() == APPLICATION_TABLE_COUNT
+                            && operationalTableNames().size() == OPERATIONAL_TABLES.size(),
+                    APPLICATION_TABLE_COUNT + " record tables, " + OPERATIONAL_TABLES.size()
+                            + " operational, migrations "
                             + String.join(" ", MIGRATION_VERSIONS) + ", no floating-point column"));
             final FinalBoundaryEvidence boundary = finalBoundaryEvidence();
             rows.add(rowFor("Final-boundary criteria, each held by an executed suite",

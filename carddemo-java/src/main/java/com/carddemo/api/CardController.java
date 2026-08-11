@@ -34,6 +34,7 @@ import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenNavigationState;
+import com.carddemo.util.ApiRoutePaths;
 import com.carddemo.util.PfKeyTranslator;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -101,10 +102,11 @@ import org.springframework.web.bind.annotation.RestController;
  * declarative validation before the method body runs, which {@link GlobalExceptionHandler} shapes into a
  * {@code 400}.
  *
- * <p><strong>Authorization.</strong> All three routes sit under {@link #CARDS_BASE_PATH}, which the
- * filter chain names as an online-data operator surface. Both user types the estate declares keep access,
- * matching the three ordinary transaction definitions, while an unrelated authenticated principal does
- * not inherit card-wide access from the catch-all. No ownership relation is inferred from a caller-supplied
+ * <p><strong>Authorization.</strong> Each of the three routes is named individually by the filter chain
+ * as an online-data operator surface. Both user types the estate declares keep access, matching the three
+ * ordinary transaction definitions, while an unrelated authenticated principal reaches none of them and
+ * neither does a caller addressing anything else beneath {@link #CARDS_BASE_PATH}, which the chain's
+ * closing refusal covers. No ownership relation is inferred from a caller-supplied
  * account or card number because the sign-on record declares none. Nothing here shadows or reroutes the
  * management endpoints or the generated interface description; the OpenAPI document remains the sole
  * responsibility of {@code config/OpenApiConfig}.
@@ -171,22 +173,23 @@ public class CardController {
     /**
      * Common prefix of the three card routes.
      *
-     * <p>Declared here, with the security configuration reading path constants from the boundary rather
-     * than the other way round, so that configuration may depend on the boundary and the boundary never
-     * depends on configuration. It is deliberately neither the single anonymous path nor beneath the
-     * administrative prefix, so the catch-all rule applies and a mistyped mapping fails closed - which is
+     * <p>Composed from the neutral route contract in the base layer, which the security configuration
+     * reads as well, so that configuration may depend on the boundary and the boundary never depends on
+     * configuration. It is deliberately neither the single anonymous path nor beneath the administrative
+     * prefix. Only the three composed addresses are granted, so a mistyped mapping beneath this prefix is
+     * refused by the chain's closing refusal over the API root - unreachable rather than open, which is
      * the safe direction for that mistake to fail in.
      */
-    public static final String CARDS_BASE_PATH = "/api/cards";
+    public static final String CARDS_BASE_PATH = ApiRoutePaths.CARDS_PATH_PREFIX;
 
     /** Route of one card-list turn, legacy transaction {@code CCLI}. */
-    public static final String CARD_LIST_PATH = "/list";
+    public static final String CARD_LIST_PATH = ApiRoutePaths.LIST_SUBPATH;
 
     /** Route of one card-detail turn, legacy transaction {@code CCDL}. */
-    public static final String CARD_DETAIL_PATH = "/detail";
+    public static final String CARD_DETAIL_PATH = ApiRoutePaths.DETAIL_SUBPATH;
 
     /** Route of one card-update turn, legacy transaction {@code CCUP}. */
-    public static final String CARD_UPDATE_PATH = "/update";
+    public static final String CARD_UPDATE_PATH = ApiRoutePaths.UPDATE_SUBPATH;
 
     /**
      * Transaction identifier of the card-list screen, {@code app/csd/CARDDEMO.CSD} line 357.

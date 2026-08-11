@@ -56,6 +56,17 @@ import org.junit.jupiter.params.provider.MethodSource;
  * one {@code ck_<table>_single_byte_text} constraint per table, and the tests below make the server refuse
  * such a value on all eleven tables and name the constraint that did it.
  *
+ * <p><strong>Three. A widened column is not a protected column.</strong> Three columns are widened
+ * beyond their legacy record widths so they can hold a protected value - the two regulated customer
+ * identifiers hold an {@code ENC1} envelope and the sign-on credential holds a BCrypt digest. Until
+ * {@code V2_2} they were constrained for width and byte repertoire only, and both a nine-digit national
+ * identifier and an eight-character password satisfy those. The entity layer refuses both, and only for a
+ * writer that constructs an entity; a bulk load, a repair script or a native statement reaches the column
+ * directly. {@code V2_2} adds one {@code CHECK} per column, and the tests below make the server refuse
+ * cleartext, a short envelope, a body outside the basic Base64 alphabet, an unrecognised BCrypt version
+ * marker and a digest below the accepted cost - each naming the constraint that did it. See
+ * {@code docs/decision-log.md} DL-349.
+ *
  * <p><strong>Two. A named constraint with no negative proof is a comment.</strong> {@code V1} declares nine
  * key-shape {@code CHECK} constraints. The entities enforce the same rules before a write, so a
  * specification that goes through the entity layer passes whether or not the database guard exists - which
@@ -79,7 +90,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * read as read-only reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
  * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source line is transcribed.
  */
-@DisplayName("Schema guards, proven by refusal: single-byte text on eleven tables and nine key shapes")
+@DisplayName("Schema guards, proven by refusal: single-byte text, nine key shapes, protected values")
 final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
 
     /**
@@ -93,6 +104,28 @@ final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
 
     /** The PostgreSQL SQLSTATE for a violated CHECK constraint. */
     private static final String SQLSTATE_CHECK_VIOLATION = "23514";
+
+    /**
+     * A protected-value envelope of exactly the shape the codec produces, and nothing else.
+     *
+     * <p>Forty-five characters: the five-character marker plus a forty-character padded body decoding to
+     * twenty-eight bytes, which is the initialisation vector and authentication tag with no ciphertext at
+     * all. The body decodes to the ASCII text {@code SYNTHETIC-TEST-ENVELOPE-0001}, so it is self-evidently
+     * not sealed regulated data; it exists to be shaped correctly rather than to be decryptable, and no key
+     * in this module would open it.
+     */
+    private static final String PROTECTED_ENVELOPE = "ENC1:U1lOVEhFVElDLVRFU1QtRU5WRUxPUEUtMDAwMQ==";
+
+    /**
+     * A structurally valid BCrypt digest at the lowest cost the module accepts.
+     *
+     * <p>Sixty characters: version marker, the two-digit cost 10, the separator, then fifty-three
+     * characters of BCrypt radix-64. It verifies nothing - no password produces it - which is exactly what
+     * a schema fixture needs, since the column's rule is structural and the constraint neither hashes nor
+     * verifies.
+     */
+    private static final String PROTECTED_DIGEST =
+            "$2a$10$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     /** A seeded account key, used as the parent of the card and category-balance foreign keys. */
     private static final String SEEDED_ACCOUNT_ID = "00000000001";
@@ -223,7 +256,13 @@ final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
                         "addr_zip", "0000012345",
                         "phone_num_1", padded("(555)1234567", 15),
                         "phone_num_2", padded("(555)7654321", 15),
-                        "govt_issued_id", "ENC1:AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAA",
+                        // Both regulated identifiers carry a correctly shaped envelope, and cust_ssn
+                        // is listed rather than left to default to NULL so the nest below can perturb it.
+                        // An earlier revision of this fixture wrote a two-colon value of thirty-eight
+                        // characters, which is not an envelope by the codec's own rule and which the
+                        // schema accepted because nothing yet required one.
+                        "cust_ssn", PROTECTED_ENVELOPE,
+                        "govt_issued_id", PROTECTED_ENVELOPE,
                         "cust_dob", "1980-01-01",
                         "eft_account_id", "0000000001",
                         "pri_card_holder_ind", "Y",
@@ -297,7 +336,7 @@ final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
                         "sec_usr_id", "PROOF001",
                         "sec_usr_fname", padded("PROOF", 20),
                         "sec_usr_lname", padded("SUBJECT", 20),
-                        "sec_usr_pwd", "$2a$10$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "sec_usr_pwd", PROTECTED_DIGEST,
                         "sec_usr_type", "U"),
                         "ck_user_security_single_byte_text", "sec_usr_lname", null));
     }
@@ -835,8 +874,187 @@ final class SchemaConstraintNegativeProofIT extends AbstractPostgresIT {
     }
 
     // ==============================================================================================
+    // DB-8: the three protected-value invariants V2_2 adds, proven by refusal
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("Protected values: the three columns widened for ciphertext or a digest refuse anything "
+            + "else")
+    class ProtectedValues {
+
+        /** The constraint on the nullable regulated identifier. */
+        private static final String SSN_CONSTRAINT = "ck_customer_cust_ssn_protected";
+
+        /** The constraint on the mandatory regulated identifier. */
+        private static final String GOVT_CONSTRAINT = "ck_customer_govt_issued_id_protected";
+
+        /** The constraint on the stored sign-on credential. */
+        private static final String DIGEST_CONSTRAINT = "ck_user_security_sec_usr_pwd_digest";
+
+        /** Creates the nest. */
+        ProtectedValues() {
+        }
+
+        @Test
+        @DisplayName("all three constraints are declared, so every refusal below fails for the reason it "
+                + "claims rather than because the guard is missing")
+        void allThreeConstraintsAreDeclared() throws SQLException {
+            assertThat(namedCheckConstraints())
+                    .as("one absent constraint would turn every assertion in this nest into a test of "
+                            + "something else")
+                    .contains(SSN_CONSTRAINT, GOVT_CONSTRAINT, DIGEST_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("a nine-digit national identifier - the legacy record's own cleartext width - is "
+                + "refused")
+        void aCleartextNationalIdentifierIsRefused() {
+            // The exact shape the finding named: US-ASCII, well inside VARCHAR(255), and accepted by every
+            // constraint the schema carried before V2_2.
+            assertRefusedBy(fixtureFor("customer"), "cust_ssn", "123456789", SSN_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("and a twenty-character government-issued identifier is refused on the same grounds")
+        void aCleartextGovernmentIdentifierIsRefused() {
+            assertRefusedBy(fixtureFor("customer"), "govt_issued_id", "VA-DL-9999999999999",
+                    GOVT_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("an envelope one byte short of an authenticated envelope is refused, so the floor is "
+                + "a real minimum and not a token length")
+        void anEnvelopeShortOfTheAuthenticatedMinimumIsRefused() {
+            // Forty-one characters: a thirty-six character body decoding to twenty-seven bytes, one byte
+            // below the twelve-byte initialisation vector plus sixteen-byte tag that any envelope must
+            // carry before it holds a single byte of ciphertext.
+            assertRefusedBy(fixtureFor("customer"), "cust_ssn",
+                    "ENC1:" + "A".repeat(36), SSN_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("an envelope AT the floor is accepted, so the constraint states the codec's reading "
+                + "rule rather than its padding habit")
+        void anEnvelopeAtTheFloorIsAccepted() throws SQLException {
+            // Forty-three characters: a thirty-eight character UNPADDED body, which is the fewest basic
+            // Base64 characters that decode to twenty-eight bytes. This module's encoder always pads, so it
+            // would never emit this value - and the codec's reader accepts it, which is why the constraint
+            // must too. A floor of forty-five would have been true of everything written and still wrong.
+            insertAndRollBack(fixtureFor("customer"), "cust_ssn", "ENC1:" + "A".repeat(38));
+        }
+
+        @Test
+        @DisplayName("a body drawn from the URL-safe alphabet is refused, because the codec decodes with "
+                + "the BASIC one")
+        void aBodyOutsideTheBasicAlphabetIsRefused() {
+            // Long enough to clear the floor, so the only thing wrong with it is the two characters that
+            // belong to Base64's URL-safe variant rather than to the basic alphabet the codec uses.
+            assertRefusedBy(fixtureFor("customer"), "cust_ssn",
+                    "ENC1:" + "A".repeat(36) + "-_", SSN_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("a well-formed body with no scheme marker is refused, so the marker is part of the "
+                + "rule and not decoration")
+        void aBodyWithNoMarkerIsRefused() {
+            assertRefusedBy(fixtureFor("customer"), "govt_issued_id",
+                    PROTECTED_ENVELOPE.substring("ENC1:".length()), GOVT_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("an eight-character cleartext credential - the legacy record's own width - is refused")
+        void aCleartextCredentialIsRefused() {
+            // Eight characters is what the legacy record reserves and what the column would have accepted
+            // before V2_2, VARCHAR(60) stating only a maximum. The value is a synthetic literal and opens
+            // nothing.
+            assertRefusedBy(fixtureFor("user_security"), "sec_usr_pwd", "NOTREAL1", DIGEST_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("a digest below the accepted cost is refused, so the work factor is part of the "
+                + "column's rule")
+        void aDigestBelowTheAcceptedCostIsRefused() {
+            // Structurally a BCrypt digest in every other respect, and orders of magnitude cheaper to
+            // attack: the work factor is a power of two, so cost 4 is 256 times cheaper than cost 12.
+            assertRefusedBy(fixtureFor("user_security"), "sec_usr_pwd",
+                    "$2a$04$" + "A".repeat(53), DIGEST_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("an unrecognised version marker is refused, so the accepted variants are the three "
+                + "the credential check names")
+        void anUnrecognisedVersionMarkerIsRefused() {
+            assertRefusedBy(fixtureFor("user_security"), "sec_usr_pwd",
+                    "$2c$12$" + "A".repeat(53), DIGEST_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("a tail character outside BCrypt's radix-64 alphabet is refused, even though it is "
+                + "single-byte and the width is exact")
+        void aTailOutsideTheRadix64AlphabetIsRefused() {
+            // Sixty characters and pure US-ASCII, so the width bound and the byte-repertoire rule both
+            // pass; the alphabet clause is the only thing that refuses it. BCrypt's radix-64 is
+            // ./A-Za-z0-9 and is deliberately not standard Base64 - different ordering, no pad character.
+            assertRefusedBy(fixtureFor("user_security"), "sec_usr_pwd",
+                    "$2a$12$" + "A".repeat(52) + "!", DIGEST_CONSTRAINT);
+        }
+
+        @Test
+        @DisplayName("the accepted digest shape is accepted at both ends of the cost window, so the rule "
+                + "is a window and not a single value")
+        void theAcceptedCostWindowIsAcceptedAtBothEnds() throws SQLException {
+            insertAndRollBack(fixtureFor("user_security"), "sec_usr_pwd", "$2b$10$" + "A".repeat(53));
+            insertAndRollBack(fixtureFor("user_security"), "sec_usr_pwd", "$2y$31$" + "A".repeat(53));
+        }
+
+        @Test
+        @DisplayName("every seeded row already satisfies all three rules, so the constraints describe the "
+                + "delivered data rather than contradicting it")
+        void theSeededRowsSatisfyTheProtectedValueRules() throws SQLException {
+            assertThat(countMatching("customer",
+                    "govt_issued_id NOT LIKE 'ENC1:%' OR char_length(govt_issued_id) < 43"))
+                    .as("every seeded customer row must carry a sealed government-issued identifier; a "
+                            + "row listed here would hold regulated data in the clear")
+                    .isZero();
+            assertThat(countMatching("customer",
+                    "cust_ssn IS NOT NULL AND (cust_ssn NOT LIKE 'ENC1:%' OR char_length(cust_ssn) < 43)"))
+                    .as("and any seeded national identifier that is present must be sealed too; absence is "
+                            + "the one state this column may hold unsealed, because it is the state the "
+                            + "reference seed leaves it in")
+                    .isZero();
+            assertThat(countMatching("user_security", "char_length(sec_usr_pwd) <> 60"))
+                    .as("and every seeded credential must be a full-width digest")
+                    .isZero();
+        }
+    }
+
+
+    // ==============================================================================================
     // Catalogue readers
     // ==============================================================================================
+
+    /**
+     * Counts the rows of one table that satisfy a predicate.
+     *
+     * <p>The predicate is a literal written in this file rather than a bound parameter, because a predicate
+     * is not a value: a parameter marker cannot carry one. The table name and the predicate both come from
+     * constants and test literals here and never from input, so no caller-supplied text reaches the
+     * statement.
+     *
+     * @param table     the table to count
+     * @param predicate the SQL predicate rows must satisfy to be counted
+     * @return the number of matching rows
+     * @throws SQLException if the query cannot be run
+     */
+    private static long countMatching(final String table, final String predicate) throws SQLException {
+        try (Connection connection = connect();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT count(*) FROM " + table + " WHERE " + predicate);
+                ResultSet rows = statement.executeQuery()) {
+            assertThat(rows.next()).isTrue();
+            return rows.getLong(1);
+        }
+    }
 
     /**
      * Returns the fixture for one table.

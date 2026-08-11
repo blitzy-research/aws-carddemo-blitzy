@@ -54,6 +54,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
 
+import com.carddemo.util.SanitisedObservation;
+
 /**
  * Unit contract for the parameter-free SNS job-completion producer.
  */
@@ -185,9 +187,10 @@ class JobCompletionNotificationServiceTest {
     }
 
     @Test
-    @DisplayName("records an SNS refusal and returns false without throwing")
+    @DisplayName("records a sanitised classification of an SNS refusal and returns false without throwing")
     void absorbsAndObservesAPublishFailure() {
-        final IllegalStateException refused = new IllegalStateException("topic refused");
+        final IllegalStateException refused =
+                new IllegalStateException("topic refused arn:aws:sns:eu-west-1:123456789012:secret");
         doThrow(refused).when(this.operations)
                 .sendNotification(org.mockito.ArgumentMatchers.eq(TOPIC),
                         org.mockito.ArgumentMatchers.any());
@@ -195,7 +198,18 @@ class JobCompletionNotificationServiceTest {
         assertThat(this.service.publishCompletion(completedEvent())).isFalse();
 
         assertThat(this.observed).hasSize(1);
-        assertThat(this.observed.getFirst().getError()).isSameAs(refused);
+        final Throwable recorded = this.observed.getFirst().getError();
+        assertThat(recorded)
+                .as("the refusal is still a failure on the span rather than a gap in the trace")
+                .isNotNull()
+                .as("but the provider's own failure is not what is recorded: the adjacent log publishes a "
+                        + "bounded type chain, and the span may not undo that by publishing the object")
+                .isNotSameAs(refused)
+                .isInstanceOf(SanitisedObservation.SanitisedBoundaryFailure.class);
+        assertThat(recorded.getMessage())
+                .doesNotContain("123456789012")
+                .contains(SanitisedObservation.FAILURE_CHAIN_LABEL + "IllegalStateException");
+        assertThat(recorded.getCause()).isNull();
     }
 
     @Test

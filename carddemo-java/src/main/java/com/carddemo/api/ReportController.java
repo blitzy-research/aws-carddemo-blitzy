@@ -22,6 +22,7 @@ import com.carddemo.api.dto.ReportResponse;
 import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.ReportRequestService;
+import com.carddemo.util.ApiRoutePaths;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -120,15 +121,16 @@ public class ReportController {
     /**
      * The address of transaction {@code CR00}.
      *
-     * <p>Declared here, as the sign-on route is, so that the mapping and anything that reasons about the
-     * route read one authority. It sits outside the administrative prefix on purpose: the route-to-role
-     * table classifies {@code CR00} as reachable by any signed-on caller, which the security chain answers
-     * with its closing catch-all rule, so a path beneath the administrative prefix would gate the report
-     * screen to administrators and a path named among the anonymous surfaces would open it to callers with
-     * no credential at all. It also shadows neither the management base path nor the interface-description
+     * <p>Read from the neutral route contract, as the sign-on route is, so that the mapping and anything
+     * that reasons about the route name one authority. It sits outside the administrative prefix on
+     * purpose: the route-to-role table classifies {@code CR00} as reachable by either sign-on authority,
+     * and the security chain grants this exact address on that classification - so a path beneath the
+     * administrative prefix would gate the report screen to administrators, a path named among the
+     * anonymous surfaces would open it to callers with no credential at all, and a path the chain does
+     * not name at all would be refused to everybody. It also shadows neither the management base path nor the interface-description
      * path, both of which the chain treats separately.
      */
-    public static final String REPORT_REQUEST_PATH = "/api/reports/request";
+    public static final String REPORT_REQUEST_PATH = ApiRoutePaths.REPORT_REQUEST_PATH;
 
     /** Timer name for one report-request turn, following the module's metric naming. */
     private static final String METRIC_REPORT_REQUEST_TURN = "carddemo.online.reportrequest.turn";

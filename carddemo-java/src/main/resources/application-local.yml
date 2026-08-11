@@ -210,19 +210,35 @@ spring:
   #   classpath:db/migration/schema                            EVERY profile, including production
   #     V1__create_schema.sql          the eleven application tables
   #     V2__create_indexes.sql         keys and alternate-index equivalents
-  #   ------------------------------------------ the shared baseline's ceiling: target 2 stops here
+  #     V2_1__create_sign_on_attempt_ledger.sql
+  #                                    the deployment-wide sign-on throttle state, numbered BELOW the
+  #                                    seeds; see the note below
+  #     V2_2__add_protected_value_invariants.sql
+  #                                    the ciphertext and digest CHECK constraints, also below the seeds
   #   classpath:db/migration/seed                              local and test ONLY
   #     V3__seed_reference_data.sql    the nine measured ASCII reference datasets, 626 rows across
   #                                    nine tables
   #     V4__seed_user_security.sql     the ten sign-on identities, five administrative and five
   #                                    standard, each credential stored only as a hash
+  #   ------------------------------------- the shared baseline's ceiling: target 2.2 stops below both
+  #
+  # THE SCHEMA SET IS ENTIRELY BELOW THE SEEDS, AND THAT IS DELIBERATE. V2_1 and V2_2 are schema
+  # scripts - production needs the deployment-wide sign-on throttle and the protected-value invariants
+  # more than any other profile does - and each takes a DOTTED version between the indexes and the
+  # fixtures so the ordering holds: 2 < 2.1 < 2.2 < 3. Under this profile, which resolves both locations,
+  # Flyway applies 1, 2, 2.1, 2.2, 3, 4 in that order. Three controls depend on the ordering - the
+  # production ceiling, the seeded-database refusal, and the ability to add the seed location to a
+  # schema-only database - and numbering a schema script above the seeds broke all three.
+  # FlywayConfigTest.noSchemaScriptIsNumberedAboveASeedScript asserts the invariant. See
+  # docs/decision-log.md DL-343 and DL-349.
   #
   # THE TWO SETTINGS ARE INDEPENDENT AND BOTH ARE REQUIRED HERE. The shared baseline in
-  # application.yml declares the schema location ALONE and pins spring.flyway.target at "2", which is
+  # application.yml declares the schema location ALONE and pins spring.flyway.target at "2.2", which is
   # the production posture. This overlay adds the seed location - the only setting that makes V3 and V4
-  # resolvable at all - and raises the ceiling to latest, so a local migration ends at V4. The
-  # production overlay re-asserts both restrictive values, and FlywayConfig re-applies them after
-  # binding so neither can be changed in silence; here it does the opposite and LIFTS an inherited "2"
+  # resolvable at all - and raises the ceiling to latest, so a local migration applies every delivered
+  # version. The production overlay re-asserts both restrictive values, and FlywayConfig re-applies them
+  # after binding so neither can be changed in silence; here it does the opposite and LIFTS an inherited
+  # low ceiling
   # rather than refusing it, because a fixture-bearing profile that stopped at the schema would load no
   # fixtures. See docs/decision-log.md DL-298 for the location split and DL-334 for the ceiling. A
   # seeded sign-on credential is stored only as a hash regardless, so that even a mistake here leaks
@@ -304,17 +320,17 @@ spring:
     # adding the seed location here is what admits V3__seed_reference_data.sql and
     # V4__seed_user_security.sql. Drop it and every fixture asserts against an empty result set.
     #
-    # NEVER REPLACE THESE TWO WITH THEIR PARENT classpath:db/migration. It would resolve the same four
+    # NEVER REPLACE THESE TWO WITH THEIR PARENT classpath:db/migration. It would resolve the same six
     # scripts and record each one under a name relative to the parent, breaking the migration names the
     # Compose bring-up check reads out of the history table; FlywayConfig refuses the parent outright.
     locations:
       - classpath:db/migration/schema
       - classpath:db/migration/seed
-    # THE SECOND OF THE TWO SETTINGS THIS PROFILE NEEDS. The shared baseline pins the ceiling at "2",
-    # which stops a migration after the indexes; this raises it so the two seed versions apply.
-    # FlywayConfig lifts an inherited low ceiling here rather than refusing it, because a
+    # THE SECOND OF THE TWO SETTINGS THIS PROFILE NEEDS. The shared baseline pins the ceiling at "2.2",
+    # which stops a migration after the protected-value invariants; this raises it so the two seed
+    # versions apply. FlywayConfig lifts an inherited low ceiling here rather than refusing it, because a
     # fixture-bearing profile that stopped at the schema would load no fixtures - the opposite of what
-    # it does under the production profile, where every value but "2" is refused.
+    # it does under the production profile, where every value but "2.2" is refused.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true

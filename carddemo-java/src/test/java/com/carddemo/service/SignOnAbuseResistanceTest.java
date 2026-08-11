@@ -214,7 +214,7 @@ class SignOnAbuseResistanceTest {
             clock = new MovableClock(START);
             meters = new SimpleMeterRegistry();
             governor = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL,
-                    TRACKED_SUBJECTS, clock, meters);
+                    TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger());
         }
 
         @Test
@@ -250,7 +250,7 @@ class SignOnAbuseResistanceTest {
             // ALLOWANCE + 1 subjects, which would saturate the shared four-slot governor and make the
             // isolation assertion below a statement about saturation instead.
             final SignOnAttemptGovernor roomy = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW,
-                    REFUSAL, ROOMY_TRACKED_SUBJECTS, clock, meters);
+                    REFUSAL, ROOMY_TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger());
             for (int attempt = 0; attempt < ALLOWANCE; attempt++) {
                 roomy.recordFailure("SWEEP" + String.format(Locale.ROOT, "%03d", attempt), SOURCE);
             }
@@ -411,23 +411,85 @@ class SignOnAbuseResistanceTest {
         }
 
         @Test
-        @DisplayName("an admitted sign-on clears both subjects, so earlier mistypes are not carried "
-                + "towards a later refusal")
-        void anAdmittedSignOnClearsBothSubjects() {
+        @DisplayName("an admitted sign-on clears the authenticated identity, so earlier mistypes are not "
+                + "carried towards a later refusal of that identity")
+        void anAdmittedSignOnClearsTheIdentity() {
+            // The stuffing shape, spread across sources so that ONLY the identity accumulates: this
+            // specification is about the identity's own count being reset, and a source that also
+            // accumulated would refuse the attempt for the other namespace's reason and prove nothing
+            // about this one.
             for (int attempt = 0; attempt < ALLOWANCE - 1; attempt++) {
-                governor.recordFailure(KNOWN_ID, SOURCE);
+                governor.recordFailure(KNOWN_ID, "192.0.2." + attempt);
+            }
+            assertThat(governor.trackedSubjectCount())
+                    .as("one identity subject and one source subject per attempt")
+                    .isEqualTo(ALLOWANCE);
+
+            governor.recordSuccess(KNOWN_ID);
+            for (int attempt = 0; attempt < ALLOWANCE - 1; attempt++) {
+                governor.recordFailure(KNOWN_ID, "198.51.100." + attempt);
             }
 
-            governor.recordSuccess(KNOWN_ID, SOURCE);
-            governor.recordFailure(KNOWN_ID, SOURCE);
-
             assertThat(governor.isRefusing(KNOWN_ID, SOURCE))
-                    .as("the success reset the count, so the single failure after it is the first of a "
-                            + "new window rather than the last of the old one")
+                    .as("the success reset the identity's count, so the %d failures after it are the "
+                            + "first of a new window rather than the last of the old one - without the "
+                            + "reset the identity would have reached %d and be refused",
+                            ALLOWANCE - 1, (ALLOWANCE - 1) * 2)
                     .isFalse();
-            assertThat(governor.trackedSubjectCount())
-                    .as("and the cleared subjects were released rather than left behind")
-                    .isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("an admitted sign-on does NOT clear the source, so a caller holding one valid "
+                + "credential cannot reset an enumeration sweep on demand")
+        void anAdmittedSignOnDoesNotClearTheSource() {
+            // A roomy ceiling for the same reason the sweep specification above gives one: a sweep of
+            // distinct identifiers produces a subject per identifier, which would saturate the shared
+            // four-slot governor and turn every assertion below into a statement about saturation.
+            final SignOnAttemptGovernor roomy = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW,
+                    REFUSAL, ROOMY_TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger());
+            // The sweep shape: one secret against many identities, so no identity ever accumulates and
+            // the source namespace is the only one counting. It is driven to one attempt short of the
+            // allowance.
+            for (int attempt = 0; attempt < ALLOWANCE - 1; attempt++) {
+                roomy.recordFailure("SWEEP" + String.format(Locale.ROOT, "%03d", attempt), SOURCE);
+            }
+            assertThat(roomy.isRefusing("NEVERSEEN", SOURCE))
+                    .as("the allowance is not yet spent, which is the state the reset would be worth "
+                            + "taking")
+                    .isFalse();
+
+            // The bypass, exactly as a caller would take it: sign in once with a credential it is
+            // entitled to, from the same source, and resume.
+            roomy.recordSuccess(KNOWN_ID);
+            roomy.recordFailure("SWEEPFINAL", SOURCE);
+
+            assertThat(roomy.isRefusing("NEVERSEEN", SOURCE))
+                    .as("the source's history survived the success, so the last failure spent the "
+                            + "allowance and the sweep is refused. Releasing the source here would have "
+                            + "made the source counter resettable by the party it counts")
+                    .isTrue();
+            assertThat(roomy.isRefusing("NEVERSEEN", OTHER_SOURCE))
+                    .as("and only that source is refused - the refusal is attributed rather than global")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("and the source's own history is released by time, so the refusal is temporary "
+                + "rather than a permanent block on an address")
+        void theSourceHistoryIsReleasedByTime() {
+            final SignOnAttemptGovernor roomy = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW,
+                    REFUSAL, ROOMY_TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger());
+            for (int attempt = 0; attempt < ALLOWANCE; attempt++) {
+                roomy.recordFailure("SWEEP" + String.format(Locale.ROOT, "%03d", attempt), SOURCE);
+            }
+            assertThat(roomy.isRefusing("NEVERSEEN", SOURCE)).isTrue();
+
+            clock.advance(REFUSAL.plusSeconds(1));
+
+            assertThat(roomy.isRefusing("NEVERSEEN", SOURCE))
+                    .as("the refusal period expired, which is the only thing that releases a source: no "
+                            + "credential, no request and no caller action does")
+                    .isFalse();
         }
 
         @Test
@@ -509,7 +571,7 @@ class SignOnAbuseResistanceTest {
                 + "carry the protection carries none of it rather than a weakened form")
         void switchedOffTheGovernorRefusesNothing() {
             final SignOnAttemptGovernor disabled = new SignOnAttemptGovernor(false, 1, WINDOW,
-                    REFUSAL, TRACKED_SUBJECTS, clock, meters);
+                    REFUSAL, TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger());
 
             for (int attempt = 0; attempt < ALLOWANCE * 4; attempt++) {
                 disabled.recordFailure(KNOWN_ID, SOURCE);
@@ -531,27 +593,32 @@ class SignOnAbuseResistanceTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .as("an allowance of nothing")
                     .isThrownBy(() -> new SignOnAttemptGovernor(true, 0, WINDOW, REFUSAL,
-                            TRACKED_SUBJECTS, clock, meters));
+                            TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger()));
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .as("a window of no duration")
                     .isThrownBy(() -> new SignOnAttemptGovernor(true, ALLOWANCE, Duration.ZERO,
-                            REFUSAL, TRACKED_SUBJECTS, clock, meters));
+                            REFUSAL, TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger()));
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .as("a refusal that lifts immediately")
                     .isThrownBy(() -> new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW,
-                            Duration.ofSeconds(-1), TRACKED_SUBJECTS, clock, meters));
+                            Duration.ofSeconds(-1), TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger()));
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .as("a ceiling that tracks nothing")
                     .isThrownBy(() -> new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL,
-                            0, clock, meters));
+                            0, clock, meters, new InMemorySignOnAttemptLedger()));
             assertThatExceptionOfType(NullPointerException.class)
                     .as("no clock, without which no window could be measured")
                     .isThrownBy(() -> new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL,
-                            TRACKED_SUBJECTS, null, meters));
+                            TRACKED_SUBJECTS, null, meters, new InMemorySignOnAttemptLedger()));
             assertThatExceptionOfType(NullPointerException.class)
                     .as("nowhere to count, without which the protection would be invisible")
                     .isThrownBy(() -> new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL,
-                            TRACKED_SUBJECTS, clock, null));
+                            TRACKED_SUBJECTS, clock, null, new InMemorySignOnAttemptLedger()));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .as("and no ledger at all: the governor holds no state of its own, so a null store"
+                            + " would be a governor that silently counted nothing")
+                    .isThrownBy(() -> new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL,
+                            TRACKED_SUBJECTS, clock, meters, null));
         }
     }
 
@@ -570,9 +637,16 @@ class SignOnAbuseResistanceTest {
      *
      * <p>Each round below is an independent race: every worker contributes two subjects nobody else uses,
      * all of them start together, and the whole round competes for a ceiling far smaller than the number
-     * of subjects offered. Between rounds every subject is released, which both returns the map to empty
-     * and asserts the second half of the same fix - that a slot given up is genuinely given back. A
-     * counter that drifted upward would pass one round and starve every round after it.
+     * of subjects offered. Between rounds every identity is released and the clock is moved past the
+     * window and the refusal period, which is what makes each round's leftovers reclaimable and asserts
+     * the second half of the same fix - that a slot given up is genuinely given back. A counter that
+     * drifted upward would pass one round and starve every round after it.
+     *
+     * <p>The rounds release identities only, and move time on for the rest. A success releases the
+     * authenticated identity and deliberately not the source - see
+     * {@link SignOnAttemptGovernor#recordSuccess(String)} - so a source record is reclaimed by expiry and
+     * the capacity sweep rather than by a caller signing in. The final fill is what proves the accounting:
+     * it can only reach the whole ceiling if every slot every round took came back.
      */
     @Nested
     @DisplayName("the tracking ceiling under contention")
@@ -594,11 +668,19 @@ class SignOnAbuseResistanceTest {
 
         private SignOnAttemptGovernor governor;
 
+        /**
+         * Held rather than passed inline, because the rounds move time forward: a source record survives
+         * a success by design, so expiry is what makes it reclaimable and expiry needs a clock a test can
+         * drive.
+         */
+        private MovableClock roundClock;
+
         @BeforeEach
         void createGovernor() {
             this.meters = new SimpleMeterRegistry();
+            this.roundClock = new MovableClock(Instant.parse("2022-07-19T10:00:00Z"));
             this.governor = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL, CEILING,
-                    new MovableClock(Instant.parse("2022-07-19T10:00:00Z")), this.meters);
+                    this.roundClock, this.meters, new InMemorySignOnAttemptLedger());
         }
 
         @Test
@@ -644,17 +726,23 @@ class SignOnAbuseResistanceTest {
                         .isLessThanOrEqualTo(CEILING);
 
                 for (int worker = 0; worker < WORKERS; worker++) {
-                    this.governor.recordSuccess(identityOf(currentRound, worker),
-                            sourceOf(currentRound, worker));
+                    this.governor.recordSuccess(identityOf(currentRound, worker));
                 }
+                // Time releases what a success does not. Past the window and the refusal period every
+                // leftover of this round is neither refusing nor inside its window, which is the only
+                // state the capacity sweep may remove an entry in.
+                this.roundClock.advance(WINDOW.plus(REFUSAL).plusSeconds(1));
                 assertThat(this.governor.trackedSubjectCount())
-                        .as("every subject of this round is released before the next one races")
-                        .isZero();
+                        .as("round %d still holds no more than the ceiling before the next one races",
+                                currentRound)
+                        .isLessThanOrEqualTo(CEILING);
             }
 
-            // The map is empty, so the ceiling must be entirely available again. It is only available if
-            // every slot handed out over twenty-five rounds came back: a counter that leaked even once
-            // would leave this final fill short, and no assertion on the map's size alone would show it.
+            // Every leftover is expired, so the ceiling must be entirely available again. It is only
+            // available if every slot handed out over twenty-five rounds came back: a counter that leaked
+            // even once would leave this final fill short, and no assertion on the map's size alone would
+            // show it. The fill itself is what triggers the sweep, because a reservation that finds no
+            // room sweeps and retries.
             for (int pair = 0; pair < CEILING / 2; pair++) {
                 this.governor.recordFailure(identityOf(ROUNDS, pair), sourceOf(ROUNDS, pair));
             }
@@ -690,7 +778,7 @@ class SignOnAbuseResistanceTest {
         void anExpiredSubjectYieldsItsSlotToANewOne() {
             final MovableClock movable = new MovableClock(Instant.parse("2022-07-19T10:00:00Z"));
             final SignOnAttemptGovernor aging = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW,
-                    REFUSAL, CEILING, movable, this.meters);
+                    REFUSAL, CEILING, movable, this.meters, new InMemorySignOnAttemptLedger());
             for (int pair = 0; pair < CEILING / 2; pair++) {
                 aging.recordFailure(identityOf(0, pair), sourceOf(0, pair));
             }
@@ -759,7 +847,7 @@ class SignOnAbuseResistanceTest {
             clock = new MovableClock(START);
             meters = new SimpleMeterRegistry();
             governor = new SignOnAttemptGovernor(true, ALLOWANCE, WINDOW, REFUSAL,
-                    TRACKED_SUBJECTS, clock, meters);
+                    TRACKED_SUBJECTS, clock, meters, new InMemorySignOnAttemptLedger());
             subject = new AuthenticationService(repository, digests, new NavigationService(),
                     new MessageCatalogService(), clock, governor);
             when(digests.encode(any(CharSequence.class))).thenReturn(STORED_DIGEST_STANDIN);
@@ -866,13 +954,15 @@ class SignOnAbuseResistanceTest {
         }
 
         @Test
-        @DisplayName("an admitted turn clears the count, so a few mistypes before a correct secret cost "
-                + "the operator nothing later")
+        @DisplayName("an admitted turn clears the identity's count, so a few mistypes before a correct "
+                + "secret cost that operator's identity nothing later")
         void anAdmittedTurnClearsTheCount() {
             when(repository.findById(KNOWN_ID)).thenReturn(Optional.of(storedRecord()));
             when(digests.matches(any(CharSequence.class), anyString())).thenReturn(false);
+            // Spread across sources, so this specification measures the identity's own count. The
+            // address's count is the subject of the specification after this one.
             for (int attempt = 0; attempt < ALLOWANCE - 1; attempt++) {
-                subject.handle(KeyAction.ENTER, KNOWN_ID, PRESENTED, SOURCE);
+                subject.handle(KeyAction.ENTER, KNOWN_ID, PRESENTED, "192.0.2." + attempt);
             }
 
             when(digests.matches(any(CharSequence.class), anyString())).thenReturn(true);
@@ -881,9 +971,43 @@ class SignOnAbuseResistanceTest {
 
             when(digests.matches(any(CharSequence.class), anyString())).thenReturn(false);
             assertThat(subject.handle(KeyAction.ENTER, KNOWN_ID, PRESENTED, SOURCE).decision())
-                    .as("the failure after the admission is the first of a new window")
+                    .as("the failure after the admission is the first of a new window for this identity")
                     .isEqualTo(AuthenticationService.Decision.WRONG_PASSWORD);
-            assertThat(governor.isRefusing(KNOWN_ID, SOURCE)).isFalse();
+            assertThat(governor.isRefusing(KNOWN_ID, OTHER_SOURCE))
+                    .as("the identity's own record was released by the admission, so it is served again "
+                            + "from an address that has spent nothing")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("but an admitted turn does NOT clear the address's count, so a caller cannot sign in "
+                + "once to reset a sweep it is driving from that address")
+        void anAdmittedTurnDoesNotClearTheSourceCount() {
+            when(repository.findById(anyString())).thenReturn(Optional.of(storedRecord()));
+            when(digests.matches(any(CharSequence.class), anyString())).thenReturn(false);
+            // One secret against distinct identifiers, all from one address: the enumeration shape, and
+            // the shape no identity counter can see. Driven to one attempt short of the allowance.
+            for (int attempt = 0; attempt < ALLOWANCE - 1; attempt++) {
+                subject.handle(KeyAction.ENTER, "SWEEP" + String.format(Locale.ROOT, "%03d", attempt),
+                        PRESENTED, SOURCE);
+            }
+
+            when(digests.matches(any(CharSequence.class), anyString())).thenReturn(true);
+            assertThat(subject.handle(KeyAction.ENTER, KNOWN_ID, PRESENTED, SOURCE).decision())
+                    .as("the caller signs in legitimately from the same address, which is the whole of "
+                            + "the bypass")
+                    .isEqualTo(AuthenticationService.Decision.ADMITTED);
+
+            when(digests.matches(any(CharSequence.class), anyString())).thenReturn(false);
+            assertThat(subject.handle(KeyAction.ENTER, "SWEEPLAST", PRESENTED, SOURCE).decision())
+                    .as("the sweep's next attempt is still served, because the allowance is spent BY it "
+                            + "rather than before it")
+                    .isEqualTo(AuthenticationService.Decision.WRONG_PASSWORD);
+            assertThat(subject.handle(KeyAction.ENTER, "SWEEPAFTER", PRESENTED, SOURCE).decision())
+                    .as("and the one after it is refused: the address's history survived the admission, "
+                            + "so the sweep cannot be resumed by presenting a valid credential")
+                    .isEqualTo(AuthenticationService.Decision.UNABLE_TO_VERIFY);
+            verify(repository, never()).findById("SWEEPAFTER");
         }
 
         @Test

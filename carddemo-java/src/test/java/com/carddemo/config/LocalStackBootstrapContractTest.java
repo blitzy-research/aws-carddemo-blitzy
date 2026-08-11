@@ -18,6 +18,7 @@ package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.util.AwsResourcePolicyRules;
 import com.carddemo.util.SqsNamingRules;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -223,6 +224,33 @@ final class LocalStackBootstrapContractTest {
         return String.join("\n", executableLines());
     }
 
+    /**
+     * Returns what each attribute-flag occurrence in the script actually writes.
+     *
+     * <p>Each value is the remainder of the flag's own line with the shell's line-continuation removed,
+     * so a caller can name the writes rather than count them - which is what keeps a claim about the
+     * queue's two behavioural attributes exact once a third write, carrying something else entirely,
+     * exists on the same flag.</p>
+     *
+     * @param  body the script's executable lines joined
+     * @return one entry per attribute write, in file order
+     */
+    private static List<String> attributeWrites(final String body) {
+        final String flag = "--attributes ";
+        final List<String> writes = new ArrayList<>();
+        for (int index = body.indexOf(flag); index >= 0;
+                index = body.indexOf(flag, index + flag.length())) {
+            final int start = index + flag.length();
+            final int lineEnd = body.indexOf('\n', start);
+            String written = body.substring(start, lineEnd < 0 ? body.length() : lineEnd).strip();
+            if (written.endsWith("\\")) {
+                written = written.substring(0, written.length() - 1).strip();
+            }
+            writes.add(written);
+        }
+        return writes;
+    }
+
     @Nested
     @DisplayName("the hook itself")
     final class TheHookItself {
@@ -283,12 +311,17 @@ final class LocalStackBootstrapContractTest {
                     .as("no endpoint flag is needed: the tool resolves the edge endpoint itself")
                     .doesNotContain("--endpoint-url");
             assertThat(body)
-                    .as("no retention, encryption or capacity setting may be configured here")
+                    .as("no retention, lifecycle or capacity setting may be configured here")
                     .doesNotContain("put-bucket-lifecycle")
-                    .doesNotContain("put-bucket-encryption")
                     .doesNotContain("object-lock")
                     .doesNotContain("VisibilityTimeout")
                     .doesNotContain("MessageRetentionPeriod");
+            // Default encryption was in the list above until this checkpoint, on the reasoning that
+            // versioning was the one setting the bucket needed. That reasoning was about generation
+            // semantics and said nothing about the objects themselves, every one of which carries
+            // account identifiers, card numbers or balances - so it is now provisioned rather than
+            // withheld, and the claim here is narrowed to what remains true. Its presence is required
+            // by theBucketIsGivenItsAccessPosture; DL-346 records the reversal.
         }
 
         @Test
@@ -450,11 +483,30 @@ final class LocalStackBootstrapContractTest {
                             + "creates is never briefly deduplicating")
                     .contains("--attributes FifoQueue=true,ContentBasedDeduplication=false");
 
-            final int writes = body.split("--attributes ", -1).length - 1;
+            // Every attribute write is enumerated and each is required to be one of the sanctioned
+            // three, rather than the writes merely being counted. Counting held while there were two;
+            // the queue's own policy is now attached through the same flag, and a count would have had
+            // to be relaxed to three - which would then have admitted any third write at all,
+            // including one that re-enabled deduplication. Naming each write instead keeps the
+            // protection exact: the two behavioural writes are pinned to their safe values, and every
+            // other write must carry the policy attribute map and must name neither attribute.
+            final List<String> writes = attributeWrites(body);
+
             assertThat(writes)
-                    .as("there are exactly two attribute writes - the creation call and the repair - "
-                            + "so no third write can undo either")
-                    .isEqualTo(2);
+                    .as("the behavioural writes are the creation call and the repair, in that order")
+                    .containsSubsequence("FifoQueue=true,ContentBasedDeduplication=false",
+                            "ContentBasedDeduplication=false");
+            assertThat(writes)
+                    .as("and every write that is not one of those two carries the policy attribute "
+                            + "map and names neither behavioural attribute, so no further write can "
+                            + "undo either")
+                    .filteredOn(write -> !write.contains("FifoQueue")
+                            && !write.contains("ContentBasedDeduplication"))
+                    .isNotEmpty()
+                    .allSatisfy(write -> assertThat(write).contains("queue_policy_attributes"));
+            assertThat(writes)
+                    .as("three writes in total: the creation call, the repair, and the policy")
+                    .hasSize(3);
         }
 
         /**
@@ -491,8 +543,13 @@ final class LocalStackBootstrapContractTest {
         @DisplayName("nothing consumes from the queue or the topic: the bridge is publish-only")
         void nothingConsumesFromTheQueueOrTopic() throws IOException {
             // The legacy definition was output-only, so no receive path, no dead-letter queue, no
-            // access policy, no permission grant and no subscription is created. Each absence is a
-            // decision, so each is pinned.
+            // permission grant and no subscription is created. Each absence is a decision, so each is
+            // pinned.
+            //
+            // An access policy IS attached to both, which this claim used to deny. The two are not the
+            // same thing: a policy that grants nothing and denies plain transport says who may NOT
+            // reach the resource, and adds no consumer of any kind. The queue's is required by
+            // theQueueIsGivenItsAccessPosture and the topic's by theTopicIsGivenItsAccessPosture.
             final String body = executableBody();
 
             assertThat(body)
@@ -500,7 +557,14 @@ final class LocalStackBootstrapContractTest {
                     .doesNotContain("RedrivePolicy")
                     .doesNotContain("add-permission")
                     .doesNotContain("sns subscribe")
-                    .doesNotContain("Policy=");
+                    .as("the shorthand attribute form must not be used to carry a policy: the "
+                            + "document's own quoting ends the value and the tool reports a parse "
+                            + "error before any call is made, so the attribute map is passed as JSON. "
+                            + "Asserted against the flag rather than against the bare text, because a "
+                            + "public-access control legitimately ends in the same word")
+                    .doesNotContain("--attributes Policy=")
+                    .doesNotContain("--attributes \"Policy=")
+                    .doesNotContain("Policy=$");
             // The attribute write the script does perform is deliberately not listed above. It forces
             // content-based deduplication off and is a property of the publish path rather than a
             // consume path, so bundling it into this claim would have made a statement about who reads
@@ -554,6 +618,160 @@ final class LocalStackBootstrapContractTest {
                     .doesNotContain("s3api put-object")
                     .doesNotContain("s3 cp")
                     .doesNotContain("s3api put-bucket-lifecycle-configuration");
+        }
+    }
+
+    @Nested
+    @DisplayName("the access posture of every resource")
+    final class TheAccessPostureOfEveryResource {
+
+        @Test
+        @DisplayName("the denial every policy carries is composed once, so three resources cannot "
+                + "drift into three postures")
+        void theDenialIsComposedOnce() throws IOException {
+            // The document is the contract, and the contract is one document with the service name
+            // substituted. Two hand-written copies would be two postures the moment one was edited.
+            final String body = executableBody();
+
+            assertThat(body)
+                    .as("one builder, and it names the wildcard principal, the service's own action "
+                            + "wildcard and the boolean transport condition together - which is "
+                            + "exactly what the production rule requires of a denial")
+                    .containsOnlyOnce("transport_denial_statement() {")
+                    .contains("\"Effect\":\"Deny\"")
+                    .contains("\"Principal\":\"*\"")
+                    .contains("\"Action\":\"%s:*\"")
+                    .contains(AwsResourcePolicyRules.SECURE_TRANSPORT_CONDITION_KEY);
+            assertThat(body)
+                    .as("and it is used for each of the two resources whose document this script "
+                            + "composes in full, the third being carried in the escaped attribute map "
+                            + "the queue service requires")
+                    .contains("transport_denial_statement s3")
+                    .contains("transport_denial_statement sns")
+                    .contains("queue_policy_attributes() {");
+        }
+
+        @Test
+        @DisplayName("the bucket is given all four public-access controls, a policy and default "
+                + "encryption, each read back and compared")
+        void theBucketIsGivenItsAccessPosture() throws IOException {
+            final String body = executableBody();
+
+            assertThat(body)
+                    .as("all four controls, because two govern access-control lists and two govern "
+                            + "policies, so three of four leaves one route to the objects open")
+                    .contains("s3api put-public-access-block")
+                    .contains("BlockPublicAcls=true")
+                    .contains("IgnorePublicAcls=true")
+                    .contains("BlockPublicPolicy=true")
+                    .contains("RestrictPublicBuckets=true")
+                    .as("and each is read back one control per call and compared, not printed")
+                    .contains("s3api get-public-access-block")
+                    .contains("PublicAccessBlockConfiguration.${PUBLIC_ACCESS_CONTROL}")
+                    .contains("!= 'True'");
+            assertThat(body)
+                    .as("a policy is attached and read back")
+                    .contains("s3api put-bucket-policy")
+                    .contains("s3api get-bucket-policy")
+                    .contains("require_transport_denial \"bucket ${BUCKET}\"");
+            assertThat(body)
+                    .as("default encryption is configured and read back, because no writer in this "
+                            + "module names an algorithm per object")
+                    .contains("s3api put-bucket-encryption")
+                    .contains("s3api get-bucket-encryption")
+                    .contains("!= 'AES256'");
+        }
+
+        @Test
+        @DisplayName("the queue is given a policy keyed on the identifier the service reports for it")
+        void theQueueIsGivenItsAccessPosture() throws IOException {
+            final String body = executableBody();
+
+            assertThat(body)
+                    .as("the queue's own identifier is read from the service rather than composed, so "
+                            + "a document governing a different queue cannot be attached quietly")
+                    .contains("queue_attribute QueueArn")
+                    .contains("arn:aws:sqs:*:*:\"${QUEUE}\"")
+                    .as("and the policy is written through the attribute map and read back")
+                    .contains("queue_policy_attributes \"${QUEUE_ARN}\"")
+                    .contains("queue_attribute Policy")
+                    .contains("require_transport_denial \"queue ${QUEUE}\"");
+        }
+
+        @Test
+        @DisplayName("the topic keeps a grant confined to the owning account and gains the denial "
+                + "beside it, because setting a policy replaces the service's own")
+        void theTopicIsGivenItsAccessPosture() throws IOException {
+            final String body = executableBody();
+
+            assertThat(body)
+                    .as("the owning account is read from the service, so the confined grant names an "
+                            + "account something checked rather than one derived here")
+                    .contains("'Attributes.Owner'")
+                    .as("the grant is least privilege: the two actions this module performs, and no "
+                            + "more, confined by the condition the service's own default uses")
+                    .contains("\\\"sns:Publish\\\",\\\"sns:GetTopicAttributes\\\"")
+                    .contains("AWS:SourceOwner")
+                    .as("and the denial is attached beside it and read back")
+                    .contains("sns set-topic-attributes")
+                    .contains("--attribute-name Policy")
+                    .contains("'Attributes.Policy'")
+                    .contains("require_transport_denial \"topic ${TOPIC}\"");
+        }
+
+        @Test
+        @DisplayName("every posture call sits outside its resource's existence guard, so a resource "
+                + "that already existed unhardened is hardened on the next run")
+        void thePostureIsAppliedOutsideTheExistenceGuards() throws IOException {
+            // The same reasoning as the versioning call, and for the same reason: a bucket or queue
+            // created by anything other than this script - a developer, an earlier revision of this
+            // file, a restored snapshot - would keep whatever posture it had forever if the calls sat
+            // inside the else branch.
+            final List<String> lines = executableLines();
+            final int bucketGuardEnd = indexOfLineFrom(lines,
+                    indexOfLineContaining(lines, "s3api create-bucket"), "fi");
+            final int queueGuardEnd = indexOfLineFrom(lines,
+                    indexOfLineContaining(lines, "sqs create-queue"), "fi");
+
+            assertThat(bucketGuardEnd)
+                    .as("the bucket's guard must close before its posture is applied")
+                    .isLessThan(indexOfLineContaining(lines, "s3api put-public-access-block"))
+                    .isLessThan(indexOfLineContaining(lines, "s3api put-bucket-policy"))
+                    .isLessThan(indexOfLineContaining(lines, "s3api put-bucket-encryption"));
+            assertThat(queueGuardEnd)
+                    .as("the queue's guard must close before its policy is attached")
+                    .isLessThan(indexOfLineContaining(lines, "queue_policy_attributes \"${QUEUE_ARN}\""));
+        }
+
+        @Test
+        @DisplayName("every property the production trust check requires is provisioned here, so a "
+                + "local stack and a production account are held to one posture")
+        void everyPropertyTheProductionCheckRequiresIsProvisionedHere() throws IOException {
+            // The agreement that matters most in this file, and the one nothing else can make. The
+            // verifier refuses a production start-up whose resources lack these five properties; this
+            // hook is what a developer's stack is built from. If the two ever disagreed, every gate
+            // would pass locally and the deployment would refuse to start - discovered at the one
+            // moment nobody wants to discover it.
+            final String script = executableBody();
+            final String verifier =
+                    read("src/main/java/com/carddemo/config/AwsResourceTrustVerifier.java");
+            final Map<String, String> requiredThenProvisioned = new LinkedHashMap<>();
+            requiredThenProvisioned.put("getPublicAccessBlock", "s3api put-public-access-block");
+            requiredThenProvisioned.put("getBucketPolicy", "s3api put-bucket-policy");
+            requiredThenProvisioned.put("getBucketEncryption", "s3api put-bucket-encryption");
+            requiredThenProvisioned.put("QueueAttributeName.POLICY", "sqs set-queue-attributes");
+            requiredThenProvisioned.put("TOPIC_POLICY_ATTRIBUTE", "sns set-topic-attributes");
+
+            requiredThenProvisioned.forEach((required, provisioned) -> {
+                assertThat(verifier)
+                        .as("the production check must still read %s; if it stopped, this pairing is "
+                                + "the thing to correct rather than to delete", required)
+                        .contains(required);
+                assertThat(script)
+                        .as("the production check reads %s, so this hook must provision it with %s",
+                                required, provisioned)
+                        .contains(provisioned);
+            });
         }
     }
 

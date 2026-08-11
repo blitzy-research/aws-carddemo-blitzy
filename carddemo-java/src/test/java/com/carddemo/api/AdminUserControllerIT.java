@@ -24,6 +24,7 @@ import com.carddemo.api.dto.UserResponse;
 import com.carddemo.config.JwtProperties;
 import com.carddemo.config.JwtTokenProvider;
 import com.carddemo.config.SecurityConfig;
+import com.carddemo.config.SignOnThrottleConfig;
 import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.KeyAction;
@@ -2604,7 +2605,8 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     @Import({AdminUserController.class, UserContractAdapter.class, ScreenStateAdapter.class,
         AuthController.class, SignOnContractAdapter.class, ModuleErrorController.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, UserManagementService.class,
-        AuthenticationService.class, SignOnAttemptGovernor.class, SignOnStateService.class,
+        AuthenticationService.class, SignOnAttemptGovernor.class, SignOnThrottleConfig.class,
+        SignOnStateService.class,
         CredentialDigestService.class,
         MessageCatalogService.class, NavigationService.class, UserListPageTokenService.class,
         SensitiveFieldEncryptionService.class, OnlineTransactionBoundary.class, RecordWriter.class,

@@ -52,6 +52,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
+import com.carddemo.util.SanitisedObservation;
+
 /**
  * Unit specification for {@link BatchStagingService}.
  *
@@ -515,9 +517,11 @@ class BatchStagingServiceTest {
         }
 
         @Test
-        @DisplayName("records an outbound failure on the span that made the call, then rethrows it")
+        @DisplayName("records a sanitised classification of an outbound failure on the span that made the "
+                + "call, then rethrows the failure itself")
         void recordsAnOutboundFailureOnTheSpan() {
-            final RuntimeException refused = new IllegalStateException("the store refused the call");
+            final RuntimeException refused = new IllegalStateException(
+                    "the store refused the call for bucket=carddemo-staging key=/secret/path");
             when(objectStore.download(BUCKET, KEY)).thenThrow(refused);
 
             assertThatExceptionOfType(IllegalStateException.class)
@@ -525,10 +529,22 @@ class BatchStagingServiceTest {
                     .isSameAs(refused);
 
             assertThat(this.observed).hasSize(1);
-            assertThat(this.observed.get(0).getError())
+            final Throwable recorded = this.observed.get(0).getError();
+            assertThat(recorded)
                     .as("a boundary failure that set no error attribute would leave the trace claiming "
                             + "the call succeeded")
-                    .isSameAs(refused);
+                    .isNotNull()
+                    .as("but the object store's own failure must not be the recorded one: the exporter "
+                            + "publishes a recorded error's message and stack trace, and this message "
+                            + "names the bucket and the key")
+                    .isNotSameAs(refused)
+                    .isInstanceOf(SanitisedObservation.SanitisedBoundaryFailure.class);
+            assertThat(recorded.getMessage())
+                    .as("what the span carries is the authored classification and the bounded type chain")
+                    .doesNotContain("carddemo-staging")
+                    .doesNotContain("/secret/path")
+                    .contains(SanitisedObservation.FAILURE_CHAIN_LABEL + "IllegalStateException");
+            assertThat(recorded.getCause()).isNull();
         }
 
         @Test

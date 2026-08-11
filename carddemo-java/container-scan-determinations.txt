@@ -1,0 +1,57 @@
+# container-scan-determinations.txt - reviewed, scoped, expiring acceptances for the container gate.
+#
+# THIS FILE IS EMPTY OF DETERMINATIONS AND THAT IS THE DELIVERED STATE. Nothing is accepted. Every HIGH
+# and CRITICAL finding in every image this stack ships at run time - the application image, both
+# digest-pinned Dockerfile bases, and every digest-pinned third-party Compose service image - fails the
+# container gate of .github/workflows/carddemo-java-ci.yml. Adding a line here is how a finding stops
+# failing it, and adding a line is a reviewed edit to a tracked file rather than a command-line flag.
+#
+# THE GATE READS THIS FILE; THE SCANNER DOES NOT. The scanner runs with --exit-code 0 and no ignore
+# list, so every finding stays in the archived JSON whether or not a line here covers it. Handing this
+# file to the scanner would delete the covered findings from that report, which is the same defect
+# DL-185 removed when it deleted --ignore-unfixed: the durable record a reviewer signs the gate off from
+# would stop showing what had been accepted. See docs/decision-log.md DL-185 and DL-350.
+#
+# FORMAT - one determination per line, five fields, separated by a single vertical bar with NO
+# whitespace around it. The workflow refuses any other shape before it scans anything.
+#
+#   <image key>|<IDENTIFIER>|<expires YYYY-MM-DD>|<reviewer>|<why this repository cannot close it>
+#
+#   image key    The image the acceptance is scoped to, and it is scoped to exactly one. For a
+#                third-party or base image the key is its full digest-pinned reference, exactly as
+#                docker compose config --images or the Dockerfile FROM line spells it - for example
+#                postgres:16.14-bookworm@sha256:0000...  For the application image the key is the
+#                literal word  application , because that image's own identifier is a fresh content
+#                digest on every build and a determination pinned to one could never match twice.
+#   IDENTIFIER   One advisory identifier, exactly as the scanner reports it in VulnerabilityID -
+#                CVE-2025-0001, GHSA-xxxx-xxxx-xxxx, and so on. One line covers one identifier on one
+#                image; there is no wildcard, no severity-wide and no image-wide form, deliberately.
+#   expires      An ISO date. On and after this date the determination is EXPIRED and the build FAILS on
+#                it, before any image is scanned, whether or not the finding is still present. An
+#                acceptance is a decision with a date on it, and once the date passes the decision has
+#                lapsed. Set it to the next review point rather than to the far future: a five-year
+#                expiry is an unreviewed acceptance wearing a date.
+#   reviewer     Who re-read the finding and accepted it. A name or a team, not a tool.
+#   reason       Why this repository cannot close it and what would. The two honest closures are moving
+#                the digest pin to a rebuilt upstream image that no longer carries the finding, and
+#                fixing it in this repository's own layers. If either is available, do that instead.
+#
+# TWO WAYS A DETERMINATION FAILS THE BUILD RATHER THAN SILENCING IT.
+#
+#   EXPIRED  The date has passed. The build fails naming the key, the identifier, the date and the
+#            reviewer. It does not quietly resume enforcement and report an unexplained new failure
+#            weeks later, which is what an ignore file with an expiry does.
+#   UNUSED   The scan produced no finding this determination matches. Either the finding is gone, or the
+#            digest pin moved and took the old key with it, or the key or identifier was mistyped. In
+#            every case the line is no longer protecting anything and its presence misrepresents the
+#            gate, so it must be removed. This is the same rule failBuildOnUnusedSuppressionRule
+#            already holds over the dependency-vulnerability gate, for the same reason.
+#
+# REVIEW PROTOCOL. A determination is added by the person who has read the advisory, established that
+# neither closure above is available, and recorded the date by which the position must be re-argued.
+# When the expiry arrives the choice is to close the finding or to re-review and re-date the line with a
+# fresh reason - never to extend the date without re-reading, which is the failure mode the expiry
+# exists to prevent. Removing a line needs no ceremony: the gate simply starts failing on the finding
+# again, which is the correct default.
+#
+# A line below this point is a determination. There are none.

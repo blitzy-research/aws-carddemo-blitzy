@@ -104,6 +104,7 @@ import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.config.BatchConfig.ConditionCodeGate;
 import com.carddemo.service.JobCompletionEvent;
 import com.carddemo.service.JobCompletionEventPublisher;
+import com.carddemo.util.SanitisedObservation;
 import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1511,7 +1512,7 @@ public final class BatchConfigTest {
         }
 
         @Test
-        @DisplayName("a publication that failed records the failure on its own observation")
+        @DisplayName("a publication that failed records a sanitised classification on its own observation")
         void aFailedPublicationRecordsTheFailureOnItsObservation() throws IOException {
             final StagedGenerationStore store = mock();
             listener = listenerWith(store, null);
@@ -1529,9 +1530,20 @@ public final class BatchConfigTest {
 
             assertThat(this.observedPublications)
                     .singleElement()
-                    .satisfies(context -> assertThat(context.getError())
-                            .as("a trace has to show the boundary that failed, not only a duration")
-                            .isInstanceOf(IllegalStateException.class));
+                    .satisfies(context -> {
+                        assertThat(context.getError())
+                                .as("a trace has to show the boundary that failed, not only a duration")
+                                .isNotNull()
+                                .as("and it shows the authored classification: the object store's own "
+                                        + "failure names the bucket and the key, and a recorded error is "
+                                        + "exported message and stack trace included")
+                                .isInstanceOf(SanitisedObservation.SanitisedBoundaryFailure.class);
+                        assertThat(context.getError().getMessage())
+                                .doesNotContain("object store refused publication")
+                                .contains(SanitisedObservation.FAILURE_CHAIN_LABEL
+                                        + "IllegalStateException");
+                        assertThat(context.getError().getCause()).isNull();
+                    });
         }
 
         @Test

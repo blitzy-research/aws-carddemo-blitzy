@@ -50,9 +50,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <h2>Why this class exists</h2>
  *
- * <p>The four delivered migrations ship from <strong>two sibling locations whose shared parent holds
- * no script at all</strong>. {@value #SCHEMA_LOCATION} carries {@code V1__create_schema.sql} and
- * {@code V2__create_indexes.sql}; {@value #SEED_LOCATION} carries {@code V3__seed_reference_data.sql}
+ * <p>The six delivered migrations ship from <strong>two sibling locations whose shared parent holds
+ * no script at all</strong>. {@value #SCHEMA_LOCATION} carries {@code V1__create_schema.sql},
+ * {@code V2__create_indexes.sql}, {@code V2_1__create_sign_on_attempt_ledger.sql} and
+ * {@code V2_2__add_protected_value_invariants.sql};
+ * {@value #SEED_LOCATION} carries {@code V3__seed_reference_data.sql}
  * and {@code V4__seed_user_security.sql}; and {@value #SHARED_PARENT_LOCATION} carries neither, which
  * is what makes the arrangement work. The file names are unchanged, because each is a load-bearing
  * Flyway log token that a bring-up check reads out of the history table, and both directories remain
@@ -90,8 +92,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * together.</strong> {@code spring.flyway.target} is pinned at {@value #PRODUCTION_TARGET}, which is the
  * highest version {@value #SCHEMA_LOCATION} delivers, and {@link #resolveTarget(Collection, String)}
  * refuses any other production value. The objection once raised against a pin - that a number freezes the
- * schema, so the day a {@code V5} schema script shipped a production migration would stop below it and
- * still report success - is real, and it is answered by making the pin <em>checked</em> rather than by
+ * schema, so the day a schema script numbered above the pin shipped a production migration would stop
+ * below it and still report success - is real, and it is answered by making the pin <em>checked</em> rather than by
  * removing it: {@code FlywayConfigTest} asserts {@value #PRODUCTION_TARGET} against the versions the
  * schema location actually carries, so a schema script added above the pin fails the build instead of
  * being silently skipped at run time. That is the property the previous arrangement lacked, and it is
@@ -180,8 +182,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * production is active it <strong>refuses</strong> any value other than {@value #PRODUCTION_TARGET} and
  * re-applies that pin: a <em>higher</em> value, {@value #ALL_RESOLVED_VERSIONS_TARGET} among them, would
  * apply whatever a resolved location happened to carry above the delivered schema, and a <em>lower</em>
- * one stops before the indexes and constraints are created and leaves an under-migrated schema behind a
- * migration that reported success. The pin cannot silently under-migrate a future release either, because
+ * one stops before the indexes, the constraints or the sign-on attempt ledger are created and leaves an
+ * under-migrated schema behind a migration that reported success. The pin cannot silently under-migrate a future release either, because
  * it is asserted against the versions {@value #SCHEMA_LOCATION} delivers rather than merely written down.
  * When local or test is active it <strong>lifts</strong> a ceiling that would stop short of version
  * {@value #FIRST_SEED_VERSION}, because a fixture-bearing profile that stopped at the schema would
@@ -294,7 +296,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * because it rests on two members rather than one:
  * {@link #resolveLocations(Collection, Collection)} requires the packaged schema location, so the three
  * indexes are resolvable, and {@link #resolveTarget(Collection, String)} pins the ceiling at
- * {@value #PRODUCTION_TARGET} - the version {@code V2__create_indexes.sql} occupies - so they are also
+ * {@value #PRODUCTION_TARGET} - at or above the version {@code V2__create_indexes.sql} occupies - so
+ * they are also
  * <em>reached</em>. A lower ceiling would stop the migration before them and still report success, which
  * is why every other value is refused rather than merely discouraged. The pin is held to the versions
  * the location actually delivers by {@code FlywayConfigTest}, so raising the schema and forgetting the
@@ -392,7 +395,31 @@ public final class FlywayConfig {
 
     /**
      * The version a production migration stops at: the highest version {@value #SCHEMA_LOCATION}
-     * delivers, which is the one {@code V2__create_indexes.sql} occupies.
+     * delivers, which is the one {@code V2_2__add_protected_value_invariants.sql} occupies.
+     *
+     * <p><strong>The pin still excludes the seeds by arithmetic, and keeping that true is why the ledger
+     * script is numbered 2.1 rather than 5, and why the protected-value invariants are 2.2.</strong> Every
+     * schema version sorts below every seed version: 1, 2, 2.1 and 2.2 are structure, 3 and 4 are fixtures.
+     * So a pin of 2.2 declines a seed-numbered script wherever it came from, and a future seed numbered 5
+     * or 6 is declined by number as well as by directory.
+     *
+     * <p>An earlier revision numbered the ledger script 5, above the seeds, on the reasoning that the seed
+     * versions were already applied and a dotted version below them would be out-of-order against any
+     * database already holding 3 and 4. That reasoning was measured and found wrong on three counts, each
+     * worse than the one it was avoiding. It broke this arithmetic, leaving the pin at 5 with the seeds
+     * beneath it. It broke {@link ProductionSeedRejectionCallback}, which reads seed contamination off the
+     * history as a successful row at or above version {@value #FIRST_SEED_VERSION} - a test a schema script
+     * numbered 5 satisfies, so a correctly migrated production database refused to start, reporting seed
+     * data it did not hold. And it broke the arrangement this module actually ships: a database migrated
+     * production-shaped and later resolving the seed location too would find 3 and 4 pending BELOW an
+     * applied 5, which the tool refuses as out-of-order. See {@code docs/decision-log.md} DL-343.
+     *
+     * <p>The seed separation is therefore carried by both controls again, and by two more besides:
+     * {@link #resolveLocations(Collection, List)} refuses under production any resolved location but
+     * {@value #SCHEMA_LOCATION} by equality; {@code FlywayConfigTest} asserts which directory each
+     * delivered script sits in, so a seed placed in the schema location fails the build; and
+     * {@link ProductionSeedRejectionCallback} refuses a production start-up against a database that
+     * actually holds seeded content, which is checked against the data rather than against a filename.
      *
      * <p><strong>Why a pin is held here at all, when the location list already separates the seeds.</strong>
      * The two controls constrain different things and neither substitutes for the other. The location list
@@ -402,8 +429,9 @@ public final class FlywayConfig {
      * seed-numbered script would still not have it applied.
      *
      * <p><strong>Why holding a pin is safe here, when the objection to one was sound.</strong> A number
-     * written down and never checked does freeze the schema: the day a {@code V5} schema script shipped,
-     * a production migration would stop below it, apply nothing, and report success. That failure mode is
+     * written down and never checked does freeze the schema: the day a further schema script shipped above
+     * it, a production migration would stop below that script, apply nothing, and report success - which is
+     * exactly what would have happened to the ledger script had this constant stayed at 2. That failure mode is
      * closed by checking the number rather than by deleting it - {@code FlywayConfigTest} asserts this
      * constant against the versions {@value #SCHEMA_LOCATION} actually carries, so a schema script added
      * above the pin fails the build at the point it is added. Raising the schema and raising this
@@ -412,15 +440,19 @@ public final class FlywayConfig {
      * <p>Held as a constant so the value this class requires and the value the shared baseline and the
      * production overlay declare cannot drift apart.
      */
-    public static final String PRODUCTION_TARGET = "2";
+    public static final String PRODUCTION_TARGET = "2.2";
 
     /**
-     * The first version a seed script occupies, which is one above {@value #PRODUCTION_TARGET}.
+     * The first version a seed script occupies.
      *
-     * <p>It is the figure a seeding profile is measured against: an inherited ceiling below this version
-     * would migrate the schema and none of the fixtures the profile exists to load. It is also the
-     * arithmetic reason production's pin is where it is - the last schema version and the first seed
-     * version are adjacent, so the pin lands exactly on the boundary between them.
+     * <p>It is the figure a seeding profile is measured against, and that is now its only job: an inherited
+     * ceiling below this version would migrate the schema and none of the fixtures the profile exists to
+     * load, so {@link #resolveTarget(Collection, String)} lifts such a ceiling for local and test.
+     *
+     * <p>It is also the arithmetic boundary between the two locations, and it remains one: every version
+     * the schema location delivers sorts below this figure and every version the seed location delivers is
+     * at or above it. {@link #PRODUCTION_TARGET} records what depends on that and what happened when a
+     * schema script was numbered above it instead.
      */
     private static final String FIRST_SEED_VERSION = "3";
 
@@ -564,7 +596,7 @@ public final class FlywayConfig {
      * Publishes this module's own record of which versions a start-up applied and which it reached.
      *
      * <p>Unconditional, unlike the callback above, because the evidence it writes is read in every profile:
-     * local validation reads it to confirm that all four delivered migrations were applied and that the
+     * local validation reads it to confirm that all six delivered migrations were applied and that the
      * schema reached its highest delivered version, and a production start-up wants the same two facts for
      * the same reason. Nothing in it is profile-specific and nothing in it inspects data.
      *
@@ -801,7 +833,7 @@ public final class FlywayConfig {
      *       <strong>completed</strong> if the bound list does not already resolve them, keeping the
      *       declared order and appending rather than replacing, because a profile that resolved no
      *       location migrates nothing at all. {@value #SHARED_PARENT_LOCATION} is
-     *       <strong>refused</strong> here too: it would apply the same four scripts and record them
+     *       <strong>refused</strong> here too: it would apply the same six scripts and record them
      *       under different names, and the compose bring-up check reads those names out of the history
      *       table.</li>
      *   <li>Neither active - the bound list is returned unchanged, except that the shared parent is
@@ -873,7 +905,7 @@ public final class FlywayConfig {
      *
      * <p>Applied before the profile is examined because the reason is not a profile's. Flyway scans a
      * location recursively, so the parent reaches both children: under production it would apply the
-     * seeds, and under a seeding profile it would apply the same four scripts while recording each one
+     * seeds, and under a seeding profile it would apply the same six scripts while recording each one
      * under a name relative to the parent - {@code schema/V1__create_schema.sql} instead of
      * {@code V1__create_schema.sql}. The compose bring-up check reads those names out of the history
      * table, so the second case is a broken contract rather than a harmless equivalence.
@@ -910,8 +942,8 @@ public final class FlywayConfig {
      *       look-alike location ever presented one. A <em>lower</em> ceiling is refused because it stops
      *       before the indexes and constraints are created and leaves an under-migrated schema behind a
      *       migration that reported success. The known objection to pinning at all - that a number
-     *       freezes the schema, so a later {@code V5} schema script would never be applied while the
-     *       migration still reported success - is answered by checking the pin rather than by removing
+     *       freezes the schema, so a later schema script numbered above it would never be applied while
+     *       the migration still reported success - is answered by checking the pin rather than by removing
      *       it: {@value #PRODUCTION_TARGET} is asserted against the versions {@value #SCHEMA_LOCATION}
      *       delivers, so a schema script added above the pin fails the build at the point it is added
      *       rather than under-migrating a deployment months later.</li>

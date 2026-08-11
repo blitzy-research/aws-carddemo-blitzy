@@ -17,6 +17,9 @@
 package com.carddemo.config;
 
 import com.carddemo.util.AwsResourceNamingRules;
+import com.carddemo.util.AwsResourcePolicyRules;
+import com.carddemo.util.AwsResourcePolicyRules.PolicyPosture;
+import com.carddemo.util.FailureDiagnostics;
 import io.awspring.cloud.sns.core.SnsOperations;
 import io.awspring.cloud.sns.core.TopicArnResolver;
 import io.awspring.cloud.sns.core.TopicsListingTopicArnResolver;
@@ -26,6 +29,7 @@ import io.awspring.cloud.sqs.listener.QueueNotFoundStrategy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -41,13 +45,21 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketPolicyRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
+import software.amazon.awssdk.services.s3.model.GetPublicAccessBlockRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
+import software.amazon.awssdk.services.s3.model.PublicAccessBlockConfiguration;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.ServerSideEncryption;
+import software.amazon.awssdk.services.s3.model.ServerSideEncryptionRule;
 import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sns.model.GetTopicAttributesRequest;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 
@@ -85,7 +97,7 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * <h2>What is verified, and how each property is established</h2>
  *
  * <table class="striped">
- *   <caption>The six properties this class establishes and the call that establishes each</caption>
+ *   <caption>The eleven properties this class establishes and the call that establishes each</caption>
  *   <tr><th>Property</th><th>Established by</th><th>Why it is load-bearing</th></tr>
  *   <tr>
  *     <td>the staging bucket is owned by the expected account</td>
@@ -98,6 +110,28 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  *     <td>{@code GetBucketVersioning}, status must be enabled</td>
  *     <td>versioning is what carries the retained-generation semantics of the legacy output datasets;
  *         without it the generation depths this module enforces retain nothing</td>
+ *   </tr>
+ *   <tr>
+ *     <td>the bucket blocks every form of public access</td>
+ *     <td>{@code GetPublicAccessBlock}, all four controls set</td>
+ *     <td>the four controls are what stop a later access-control list or bucket policy from opening the
+ *         bucket at all; without them a single mistaken grant makes statements, reports and rejected
+ *         records - carrying account identifiers, card numbers and balances - world-readable, and
+ *         nothing in this deployment would report differently</td>
+ *   </tr>
+ *   <tr>
+ *     <td>the bucket's own policy opens it to nobody and refuses plain transport</td>
+ *     <td>{@code GetBucketPolicy}, judged by {@link AwsResourcePolicyRules}</td>
+ *     <td>the public-access controls bound what a policy may say; the policy is what actually says it,
+ *         and it is also the only place a deployment can require that its data never crosses the
+ *         network in clear text</td>
+ *   </tr>
+ *   <tr>
+ *     <td>the bucket encrypts what is written to it by default</td>
+ *     <td>{@code GetBucketEncryption}, an algorithm must be configured</td>
+ *     <td>every object this module writes carries account identifiers, card numbers or monetary
+ *         balances, and none of the writers names an algorithm per object - so the bucket's default is
+ *         the whole of the at-rest protection</td>
  *   </tr>
  *   <tr>
  *     <td>the credential can write and remove an object</td>
@@ -118,11 +152,39 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  *         which are byte-identical, shortening the job stream to something a reader would accept</td>
  *   </tr>
  *   <tr>
+ *     <td>the job queue's own policy opens it to nobody and refuses plain transport</td>
+ *     <td>the queue's {@code Policy} attribute, judged by {@link AwsResourcePolicyRules}</td>
+ *     <td>a queue open to every principal accepts eighty-column job-control cards from anyone who can
+ *         name it, and a scheduler cannot tell those from this deployment's own</td>
+ *   </tr>
+ *   <tr>
  *     <td>the notification topic exists and is owned by the expected account</td>
  *     <td>listing the topics, then reading the resolved topic's attributes</td>
  *     <td>a topic in another account receives this deployment's job-completion notices</td>
  *   </tr>
+ *   <tr>
+ *     <td>the notification topic's own policy opens it to nobody and refuses plain transport</td>
+ *     <td>the topic's {@code Policy} attribute, judged by {@link AwsResourcePolicyRules}</td>
+ *     <td>a topic open to every principal can be published to by anyone, so a completion notice for a
+ *         job that never ran is indistinguishable from one for a job that did</td>
+ *   </tr>
  * </table>
+ *
+ * <h2>Why the resource policies are judged here and provisioned elsewhere</h2>
+ *
+ * <p>Ownership, versioning, queue shape and write capability were verified from the beginning; the five
+ * policy properties above were not, and their absence was the gap. Verification and provisioning are
+ * deliberately separate: the posture is created by whatever provisions the account - the local
+ * validation stack's bootstrap hook creates it for the emulator, and a production deployment's
+ * infrastructure definition creates it there - and it is <em>required</em> here, at the one point every
+ * deployment passes through. A check that also provisioned would turn a misconfigured account into a
+ * silently corrected one, which is the same failure the queue-resolution strategy below refuses.
+ *
+ * <p>The two rules each policy is held to are stated once, in {@link AwsResourcePolicyRules}, and are
+ * applied identically to the bucket, the queue and the topic. Nothing about a document reaches this
+ * class: it receives a verdict, composes a refusal from it, and never sees a principal, an action or a
+ * resource identifier that a refusal could then publish. Recorded as {@code docs/decision-log.md}
+ * DL-346.
  *
  * <h2>Why an unproven property stops the start rather than reporting DOWN</h2>
  *
@@ -170,6 +232,16 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * proven and, explicitly, what was not, so that a reader of the evidence is not left to assume the
  * stronger claim.
  *
+ * <p>The five policy properties are <strong>structural</strong> claims about each document, not the
+ * outcome of evaluating it. No access is simulated and no effective permission is computed: this class
+ * establishes that no statement opens the resource to every principal unconditionally and that one
+ * statement closes it to plain transport, which are the two properties a document either has or lacks.
+ * An identity policy attached elsewhere, a permission boundary, a service control policy or an
+ * organisation-level rule can each narrow or widen what a caller may actually do, and none of them is
+ * visible from a resource's own document. Those belong to whatever provisions the account; what belongs
+ * here is that the deployment refuses to run against a resource whose own document is open or permissive,
+ * and that is what is claimed.
+ *
  * <p>Stateless after construction and immutable: every field is final, the verification runs once, and
  * nothing is cached for a later caller.
  *
@@ -199,10 +271,25 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
     static final String WRITE_CAPABILITY_PROBE_KEY =
             "_carddemo/trust-verification/write-capability-probe";
 
-    /** Service segment a job-queue resource identifier must carry. */
+    /**
+     * Action namespace the staging bucket's policy must deny in full over plain transport.
+     *
+     * <p>No bucket identifier carries a service segment - an object-store resource identifier omits both
+     * the region and the account - so unlike the two below this name is used only as the namespace the
+     * transport denial has to cover.</p>
+     */
+    static final String OBJECT_STORE_SERVICE = "s3";
+
+    /**
+     * Service segment a job-queue resource identifier must carry, and the action namespace its policy
+     * must deny in full over plain transport.
+     */
     static final String QUEUE_SERVICE = "sqs";
 
-    /** Service segment a notification-topic resource identifier must carry. */
+    /**
+     * Service segment a notification-topic resource identifier must carry, and the action namespace its
+     * policy must deny in full over plain transport.
+     */
     static final String TOPIC_SERVICE = "sns";
 
     /**
@@ -223,6 +310,14 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
 
     /** Attribute value the queue must report for content-based deduplication. */
     private static final String ATTRIBUTE_FALSE = "false";
+
+    /**
+     * Name of the topic attribute carrying the topic's own policy.
+     *
+     * <p>A literal because the notification service reports its attributes as a plain map of names to
+     * values, unlike the queue service, which enumerates them.</p>
+     */
+    private static final String TOPIC_POLICY_ATTRIBUTE = "Policy";
 
     /** Object store the bucket properties are established through. */
     private final S3Client objectStore;
@@ -272,7 +367,7 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
     /**
      * Runs the verification as this bean is initialised, so it precedes anything that would publish.
      *
-     * @throws IllegalStateException if any of the six properties cannot be established
+     * @throws IllegalStateException if any of the eleven properties cannot be established
      */
     @Override
     public void afterPropertiesSet() {
@@ -280,7 +375,7 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
     }
 
     /**
-     * Establishes all six properties and publishes the capability evidence.
+     * Establishes all eleven properties and publishes the capability evidence.
      *
      * <p>Every property is established before the evidence is logged, so an evidence record exists only
      * for a deployment in which all of them held. A refusal names the resource and the property, and
@@ -297,8 +392,11 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
                         + " Proven capabilities: {}."
                         + " NOT proven, and deliberately so: sqs:SendMessage and sns:Publish, because"
                         + " proving them would emit an eighty-column job-control card a reader would act"
-                        + " on and a completion notice for a job that did not run. See"
-                        + " docs/gate-evidence.md and docs/decision-log.md DL-302",
+                        + " on and a completion notice for a job that did not run; and no effective"
+                        + " permission is computed anywhere - the three policy claims above are"
+                        + " structural properties of each attached document, not the outcome of"
+                        + " evaluating it against an identity. See docs/gate-evidence.md and"
+                        + " docs/decision-log.md DL-302 and DL-346",
                 proven);
     }
 
@@ -342,7 +440,146 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
         }
         proven.add("s3:GetBucketVersioning (enabled)");
 
+        // The three posture checks precede the write probe deliberately. The probe writes an object,
+        // and a bucket that is world-readable or that accepts plain transport is a bucket this
+        // deployment must not write to at all - not even a zero-length object under a reserved key.
+        verifyPublicAccessPosture(bucket, proven);
+        verifyBucketPolicy(bucket, proven);
+        verifyDefaultEncryption(bucket, proven);
+
         verifyWriteCapability(bucket, proven);
+    }
+
+    /**
+     * Establishes that all four of the bucket's public-access controls are set.
+     *
+     * <p>All four are required rather than any subset, because each closes a different door: two govern
+     * access-control lists, on the bucket and on the objects within it, and two govern policies, refusing
+     * a public one and disregarding one already attached. Three of four leaves the fourth door open, and
+     * which door is open is not something a later reader of this deployment could tell.</p>
+     *
+     * @param bucket the staging bucket
+     * @param proven collects the capability names that were exercised
+     */
+    private void verifyPublicAccessPosture(final String bucket, final List<String> proven) {
+        final PublicAccessBlockConfiguration configuration;
+        try {
+            configuration = this.objectStore.getPublicAccessBlock(GetPublicAccessBlockRequest.builder()
+                            .bucket(bucket)
+                            .expectedBucketOwner(this.expectedAccountId)
+                            .build())
+                    .publicAccessBlockConfiguration();
+        } catch (final RuntimeException refused) {
+            throw refusal("the batch staging bucket's public-access controls could not be read. A"
+                    + " bucket with no public-access-block configuration at all answers this call with a"
+                    + " failure rather than with four unset values, so an absent configuration is"
+                    + " reported here and is not distinguished from an unreadable one: neither"
+                    + " establishes that public access is blocked", refused);
+        }
+        if (configuration == null
+                || !Boolean.TRUE.equals(configuration.blockPublicAcls())
+                || !Boolean.TRUE.equals(configuration.ignorePublicAcls())
+                || !Boolean.TRUE.equals(configuration.blockPublicPolicy())
+                || !Boolean.TRUE.equals(configuration.restrictPublicBuckets())) {
+            throw refusal("the batch staging bucket does not block every form of public access. All four"
+                    + " controls - BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy and"
+                    + " RestrictPublicBuckets - are required, because each closes a different route to"
+                    + " the statements, reports and rejected records this module writes there, and three"
+                    + " of four leaves one route open", null);
+        }
+        proven.add("s3:GetPublicAccessBlock (all four controls set)");
+    }
+
+    /**
+     * Establishes that the bucket's own policy opens it to nobody and refuses plain transport.
+     *
+     * <p>An absent policy is reported through the same refusal as an unreadable one, because the object
+     * store answers a bucket with no policy with a failure rather than with an empty document, and
+     * neither state establishes anything about who may reach the bucket.</p>
+     *
+     * @param bucket the staging bucket
+     * @param proven collects the capability names that were exercised
+     */
+    private void verifyBucketPolicy(final String bucket, final List<String> proven) {
+        final String document;
+        try {
+            document = this.objectStore.getBucketPolicy(GetBucketPolicyRequest.builder()
+                            .bucket(bucket)
+                            .expectedBucketOwner(this.expectedAccountId)
+                            .build())
+                    .policy();
+        } catch (final RuntimeException refused) {
+            throw refusal("the batch staging bucket's own policy could not be read, and a bucket with"
+                    + " no policy attached answers this call with a failure rather than with an empty"
+                    + " document - so neither an absent policy nor an unreadable one is distinguished"
+                    + " here, because neither establishes who may reach the objects this module writes",
+                    refused);
+        }
+        requirePolicyPosture(AwsResourcePolicyRules.postureOf(document, OBJECT_STORE_SERVICE),
+                "batch staging bucket",
+                "Every object written there carries account identifiers, card numbers or monetary"
+                        + " balances, and the readiness probe reports the bucket UP whether or not"
+                        + " anybody else can read it.");
+        proven.add("s3:GetBucketPolicy (no open grant, plain transport denied)");
+    }
+
+    /**
+     * Establishes that the bucket encrypts by default what this module writes to it.
+     *
+     * <p>The algorithm is not narrowed to one choice. A managed key and a customer-managed key are both
+     * accepted, because the property that matters is that an object written without naming an algorithm -
+     * which is how every writer in this module writes - is encrypted anyway.</p>
+     *
+     * @param bucket the staging bucket
+     * @param proven collects the capability names that were exercised
+     */
+    private void verifyDefaultEncryption(final String bucket, final List<String> proven) {
+        final GetBucketEncryptionResponse encryption;
+        try {
+            encryption = this.objectStore.getBucketEncryption(GetBucketEncryptionRequest.builder()
+                    .bucket(bucket)
+                    .expectedBucketOwner(this.expectedAccountId)
+                    .build());
+        } catch (final RuntimeException refused) {
+            throw refusal("the batch staging bucket's default encryption could not be read, and a bucket"
+                    + " with none configured answers this call with a failure rather than with an empty"
+                    + " configuration - so neither is distinguished here, because neither establishes"
+                    + " that an object written without naming an algorithm is encrypted", refused);
+        }
+        if (!carriesDefaultEncryption(encryption)) {
+            throw refusal("the batch staging bucket configures no default server-side encryption"
+                    + " algorithm. No writer in this module names an algorithm per object, so the"
+                    + " bucket's default is the whole of the at-rest protection for statements, reports"
+                    + " and rejected records", null);
+        }
+        proven.add("s3:GetBucketEncryption (a default algorithm is configured)");
+    }
+
+    /**
+     * Decides whether an encryption configuration names an algorithm this deployment recognises.
+     *
+     * @param  encryption the configuration as the object store reported it
+     * @return {@code true} when at least one rule applies a recognised algorithm by default
+     */
+    private static boolean carriesDefaultEncryption(final GetBucketEncryptionResponse encryption) {
+        if (encryption.serverSideEncryptionConfiguration() == null) {
+            return false;
+        }
+        for (final ServerSideEncryptionRule rule
+                : encryption.serverSideEncryptionConfiguration().rules()) {
+            if (rule.applyServerSideEncryptionByDefault() == null) {
+                continue;
+            }
+            final ServerSideEncryption algorithm =
+                    rule.applyServerSideEncryptionByDefault().sseAlgorithm();
+            // An algorithm this software development kit does not recognise is treated as no algorithm:
+            // the property being established is that the default is one this deployment can reason
+            // about, and a name it cannot resolve is not one.
+            if (algorithm != null && algorithm != ServerSideEncryption.UNKNOWN_TO_SDK_VERSION) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -484,6 +721,18 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
                         + " shorten the job stream to something a reader would accept and a scheduler"
                         + " would misread");
         proven.add("the queue is first-in-first-out with content-based deduplication switched off");
+
+        // The queue's own policy arrives with the same attribute read as the two above, so establishing
+        // it costs no further call. A queue reports no Policy attribute at all when none is attached,
+        // which the rules below read as absent rather than as permissive.
+        requirePolicyPosture(AwsResourcePolicyRules.postureOf(
+                        attributes.getQueueAttribute(QueueAttributeName.POLICY), QUEUE_SERVICE),
+                "job queue",
+                "The queue is the single online-to-batch bridge, it receives the eighty-column"
+                        + " job-control cards of every submission, and the publisher is defined to"
+                        + " tolerate a refused write - so neither a card this deployment did not send nor"
+                        + " one it failed to send would surface anywhere.");
+        proven.add("the queue's own policy carries no open grant and denies plain transport");
     }
 
     /**
@@ -497,7 +746,8 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
                 .sqsAsyncClient(this.queueClient)
                 .queueAttributeNames(List.of(QueueAttributeName.QUEUE_ARN,
                         QueueAttributeName.FIFO_QUEUE,
-                        QueueAttributeName.CONTENT_BASED_DEDUPLICATION))
+                        QueueAttributeName.CONTENT_BASED_DEDUPLICATION,
+                        QueueAttributeName.POLICY))
                 .queueNotFoundStrategy(QueueNotFoundStrategy.FAIL)
                 .build()
                 .resolveQueueAttributes();
@@ -581,6 +831,79 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
                     + " itself", null);
         }
         proven.add("sns:ListTopics and sns:GetTopicAttributes (owner matched)");
+
+        verifyTopicPolicy(topicArn, proven);
+    }
+
+    /**
+     * Establishes that the topic's own policy opens it to nobody and refuses plain transport.
+     *
+     * <p>Read through the client rather than through the facade, because the facade answers whether a
+     * topic exists and does not surrender its attributes. The notification service attaches a default
+     * policy to every topic it creates, and that default is <em>not</em> an open grant even though it
+     * names every principal: its statements are confined by a condition on the owning account, which is
+     * exactly the shape {@link AwsResourcePolicyRules} accepts. What it does not carry is a transport
+     * denial, so a topic left with only its default policy is refused here - and that is the finding this
+     * check exists to make.</p>
+     *
+     * @param topicArn the resolved topic identifier
+     * @param proven   collects the capability names that were exercised
+     */
+    private void verifyTopicPolicy(final String topicArn, final List<String> proven) {
+        final Map<String, String> attributes;
+        try {
+            attributes = this.notificationClient.getTopicAttributes(GetTopicAttributesRequest.builder()
+                            .topicArn(topicArn)
+                            .build())
+                    .attributes();
+        } catch (final RuntimeException refused) {
+            throw refusal("the notification topic's attributes could not be read, so its own policy"
+                    + " cannot be established", refused);
+        }
+        requirePolicyPosture(AwsResourcePolicyRules.postureOf(
+                        attributes == null ? null : attributes.get(TOPIC_POLICY_ATTRIBUTE),
+                        TOPIC_SERVICE),
+                "notification topic",
+                "A notice announces a batch job that has already finished, so the delivery path is"
+                        + " deliberately best effort - which is precisely why nobody would notice a"
+                        + " notice this deployment did not publish.");
+        proven.add("the topic's own policy carries no open grant and denies plain transport");
+    }
+
+    /**
+     * Turns one policy verdict into either nothing or the refusal that names the property it failed.
+     *
+     * <p>Written as a switch expression rather than as a chain of comparisons so that the compiler
+     * enforces exhaustiveness: were a further verdict ever added to {@link PolicyPosture}, this method
+     * would fail to compile rather than silently accept the state it names. That is the fail-closed
+     * direction, and it is the direction that matters for a check whose job is to refuse.</p>
+     *
+     * @param  posture     what the document was found to be
+     * @param  resource    the resource the document belongs to, named as a refusal would name it
+     * @param  consequence what an open or permissive policy on that resource would mean, carried into
+     *                     the refusal so a deployer reads the reason rather than the rule
+     * @throws IllegalStateException if the posture is anything other than sound
+     */
+    private static void requirePolicyPosture(final PolicyPosture posture, final String resource,
+            final String consequence) {
+        final String unmetProperty = switch (posture) {
+            case SOUND -> null;
+            case ABSENT -> "the " + resource + " carries no resource policy of its own, so nothing"
+                    + " attached to the resource constrains who may reach it";
+            case UNREADABLE -> "the " + resource + "'s resource policy could not be read as a policy"
+                    + " document, so no property of it can be established. The document is deliberately"
+                    + " not reported here, because it names accounts, roles and resources";
+            case PUBLICLY_GRANTED -> "the " + resource + "'s resource policy grants every principal,"
+                    + " with no condition confining the grant";
+            case INSECURE_TRANSPORT_PERMITTED -> "the " + resource + "'s resource policy does not deny"
+                    + " every principal every action over an unencrypted transport. A statement denying"
+                    + " every action of the service when "
+                    + AwsResourcePolicyRules.SECURE_TRANSPORT_CONDITION_KEY + " is false is what closes"
+                    + " it";
+        };
+        if (unmetProperty != null) {
+            throw refusal(unmetProperty + ". " + consequence, null);
+        }
     }
 
     /**
@@ -589,20 +912,44 @@ public final class AwsResourceTrustVerifier implements InitializingBean {
      * <p>The message states the property that could not be established and why it matters. It never
      * carries the account, the resource identifier, the bucket owner reported by the service or any part
      * of a credential - a deployer already has the values they configured, and a log record naming a
-     * resource in another account would put that resource's identity into this deployment's log. The
-     * cause is chained, so a diagnosing reader has the provider's own exception without this message
-     * repeating its text.</p>
+     * resource in another account would put that resource's identity into this deployment's log.</p>
+     *
+     * <p><strong>The provider's own failure is classified rather than attached, and that is a correction
+     * rather than a preference.</strong> A chained cause reads as free diagnosis, and it is not: this
+     * exception is thrown from a bean's initialisation, so the framework's own start-up failure reporting
+     * renders it and every cause beneath it into the deployment log, in full and verbatim. Those causes
+     * are composed by the provider's software development kit, and in practice they carry the endpoint
+     * that was called, the request and extended request identifiers, the resource name, the account the
+     * bucket is owned by as the service reported it and, on a signature failure, the access key
+     * identifier - every one of which this message is at pains not to publish. Chaining them therefore
+     * discarded the whole point of composing the message carefully, and it did so at the one moment
+     * whose output is most widely read.</p>
+     *
+     * <p>What replaces it is the part this module authored: the bounded chain of failure <em>type</em>
+     * names and the bounded code location, both rendered by {@link FailureDiagnostics}, which reads no
+     * message, no localised message, no suppressed throwable and no rendered frame. That is the same
+     * classification every other boundary in this module publishes in place of a provider failure, so a
+     * reader correlating this refusal with the provider's own logs has the type chain and the origin to
+     * correlate on, and the provider's record still holds its own detail for whoever is entitled to read
+     * it. Recorded as {@code docs/decision-log.md} DL-347.</p>
      *
      * @param  property what could not be established
      * @param  cause    the provider failure, or {@code null} when the refusal is a comparison
-     * @return the exception for the caller to throw
+     * @return the exception for the caller to throw, carrying no cause of any kind
      */
     private static IllegalStateException refusal(final String property, final Throwable cause) {
-        final String message = "This production deployment must not start: " + property
+        final String classification = cause == null
+                ? ""
+                : " The provider failure this was established from, classified: "
+                        + FailureDiagnostics.failureChainOf(cause)
+                        + " at " + FailureDiagnostics.failureOriginOf(cause)
+                        + ". Its own message and stack are deliberately not reproduced here, because"
+                        + " start-up failure reporting renders whatever this exception carries and a"
+                        + " provider message carries the endpoint, the request identifiers and the"
+                        + " resource.";
+        return new IllegalStateException("This production deployment must not start: " + property
                 + ". Verified by " + AwsResourceTrustVerifier.class.getSimpleName()
-                + " before any bean that publishes; see docs/decision-log.md DL-302.";
-        return cause == null
-                ? new IllegalStateException(message)
-                : new IllegalStateException(message, cause);
+                + " before any bean that publishes; see docs/decision-log.md DL-302, DL-346 and"
+                + " DL-347." + classification);
     }
 }

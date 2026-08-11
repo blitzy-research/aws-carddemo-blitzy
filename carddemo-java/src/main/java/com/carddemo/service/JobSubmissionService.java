@@ -35,6 +35,7 @@ import org.springframework.stereotype.Service;
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.JclCardImageBuilder;
+import com.carddemo.util.SanitisedObservation;
 import com.carddemo.util.SqsNamingRules;
 
 /**
@@ -552,14 +553,20 @@ public final class JobSubmissionService {
     private boolean publishCard(final String submission, final String card, final int cardOrdinal,
             final String deduplicationId, final Map<String, Object> envelope) {
         try {
-            final SendResult<String> sendResult = Observation
+            // SanitisedObservation rather than the observation's own observe(): that convenience records
+            // the RAW provider failure on the span, and the tracing bridge exports its message and stack
+            // trace - the queue name, the endpoint and whatever else the refusal was carrying - to the
+            // collector. The failure is still recorded, so a refused publish is visible as a failure
+            // rather than as a gap, but only as the bounded type chain this module composed. The failure
+            // is rethrown unchanged, so the handler below is unaffected. See decision log DL-341.
+            final SendResult<String> sendResult = SanitisedObservation.observe(Observation
                     .createNotStarted(PUBLISH_OBSERVATION_NAME, this.observationRegistry)
                     .lowCardinalityKeyValue(TAG_SYSTEM, SYSTEM_SQS)
                     .lowCardinalityKeyValue(TAG_OPERATION, OPERATION_SEND)
                     .highCardinalityKeyValue(TAG_QUEUE, this.queueName)
                     .highCardinalityKeyValue(TAG_SUBMISSION, submission)
-                    .highCardinalityKeyValue(TAG_CARD_ORDINAL, Integer.toString(cardOrdinal))
-                    .observe(() -> this.sqsOperations.send(options -> options
+                    .highCardinalityKeyValue(TAG_CARD_ORDINAL, Integer.toString(cardOrdinal)),
+                    () -> this.sqsOperations.send(options -> options
                             .queue(this.queueName)
                             .payload(card)
                             .messageGroupId(this.messageGroupId)

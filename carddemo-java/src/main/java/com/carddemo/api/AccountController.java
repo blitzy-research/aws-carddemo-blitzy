@@ -25,6 +25,7 @@ import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.AccountUpdateService;
 import com.carddemo.service.AccountViewService;
+import com.carddemo.util.ApiRoutePaths;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -131,13 +132,13 @@ public class AccountController {
      * and not the published API-document prefix, so this class shadows neither the management surface nor
      * the contract document.
      */
-    public static final String ACCOUNTS_PATH = "/api/accounts";
+    public static final String ACCOUNTS_PATH = ApiRoutePaths.ACCOUNTS_PATH_PREFIX;
 
     /** Route of transaction {@code CAVW}, relative to {@link #ACCOUNTS_PATH}. */
-    public static final String VIEW_SUBPATH = "/view";
+    public static final String VIEW_SUBPATH = ApiRoutePaths.VIEW_SUBPATH;
 
     /** Route of transaction {@code CAUP}, relative to {@link #ACCOUNTS_PATH}. */
-    public static final String UPDATE_SUBPATH = "/update";
+    public static final String UPDATE_SUBPATH = ApiRoutePaths.UPDATE_SUBPATH;
 
     /**
      * Absolute route of transaction {@code CAVW}.

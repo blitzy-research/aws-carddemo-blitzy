@@ -63,7 +63,8 @@ import com.carddemo.util.SensitiveFieldCodec;
  * <h2>Why a database of its own</h2>
  *
  * <p>{@link AbstractPostgresIT} migrates the two delivered locations,
- * {@code classpath:db/migration}, the one flat location all four scripts share, to the head of the
+ * {@code classpath:db/migration/schema} and {@code classpath:db/migration/seed}, the two sibling
+ * locations the six delivered scripts split across, to the head of the
  * sequence, and shares one server
  * across every integration test in the run, so applying the seeds to it would leave fifty customer
  * rows, fifty cross-reference rows and ten sign-on identities behind for whichever test ran next.

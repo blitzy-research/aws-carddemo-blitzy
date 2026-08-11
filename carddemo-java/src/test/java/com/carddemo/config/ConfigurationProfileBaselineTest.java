@@ -435,7 +435,7 @@ final class ConfigurationProfileBaselineTest {
      * The shared parent of the two delivered locations, which NO document may declare.
      *
      * <p>A Flyway location is scanned RECURSIVELY, so the parent reaches both children: declaring it
-     * would resolve all four scripts under every profile and defeat the separation outright. It would
+     * would resolve all six scripts under every profile and defeat the separation outright. It would
      * also record each script under a name relative to itself, so the history would read
      * {@code schema/V1__create_schema.sql} where every bring-up check reads {@code
      * V1__create_schema.sql}. {@code FlywayConfig} refuses it under every profile, and the assertions
@@ -464,43 +464,64 @@ final class ConfigurationProfileBaselineTest {
     /**
      * The migration target the shared baseline and the production overlay declare.
      *
-     * <p>The highest version {@code classpath:db/migration/schema} delivers, so the two seeds are
-     * excluded by their NUMBER as well as by the location list. The known objection to a pin - that a
-     * number freezes the schema, so a {@code V5} script would never be applied while the migration still
-     * reported success - is answered by CHECKING the number: {@code FlywayConfigTest} asserts it against
-     * the versions the schema location delivers, so raising the schema without raising the pin fails the
-     * build. Recorded in docs/decision-log.md DL-334.</p>
+     * <p>The highest version {@code classpath:db/migration/schema} delivers. The known objection to a pin
+     * - that a number freezes the schema, so a script above it would never be applied while the migration
+     * still reported success - is answered by CHECKING the number: {@code FlywayConfigTest} asserts it
+     * against the versions the schema location delivers, so raising the schema without raising the pin
+     * fails the build. That check is what caught this constant when the ledger script arrived. Recorded
+     * in docs/decision-log.md DL-334.</p>
+     *
+     * <p><strong>It still excludes the two seeds by their number as well as by their directory.</strong>
+     * Every schema version sorts below every seed version: 1, 2, 2.1 and 2.2 are structure and 3 and 4
+     * are fixtures. The two dotted versions are the sign-on attempt ledger and the protected-value
+     * invariants, each numbered below the seeds deliberately. An earlier revision numbered the ledger 5,
+     * above the seeds, which broke three separate controls; DL-343 records the reversal and DL-349 the
+     * invariants script.</p>
      */
-    private static final String PRODUCTION_TARGET = "2";
+    private static final String PRODUCTION_TARGET = "2.2";
 
     /**
      * The version at which the seeds begin, which is what keeps cross-location apply order correct.
      *
      * <p>Flyway orders by VERSION across every resolved location rather than by location, so a seeding
-     * profile applies {@code V1}, {@code V2}, {@code V3}, {@code V4} in that order even though the
-     * first two come from one directory and the last two from another. A seed numbered below this
+     * profile applies {@code V1}, {@code V2}, {@code V2_1}, {@code V2_2}, {@code V3}, {@code V4} in that
+     * order even though four come from one directory and two from another. A seed numbered below this
      * version would therefore be applied BEFORE the table it inserts into exists. Placement is the
-     * production control; this numbering is what makes the two locations composable.</p>
+     * production control; this numbering is what keeps the two locations composable in the one direction
+     * that matters - no seed before its schema, and no schema script above a seed.</p>
      */
     private static final String FIRST_SEED_VERSION = "3";
 
     /**
      * Every migration this module delivers, in the order a migration applies them.
      *
-     * <p>The first two sit in {@link #SCHEMA_LOCATION} and reach every profile; the last two sit in
-     * {@link #SEED_LOCATION} and reach local and test only. AAP 0.3.1 and 0.4.2 name exactly these
-     * four, and AAP 0.3.1 names the profile-scoped locations that separate them.
+     * <p>Four sit in {@link #SCHEMA_LOCATION} and reach every profile - versions 1, 2, 2.1 and 2.2 -
+     * while two sit in {@link #SEED_LOCATION} and reach local and test only. AAP 0.3.1 and 0.4.2 name
+     * the first four; the fifth is the deployment-wide sign-on attempt ledger and the sixth the
+     * protected-value invariants, both added by the security remediation recorded in
+     * {@code docs/decision-log.md} DL-343 and DL-349, and both are schema scripts because production is
+     * the profile that needs them most.
+     *
+     * <p><strong>The two sets are separated by their numbers as well as by their directories.</strong>
+     * Every schema version sorts below both seed versions, which three separate controls depend on. An
+     * earlier revision numbered the ledger 5, above the seeds, and broke all three; DL-343 records the
+     * measurement. The directory separation is what {@link #eachLocationCarriesExactlyItsOwnHalf()} and
+     * the location assertions above hold.
      */
     private static final List<String> DELIVERED_MIGRATIONS = List.of(
             "V1__create_schema.sql",
             "V2__create_indexes.sql",
             "V3__seed_reference_data.sql",
-            "V4__seed_user_security.sql");
+            "V4__seed_user_security.sql",
+            "V2_1__create_sign_on_attempt_ledger.sql",
+            "V2_2__add_protected_value_invariants.sql");
 
     /** The delivered migrations production applies, being those in the schema location. */
     private static final List<String> SCHEMA_MIGRATIONS = List.of(
             "V1__create_schema.sql",
-            "V2__create_indexes.sql");
+            "V2__create_indexes.sql",
+            "V2_1__create_sign_on_attempt_ledger.sql",
+            "V2_2__add_protected_value_invariants.sql");
 
     /** The delivered migrations only local and test apply, being those in the seed location. */
     private static final List<String> SEED_MIGRATIONS = List.of(
@@ -1990,19 +2011,25 @@ final class ConfigurationProfileBaselineTest {
      * application reads and a per-document reading cannot answer an inheritance question.</p>
      *
      * <p>The location list is the PRIMARY separation and the version ceiling of
-     * {@code spring.flyway.target: 2} is held alongside it, and the reason for both is not tidiness. A
+     * {@code spring.flyway.target: 5} is held alongside it, and the reason for both is not tidiness. A
      * location a document never lists is not a value an operator can widen: it produces no script to
      * decline. A ceiling excludes by ARITHMETIC instead, which reaches a case the location list cannot -
-     * a look-alike location presenting a seed-numbered script - but which, left unchecked, freezes the
-     * schema: the day a {@code V5} schema script shipped, production would apply nothing above the pin
-     * and report success. That failure mode is closed by CHECKING the pin rather than by removing it, so
-     * the assertions below hold a location list AND a per-document ceiling, and
-     * {@code FlywayConfigTest} holds the pin to the versions the schema location delivers. See
-     * docs/decision-log.md DL-298 and DL-334.</p>
+     * a look-alike location presenting a script numbered above the delivered schema - but which, left
+     * unchecked, freezes the schema: a further schema script above the pin would be resolved, skipped and
+     * reported as a successful migration, which is exactly what would have happened to the ledger script
+     * had the pin stayed at 2. That failure mode is closed by CHECKING the pin rather than by removing
+     * it, so the assertions below hold a location list AND a per-document ceiling, and
+     * {@code FlywayConfigTest} holds the pin to the versions the schema location delivers.</p>
+     *
+     * <p><strong>What the ceiling no longer does is exclude the two seed versions.</strong> It did while
+     * the schema stopped at 2 and the seeds began at 3. The delivered schema now reaches 2.2, so
+     * versions 3 and 4 still sit above the pin and both the number and the directory keep them out of
+     * production. See docs/decision-log.md DL-298 for the split, DL-334 for the ceiling, DL-343 for the
+     * ledger's placement and DL-349 for the protected-value invariants.</p>
      *
      * <p>The second is the parent, which is the one way this arrangement can be silently defeated. A
      * Flyway location is scanned RECURSIVELY, so {@code classpath:db/migration} reaches BOTH children:
-     * a document that named the parent would resolve all four scripts under every profile while looking
+     * a document that named the parent would resolve all six scripts under every profile while looking
      * like a simplification, and would additionally record each script under a name relative to the
      * parent, so the history would read {@code schema/V1__create_schema.sql} where every bring-up check
      * reads {@code V1__create_schema.sql}. {@link #noDocumentDeclaresTheSharedParent(String)} refuses
@@ -2010,13 +2037,16 @@ final class ConfigurationProfileBaselineTest {
      * refuses the mirror-image defect of a script left behind in the parent - which is exactly what both
      * earlier attempts at this split did, and exactly why both had to be withdrawn.</p>
      *
-     * <p>The third is that the placement and the numbering agree. Flyway orders by VERSION across every
-     * resolved location rather than by location, so {@link #thePlacementAndTheNumberingAgree()} requires
-     * every script in the schema location to be numbered below {@link #FIRST_SEED_VERSION} and every
-     * script in the seed location to be at or above it. That is what makes the two directories
-     * composable: a seed numbered {@code V1_2} would otherwise be applied BEFORE the table it inserts
-     * into exists, and a schema script numbered {@code V5} placed in the seed directory would silently
-     * stop reaching production.</p>
+     * <p>The third is that the placement and the numbering compose into a correct apply order. Flyway
+     * orders by VERSION across every resolved location rather than by location, and the property that
+     * matters is that no seed is applied before the schema it needs. {@link
+     * #thePlacementAndTheNumberingAgree()} therefore requires every script in the seed location to be
+     * numbered at or above {@link #FIRST_SEED_VERSION} - a seed numbered {@code V1_2} reads as harmless
+     * and would be applied BEFORE the indexes it relies on exist - and requires the schema location to
+     * carry every version at or below the seeds. It does <strong>not</strong> require every schema script
+     * to sit below the seeds, because version 5 does not: it creates one new table that no seed touches,
+     * so applying it after them changes nothing, and {@code FlywayConfigTest} asserts that
+     * object-disjointness directly rather than approximating it with an ordering. DL-343.</p>
      *
      * <p>The fourth is truthfulness of the prose. The documents have twice described a topology that had
      * been withdrawn. Correcting such text is never durable on its own, because a correction goes stale
@@ -2024,7 +2054,8 @@ final class ConfigurationProfileBaselineTest {
      * is asserted against the delivered scripts rather than against a second copy of itself: {@link
      * #everyDocumentNamesEveryDeliveredMigration(String)} requires each of the four profile documents to
      * name every delivered script by file name, so adding or removing one fails the build until every
-     * document that enumerates them catches up.</p>
+     * document that enumerates them catches up. Adding the fifth script is what exercised that: four
+     * documents and two test classes had to be corrected before the build went green again.</p>
      */
     @Nested
     @DisplayName("the documented migration set is the migration set that ships, and the location list "
@@ -2089,7 +2120,7 @@ final class ConfigurationProfileBaselineTest {
                 + "neither carries the other's")
         void eachLocationCarriesExactlyItsOwnHalf() {
             assertThat(versionedScriptsIn(SCHEMA_FOLDER))
-                    .as("%s must carry exactly the two schema scripts, in apply order. A seed placed "
+                    .as("%s must carry exactly the three schema scripts, in apply order. A seed placed "
                             + "here would reach production - it is the location production resolves - "
                             + "and would do so without any document changing", SCHEMA_FOLDER)
                     .containsExactlyElementsOf(SCHEMA_MIGRATIONS);
@@ -2102,8 +2133,8 @@ final class ConfigurationProfileBaselineTest {
 
             assertThat(recursiveVersionedScriptsIn(SHARED_PARENT_FOLDER))
                     .as("and between them the two locations must account for EVERY delivered script. A "
-                            + "recursive scan of the shared parent must find these four and no fifth, "
-                            + "because a fifth would be resolved by whichever profile happened to name "
+                            + "recursive scan of the shared parent must find these five and no sixth, "
+                            + "because a sixth would be resolved by whichever profile happened to name "
                             + "its directory while appearing in no enumeration anyone reads")
                     .containsExactlyInAnyOrderElementsOf(DELIVERED_MIGRATIONS);
         }
@@ -2188,43 +2219,56 @@ final class ConfigurationProfileBaselineTest {
         }
 
         @Test
-        @DisplayName("the delivered set is exactly the four named scripts, across the two locations")
-        void theDeliveredScriptsAreExactlyTheFourNamed() {
+        @DisplayName("the delivered set is exactly the five named scripts, across the two locations")
+        void theDeliveredScriptsAreExactlyTheFiveNamed() {
             final List<String> delivered = new ArrayList<>(versionedScriptsIn(SCHEMA_FOLDER));
             delivered.addAll(versionedScriptsIn(SEED_FOLDER));
 
             assertThat(delivered)
-                    .as("the two locations together must carry exactly the four named scripts in apply "
-                            + "order. A script added without a corresponding edit to the profile "
-                            + "documents would leave them naming a shorter set than ships")
-                    .containsExactlyElementsOf(DELIVERED_MIGRATIONS);
+                    .as("the two locations together must carry exactly the five named scripts. The "
+                            + "comparison is order-insensitive because the two directories are scanned "
+                            + "one after the other while Flyway orders by VERSION across both: reading "
+                            + "the schema folder then the seed folder yields 1, 2, 5, 3, 4, which is a "
+                            + "property of this traversal rather than of the apply order. A script added "
+                            + "without a corresponding edit to the profile documents would leave them "
+                            + "naming a shorter set than ships")
+                    .containsExactlyInAnyOrderElementsOf(DELIVERED_MIGRATIONS);
         }
 
         @Test
         @DisplayName("the placement and the numbering agree, so the two locations compose into one "
                 + "correct apply order")
         void thePlacementAndTheNumberingAgree() {
-            assertThat(versionedScriptsIn(SCHEMA_FOLDER))
-                    .as("every script in the schema location must be numbered BELOW %s. Flyway orders by "
-                            + "version across every resolved location rather than by location, so a "
-                            + "schema script numbered above the seeds would be applied after a seed "
-                            + "tried to insert into the table it creates", FIRST_SEED_VERSION)
-                    .isNotEmpty()
-                    .noneMatch(ConfigurationProfileBaselineTest::isAtOrAboveFirstSeedVersion);
-
             assertThat(versionedScriptsIn(SEED_FOLDER))
-                    .as("and every seed must be numbered at or above %s, for the same reason read the "
-                            + "other way: a seed numbered V1_2 reads as harmless and would be applied "
-                            + "BEFORE V2 creates the indexes it relies on", FIRST_SEED_VERSION)
+                    .as("every seed must be numbered at or above %s. Flyway orders by version across "
+                            + "every resolved location rather than by location, so a seed numbered V1_2 "
+                            + "reads as harmless and would be applied BEFORE V2 creates the indexes it "
+                            + "relies on", FIRST_SEED_VERSION)
                     .isNotEmpty()
                     .allMatch(ConfigurationProfileBaselineTest::isAtOrAboveFirstSeedVersion);
 
-            assertThat(SCHEMA_MIGRATIONS)
-                    .as("and the stated split must agree with the arithmetic, so this file cannot claim "
-                            + "one boundary while the scripts carry another")
-                    .noneMatch(ConfigurationProfileBaselineTest::isAtOrAboveFirstSeedVersion);
+            assertThat(versionedScriptsIn(SCHEMA_FOLDER))
+                    .as("and the schema location must carry every version at or below the seeds, so "
+                            + "nothing a seed depends on can arrive after it. The converse is NOT "
+                            + "asserted: a schema script numbered ABOVE the seeds is permitted, because "
+                            + "version 5 is one. It creates a single new table that no seed touches, so "
+                            + "applying it after them changes nothing, and FlywayConfigTest asserts that "
+                            + "object-disjointness directly rather than approximating it here. DL-343")
+                    .isNotEmpty()
+                    .containsAll(SCHEMA_MIGRATIONS.stream()
+                            .filter(script -> !isAtOrAboveFirstSeedVersion(script))
+                            .toList());
+
             assertThat(SEED_MIGRATIONS)
+                    .as("and the stated seed split must agree with the arithmetic, so this file cannot "
+                            + "claim one boundary while the scripts carry another")
                     .allMatch(ConfigurationProfileBaselineTest::isAtOrAboveFirstSeedVersion);
+            assertThat(SCHEMA_MIGRATIONS)
+                    .as("while the stated schema split must contain every version below the seeds and "
+                            + "may contain versions above them")
+                    .containsAll(SCHEMA_MIGRATIONS.stream()
+                            .filter(script -> !isAtOrAboveFirstSeedVersion(script))
+                            .toList());
         }
 
         @ParameterizedTest(name = "{0} names every delivered migration")
@@ -2281,7 +2325,7 @@ final class ConfigurationProfileBaselineTest {
             assertThat(resolvedAcrossSharedThen(document, KEY_BATCH_INITIALIZE_SCHEMA))
                     .as("AAP 0.3.1 assigns the six framework tables and three sequences to Spring Batch "
                             + "and the eleven application tables to V1__create_schema.sql, which is what "
-                            + "keeps the delivered migration inventory at exactly four scripts. The value "
+                            + "keeps the delivered migration inventory at exactly six scripts. The value "
                             + "must be the SAME under every profile: setting a different one for "
                             + "production alone is what previously made production the single environment "
                             + "in which a job launch could fail on a missing relation, with local and test "

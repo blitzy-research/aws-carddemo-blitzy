@@ -174,11 +174,17 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
     /** The only index the schema gives this table: the one backing its primary key. */
     private static final String PRIMARY_KEY_INDEX = "pk_customer";
 
-    /** The one check constraint the schema gives this table, over the business key alone. */
+    /** The check constraint over the business key alone. */
     private static final String KEY_DIGIT_CONSTRAINT = "ck_customer_cust_id_digits";
 
     /** The name of the encoding rule, which every text column of this table appears inside. */
     private static final String BYTE_REPERTOIRE_CONSTRAINT = "ck_customer_single_byte_text";
+
+    /** The invariant requiring the nullable regulated identifier to be a protected envelope. DL-349. */
+    private static final String SSN_PROTECTED_CONSTRAINT = "ck_customer_cust_ssn_protected";
+
+    /** The invariant requiring the mandatory regulated identifier to be a protected envelope. DL-349. */
+    private static final String GOVT_PROTECTED_CONSTRAINT = "ck_customer_govt_issued_id_protected";
 
     /** The type every column of this table is declared as, as the catalogue spells it. */
     private static final String BOUNDED_TEXT_TYPE = "character varying";
@@ -199,6 +205,10 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
     private static final List<String> SECONDARY_INDEXES = List.of(
             "card -> idx_card_card_acct_id",
             "card_cross_reference -> idx_card_cross_reference_xref_acct_id",
+            // Not an alternate-index stand-in. The sign-on attempt ledger sweeps spent entries when it
+            // is at its tracked-subject ceiling, and this index is what keeps that sweep from scanning
+            // the table at the one moment it is busiest. Ordered by table name, so it sorts here.
+            "sign_on_attempt -> ix_sign_on_attempt_sweep",
             "transaction -> idx_transaction_tran_proc_ts");
 
     // =============================================================================================
@@ -943,13 +953,18 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
                             + "covers the whole of it")
                     .hasSize(APPLICATION_TABLE_COUNT);
             assertThat(database.queryForList(NULLABLE_APPLICATION_COLUMNS, String.class))
-                    .as("one column in the entire schema admits a null, and this is it. It admits one "
-                            + "because the legacy record permits a customer with no national "
+                    .as("two columns in the schema admit a null and this is the first of them. It "
+                            + "admits one because the legacy record permits a customer with no national "
                             + "identifier on file, and a column that refused absence would refuse a "
                             + "customer the legacy system stored. The delivered seed nonetheless "
                             + "fills all fifty rows: nullable is what the schema allows, not what the "
-                            + "seed does")
-                    .containsExactly(TABLE + "." + NATIONAL_IDENTIFIER_COLUMN);
+                            + "seed does. The second is the sign-on attempt ledger's refusal "
+                            + "deadline, nullable because ABSENCE IS THE MEANING: no deadline is how "
+                            + "\"not currently refused\" is stored. Enumerated rather than excluded so "
+                            + "the control keeps its full strength - a THIRD nullable column still "
+                            + "fails this. DL-343")
+                    .containsExactly(TABLE + "." + NATIONAL_IDENTIFIER_COLUMN,
+                            "sign_on_attempt.refused_until");
             assertThat(declaredColumn(NATIONAL_IDENTIFIER_COLUMN).nullable())
                     .as("read from the other side, the same column reports itself nullable")
                     .isTrue();
@@ -1055,22 +1070,30 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
             final List<String> checks =
                     database.queryForList(CHECK_CONSTRAINTS_ON_TABLE, String.class, TABLE);
 
-            // TWO check constraints, and neither is a content edit. One is the business-key digit class.
-            // The other is the single-byte-text rule, which is a statement about the ENCODING of every text
-            // column - octet_length equal to char_length - and says nothing whatever about what a value may
-            // contain. The distinction is the one this test exists to hold: the 300-to-850 range is
+            // FOUR check constraints, and not one of them is a content edit on the score. One is the
+            // business-key digit class. One is the single-byte-text rule, which is a statement about the
+            // ENCODING of every text column - octet_length equal to char_length - and says nothing whatever
+            // about what a value may contain. The other two are the protected-value invariants V2_2 adds
+            // over the two regulated identifiers, which are content rules but only over columns declared to
+            // hold ciphertext. The distinction is the one this test exists to hold: the 300-to-850 range is
             // screen-level edit validation belonging to the account-update path, and enforcing THAT here
             // would refuse rows the legacy system stored.
             assertThat(checks)
-                    .as("exactly two check constraints: the business-key digit class and the encoding rule")
-                    .hasSize(2);
+                    .as("exactly four check constraints: the business-key digit class, the encoding rule "
+                            + "and the two protected-value invariants")
+                    .hasSize(4);
             assertThat(checks)
                     .as("the business-key digit class is one of them")
                     .anySatisfy(definition -> assertThat(definition).startsWith(KEY_DIGIT_CONSTRAINT));
             assertThat(checks)
-                    .as("and the encoding rule is the other")
+                    .as("the encoding rule is another")
                     .anySatisfy(definition ->
                             assertThat(definition).startsWith(BYTE_REPERTOIRE_CONSTRAINT));
+            assertThat(checks)
+                    .as("and the two protected-value invariants are the rest, one per regulated "
+                            + "identifier. DL-349")
+                    .anySatisfy(definition -> assertThat(definition).startsWith(SSN_PROTECTED_CONSTRAINT))
+                    .anySatisfy(definition -> assertThat(definition).startsWith(GOVT_PROTECTED_CONSTRAINT));
             assertThat(checks).allSatisfy(definition -> {
                 assertThat(definition)
                         .as("no constraint on this table constrains the VALUE of the credit score: it may "
@@ -1080,10 +1103,15 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
                                 text -> assertThat(text).doesNotContain(CREDIT_SCORE_COLUMN),
                                 text -> assertThat(text).startsWith(BYTE_REPERTOIRE_CONSTRAINT));
                 assertThat(definition)
-                        .as("and no constraint expresses a range comparison of any kind")
-                        .doesNotContain(">=")
-                        .doesNotContain("<=")
-                        .doesNotContain("BETWEEN");
+                        .as("and no constraint that so much as MENTIONS the credit score expresses a "
+                                + "range comparison. Scoped to the column rather than to the whole table, "
+                                + "because a protected-value invariant does carry a length floor - it "
+                                + "bounds the width of a ciphertext envelope on a different column and "
+                                + "says nothing about a score. An unscoped ban would have had to be "
+                                + "deleted here, which would have lost the claim entirely")
+                        .satisfiesAnyOf(
+                                text -> assertThat(text).doesNotContain(CREDIT_SCORE_COLUMN),
+                                text -> assertThat(text).doesNotContain(">=", "<=", "BETWEEN"));
             });
             assertThat(declaredColumn(CREDIT_SCORE_COLUMN).dataType())
                     .as("the score is three characters of text, not a number. It is stored exactly "
@@ -1226,9 +1254,11 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
                             + "through the cross-reference, and the keyed read needs no other index")
                     .containsExactly(PRIMARY_KEY_INDEX);
             assertThat(database.queryForList(SECONDARY_INDEXES_IN_SCHEMA, String.class))
-                    .as("the index migration creates three secondary indexes in the whole schema, "
-                            + "standing in for the three legacy alternate indexes, and not one of "
-                            + "them is on this table")
+                    .as("four secondary indexes exist in the whole schema and not one of them is on "
+                            + "this table. Three stand in for the three legacy alternate indexes; the "
+                            + "fourth serves the sign-on attempt ledger's sweep and stands in for no "
+                            + "legacy index at all, which is why it is named separately rather than "
+                            + "folded into the count. DL-343")
                     .containsExactlyElementsOf(SECONDARY_INDEXES)
                     .noneMatch(entry -> entry.startsWith(TABLE + " ->"));
         }

@@ -345,7 +345,15 @@ public final class SensitiveFieldCodec {
     /**
      * Rejects key material of the wrong length before it reaches the cipher, so that a
      * misconfiguration is reported as a configuration fault rather than as an opaque cryptographic
-     * one. The message states the required and observed lengths and never the material itself.
+     * one.
+     *
+     * <p>The message states the required length and never the material - nor, since this checkpoint, the
+     * length that was supplied. The observed length is a property of the key, this exception aborts
+     * start-up, and start-up failure reporting renders whatever it carries into the deployment log; an
+     * operator who is about to pad or regenerate their key gains nothing from being told how long the
+     * rejected one was, and a reader of the log gains a bound on the material. Recorded as
+     * {@code docs/decision-log.md} DL-348, which records the same correction at the two configuration
+     * refusals that prompted it.</p>
      *
      * @param key the candidate key material
      */
@@ -353,7 +361,8 @@ public final class SensitiveFieldCodec {
         Objects.requireNonNull(key, "key material must not be null");
         if (key.length != KEY_LENGTH_BYTES) {
             throw new IllegalArgumentException("key material must be exactly "
-                    + KEY_LENGTH_BYTES + " bytes, but " + key.length + " were supplied");
+                    + KEY_LENGTH_BYTES + " bytes; the length supplied is deliberately not reported,"
+                    + " because a length is a property of the key. See docs/decision-log.md DL-348");
         }
     }
 }

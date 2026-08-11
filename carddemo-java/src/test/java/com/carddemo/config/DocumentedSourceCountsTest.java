@@ -217,7 +217,8 @@ final class DocumentedSourceCountsTest {
     private static final List<String> NUMBER_WORDS = List.of(
             "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
             "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
-            "eighteen", "nineteen", "twenty");
+            "eighteen", "nineteen", "twenty", "twenty-one", "twenty-two", "twenty-three",
+            "twenty-four");
 
     /** Creates the test class. */
     DocumentedSourceCountsTest() {
@@ -1666,7 +1667,11 @@ final class DocumentedSourceCountsTest {
     private static String numberWord(final int count) {
         assertThat(count)
                 .as("a count outside the range the documents spell out means the prose needs "
-                        + "rewriting rather than this range widening")
+                        + "rewriting rather than this range widening. The one range that grows by "
+                        + "construction is the measured-run table: every recorded full verify adds "
+                        + "three rows to it, so it crosses each ten without any prose changing "
+                        + "intent, and the documents state that count in words like every other. "
+                        + "Words past twenty are carried for that reason and for no other")
                 .isBetween(0, NUMBER_WORDS.size() - 1);
         return NUMBER_WORDS.get(count);
     }

@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.carddemo.config.JwtProperties;
 import com.carddemo.config.JwtTokenProvider;
 import com.carddemo.config.SecurityConfig;
+import com.carddemo.config.SignOnThrottleConfig;
 import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.repository.UserSecurityRepository;
@@ -211,15 +212,18 @@ abstract class AbstractSignOnSourceAttributionIT extends AbstractPostgresIT {
      * The sign-on surface under test: the shipped controller, service, governor and filter chain.
      *
      * <p>Assembled explicitly rather than by scanning. Nothing about the governor is stubbed - the subject
-     * of both specifications is which value reaches it, so replacing it would remove the subject.
+     * of both specifications is which value reaches it, so replacing it would remove the subject. The
+     * governor's state store is contributed by the shipped {@link SignOnThrottleConfig} rather than by a
+     * hand-built bean here, so this slice exercises the same selection a deployment does; with no profile
+     * active it resolves the per-instance store, which is what a single-process slice needs.
      */
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({AuthController.class, ModuleErrorController.class, SignOnContractAdapter.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, AuthenticationService.class,
-        SignOnAttemptGovernor.class, NavigationService.class, MessageCatalogService.class,
-        CredentialDigestService.class, SignOnStateService.class, SecurityConfig.class,
-        JwtTokenProvider.class, WebMvcConfig.class})
+        SignOnAttemptGovernor.class, SignOnThrottleConfig.class, NavigationService.class,
+        MessageCatalogService.class, CredentialDigestService.class, SignOnStateService.class,
+        SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class})
     @EnableConfigurationProperties(JwtProperties.class)
     @EnableJpaRepositories(basePackageClasses = UserSecurityRepository.class)
     @EntityScan(basePackageClasses = UserSecurity.class)

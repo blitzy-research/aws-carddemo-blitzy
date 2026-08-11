@@ -1465,6 +1465,13 @@ public final class ProductionConfigurationValidator {
      * <p>An absent value is not reported here. {@link #validateRequiredSettings} already reports it, and one
      * missing variable producing two messages teaches a deployer to fix one of them and stop reading.
      *
+     * <p>It also does not describe the value it rejected. Each fault names the rule and not the finding: the
+     * word list is refused by size rather than by naming the match, and every measurement - the byte count,
+     * the distinct-character count and the length applied by
+     * {@link #validateRequiredSettings} - is reported as the requirement rather than as the actual. A
+     * property of a credential is part of a credential once it reaches a log. Recorded as
+     * {@code docs/decision-log.md} DL-348.
+     *
      * <p>See {@code docs/decision-log.md} entry DL-312.
      *
      * @param environment the environment to read, never {@code null}
@@ -1498,9 +1505,17 @@ public final class ProductionConfigurationValidator {
         final String folded = credential.toLowerCase(Locale.ROOT);
         for (final String forbidden : MANAGEMENT_TOKEN_FORBIDDEN_WORDS) {
             if (folded.contains(forbidden)) {
-                faults.add("  " + SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + ": must not contain the word"
-                        + " \"" + forbidden + "\", which appears in values that were typed rather than"
-                        + " generated");
+                // WHICH word was found is deliberately withheld. It is a substring of a live credential,
+                // so naming it published part of the value into the log of the deployment that rejected
+                // it - and it narrowed a guess at the rest, because a reader then knows a run of the
+                // credential exactly and knows the remainder is shorter than it looks. The category and
+                // the size of the refused list are what a deployer needs, and the list itself is a
+                // constant in this file for anybody who wants to read it. Recorded as DL-348.
+                faults.add("  " + SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + ": must not contain any of"
+                        + " the " + MANAGEMENT_TOKEN_FORBIDDEN_WORDS.size() + " words this check"
+                        + " refuses, each of which appears in values that were typed rather than"
+                        + " generated. Which one was found is deliberately not reported, because it is a"
+                        + " substring of the configured credential");
                 break;
             }
         }
@@ -1517,6 +1532,14 @@ public final class ProductionConfigurationValidator {
      * live credential for the surface that publishes this deployment's metrics, so a refusal that echoed it
      * would write a working credential into the log of the deployment that rejected it, where it would
      * outlive the correction. The rule that was broken is named instead, which is what a deployer needs.
+     *
+     * <p><strong>No property of the value is repeated either, which is the stronger discipline and the
+     * correction this method carries.</strong> Two faults used to describe the value rather than the rule:
+     * the dictionary-word fault named the word it had found, which is a substring of the credential and
+     * therefore part of the credential; and the length fault named the number of characters supplied, which
+     * is the search space a guesser needs. Both are now stated as requirements alone. Neither withholding
+     * costs a deployer anything - they have the value in front of them - and each removes something a reader
+     * of the log gains. Recorded as {@code docs/decision-log.md} DL-348.
      *
      * @param  faults one line per broken rule
      * @return the message the refusal carries
@@ -1642,13 +1665,19 @@ public final class ProductionConfigurationValidator {
         if (minimumLength != null && resolved.strip().length() < minimumLength) {
             // Measured on the STRIPPED value, because that is the credential: SecurityConfig strips the
             // configured token before comparing, so surrounding whitespace is not part of what an
-            // attacker has to guess and must not be allowed to count towards the floor. The report says
-            // what was wrong and how to produce a value that is not, and it never echoes the value -
-            // a start-up log carrying a rejected credential is a credential in a log.
-            return "the value is " + resolved.strip().length() + " characters and this credential "
-                    + "requires at least " + minimumLength + ". It is presented as a bearer token on "
-                    + "the management surface, with no sign-on and no attempt limit behind it, so its "
-                    + "only defence is that it cannot be guessed. Generate one with "
+            // attacker has to guess and must not be allowed to count towards the floor.
+            //
+            // The measurement is not reported. A length is a property OF the credential, and this class
+            // withholds properties of a configured secret for the same reason it withholds the secret:
+            // start-up failure reporting renders this text into the deployment log, where it outlives the
+            // correction. The deployer already knows how long their own value is, so the actual adds
+            // nothing for them and hands a reader the search space to work in. The requirement is what
+            // makes the message actionable, and the requirement is a published constant. Recorded as
+            // DL-348.
+            return "the value is shorter than the " + minimumLength + " characters this credential "
+                    + "requires; its actual length is deliberately not reported. It is presented as a "
+                    + "bearer token on the management surface, with no sign-on and no attempt limit "
+                    + "behind it, so its only defence is that it cannot be guessed. Generate one with "
                     + "`openssl rand -hex 16` or `openssl rand -base64 24`";
         }
         return null;

@@ -30,6 +30,7 @@ import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.InMemoryCredentialMaster;
+import com.carddemo.util.ApiRoutePaths;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.OctetSequenceKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
@@ -294,8 +295,28 @@ class SecurityConfigTest {
     /** Address the probe interface description is published at. */
     private static final String API_DOCS = "/v3/api-docs";
 
-    /** An ordinary protected business route, beneath no special prefix. */
-    private static final String ORDINARY_ROUTE = "/api/accounts/00000000001";
+    /**
+     * An ordinary protected business route, and one this module actually delivers.
+     *
+     * <p><strong>It has to be a delivered address now, and it did not used to be.</strong> This constant
+     * was {@code /api/accounts/00000000001} - a plausible-looking address no controller has ever mapped -
+     * and every assertion below that admitted an ordinary identity to it was, without saying so, asserting
+     * that a signed-on caller reached whatever lay beneath the API root. That is exactly the over-grant the
+     * chain has since closed: the ordinary rules name the eleven delivered addresses and everything else
+     * beneath the root is refused. The invented address is kept, one constant below, as the probe that
+     * proves the refusal.
+     */
+    private static final String ORDINARY_ROUTE = ApiRoutePaths.ACCOUNT_VIEW_PATH;
+
+    /**
+     * An address beneath the API root that no ordinary rule names.
+     *
+     * <p>Deliberately the address this suite used to treat as an ordinary business route, and deliberately
+     * given a handler of its own in the probe interface below - so a {@code 200} would be reachable if
+     * authorization allowed it, and the refusal asserted against it is the chain's answer rather than the
+     * dispatcher's not-found.
+     */
+    private static final String UNNAMED_API_ROUTE = "/api/accounts/00000000001";
 
     /**
      * Response header refusing content-type sniffing.
@@ -325,8 +346,15 @@ class SecurityConfigTest {
      */
     private static final String BATCH_CONTROL_ROUTE = "/api/batch/jobs/postTransactionJob/launch";
 
-    /** A protected route that commits its answer before failing authorization. */
-    private static final String COMMITTED_ROUTE = "/api/accounts/commit-then-deny";
+    /**
+     * A protected route that commits its answer before failing authorization.
+     *
+     * <p>A delivered ordinary address, because the handler has to be REACHED for the condition to arise at
+     * all: the chain refuses an address no ordinary rule names, and a refusal before the handler runs is
+     * not the case under test. The account-update address is used rather than the view address so that the
+     * two probes do not share a handler.
+     */
+    private static final String COMMITTED_ROUTE = ApiRoutePaths.ACCOUNT_UPDATE_PATH;
 
     /**
      * The batch-control launch operation, addressed exactly as the controller maps it.
@@ -684,6 +712,20 @@ class SecurityConfigTest {
         @GetMapping(ORDINARY_ROUTE)
         String ordinary() {
             return "ordinary";
+        }
+
+        /**
+         * Stands in for an address beneath the API root that no ordinary rule names.
+         *
+         * <p>It answers, so that a {@code 200} is what the chain would have to permit for the refusal
+         * asserted against this address to be missing. Without a handler here the same assertion would
+         * pass against the dispatcher's own not-found and would prove nothing about authorization.</p>
+         *
+         * @return a fixed body
+         */
+        @GetMapping(UNNAMED_API_ROUTE)
+        String unnamedApiAddress() {
+            return "unnamed-api-address";
         }
 
         /**
@@ -1323,9 +1365,9 @@ class SecurityConfigTest {
     class BusinessSurfaceAllowList {
 
         @Test
-        @DisplayName("names the API root as the region it governs, so a business route added later is "
-                + "inside the allow-list from the moment it exists")
-        void namesTheApiRootAsTheRegionItGoverns() {
+        @DisplayName("names the API root as the region its closing refusal covers, so an address no rule "
+                + "claims is refused rather than admitted to any signed-on caller")
+        void namesTheApiRootAsTheRegionItsRefusalCovers() {
             assertThat(SecurityConfig.API_PATH_PREFIX).isEqualTo("/api");
             assertThat(ORDINARY_ROUTE).startsWith(SecurityConfig.API_PATH_PREFIX + "/");
             assertThat(ADMIN_ROUTE).startsWith(SecurityConfig.API_PATH_PREFIX + "/");
@@ -1334,17 +1376,68 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("states the ordinary entitlement as a rule of its own rather than leaving it to the "
-                + "closing catch-all, which is the change that closes the over-grant")
-        void statesTheOrdinaryEntitlementAsARuleOfItsOwn() {
-            assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPattern())
-                    .as("an entitlement with no pattern is an entitlement enforced by whatever the "
-                            + "closing rule happens to say, which was bare authentication")
-                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
+        @DisplayName("states the ordinary entitlement as one rule per delivered address, which is the "
+                + "change that closes the over-grant")
+        void statesTheOrdinaryEntitlementAsOneRulePerDeliveredAddress() {
+            assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPatterns())
+                    .as("an entitlement with no pattern is enforced by whatever the closing rule happens "
+                            + "to say, which was bare authentication; an entitlement whose pattern is the "
+                            + "whole root grants every address beneath it, including the ones nothing "
+                            + "serves")
+                    .isEqualTo(ApiRoutePaths.ORDINARY_ROUTE_PATHS)
+                    .doesNotContain(SecurityConfig.API_PATH_PREFIX + "/**")
+                    .contains(ORDINARY_ROUTE)
+                    .doesNotContain(UNNAMED_API_ROUTE);
             assertThat(Stream.of(SecurityConfig.Gating.values())
-                    .filter(gating -> gating.enforcementPattern().isBlank()))
-                    .as("every entitlement now names the rule that enforces it")
+                    .filter(gating -> gating.enforcementPatterns().isEmpty()))
+                    .as("every entitlement now names the rules that enforce it")
                     .isEmpty();
+        }
+
+        @Test
+        @DisplayName("refuses an address beneath the API root that no rule names, even to an identity "
+                + "carrying a sign-on authority, which is the over-grant itself")
+        void refusesAnAddressNoRuleNames() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(UNNAMED_API_ROUTE)
+                            .with(authentication(identityCarrying(JwtTokenProvider.USER_AUTHORITY))))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("a handler answers this address, so a 200 here would be the chain "
+                                    + "admitting an address it never classified")
+                            .isEqualTo(403)));
+        }
+
+        @Test
+        @DisplayName("refuses that address to an administrative identity as well, so the refusal is not a "
+                + "matter of rank")
+        void refusesAnAddressNoRuleNamesToAnAdministratorToo() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(UNNAMED_API_ROUTE)
+                            .with(authentication(identityCarrying(JwtTokenProvider.ADMIN_AUTHORITY))))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(403)));
+        }
+
+        @Test
+        @DisplayName("refuses that address presenting no credential at all as unauthorized, so the "
+                + "closing refusal does not turn a missing credential into a forbidden answer")
+        void refusesAnAddressNoRuleNamesWithoutACredential() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(get(UNNAMED_API_ROUTE))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("admits every one of the eleven delivered ordinary addresses to a standard identity, "
+                + "so enumerating them left none of them behind")
+        void admitsEveryDeliveredOrdinaryAddress() {
+            assertThat(ApiRoutePaths.ORDINARY_ROUTE_PATHS)
+                    .as("the roster the chain installs its ordinary rules from")
+                    .hasSize(11)
+                    .contains(ORDINARY_ROUTE, COMMITTED_ROUTE);
+            assertThat(SecurityConfig.TransactionRoute.enforcementPatternsFor(
+                    SecurityConfig.Gating.AUTHENTICATED))
+                    .as("and the rules the chain actually installs are that roster, so an address left "
+                            + "out of it would be refused rather than quietly admitted")
+                    .isEqualTo(ApiRoutePaths.ORDINARY_ROUTE_PATHS);
         }
 
         @Test

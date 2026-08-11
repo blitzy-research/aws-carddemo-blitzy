@@ -222,11 +222,13 @@ services:
   # column widths are the verified record layouts.
   #
   # SCHEMA OWNERSHIP IS EXCLUSIVE AND IT IS NOT HERE. Flyway owns every table and every seeded row:
-  # db/migration/schema holds V1__create_schema.sql and V2__create_indexes.sql and is resolved by every
-  # profile; db/migration/seed holds V3__seed_reference_data.sql and V4__seed_user_security.sql and is
-  # resolved by the local and test profiles only. Their shared parent db/migration holds no script and is
-  # resolved by no profile, because a Flyway location is scanned recursively. Two independent controls
-  # hold the seeds out of a production migration - that location list, and a version ceiling pinned at 2.
+  # db/migration/schema holds V1__create_schema.sql, V2__create_indexes.sql,
+  # V2_1__create_sign_on_attempt_ledger.sql and V2_2__add_protected_value_invariants.sql, and is resolved
+  # by every profile; db/migration/seed holds V3__seed_reference_data.sql and V4__seed_user_security.sql
+  # and is resolved by the local and test profiles only. Their shared parent db/migration holds no script
+  # and is resolved by no profile, because a Flyway location is scanned recursively. Two independent
+  # controls hold the seeds out of a production migration - that location list, and a version ceiling
+  # pinned at 2.2, which stops below both seed versions.
   # Deliberately NO script is mounted into /docker-entrypoint-initdb.d - a
   # second path that creates a table would make the schema depend on which mechanism ran first, and
   # forward-only versioned migration is the whole guarantee being bought.

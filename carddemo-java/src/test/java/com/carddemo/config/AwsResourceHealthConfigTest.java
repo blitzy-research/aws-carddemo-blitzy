@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -34,6 +35,8 @@ import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.sns.core.SnsOperations;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
@@ -44,12 +47,17 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -88,12 +96,32 @@ class AwsResourceHealthConfigTest {
     private static final String TOPIC_ARN =
             "arn:aws:sns:us-east-1:000000000000:carddemo-job-notifications";
 
+    /**
+     * The probe interval the container image asks at, in seconds.
+     *
+     * <p>Named here and read out of the image itself by the specification below, so the claim that the
+     * freshness window is shorter than the probe cadence is measured against the shipped document rather
+     * than against a remembered number.
+     */
+    private static final long CONTAINER_PROBE_INTERVAL_SECONDS = 10L;
+
+    /** A wait no correct run ever reaches, so a hung run fails rather than hanging the suite. */
+    private static final long FAR_LONGER_THAN_ANY_WAIT_SECONDS = 5L;
+
     private S3Operations s3Operations;
     private SqsAsyncClient sqsAsyncClient;
     private SnsClient snsClient;
     private SnsOperations snsOperations;
     private AwsResourceHealthConfig configuration;
     private ExecutorService workers;
+
+    /**
+     * The elapsed-time source the contributors read their freshness window against.
+     *
+     * <p>Moved deliberately rather than waited out, so an expiry is asserted at the instant it happens
+     * instead of approximated by sleeping past it.
+     */
+    private MovableTicker ticker;
 
     /**
      * The registry a probe's observation is carried from onto its worker.
@@ -138,6 +166,7 @@ class AwsResourceHealthConfigTest {
         observationRegistry = recordingRegistry();
         configuration = new AwsResourceHealthConfig(settings(), observationRegistry);
         workers = configuration.awsHealthCheckExecutor();
+        ticker = new MovableTicker();
     }
 
     @AfterEach
@@ -185,9 +214,14 @@ class AwsResourceHealthConfigTest {
     @DisplayName("reports the staging bucket up only when the non-creating existence check succeeds")
     void checksTheBucketWithoutCreatingIt() {
         when(s3Operations.bucketExists(BUCKET)).thenReturn(true, false);
-        final HealthIndicator indicator = configuration.awsS3HealthIndicator(s3Operations, workers);
+        final HealthIndicator indicator =
+                configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
 
         assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+        // Past the freshness window, so the second answer below is a second evaluation of the bucket
+        // rather than the first one repeated. Both outcomes are the point of this specification, and
+        // inside the window there would only ever be one of them.
+        ticker.advanceBeyondTheWindow();
         final Health absent = indicator.health();
         assertThat(absent.getStatus()).isEqualTo(Status.DOWN);
         assertThat(absent.getDetails()).containsEntry("reason", "resource-not-found");
@@ -607,10 +641,14 @@ class AwsResourceHealthConfigTest {
         void onlyTransitionsAreLogged() {
             when(s3Operations.bucketExists(BUCKET)).thenReturn(false, false, false, true, true);
             final HealthIndicator indicator =
-                    configuration.awsS3HealthIndicator(s3Operations, workers);
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
 
             for (int evaluation = 0; evaluation < 5; evaluation++) {
                 indicator.health();
+                // One window per evaluation, so these are five evaluations of the bucket rather than one
+                // evaluation repeated five times - which is what makes the count of transitions below a
+                // statement about the resource's state changing.
+                ticker.advanceBeyondTheWindow();
             }
 
             assertThat(recorded.list)
@@ -631,9 +669,10 @@ class AwsResourceHealthConfigTest {
                     .thenReturn(false)
                     .thenThrow(new IllegalStateException("unreachable"));
             final HealthIndicator indicator =
-                    configuration.awsS3HealthIndicator(s3Operations, workers);
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
 
             indicator.health();
+            ticker.advanceBeyondTheWindow();
             indicator.health();
 
             assertThat(recorded.list).hasSize(2);
@@ -647,9 +686,10 @@ class AwsResourceHealthConfigTest {
         void aHealthyComponentIsQuiet() {
             when(s3Operations.bucketExists(BUCKET)).thenReturn(true);
             final HealthIndicator indicator =
-                    configuration.awsS3HealthIndicator(s3Operations, workers);
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
 
             indicator.health();
+            ticker.advanceBeyondTheWindow();
             indicator.health();
 
             assertThat(recorded.list).isEmpty();
@@ -689,6 +729,276 @@ class AwsResourceHealthConfigTest {
                     .contains(AwsResourceHealthConfig.COMPONENT_S3);
             assertThat(recorded.list.get(1).getFormattedMessage())
                     .contains(AwsResourceHealthConfig.COMPONENT_SNS);
+        }
+    }
+
+    @Nested
+    @DisplayName("Probe volume does not set provider call volume, because the callers include anonymous "
+            + "ones")
+    class ProbeVolumeIsNotProviderVolume {
+
+        /** How many probes a burst is represented by; any number above one would show the defect. */
+        private static final int PROBES_IN_A_BURST = 6;
+
+        @Test
+        @DisplayName("so repeated probes inside one window ask the object store exactly once, which is "
+                + "the amplification an unauthenticated caller could otherwise drive")
+        void repeatedProbesInsideOneWindowAskTheObjectStoreOnce() {
+            when(s3Operations.bucketExists(BUCKET)).thenReturn(true);
+            final HealthIndicator indicator =
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
+
+            for (int probe = 0; probe < PROBES_IN_A_BURST; probe++) {
+                assertThat(indicator.health().getStatus())
+                        .as("every probe is answered, and answered the same way")
+                        .isEqualTo(Status.UP);
+            }
+
+            verify(s3Operations, times(1)).bucketExists(BUCKET);
+            verifyNoMoreInteractions(s3Operations);
+        }
+
+        @Test
+        @DisplayName("and the resource is asked again once the window has closed, so readiness keeps "
+                + "tracking the resource rather than a memory of it")
+        void theResourceIsAskedAgainOnceTheWindowHasClosed() {
+            when(s3Operations.bucketExists(BUCKET)).thenReturn(true, false);
+            final HealthIndicator indicator =
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
+
+            assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+            ticker.advanceBeyondTheWindow();
+            assertThat(indicator.health().getStatus())
+                    .as("a bucket that has gone away must be reported, and within one window of going")
+                    .isEqualTo(Status.DOWN);
+
+            verify(s3Operations, times(2)).bucketExists(BUCKET);
+        }
+
+        @Test
+        @DisplayName("a DOWN answer is reused too, because an absent or unreachable resource is exactly "
+                + "the state in which re-asking every probe hurts most")
+        void aDownAnswerIsReusedToo() {
+            when(s3Operations.bucketExists(BUCKET)).thenReturn(false);
+            final HealthIndicator indicator =
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
+
+            for (int probe = 0; probe < PROBES_IN_A_BURST; probe++) {
+                final Health repeated = indicator.health();
+                assertThat(repeated.getStatus()).isEqualTo(Status.DOWN);
+                assertThat(repeated.getDetails()).containsEntry("reason", "resource-not-found");
+            }
+
+            verify(s3Operations, times(1)).bucketExists(BUCKET);
+        }
+
+        @Test
+        @DisplayName("a failing resource is not re-asked per probe either, so a provider that refuses "
+                + "cannot be asked to refuse once per request")
+        void aFailingResourceIsNotReAskedPerProbe() {
+            when(s3Operations.bucketExists(BUCKET))
+                    .thenThrow(new IllegalStateException("provider refused"));
+            final HealthIndicator indicator =
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
+
+            for (int probe = 0; probe < PROBES_IN_A_BURST; probe++) {
+                final Health repeated = indicator.health();
+                assertThat(repeated.getStatus()).isEqualTo(Status.DOWN);
+                assertThat(repeated.getDetails().get("failureChain").toString())
+                        .contains("IllegalStateException")
+                        .doesNotContain("provider refused");
+            }
+
+            verify(s3Operations, times(1)).bucketExists(BUCKET);
+        }
+
+        @Test
+        @DisplayName("simultaneous probes that all find the window closed share one evaluation, which "
+                + "reuse alone cannot do because every member of a burst misses the same window")
+        void simultaneousProbesShareOneEvaluation() throws Exception {
+            final CountDownLatch insideTheProvider = new CountDownLatch(1);
+            final CountDownLatch releaseTheProvider = new CountDownLatch(1);
+            final AtomicInteger providerCalls = new AtomicInteger();
+            when(s3Operations.bucketExists(BUCKET)).thenAnswer(invocation -> {
+                providerCalls.incrementAndGet();
+                insideTheProvider.countDown();
+                releaseTheProvider.await(FAR_LONGER_THAN_ANY_WAIT_SECONDS, TimeUnit.SECONDS);
+                return Boolean.TRUE;
+            });
+            final HealthIndicator indicator =
+                    configuration.awsS3HealthIndicator(s3Operations, workers, ticker);
+            final ExecutorService probes = Executors.newFixedThreadPool(PROBES_IN_A_BURST);
+            try {
+                final List<Future<Status>> answers = new ArrayList<>();
+                answers.add(probes.submit(() -> indicator.health().getStatus()));
+                assertThat(insideTheProvider.await(FAR_LONGER_THAN_ANY_WAIT_SECONDS, TimeUnit.SECONDS))
+                        .as("the first probe must be inside the provider call before the others arrive")
+                        .isTrue();
+                for (int probe = 1; probe < PROBES_IN_A_BURST; probe++) {
+                    answers.add(probes.submit(() -> indicator.health().getStatus()));
+                }
+                releaseTheProvider.countDown();
+                for (final Future<Status> answer : answers) {
+                    assertThat(answer.get(FAR_LONGER_THAN_ANY_WAIT_SECONDS, TimeUnit.SECONDS))
+                            .as("every probe is answered rather than refused for being concurrent")
+                            .isNotNull();
+                }
+
+                assertThat(providerCalls.get())
+                        .as("one evaluation for the whole burst; one per probe is the defect")
+                        .isEqualTo(1);
+            } finally {
+                releaseTheProvider.countDown();
+                probes.shutdownNow();
+            }
+        }
+
+        @Test
+        @DisplayName("the queue contributor reuses its answer too, so the resolver is not run per probe")
+        void theQueueContributorReusesItsAnswer() {
+            when(sqsAsyncClient.getQueueUrl(any(GetQueueUrlRequest.class)))
+                    .thenReturn(CompletableFuture.completedFuture(
+                            GetQueueUrlResponse.builder().queueUrl(QUEUE_URL).build()));
+            when(sqsAsyncClient.getQueueAttributes(
+                    org.mockito.ArgumentMatchers
+                            .<Consumer<GetQueueAttributesRequest.Builder>>any()))
+                    .thenReturn(CompletableFuture.completedFuture(
+                            GetQueueAttributesResponse.builder()
+                                    .attributes(Map.of(QueueAttributeName.QUEUE_ARN, QUEUE_ARN))
+                                    .build()));
+            final HealthIndicator indicator =
+                    configuration.awsSqsHealthIndicator(sqsAsyncClient, ticker);
+
+            for (int probe = 0; probe < PROBES_IN_A_BURST; probe++) {
+                assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+            }
+
+            verify(sqsAsyncClient, times(1)).getQueueUrl(any(GetQueueUrlRequest.class));
+            verify(sqsAsyncClient, times(1)).getQueueAttributes(
+                    org.mockito.ArgumentMatchers
+                            .<Consumer<GetQueueAttributesRequest.Builder>>any());
+            verifyNoMoreInteractions(sqsAsyncClient);
+        }
+
+        @Test
+        @DisplayName("the topic contributor reuses its answer too, so a listing is not run per probe")
+        void theTopicContributorReusesItsAnswer() {
+            when(snsClient.listTopics()).thenReturn(ListTopicsResponse.builder()
+                    .topics(Topic.builder().topicArn(TOPIC_ARN).build())
+                    .build());
+            when(snsOperations.topicExists(TOPIC_ARN)).thenReturn(true);
+            final HealthIndicator indicator =
+                    configuration.awsSnsHealthIndicator(snsClient, snsOperations, workers, ticker);
+
+            for (int probe = 0; probe < PROBES_IN_A_BURST; probe++) {
+                assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+            }
+
+            verify(snsClient, times(1)).listTopics();
+            verify(snsOperations, times(1)).topicExists(TOPIC_ARN);
+        }
+
+        @Test
+        @DisplayName("every published contributor carries the window, so none of the three is left as "
+                + "the one an anonymous caller can amplify")
+        void everyPublishedContributorCarriesTheWindow() {
+            when(s3Operations.bucketExists(BUCKET)).thenReturn(true);
+            when(sqsAsyncClient.getQueueUrl(any(GetQueueUrlRequest.class)))
+                    .thenReturn(CompletableFuture.completedFuture(
+                            GetQueueUrlResponse.builder().queueUrl(QUEUE_URL).build()));
+            when(sqsAsyncClient.getQueueAttributes(
+                    org.mockito.ArgumentMatchers
+                            .<Consumer<GetQueueAttributesRequest.Builder>>any()))
+                    .thenReturn(CompletableFuture.completedFuture(
+                            GetQueueAttributesResponse.builder()
+                                    .attributes(Map.of(QueueAttributeName.QUEUE_ARN, QUEUE_ARN))
+                                    .build()));
+            when(snsClient.listTopics()).thenReturn(ListTopicsResponse.builder()
+                    .topics(Topic.builder().topicArn(TOPIC_ARN).build())
+                    .build());
+            when(snsOperations.topicExists(TOPIC_ARN)).thenReturn(true);
+            // The BEAN methods, not the clock-carrying ones: this is the composition the context
+            // publishes, so it is the composition that must carry the window. Reading them twice in
+            // immediate succession is inside any window a monotonic clock could report.
+            final List<HealthIndicator> published = List.of(
+                    configuration.awsS3HealthIndicator(s3Operations, workers),
+                    configuration.awsSqsHealthIndicator(sqsAsyncClient),
+                    configuration.awsSnsHealthIndicator(snsClient, snsOperations, workers));
+
+            for (final HealthIndicator indicator : published) {
+                assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+                assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+            }
+
+            verify(s3Operations, times(1)).bucketExists(BUCKET);
+            verify(sqsAsyncClient, times(1)).getQueueUrl(any(GetQueueUrlRequest.class));
+            verify(snsClient, times(1)).listTopics();
+        }
+
+        @Test
+        @DisplayName("the window outlasts one check deadline and is shorter than the probe interval the "
+                + "container image actually asks at")
+        void theWindowSitsBetweenTheDeadlineAndTheProbeInterval() throws IOException {
+            assertThat(AwsResourceHealthConfig.RESULT_FRESHNESS_MILLIS)
+                    .as("a window shorter than a deadline could close before the evaluation that "
+                            + "opened it was even allowed to finish, which would reuse nothing")
+                    .isGreaterThan(AwsResourceHealthConfig.CHECK_DEADLINE_MILLIS);
+
+            final String dockerfile = Files.readString(Path.of("Dockerfile"), StandardCharsets.UTF_8);
+            assertThat(dockerfile)
+                    .as("the interval the claim below is measured against is read from the image rather "
+                            + "than assumed, so a changed probe cadence fails here")
+                    .contains("--interval=" + CONTAINER_PROBE_INTERVAL_SECONDS + "s");
+            assertThat(AwsResourceHealthConfig.RESULT_FRESHNESS_MILLIS)
+                    .as("shorter than the documented probe interval, so a probe arriving on that cadence "
+                            + "still causes a fresh evaluation")
+                    .isLessThan(TimeUnit.SECONDS.toMillis(CONTAINER_PROBE_INTERVAL_SECONDS));
+        }
+
+        @Test
+        @DisplayName("and the endpoint's own cache is set to the same window, so the two bounds cannot "
+                + "drift into disagreeing about how stale an answer may be")
+        void theEndpointCacheIsSetToTheSameWindow() throws IOException {
+            final String shared = new ClassPathResource("application.yml").getContentAsString(
+                    StandardCharsets.UTF_8);
+
+            assertThat(shared)
+                    .as("the aggregate answer is the one an anonymous caller reaches most cheaply, so it "
+                            + "carries a window of its own as well")
+                    .contains("cache:\n        time-to-live: "
+                            + TimeUnit.MILLISECONDS.toSeconds(
+                                    AwsResourceHealthConfig.RESULT_FRESHNESS_MILLIS)
+                            + "s");
+        }
+    }
+
+    /**
+     * An elapsed-nanosecond source this specification moves rather than waits out.
+     *
+     * <p>The contributors read their freshness window through a supplied clock precisely so that an
+     * expiry can be asserted at the instant it happens. Sleeping past a two-second window instead would
+     * add two seconds to every specification that needs a second evaluation and would still only
+     * approximate the boundary.
+     *
+     * <p>It starts at zero, which is a legitimate reading for a monotonic source: the contributors
+     * compare readings by difference and never against an absolute origin.
+     */
+    private static final class MovableTicker implements LongSupplier {
+
+        /** The reading this ticker reports. */
+        private final AtomicLong reading = new AtomicLong();
+
+        @Override
+        public long getAsLong() {
+            return this.reading.get();
+        }
+
+        /**
+         * Moves past the freshness window, so the next probe must ask its resource again.
+         */
+        void advanceBeyondTheWindow() {
+            this.reading.addAndGet(TimeUnit.MILLISECONDS.toNanos(
+                    AwsResourceHealthConfig.RESULT_FRESHNESS_MILLIS) + 1L);
         }
     }
 

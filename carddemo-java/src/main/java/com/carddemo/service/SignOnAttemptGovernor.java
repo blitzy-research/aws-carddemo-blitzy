@@ -20,13 +20,8 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
-import java.util.Iterator;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -67,14 +62,31 @@ import org.springframework.stereotype.Service;
  * a sweeping caller exactly when to pause and from where to resume. Operators learn about it from the
  * counters and the log records below, which is where that information belongs.
  *
- * <h2>Bounded memory, stated as a property rather than assumed</h2>
+ * <h2>Bounded storage, stated as a property rather than assumed</h2>
  *
  * <p>The subject of a failure is partly caller-supplied - an identifier a caller invented is still a
- * subject - so an unbounded map is a second denial-of-service channel wearing the first one's clothes. The
- * number of tracked subjects is capped. When the cap is reached, expired entries are swept first; if the
- * map is still full, a <em>new</em> subject is not admitted and the omission is counted, so the ceiling is
- * observable rather than silent. An already-tracked refusal is never dropped to make room, because that
- * would let a caller evict the record of its own abuse.
+ * subject - so an unbounded store is a second denial-of-service channel wearing the first one's clothes.
+ * Two bounds answer that. The number of tracked subjects is capped: when the cap is reached, spent entries
+ * are swept first, and if the store is still full a <em>new</em> subject is not admitted and the omission
+ * is counted, so the ceiling is observable rather than silent. An already-tracked refusal is never dropped
+ * to make room, because that would let a caller evict the record of its own abuse. The length of one
+ * subject is capped too, at {@link SignOnAttemptLedger#MAX_SUBJECT_LENGTH}, so that a caller reaching this
+ * service below the delivered eight-character contract cannot choose the size of a stored key.
+ *
+ * <h2>Where the count lives is a security question, so the store is named</h2>
+ *
+ * <p>This class holds no attempt state of its own. It decides policy - the allowance, the window, the
+ * refusal period, the ceiling - and it counts and logs what happened; the state that policy is applied to
+ * belongs to an injected {@link SignOnAttemptLedger}. The separation exists because an allowance is only an
+ * allowance if it is counted once, and a count held in one process's memory is counted once <em>per
+ * process</em>: two replicas behind one address grant a caller twice the attempts, ten grant ten times, and
+ * every restart returns every allowance to full without anyone authenticating. None of that is visible from
+ * inside a replica and all of it multiplies exactly the budget this class exists to bound.
+ *
+ * <p>So a deployment chooses a store whose scope matches its shape - {@link InMemorySignOnAttemptLedger}
+ * for a single instance, {@link PostgresSignOnAttemptLedger} for every deployment that runs more than one -
+ * and a production start-up refuses a store that is not deployment-wide. See
+ * {@code config/SignOnThrottleConfig} for the selection and {@code docs/decision-log.md} entry DL-343.
  *
  * <h2>Every figure is configuration, and none is a service level</h2>
  *
@@ -89,8 +101,8 @@ import org.springframework.stereotype.Service;
  * <p>The decision, including the parity exception that keeps the two refusal messages distinct rather
  * than flattening them, is recorded in {@code docs/decision-log.md} entry DL-268.
  *
- * <p>Safe for concurrent use: the map is concurrent and every state change to one subject is applied inside
- * that map's own per-key atomic computation.
+ * <p>Safe for concurrent use: this class holds only immutable configuration, and every state change is
+ * applied atomically by the injected ledger.
  *
  * @since 1.0.0
  */
@@ -130,6 +142,16 @@ public class SignOnAttemptGovernor {
      */
     public static final String SATURATED_METRIC = "carddemo.signon.attempts.refused.saturated";
 
+    /**
+     * Counter of failures the ledger could not record because it could not be reached.
+     *
+     * <p>Its own counter rather than a share of {@link #UNTRACKED_METRIC}, because the two mean opposite
+     * things about the protection: that one means the ceiling is doing its job, and this one means the
+     * protection is not working at all. An operator seeing this rise is looking at a database fault, and
+     * folding it into the ceiling counter would present that fault as a capacity decision.
+     */
+    public static final String UNAVAILABLE_METRIC = "carddemo.signon.ledger.unavailable";
+
     /** Tag naming which of the two namespaces a counted event belongs to. */
     public static final String NAMESPACE_TAG = "namespace";
 
@@ -139,7 +161,7 @@ public class SignOnAttemptGovernor {
     /** Namespace of a subject that is one caller address. */
     public static final String SOURCE_NAMESPACE = "source";
 
-    /** Subject prefix keeping the two namespaces apart inside one map. */
+    /** Subject prefix keeping the two namespaces apart inside one ledger. */
     private static final String IDENTITY_PREFIX = "i:";
 
     /** Subject prefix for the source namespace. */
@@ -169,31 +191,20 @@ public class SignOnAttemptGovernor {
     /** The clock every window and deadline is measured against. */
     private final Clock clock;
 
-    /** Where the four counters are registered. */
+    /** Where the counters are registered. */
     private final MeterRegistry meterRegistry;
 
-    /** Per-subject state, keyed by prefixed subject. */
-    private final Map<String, AttemptRecord> records = new ConcurrentHashMap<>();
+    /** Where the attempt state lives, and the only thing that mutates it. */
+    private final SignOnAttemptLedger ledger;
 
     /**
-     * Slots taken in {@link #records}, held separately so the ceiling can be enforced atomically.
+     * The four thresholds as one value, handed to the ledger on every call.
      *
-     * <h2>Why a counter beside the map rather than the map's own size</h2>
-     *
-     * <p>{@code size()} answers a question about the past. Reading it, deciding there is room, and then
-     * inserting is three steps, and the ceiling is only respected if nothing else inserts in between -
-     * which is exactly what a burst of first-attempts from distinct subjects does. Each thread saw room
-     * and each thread took it, so the hard bound this governor exists to provide could be exceeded by as
-     * many subjects as there were threads. The bound matters because it is the only thing standing between
-     * an enumeration sweep across generated identifiers and unbounded growth of this map.
-     *
-     * <p>A slot is therefore <em>reserved</em> before the per-key computation runs and released if the
-     * computation turns out not to need it. Reservation is a compare-and-set against this counter, so two
-     * threads cannot both take the last slot however they interleave. The counter is maintained to equal
-     * the map's size exactly: every insertion consumes a reservation and every removal - the expiry sweep
-     * and a successful sign-on alike - returns one.
+     * <p>Passed rather than injected into the store, so the figures are read from configuration in exactly
+     * one place - this class's constructor - and a store cannot hold a stale or a second opinion of what
+     * the allowance is.
      */
-    private final AtomicInteger reservedSlots = new AtomicInteger();
+    private final SignOnAttemptLedger.Policy policy;
 
     /**
      * @param enabled         whether the governor refuses anything, default {@code true}
@@ -203,6 +214,7 @@ public class SignOnAttemptGovernor {
      * @param trackedSubjects ceiling on tracked subjects, default ten thousand
      * @param clock           the clock windows are measured against; must not be {@code null}
      * @param meterRegistry   where the counters are registered; must not be {@code null}
+     * @param ledger          where the attempt state lives; must not be {@code null}
      * @throws IllegalArgumentException if a figure is not positive, or a duration is zero or negative
      */
     public SignOnAttemptGovernor(
@@ -212,7 +224,8 @@ public class SignOnAttemptGovernor {
             @Value("${" + REFUSAL_PERIOD_PROPERTY + ":PT1M}") final Duration refusalPeriod,
             @Value("${" + TRACKED_SUBJECTS_PROPERTY + ":10000}") final int trackedSubjects,
             final Clock clock,
-            final MeterRegistry meterRegistry) {
+            final MeterRegistry meterRegistry,
+            final SignOnAttemptLedger ledger) {
         this.enabled = enabled;
         this.maxFailures = requirePositive(maxFailures, MAX_FAILURES_PROPERTY);
         this.failureWindow = requirePositive(failureWindow, FAILURE_WINDOW_PROPERTY);
@@ -220,10 +233,14 @@ public class SignOnAttemptGovernor {
         this.trackedSubjects = requirePositive(trackedSubjects, TRACKED_SUBJECTS_PROPERTY);
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
+        this.ledger = Objects.requireNonNull(ledger, "ledger must not be null");
+        this.policy = new SignOnAttemptLedger.Policy(this.maxFailures, this.failureWindow,
+                this.refusalPeriod, this.trackedSubjects);
         LOG.info("Sign-on attempt governor configured: enabled={} maxFailures={} failureWindow={}"
-                        + " refusalPeriod={} trackedSubjects={}",
+                        + " refusalPeriod={} trackedSubjects={} stateScope={}",
                 this.enabled, this.maxFailures, this.failureWindow, this.refusalPeriod,
-                this.trackedSubjects);
+                this.trackedSubjects,
+                this.ledger.isDeploymentWide() ? "deployment-wide" : "this instance only");
     }
 
     /**
@@ -278,21 +295,45 @@ public class SignOnAttemptGovernor {
     }
 
     /**
-     * Clears both subjects of an attempt that authenticated.
+     * Clears the <em>authenticated identity</em> of an attempt that authenticated, and nothing else.
      *
      * <p>An operator who mistypes a secret several times and then gets it right must not carry the
-     * earlier failures towards a later refusal, so success releases the identity. It releases the source
-     * too, because a source that produced a genuine sign-on is by that evidence not mid-sweep.
+     * earlier failures towards a later refusal, so success releases that identity. That is the whole of
+     * what a successful credential establishes, and it is therefore the whole of what is released.
      *
-     * @param userId    the identifier that authenticated
-     * @param sourceKey the caller address the boundary attributed, possibly {@code null}
+     * <h2>Why the source subject is deliberately NOT released</h2>
+     *
+     * <p>This method used to release the source as well, on the reasoning that a source which produced a
+     * genuine sign-on is by that evidence not mid-sweep. The reasoning does not hold, and the gap it left
+     * is the one the source namespace exists to close. An enumeration sweep is driven from <em>somewhere</em>,
+     * and the caller driving it needs only one credential it is entitled to - its own, a colleague's, a
+     * shared low-privilege operator account, an identity it created through the very surface it is
+     * enumerating - to clear the source-wide failure record on demand. The sweep then resumed at full
+     * rate: exhaust the source allowance, sign in once legitimately, resume. The source counter existed,
+     * counted correctly, and could be reset at will by the party it was counting.
+     *
+     * <p>So a success now says only "this identity's own history is spent". The source's history is
+     * released by <em>time</em> and by nothing else: an entry outside its failure window restarts its
+     * count on the next failure, an engaged refusal lifts when its period expires, and the capacity sweep
+     * removes an entry that is neither refusing nor inside its window. None of those is reachable by
+     * presenting a credential, which is what makes the source namespace a bound on the caller rather than
+     * a formality.
+     *
+     * <p>The cost of this is bounded and is stated rather than hidden. An operator behind an address that
+     * has genuinely exhausted its allowance - a shared office egress address, several operators mistyping
+     * inside one window - waits out the refusal period even after a correct credential. The allowance and
+     * the period are both configuration for that reason, and the alternative is a bypass any caller can
+     * take.
+     *
+     * <p>Recorded in {@code docs/decision-log.md} entry DL-342.
+     *
+     * @param userId the identifier that authenticated
      */
-    public void recordSuccess(final String userId, final String sourceKey) {
+    public void recordSuccess(final String userId) {
         if (!this.enabled) {
             return;
         }
-        releaseIfPresent(identitySubject(userId));
-        releaseIfPresent(sourceSubject(sourceKey));
+        this.ledger.release(identitySubject(userId));
     }
 
     /**
@@ -305,22 +346,16 @@ public class SignOnAttemptGovernor {
      * keeps the fail-closed answer proportional - a subject-flooding attack locks out the operators who
      * had not attempted a sign-on before it began, rather than every operator.
      *
-     * <p>Read from the reservation counter rather than from the table's {@code size()}, for the same
-     * reason admission is: the counter is the authority on occupancy and {@code size()} is an estimate.
+     * <p>The question is asked of the ledger rather than answered here, because occupancy is a property of
+     * the stored state and only the store can decide it without racing its own writers.
      *
      * @param  identitySubject the prefixed identity subject
      * @param  sourceSubject   the prefixed source subject
      * @return {@code true} when the attempt must be refused because it could not be counted
      */
     private boolean saturatedFor(final String identitySubject, final String sourceSubject) {
-        if (this.records.containsKey(identitySubject) || this.records.containsKey(sourceSubject)) {
-            return false;
-        }
-        if (this.reservedSlots.get() < this.trackedSubjects) {
-            return false;
-        }
-        sweepExpired();
-        if (this.reservedSlots.get() < this.trackedSubjects) {
+        if (this.ledger.canBeginTracking(identitySubject, sourceSubject, this.clock.instant(),
+                this.policy)) {
             return false;
         }
         count(SATURATED_METRIC, SOURCE_NAMESPACE,
@@ -354,12 +389,25 @@ public class SignOnAttemptGovernor {
     /**
      * Reports how many subjects are currently tracked.
      *
-     * <p>Published so that the bounded-memory property can be asserted rather than assumed.
+     * <p>Published so that the bounded-storage property can be asserted rather than assumed.
      *
      * @return the number of tracked subjects
      */
     public int trackedSubjectCount() {
-        return this.records.size();
+        return this.ledger.trackedSubjectCount();
+    }
+
+    /**
+     * Reports whether the attempt state this governor applies is shared by every instance.
+     *
+     * <p>Published because it is the difference the security posture turns on, and because it is what a
+     * production start-up refuses when it is {@code false}: an allowance held per process is multiplied by
+     * the number of processes and reset by every restart.
+     *
+     * @return {@code true} when the injected ledger's state is shared and durable across instances
+     */
+    public boolean isDeploymentWideState() {
+        return this.ledger.isDeploymentWide();
     }
 
     /**
@@ -370,12 +418,7 @@ public class SignOnAttemptGovernor {
      * @return {@code true} when this subject is currently refused
      */
     private boolean refusing(final String subject, final String namespace) {
-        final AttemptRecord existing = this.records.get(subject);
-        if (existing == null) {
-            return false;
-        }
-        final Instant now = this.clock.instant();
-        if (existing.refusedUntil() == null || !now.isBefore(existing.refusedUntil())) {
+        if (!this.ledger.isRefusing(subject, this.clock.instant())) {
             return false;
         }
         count(REFUSED_METRIC, namespace,
@@ -384,174 +427,56 @@ public class SignOnAttemptGovernor {
     }
 
     /**
-     * Applies one failure to one subject atomically, engaging the refusal when the allowance is spent.
+     * Applies one failure to one subject, and turns what the ledger did into counters and log records.
+     *
+     * <p>The transition itself belongs to {@link SignOnAttemptLedger}, which owns both the state and the
+     * pure function that advances it. What is left here is the observability: which counter to increment,
+     * and whether an operator needs to be told something. Five outcomes, and each says something different
+     * to an operator:
+     *
+     * <ul>
+     *   <li>a counted failure and a failure that engaged a refusal are both recorded, and only the second
+     *       is announced;</li>
+     *   <li>a failure against a subject already refused is recorded and not announced, because the
+     *       refusal it belongs to was announced when it engaged;</li>
+     *   <li>the ceiling declining a new subject is announced, because it means the protection is at its
+     *       limit, while the immaterial race that looks like it is not;</li>
+     *   <li>an unreachable ledger gets its own counter, because it means the protection is not working -
+     *       the ledger has already logged that fault, so nothing is logged twice here.</li>
+     * </ul>
      *
      * @param subject   the prefixed subject
      * @param namespace the namespace, for the counter tags and the log record
      */
     private void record(final String subject, final String namespace) {
-        final Instant now = this.clock.instant();
-        final boolean[] engaged = {false};
-        final boolean[] consumed = {false};
-        // Decided BEFORE the computation, and this is the whole of the fix. A mapping function can see
-        // one key; the ceiling is a property of the map. Deciding admission inside the computation meant
-        // two first-attempts for different subjects each observed room and each took it, and it also meant
-        // the sweep that frees room ran while a bin was locked - a mapping function is forbidden from
-        // modifying the map it is computing in, and doing so risks not terminating rather than merely
-        // being untidy. See docs/decision-log.md entry DL-308.
-        final Reservation reservation = reserveIfNeeded(subject);
-        final AttemptRecord updated = this.records.compute(subject, (key, current) -> {
-            if (current == null) {
-                if (reservation != Reservation.HELD) {
-                    return null;
-                }
-                consumed[0] = true;
-                return new AttemptRecord(1, now, null);
+        final SignOnAttemptLedger.FailureOutcome outcome =
+                this.ledger.recordFailure(subject, this.clock.instant(), this.policy);
+        switch (outcome) {
+            case COUNTED, ALREADY_REFUSING -> count(RECORDED_METRIC, namespace,
+                    "sign-on attempts recorded as failures by the governor");
+            case REFUSAL_ENGAGED -> {
+                count(RECORDED_METRIC, namespace,
+                        "sign-on attempts recorded as failures by the governor");
+                count(ENGAGED_METRIC, namespace, "transitions into a temporarily refusing state");
+                // No identifier and no address: an operator needs to know that the protection engaged and
+                // in which namespace, and a log record naming the subject would put an enumerated
+                // identifier or a caller address into the log for the caller's benefit rather than ours.
+                LOG.warn("Sign-on attempts temporarily refused: namespace={} allowance={} window={}"
+                                + " refusalPeriod={}",
+                        namespace, this.maxFailures, this.failureWindow, this.refusalPeriod);
             }
-            // A refusal already in force is left exactly as it is: extending it on every further
-            // attempt would make the period unbounded, which is a caller-driven denial of service
-            // against whoever legitimately owns the subject.
-            if (current.refusedUntil() != null && now.isBefore(current.refusedUntil())) {
-                return current;
-            }
-            // Outside the window the count restarts rather than accumulating for ever, so an operator
-            // who mistypes once a month is never refused.
-            final int failures = now.isBefore(current.windowStartedAt().plus(this.failureWindow))
-                    ? current.failures() + 1
-                    : 1;
-            final Instant windowStart = failures == 1 ? now : current.windowStartedAt();
-            if (failures >= this.maxFailures) {
-                engaged[0] = true;
-                return new AttemptRecord(0, now, now.plus(this.refusalPeriod));
-            }
-            return new AttemptRecord(failures, windowStart, null);
-        });
-        if (reservation == Reservation.HELD && !consumed[0]) {
-            // The subject already existed, so the slot was not needed after all. Returning it is what
-            // keeps the counter equal to the map's size; keeping it would leak the ceiling downwards until
-            // no new subject could ever be tracked.
-            this.reservedSlots.decrementAndGet();
-        }
-        if (updated == null) {
-            count(UNTRACKED_METRIC, namespace,
-                    "subjects the tracking ceiling declined to begin counting");
-            if (reservation == Reservation.REFUSED) {
+            case DECLINED_AT_CEILING -> {
+                count(UNTRACKED_METRIC, namespace,
+                        "subjects the tracking ceiling declined to begin counting");
                 LOG.warn("Sign-on governor is tracking its configured maximum of {} subjects, so one"
                                 + " further subject is not being counted; raise {} if this recurs"
                                 + " outside an attack",
                         this.trackedSubjects, TRACKED_SUBJECTS_PROPERTY);
             }
-            return;
-        }
-        count(RECORDED_METRIC, namespace, "sign-on attempts recorded as failures by the governor");
-        if (engaged[0]) {
-            count(ENGAGED_METRIC, namespace, "transitions into a temporarily refusing state");
-            // No identifier and no address: an operator needs to know that the protection engaged and
-            // in which namespace, and a log record naming the subject would put an enumerated
-            // identifier or a caller address into the log for the caller's benefit rather than ours.
-            LOG.warn("Sign-on attempts temporarily refused: namespace={} allowance={} window={}"
-                            + " refusalPeriod={}",
-                    namespace, this.maxFailures, this.failureWindow, this.refusalPeriod);
-        }
-    }
-
-    /** What the caller of {@link #reserveIfNeeded} holds when the per-key computation runs. */
-    private enum Reservation {
-
-        /** A slot was taken and must be consumed by an insertion or returned. */
-        HELD,
-
-        /** The subject was already tracked, so no slot was taken and none is owed. */
-        NOT_NEEDED,
-
-        /** The ceiling was reached even after a sweep, so no new subject may be inserted. */
-        REFUSED
-    }
-
-    /**
-     * Takes a tracking slot for a subject that does not yet have one.
-     *
-     * <p>The probe for an existing subject is a fast path and not a correctness guarantee: an entry can
-     * be swept between the probe and the computation. When that happens the computation finds no mapping
-     * while holding no reservation and declines, so this attempt goes uncounted for that subject. That is
-     * a deliberate and immaterial loss - an entry is only ever swept once it is neither refusing nor
-     * inside its window, which is exactly the state in which the next failure restarts the count at one
-     * anyway - and it is the price of never inserting without a reservation, which is what keeps the
-     * bound absolute.
-     *
-     * @param  subject the prefixed subject about to be recorded
-     * @return what the caller holds
-     */
-    private Reservation reserveIfNeeded(final String subject) {
-        if (this.records.containsKey(subject)) {
-            return Reservation.NOT_NEEDED;
-        }
-        if (tryReserveSlot()) {
-            return Reservation.HELD;
-        }
-        // Only here, outside every computation, is it safe to remove other mappings.
-        sweepExpired();
-        return tryReserveSlot() ? Reservation.HELD : Reservation.REFUSED;
-    }
-
-    /**
-     * Takes one slot if the ceiling leaves room, atomically.
-     *
-     * @return {@code true} when a slot was taken and is now owed back or consumed
-     */
-    private boolean tryReserveSlot() {
-        int taken = this.reservedSlots.get();
-        while (taken < this.trackedSubjects) {
-            if (this.reservedSlots.compareAndSet(taken, taken + 1)) {
-                return true;
-            }
-            taken = this.reservedSlots.get();
-        }
-        return false;
-    }
-
-    /**
-     * Removes one subject and returns its slot, if it was there to remove.
-     *
-     * <p>Conditional on the removal actually happening, because two callers can ask to release the same
-     * subject and only one of them frees a slot. Decrementing unconditionally would drift the counter
-     * below the map's size and hand out slots that do not exist.
-     *
-     * @param subject the prefixed subject to release
-     */
-    private void releaseIfPresent(final String subject) {
-        if (this.records.remove(subject) != null) {
-            this.reservedSlots.decrementAndGet();
-        }
-    }
-
-    /**
-     * Removes every entry that is neither refusing nor inside its window.
-     *
-     * <p>A refusing entry is never swept, whatever the pressure on the map: dropping one would let a
-     * caller clear the record of its own abuse by generating subjects.
-     */
-    private void sweepExpired() {
-        final Instant now = this.clock.instant();
-        final Iterator<Map.Entry<String, AttemptRecord>> entries = this.records.entrySet().iterator();
-        while (entries.hasNext()) {
-            final Map.Entry<String, AttemptRecord> entry = entries.next();
-            final AttemptRecord record = entry.getValue();
-            final boolean stillRefusing =
-                    record.refusedUntil() != null && now.isBefore(record.refusedUntil());
-            final boolean insideWindow =
-                    now.isBefore(record.windowStartedAt().plus(this.failureWindow));
-            if (stillRefusing || insideWindow) {
-                continue;
-            }
-            // Removed by key AND value rather than through the iterator, for two reasons. It reports
-            // whether it actually removed anything, which is what makes the slot release exact when two
-            // threads sweep at once; and it declines to remove an entry another thread has replaced since
-            // this iteration observed it - which could otherwise discard a refusal that had just engaged,
-            // letting a caller clear the record of its own abuse.
-            if (this.records.remove(entry.getKey(), record)) {
-                this.reservedSlots.decrementAndGet();
-            }
+            case DECLINED_BY_RACE -> count(UNTRACKED_METRIC, namespace,
+                    "subjects the tracking ceiling declined to begin counting");
+            case STORE_UNAVAILABLE -> count(UNAVAILABLE_METRIC, namespace,
+                    "failures the attempt ledger could not record because it could not be reached");
         }
     }
 
@@ -576,7 +501,7 @@ public class SignOnAttemptGovernor {
      */
     private static String identitySubject(final String userId) {
         final String folded = userId == null ? "" : userId.strip().toUpperCase(Locale.ROOT);
-        return IDENTITY_PREFIX + folded;
+        return bounded(IDENTITY_PREFIX + folded);
     }
 
     /**
@@ -587,7 +512,7 @@ public class SignOnAttemptGovernor {
         final String resolved = sourceKey == null || sourceKey.isBlank()
                 ? UNATTRIBUTED_SOURCE
                 : sourceKey.strip();
-        return SOURCE_PREFIX + resolved;
+        return bounded(SOURCE_PREFIX + resolved);
     }
 
     /**
@@ -618,12 +543,30 @@ public class SignOnAttemptGovernor {
     }
 
     /**
-     * One subject's accumulated state.
+     * Cuts a subject to the greatest length a ledger will store.
      *
-     * @param failures      failures inside the current window
-     * @param windowStartedAt when the current window began
-     * @param refusedUntil  when the refusal lifts, or {@code null} when the subject is not refused
+     * <p>An ordinary subject is nowhere near the bound - the delivered sign-on contract stops an identifier
+     * at eight characters, so an ordinary identity subject is ten - and the bound exists for a caller that
+     * reaches this service below that contract. Without it a caller chooses the size of a stored key, which
+     * in a durable ledger is a storage lever and an index-size one besides.
+     *
+     * <p>Two over-long subjects that coincide once cut share one allowance. That can only happen between
+     * values no delivered identity could hold, and it makes the throttle stricter rather than weaker, so it
+     * is accepted rather than worked around.
+     *
+     * <p>The cut steps back off a trailing high surrogate. Splitting a surrogate pair leaves a lone
+     * surrogate, which is not a character any encoding can represent - a durable store would reject the
+     * write outright, and a rejected write is an uncounted failure.
+     *
+     * @param  subject the prefixed subject
+     * @return the subject, cut to {@link SignOnAttemptLedger#MAX_SUBJECT_LENGTH} if it was longer
      */
-    private record AttemptRecord(int failures, Instant windowStartedAt, Instant refusedUntil) {
+    private static String bounded(final String subject) {
+        if (subject.length() <= SignOnAttemptLedger.MAX_SUBJECT_LENGTH) {
+            return subject;
+        }
+        final int limit = SignOnAttemptLedger.MAX_SUBJECT_LENGTH;
+        final int end = Character.isHighSurrogate(subject.charAt(limit - 1)) ? limit - 1 : limit;
+        return subject.substring(0, end);
     }
 }

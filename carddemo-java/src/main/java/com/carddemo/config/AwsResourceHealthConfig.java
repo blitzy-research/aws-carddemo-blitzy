@@ -39,7 +39,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.actuate.health.Health;
@@ -97,6 +99,23 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * exceeds its deadline reports DOWN with a bounded reason rather than making the caller wait, which is
  * the correct answer: a resource that cannot answer in that time cannot serve a request either.
  *
+ * <h2>Probe volume does not set provider call volume</h2>
+ *
+ * <p>A deadline bounds how long one evaluation may take. It says nothing about how many evaluations
+ * happen, and the callers here are not all trusted: the aggregate health endpoint and the readiness
+ * group are deliberately reachable without a credential, because an orchestrator and a Compose
+ * dependent must be able to ask whether this instance can serve before they have any way to obtain one.
+ * Every probe used to be its own bucket existence call, its own queue attribute resolution and its own
+ * topic listing, so an unauthenticated caller chose the rate at which this deployment called its
+ * provider - which is provider throttling, metered request cost and, against a provider that answers
+ * slowly, exhaustion of the very worker slots the deadline depends on, all driven from outside.
+ *
+ * <p>Each contributor therefore answers from its own recent result for
+ * {@value #RESULT_FRESHNESS_MILLIS} ms and coalesces concurrent evaluations onto one, so the resource
+ * behind it is asked at most once per window however often the component is probed. What a caller is
+ * told is unchanged - the same three outcomes, the same bounded reasons, the same transition log lines -
+ * and the answer can be at most one window old. Decision-log entry DL-344 records the reasoning.
+ *
  * <h2>Absorbed failures are logged, not only detailed</h2>
  *
  * <p>Reducing a failure to a bounded detail is right for the response body and insufficient on its own.
@@ -132,6 +151,37 @@ public final class AwsResourceHealthConfig {
 
     /** Worst case for all three checks together, stated so the probe budget can be checked by reading. */
     static final long TOTAL_AWS_BUDGET_MILLIS = 3 * CHECK_DEADLINE_MILLIS;
+
+    /**
+     * How long one component answers from its own most recent result before the resource is asked again.
+     *
+     * <p><strong>Why a result is reused at all.</strong> Because the callers include anonymous ones. The
+     * aggregate health endpoint and the readiness group are reachable with no credential by design, so
+     * without a window every request an unauthenticated caller made became a provider call this
+     * deployment paid for and was throttled on. A deadline cannot close that: it bounds one evaluation
+     * and there is no limit on how many evaluations a caller may ask for. Reusing a recent result
+     * decouples the two - probe volume becomes free, and provider call volume is set by this window.
+     *
+     * <p><strong>Why this length.</strong> It is longer than {@link #CHECK_DEADLINE_MILLIS}, so a result
+     * cannot expire before the evaluation that produced it was even allowed to finish, and shorter than
+     * the ten-second interval the container health check runs at, so a probe arriving on that documented
+     * cadence still causes a fresh evaluation and readiness keeps tracking the resource rather than a
+     * memory of it. The staleness a caller can therefore meet is at most this window - well inside the
+     * several probe periods an orchestrator waits before acting on a change of state, and far shorter
+     * than the interval at which a resource is provisioned or withdrawn.
+     *
+     * <p>It is not a service level and asserts nothing about how fast a provider ought to be.
+     */
+    static final long RESULT_FRESHNESS_MILLIS = 2_000L;
+
+    /**
+     * {@link #RESULT_FRESHNESS_MILLIS} in the unit the monotonic clock reports, converted once.
+     *
+     * <p>Elapsed nanoseconds rather than wall time deliberately: a clock correction can step wall time
+     * backwards, which would either hold a window open indefinitely or expire it the moment it opened.
+     */
+    private static final long RESULT_FRESHNESS_NANOS =
+            TimeUnit.MILLISECONDS.toNanos(RESULT_FRESHNESS_MILLIS);
 
     /**
      * The bean name of the bounded pool the two synchronous probes share.
@@ -271,12 +321,31 @@ public final class AwsResourceHealthConfig {
     @Bean
     public HealthIndicator awsS3HealthIndicator(final S3Operations s3Operations,
             @Qualifier(HEALTH_CHECK_EXECUTOR_BEAN) final ExecutorService workers) {
+        return awsS3HealthIndicator(s3Operations, workers, System::nanoTime);
+    }
+
+    /**
+     * Builds the object-store contributor over a supplied elapsed-time source.
+     *
+     * <p>The bean method above is this method with the process clock. The clock is a parameter so that
+     * the freshness window can be advanced in a specification rather than waited out, which is the only
+     * way an expiry is asserted rather than approximated by sleeping - and the only way the contributor
+     * a specification exercises is the delivered one rather than a re-assembly of its parts.
+     *
+     * @param s3Operations the auto-configured object-store facade; must not be {@code null}
+     * @param workers      the bounded pool this synchronous check is given a deadline on; must not be
+     *                     {@code null}
+     * @param ticker       a monotonic elapsed-nanosecond source; must not be {@code null}
+     * @return a read-only, deadline-bounded, freshness-bounded bucket existence check
+     */
+    HealthIndicator awsS3HealthIndicator(final S3Operations s3Operations,
+            final ExecutorService workers, final LongSupplier ticker) {
         Objects.requireNonNull(s3Operations, "s3Operations must not be null");
         Objects.requireNonNull(workers, "workers must not be null");
         final String bucket = this.awsProperties.s3().batchStagingBucket();
-        return existenceIndicator(COMPONENT_S3,
+        return freshnessBounded(existenceIndicator(COMPONENT_S3,
                 boundedByDeadline(workers, this.observationRegistry,
-                        () -> s3Operations.bucketExists(bucket)));
+                        () -> s3Operations.bucketExists(bucket))), ticker);
     }
 
     /**
@@ -299,6 +368,22 @@ public final class AwsResourceHealthConfig {
      */
     @Bean
     public HealthIndicator awsSqsHealthIndicator(final SqsAsyncClient sqsAsyncClient) {
+        return awsSqsHealthIndicator(sqsAsyncClient, System::nanoTime);
+    }
+
+    /**
+     * Builds the queue contributor over a supplied elapsed-time source.
+     *
+     * <p>The bean method above is this method with the process clock; see
+     * {@link #awsS3HealthIndicator(S3Operations, ExecutorService, LongSupplier)} for why the clock is a
+     * parameter.
+     *
+     * @param sqsAsyncClient the auto-configured queue client; must not be {@code null}
+     * @param ticker         a monotonic elapsed-nanosecond source; must not be {@code null}
+     * @return a read-only, deadline-bounded, freshness-bounded queue resolution check
+     */
+    HealthIndicator awsSqsHealthIndicator(final SqsAsyncClient sqsAsyncClient,
+            final LongSupplier ticker) {
         Objects.requireNonNull(sqsAsyncClient, "sqsAsyncClient must not be null");
         final QueueAttributesResolver resolver = QueueAttributesResolver.builder()
                 .queueName(this.awsProperties.sqs().jobQueue())
@@ -306,8 +391,8 @@ public final class AwsResourceHealthConfig {
                 .queueAttributeNames(List.of(QueueAttributeName.QUEUE_ARN))
                 .queueNotFoundStrategy(QueueNotFoundStrategy.FAIL)
                 .build();
-        return existenceIndicator(COMPONENT_SQS,
-                () -> awaitWithinDeadline(resolver.resolveQueueAttributes()));
+        return freshnessBounded(existenceIndicator(COMPONENT_SQS,
+                () -> awaitWithinDeadline(resolver.resolveQueueAttributes())), ticker);
     }
 
     /**
@@ -353,16 +438,39 @@ public final class AwsResourceHealthConfig {
     public HealthIndicator awsSnsHealthIndicator(final SnsClient snsClient,
             final SnsOperations snsOperations,
             @Qualifier(HEALTH_CHECK_EXECUTOR_BEAN) final ExecutorService workers) {
+        return awsSnsHealthIndicator(snsClient, snsOperations, workers, System::nanoTime);
+    }
+
+    /**
+     * Builds the notification contributor over a supplied elapsed-time source.
+     *
+     * <p>The bean method above is this method with the process clock; see
+     * {@link #awsS3HealthIndicator(S3Operations, ExecutorService, LongSupplier)} for why the clock is a
+     * parameter. Both provider calls stay inside one deadline and inside one freshness window, because
+     * the pair is one logical existence question.
+     *
+     * @param snsClient     the auto-configured notification client used only for topic listing; must not
+     *                      be {@code null}
+     * @param snsOperations the auto-configured notification facade used for the attribute check; must not
+     *                      be {@code null}
+     * @param workers       the bounded pool this synchronous check is given a deadline on; must not be
+     *                      {@code null}
+     * @param ticker        a monotonic elapsed-nanosecond source; must not be {@code null}
+     * @return a read-only, deadline-bounded, freshness-bounded topic existence check
+     */
+    HealthIndicator awsSnsHealthIndicator(final SnsClient snsClient,
+            final SnsOperations snsOperations, final ExecutorService workers,
+            final LongSupplier ticker) {
         Objects.requireNonNull(snsClient, "snsClient must not be null");
         Objects.requireNonNull(snsOperations, "snsOperations must not be null");
         Objects.requireNonNull(workers, "workers must not be null");
         final TopicArnResolver resolver = new TopicsListingTopicArnResolver(snsClient);
         final String topic = this.awsProperties.sns().jobNotificationTopic();
-        return existenceIndicator(COMPONENT_SNS,
+        return freshnessBounded(existenceIndicator(COMPONENT_SNS,
                 boundedByDeadline(workers, this.observationRegistry, () -> {
                     final String topicArn = resolver.resolveTopicArn(topic).toString();
                     return snsOperations.topicExists(topicArn);
-                }));
+                })), ticker);
     }
 
     /**
@@ -409,6 +517,126 @@ public final class AwsResourceHealthConfig {
                 throw unwrapped(failed);
             }
         };
+    }
+
+    /**
+     * Bounds how often a contributor's resource is actually asked, without changing what it answers.
+     *
+     * <p>Two mechanisms, closing different halves of one hole. <strong>Reuse</strong> serves a recent
+     * result to a later probe, so a sustained stream of probes costs one provider call per
+     * {@value #RESULT_FRESHNESS_MILLIS} ms rather than one per probe. <strong>Coalescing</strong> makes
+     * concurrent probes that all find the window expired share the single evaluation the first of them
+     * starts, which is the case reuse alone cannot help: every member of a simultaneous burst misses the
+     * same expired window, so a burst would otherwise become a burst of provider calls.
+     *
+     * <p><strong>Every outcome is reused, not only the healthy one.</strong> A DOWN caused by an absent
+     * resource, an expired deadline or a provider that stopped answering is exactly the state in which
+     * unbounded re-asking hurts most - it is also the state in which each attempt occupies a worker slot
+     * until the transport releases it - so a window that skipped failures would leave the amplification
+     * in place for the situation it was added for.
+     *
+     * <p><strong>What a caller sees is unchanged.</strong> The wrapped contributor still decides every
+     * outcome, still reduces a failure to a bounded chain and still logs its own state transitions; this
+     * wrapper only decides whether that contributor is consulted or its last answer repeated. Because a
+     * repeat is not an evaluation, a transition is logged when the state actually changes rather than
+     * once per probe, which is the same rule the contributor already followed.
+     *
+     * <p>A probe that finds an evaluation already running takes the previous answer when there is one and
+     * waits at most one {@value #CHECK_DEADLINE_MILLIS} ms deadline when there is not - which is only the
+     * first evaluation after start-up. Expiring that wait reports the same bounded
+     * {@value #DEADLINE_EXCEEDED} a silent provider would, because from the caller's position that is
+     * precisely what happened: no answer arrived inside a check's deadline. No path here waits without a
+     * bound.
+     *
+     * @param delegate the contributor whose result is reused; must not be {@code null}
+     * @param ticker   a monotonic elapsed-nanosecond source; must not be {@code null}
+     * @return a contributor that answers as {@code delegate} does while consulting it at most once per
+     *         window
+     */
+    private static HealthIndicator freshnessBounded(final HealthIndicator delegate,
+            final LongSupplier ticker) {
+        Objects.requireNonNull(delegate, "delegate must not be null");
+        Objects.requireNonNull(ticker, "ticker must not be null");
+        final AtomicReference<RecentAnswer> recent = new AtomicReference<>(null);
+        final ReentrantLock evaluating = new ReentrantLock();
+        return () -> {
+            final RecentAnswer reusable = recent.get();
+            if (isFresh(reusable, ticker)) {
+                return reusable.health();
+            }
+            if (!evaluating.tryLock()) {
+                // Somebody else is already asking the resource. Repeating their previous answer is
+                // better than starting a second call to the same resource, and it is what makes a burst
+                // cost one call rather than one call per member of the burst.
+                if (reusable != null) {
+                    return reusable.health();
+                }
+                if (!awaitFirstEvaluation(evaluating)) {
+                    return Health.down().withDetail("reason", DEADLINE_EXCEEDED).build();
+                }
+            }
+            try {
+                // Re-read under the lock: the evaluation this probe waited for has just published its
+                // answer, and asking the resource again would defeat the coalescing.
+                final RecentAnswer justPublished = recent.get();
+                if (isFresh(justPublished, ticker)) {
+                    return justPublished.health();
+                }
+                final Health evaluated = delegate.health();
+                recent.set(new RecentAnswer(evaluated, ticker.getAsLong() + RESULT_FRESHNESS_NANOS));
+                return evaluated;
+            } finally {
+                evaluating.unlock();
+            }
+        };
+    }
+
+    /**
+     * Waits for the first evaluation of a component to publish an answer, for no longer than one check's
+     * deadline.
+     *
+     * <p>Reached only when a component has no previous answer at all, which is the first probe after
+     * start-up. The interrupt is restored before reporting, because swallowing it would leave a thread
+     * that has been asked to stop believing it has not been.
+     *
+     * @param evaluating the lock the evaluating probe holds
+     * @return {@code true} when the lock was acquired, and the caller must release it
+     */
+    private static boolean awaitFirstEvaluation(final ReentrantLock evaluating) {
+        try {
+            return evaluating.tryLock(CHECK_DEADLINE_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /**
+     * Reports whether a remembered answer may still be repeated.
+     *
+     * <p>The comparison is a difference rather than an ordering, because a monotonic clock's readings
+     * are only meaningful relative to each other and an absolute comparison would be wrong once the
+     * reading wraps.
+     *
+     * @param answer the remembered answer, or {@code null} when the component has never been evaluated
+     * @param ticker the elapsed-nanosecond source
+     * @return {@code true} when {@code answer} exists and its window has not closed
+     */
+    private static boolean isFresh(final RecentAnswer answer, final LongSupplier ticker) {
+        return answer != null && ticker.getAsLong() - answer.freshUntilNanos() < 0L;
+    }
+
+    /**
+     * One component's most recent answer together with the reading at which it stops being repeated.
+     *
+     * <p>The two are held as one value rather than as two fields so that "is there an answer, and is it
+     * still fresh" is a single atomic read. Held separately, a probe could observe a new answer beside
+     * the previous window - or the reverse - and ask the resource again for no reason.
+     *
+     * @param health          the answer to repeat
+     * @param freshUntilNanos the elapsed-nanosecond reading at which the window closes
+     */
+    private record RecentAnswer(Health health, long freshUntilNanos) {
     }
 
     /**

@@ -361,8 +361,17 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     /** Gated steps in this member: its second, third and fourth. */
     private static final int GATE_COUNT = 3;
 
-    /** Delivered migrations: two of schema, two of seed, and no fifth for the absorbed cluster. */
-    private static final int MIGRATION_VERSION_COUNT = 4;
+    /**
+     * Delivered migrations: four of schema, two of seed, and no seventh for the absorbed cluster.
+     *
+     * <p>The third and fourth schema scripts are the deployment-wide sign-on attempt ledger and the
+     * protected-value invariants, and each takes a <em>dotted</em> version <strong>below</strong> both seed
+     * versions - {@code 2 < 2.1 < 2.2 < 3} - for the reasons {@code docs/decision-log.md} DL-343 and DL-349
+     * record. They are counted here because they are delivered; what this constant asserts is that the
+     * transient cluster this job's legacy stream defined and destroyed became an in-job result rather than
+     * a migration of its own.</p>
+     */
+    private static final int MIGRATION_VERSION_COUNT = 6;
 
     /** Rule-line emissions per statement: three declared positions, two of them written twice. */
     private static final int RULE_LINES_PER_STATEMENT = 6;
@@ -1328,7 +1337,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
 
     @Test
     @DisplayName("the absorbed transient definition leaves no schema artefact: eleven application "
-            + "tables and four migrations, unchanged")
+            + "tables and six migrations, unchanged")
     void theAbsorbedTransientDefinitionLeavesNoSchemaArtefact() throws Exception {
         assertThat(applicationTableNames())
                 .as("the transient cluster is created and destroyed inside this one job stream, so it"

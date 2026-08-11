@@ -19,6 +19,8 @@ package com.carddemo.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.carddemo.support.AbstractLocalStackIT;
+import com.carddemo.util.AwsResourcePolicyRules;
+import com.carddemo.util.AwsResourcePolicyRules.PolicyPosture;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +39,8 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
+import software.amazon.awssdk.services.s3.model.PublicAccessBlockConfiguration;
+import software.amazon.awssdk.services.s3.model.ServerSideEncryption;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
@@ -280,6 +284,56 @@ class LocalStackBootstrapIT {
         }
     }
 
+    /**
+     * Returns the topic's identifier as the emulator reports it.
+     *
+     * @return the only topic's identifier
+     */
+    private static String topicArn() {
+        try (SnsClient client = snsClient()) {
+            return client.listTopics().topics().get(0).topicArn();
+        }
+    }
+
+    /**
+     * Returns the policy the emulator holds against the queue, or {@code null} when it holds none.
+     *
+     * @return the queue's own policy document
+     */
+    private static String queuePolicy() {
+        try (SqsClient client = sqsClient()) {
+            return client.getQueueAttributes(request -> request
+                            .queueUrl(queueUrl())
+                            .attributeNames(QueueAttributeName.POLICY))
+                    .attributes()
+                    .get(QueueAttributeName.POLICY);
+        }
+    }
+
+    /**
+     * Returns the policy the emulator holds against the topic, or {@code null} when it holds none.
+     *
+     * @return the topic's own policy document
+     */
+    private static String topicPolicy() {
+        try (SnsClient client = snsClient()) {
+            return client.getTopicAttributes(request -> request.topicArn(topicArn()))
+                    .attributes()
+                    .get("Policy");
+        }
+    }
+
+    /**
+     * Returns the policy the emulator holds against the bucket.
+     *
+     * @return the bucket's own policy document
+     */
+    private static String bucketPolicy() {
+        try (S3Client client = s3Client()) {
+            return client.getBucketPolicy(request -> request.bucket(BUCKET)).policy();
+        }
+    }
+
     @Nested
     @DisplayName("the first run")
     final class TheFirstRun {
@@ -306,6 +360,15 @@ class LocalStackBootstrapIT {
                     .contains("queue " + QUEUE + " verified at")
                     .contains("bucket " + BUCKET + " object versioning verified: "
                             + BucketVersioningStatus.ENABLED.toString())
+                    .as("the access posture of each resource is reported on its own line, because a "
+                            + "posture that was applied and not read back is a posture nobody has "
+                            + "evidence of")
+                    .contains("queue " + QUEUE + " policy verified:")
+                    .contains("bucket " + BUCKET + " public access verified: all 4 controls set")
+                    .contains("bucket " + BUCKET + " policy verified:")
+                    .contains("bucket " + BUCKET + " default encryption verified: "
+                            + ServerSideEncryption.AES256.toString())
+                    .contains("topic " + TOPIC + " policy verified:")
                     .contains("topic " + TOPIC + " verified at")
                     .contains("AWS resource bootstrap complete: " + PROVISIONED_RESOURCE_COUNT
                             + " of " + PROVISIONED_RESOURCE_COUNT
@@ -413,6 +476,22 @@ class LocalStackBootstrapIT {
                     .hasSize(1)
                     .allSatisfy(url -> assertThat(url).endsWith("/" + QUEUE));
         }
+
+        @Test
+        @DisplayName("carries a policy the production trust check would accept, and it grants nothing")
+        void carriesAPolicyTheProductionCheckWouldAccept() {
+            final String policy = queuePolicy();
+
+            assertThat(AwsResourcePolicyRules.postureOf(policy, "sqs"))
+                    .as("the attached document must open the queue to nobody and deny plain transport")
+                    .isEqualTo(PolicyPosture.SOUND);
+            assertThat(policy)
+                    .as("this deployment's own access to the queue is granted by the identity it runs "
+                            + "as, so the resource grants nothing at all")
+                    .doesNotContain("\"Allow\"")
+                    .as("and the denial names this queue rather than every queue")
+                    .contains(":" + QUEUE);
+        }
     }
 
     @Nested
@@ -438,9 +517,11 @@ class LocalStackBootstrapIT {
         @DisplayName("has object versioning enabled, which is the generation-data-group replacement")
         void hasObjectVersioningEnabled() {
             // Versioning is what carries the retained-history semantics of the legacy generation data
-            // groups, and it is the only setting the bucket needs: no retention rule, no encryption
-            // configuration and no object lock is applied, because none of them carries those
-            // semantics and none was configured in the estate.
+            // groups. It is not, as this comment used to say, the only setting the bucket needs: that
+            // claim was about generation semantics and said nothing about who can read the objects or
+            // whether they are encrypted, and both are now provisioned and asserted below. No
+            // retention rule and no object lock is applied, because neither carries those semantics
+            // and neither was configured in the estate.
             final BucketVersioningStatus status;
             try (S3Client client = s3Client()) {
                 status = client.getBucketVersioning(request -> request.bucket(BUCKET)).status();
@@ -466,6 +547,56 @@ class LocalStackBootstrapIT {
             assertThat(objectCount)
                     .as("the bootstrap must create no object of any kind in the staging bucket")
                     .isZero();
+        }
+
+        @Test
+        @DisplayName("blocks every route to public access, all four controls, read through the SDK")
+        void blocksEveryRouteToPublicAccess() {
+            // All four, because two govern access-control lists and two govern policies: three of four
+            // leaves one route to statements, reports and rejected records open, and which route is
+            // open is not something a later reader could tell.
+            final PublicAccessBlockConfiguration configuration;
+            try (S3Client client = s3Client()) {
+                configuration = client.getPublicAccessBlock(request -> request.bucket(BUCKET))
+                        .publicAccessBlockConfiguration();
+            }
+
+            assertThat(configuration).isNotNull();
+            assertThat(configuration.blockPublicAcls()).isTrue();
+            assertThat(configuration.ignorePublicAcls()).isTrue();
+            assertThat(configuration.blockPublicPolicy()).isTrue();
+            assertThat(configuration.restrictPublicBuckets()).isTrue();
+        }
+
+        @Test
+        @DisplayName("carries a policy the production trust check would accept, judged by the "
+                + "production rule itself rather than by a copy of it")
+        void carriesAPolicyTheProductionCheckWouldAccept() {
+            // The agreement that neither tier can make alone. The hook writes the document with the
+            // emulator's own tool; this reads it back through the SDK and hands it to
+            // AwsResourcePolicyRules - the same rule that refuses a production start-up. A document
+            // this hook writes that the verifier would refuse would otherwise pass every local gate
+            // and stop the deployment.
+            assertThat(AwsResourcePolicyRules.postureOf(bucketPolicy(), "s3"))
+                    .as("the attached document must open the bucket to nobody and deny plain transport")
+                    .isEqualTo(PolicyPosture.SOUND);
+        }
+
+        @Test
+        @DisplayName("encrypts by default, because no writer in this module names an algorithm per "
+                + "object")
+        void encryptsByDefault() {
+            final ServerSideEncryption algorithm;
+            try (S3Client client = s3Client()) {
+                algorithm = client.getBucketEncryption(request -> request.bucket(BUCKET))
+                        .serverSideEncryptionConfiguration()
+                        .rules()
+                        .get(0)
+                        .applyServerSideEncryptionByDefault()
+                        .sseAlgorithm();
+            }
+
+            assertThat(algorithm).isEqualTo(ServerSideEncryption.AES256);
         }
     }
 
@@ -503,6 +634,32 @@ class LocalStackBootstrapIT {
                     .as("nothing may be subscribed to the notification topic")
                     .isZero();
         }
+
+        @Test
+        @DisplayName("carries a policy the production trust check would accept, keeping a grant "
+                + "confined to the owning account beside the denial")
+        void carriesAPolicyTheProductionCheckWouldAccept() {
+            // Setting a policy replaces the one the notification service attaches on creation, so the
+            // grant is reproduced rather than dropped - narrowed to the two actions this module
+            // performs and confined by the condition the service's own default uses. That shape is
+            // exactly what makes the rule's treatment of a conditioned wildcard principal load-bearing:
+            // read as an open grant it would refuse every correctly-provisioned topic.
+            final String policy = topicPolicy();
+
+            assertThat(AwsResourcePolicyRules.postureOf(policy, "sns"))
+                    .as("the attached document must open the topic to nobody and deny plain transport")
+                    .isEqualTo(PolicyPosture.SOUND);
+            assertThat(policy)
+                    .as("the grant that remains is confined to the owning account and to the two "
+                            + "actions this module performs")
+                    .contains("AWS:SourceOwner")
+                    .contains("sns:Publish")
+                    .contains("sns:GetTopicAttributes")
+                    .as("and nothing else is granted: no subscribe, no permission change, no delete")
+                    .doesNotContain("sns:Subscribe")
+                    .doesNotContain("sns:AddPermission")
+                    .doesNotContain("sns:DeleteTopic");
+        }
     }
 
     @Nested
@@ -523,6 +680,9 @@ class LocalStackBootstrapIT {
             // not unexamined: the rerun still reads both resources back and still compares what it
             // finds, which is why it reports them as already present and verified in the same run.
             final String queueUrlBefore = queueUrl();
+            final String bucketPolicyBefore = bucketPolicy();
+            final String queuePolicyBefore = queuePolicy();
+            final String topicPolicyBefore = topicPolicy();
             final BucketVersioningStatus versioningBefore;
             try (S3Client client = s3Client()) {
                 versioningBefore =
@@ -560,6 +720,20 @@ class LocalStackBootstrapIT {
                         .isEqualTo(versioningBefore)
                         .isEqualTo(BucketVersioningStatus.ENABLED);
             }
+            // The posture is re-applied on every run by design, so "changes nothing" has to be
+            // asserted of the documents themselves rather than of the calls: a rerun that appended a
+            // statement, or replaced a document with a differently-ordered one, would accumulate state
+            // on a hook that runs at every container start.
+            assertThat(bucketPolicy())
+                    .as("re-applying the bucket policy must leave the same document")
+                    .isEqualTo(bucketPolicyBefore);
+            assertThat(queuePolicy())
+                    .as("re-applying the queue policy must leave the same document")
+                    .isEqualTo(queuePolicyBefore);
+            assertThat(topicPolicy())
+                    .as("re-applying the topic policy must leave the same document, and must not "
+                            + "accumulate a second grant beside the one it reproduces")
+                    .isEqualTo(topicPolicyBefore);
         }
 
         @Test

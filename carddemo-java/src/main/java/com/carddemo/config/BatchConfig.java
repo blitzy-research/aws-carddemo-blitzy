@@ -52,6 +52,7 @@ import org.springframework.context.annotation.Configuration;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.service.JobCompletionEvent;
 import com.carddemo.service.JobCompletionEventPublisher;
+import com.carddemo.util.SanitisedObservation;
 
 /**
  * Batch <em>infrastructure</em> for the migrated job tier: the small set of collaborators every job
@@ -163,7 +164,7 @@ import com.carddemo.service.JobCompletionEventPublisher;
  * the shared configuration declares; those tables are additional to, never instead of, the eleven
  * application tables that {@code db/migration/schema/V1__create_schema.sql} creates, and a table census
  * must exclude that prefix. {@code config/FlywayConfig} owns migration behaviour, the delivered migration
- * inventory stays at exactly four scripts, and none of them may define a metadata table.
+ * inventory stays at exactly five scripts, and none of them may define a metadata table.
  *
  * <p><strong>No tuning of any kind.</strong> No chunk size, commit interval, task executor, thread count,
  * skip limit, retry limit, time-out or pool setting appears here, in code or in a comment. No numeric
@@ -1124,13 +1125,18 @@ public final class BatchConfig {
                                     String.valueOf(jobExecution.getId()))
                             .lowCardinalityKeyValue(TAG_ARTIFACT_COUNT,
                                     String.valueOf(artifactCount));
-            // observe() opens the scope, records a failure on the span and stops the observation, which is
-            // the same shape every other outbound call in this module is observed with. The failure is then
-            // converted into the job's verdict below exactly as before; it is never rethrown from this
-            // callback, so a trace shows the boundary that failed AND the job still ends with a verdict.
+            // SanitisedObservation opens the scope, records a failure on the span and stops the
+            // observation, which is the same shape every other outbound call in this module is observed
+            // with - and it records the bounded type chain this module composed rather than the raw
+            // object-store failure, whose message and stack trace the tracing bridge would export. The
+            // observation's own observe() recorded the latter, so a publication failure published the
+            // bucket, the key and the endpoint to the collector while the verdict below stayed safe; see
+            // decision log DL-341. The failure is then converted into the job's verdict below exactly as
+            // before; it is never rethrown from this callback, so a trace shows the boundary that failed
+            // AND the job still ends with a verdict.
             final Runnable publish = () -> this.generationStore.publishRegistered(jobExecution);
             try {
-                publication.observe(publish);
+                SanitisedObservation.observeRunnable(publication, publish);
                 return PUBLICATION_PUBLISHED;
             } catch (final RuntimeException failure) {
                 failPublicationAndDiscardLocalArtifacts(jobExecution, failure);

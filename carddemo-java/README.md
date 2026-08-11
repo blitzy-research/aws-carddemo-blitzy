@@ -380,7 +380,7 @@ These are absences by design. Each one would break something specific if added:
 |---|---|
 | Lombok, MapStruct, Immutables, AutoValue — **any annotation processor** | The unsafe-code audit commits to a reflection count of **zero**, and under `-Werror` processor-generated code is a live source of build-failing warnings. Boilerplate is written explicitly instead. |
 | Any templating engine | Byte-identical statement output requires literal constants emitted in source order at exact width. A template engine introduces whitespace and ordering variability that the byte-equivalence gate would fail immediately. |
-| Redis or any application-level cache | The legacy system has no caching layer. Adding one would change the latency and consistency characteristics that the performance baseline is meant to record. |
+| Redis or any application-level cache | The legacy system has no caching layer. Adding one would change the latency and consistency characteristics that the performance baseline is meant to record. **This is about caching business data, and the readiness contributors' two-second freshness window is not that**: it bounds how often an *anonymous probe* can reach a cloud provider, holds no application record, and is read by no business path — see [Observability](#observability) and DL-344. |
 | The paid, commercially-licensed LocalStack tier | The **Community** edition covers S3, SQS and SNS, which is the entire AWS surface this module uses. No licence or auth token is required, none is configured, and none belongs in this repository. |
 | Gradle | Maven with the committed Wrapper was chosen because full version pinning plus a project-distributed build tool is the stronger guarantee of a reproducible, zero-warning, clean-checkout build. |
 | A surrogate primary key generator | Every JPA `@Id` is the business key that is the leading substring of the legacy record image. |
@@ -561,7 +561,7 @@ export SOURCE_REVISION="$(git rev-parse HEAD)"
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 docker compose up -d --build     # build the module image and start all six services
 docker compose ps                # every service should report (healthy)
-docker compose logs -f app       # four migrations, then the listening port
+docker compose logs -f app       # six migrations, then the listening port
 docker compose down              # stop and remove the containers — VOLUMES SURVIVE
 docker compose down -v           # …and delete the named volumes with them
 ```
@@ -705,6 +705,14 @@ diagnostics. Anonymous
 health checks receive aggregate status only. Component and detail data use
 `show-details: when-authorized` and `show-components: when-authorized`.
 
+The three health addresses stay reachable without a credential — an orchestrator has none to present —
+and the cost of probing them is bounded rather than the anonymity withdrawn. Each AWS readiness
+contributor answers from its own most recent result for two seconds and coalesces concurrent
+evaluations onto one, so the object store, the queue and the topic are each asked at most once per
+window however often the endpoint is probed; the aggregate endpoint caches its own answer for the same
+window. Probing more often therefore costs nothing beyond the endpoint, and a resource that goes away
+is still reported within one window. `docs/decision-log.md` DL-344 records the reasoning.
+
 Sign-on uses the seeded sample identifiers — `ADMIN001` for the administrator role and `USER0001` for
 the standard-user role. Their password is the single sample literal carried in the legacy
 user-provisioning job's in-stream cards, and it is stored **only as a BCrypt hash** by the seed
@@ -713,8 +721,17 @@ migration. These identifiers exist in the local and test profiles only.
 The REST surface publishes **20 operations over 19 paths**: 18 derived from the 17 screen transactions
 — sign-on's two turns share one path, first entry with no communication area and a submitted turn — plus
 two administrator-only batch-management operations. The batch routes have their own explicit
-`/api/batch/**` administrative-authority gate; they are not admitted by the authenticated-user
-catch-all.
+`/api/batch/**` administrative-authority gate.
+
+**Every address the filter chain admits is named individually, and everything else beneath `/api` is
+refused.** The eleven ordinary screen addresses each carry a rule requiring one of the two sign-on
+authorities; the administrative and batch-control prefixes each carry a rule requiring the
+administrative authority; sign-on is permitted; and a closing `denyAll` covers the rest of `/api`, so a
+signed-on caller addressing a path this module does not serve is refused rather than authorized and then
+answered as not-found. The `Access` column below is that decision, not a description of it — the
+delivered-surface oracle requires the router's mappings, this table and the chain's ordinary roster to
+agree, so a route added and left unclassified fails the build instead of becoming either unreachable or
+open. `docs/decision-log.md` DL-345 records the reasoning.
 
 This table is not the authority for the surface, and it is not allowed to drift from it either.
 [`DeliveredApiSurfaceOracleTest`](src/test/java/com/carddemo/api/DeliveredApiSurfaceOracleTest.java)
@@ -859,6 +876,32 @@ the legacy program-to-program transfer. Wrong credentials answer with the legacy
 character for character, because those strings are an external contract. A refused sign-on is answered
 without an `Authorization` header, so `$AUTH` simply comes back empty.
 
+#### Repeated sign-on is bounded, and in production the bound is deployment-wide
+
+The sign-on surface distinguishes an unknown identifier from a wrong secret, and verifies a secret with a
+deliberately expensive digest, so without a limit it is an enumeration oracle, a credential-stuffing
+channel and a processor-budget drain at once. A spent allowance is therefore refused **before any
+credential is read**, counted separately per identity and per caller address.
+
+Three properties of it are worth knowing before you deploy, because two of them are not defaults:
+
+* **A successful sign-on releases the identity alone.** The caller address keeps its history and decays
+  only by its own window, so one valid low-privilege login cannot clear a sweep that is walking generated
+  identifiers from the same address. DL-342.
+* **Where the count lives is a setting, and production must not take the default.**
+  `carddemo.security.sign-on.state-scope` is `instance` by default — correct for one process, wrong for
+  anything else, because N instances would grant N times the attempts and every restart would return
+  every allowance to full without anyone authenticating. `application-prod.yml` pins it to `deployment`,
+  which holds the count in the shared database under a ledger-wide advisory lock, so one allowance is one
+  allowance however many instances run and a refusal survives all of them restarting.
+  `config/SignOnThrottleConfig` **refuses to create the bean** under `prod` with any other value, so this
+  cannot be misconfigured quietly. DL-343.
+* **It needs nothing provisioned and it fails open.** The table ships as `V2_1` in the schema location
+  every profile already resolves, it is correct empty, it holds no business record, and it removes a
+  spent entry inside the same serialized transition that would otherwise extend it. If the store is
+  unreachable the governor reports that and **refuses nobody** — an outage of the throttle must not
+  become an outage of sign-on.
+
 #### Launching a job over HTTP, and asking after it
 
 ```bash
@@ -951,6 +994,35 @@ provider chain rather than from configuration at all.
 **No production value for any of the variables above appears in this repository**, and none is defaulted
 in `application-prod.yml`: a missing one fails startup.
 
+#### What the production AWS account must already carry
+
+Configuration is only half of the requirement. `config/AwsResourceTrustVerifier` asks the three services
+themselves, before any bean that could publish exists, and a `prod` start-up is refused unless the account
+carries an **access posture** as well as the right resources. This application provisions none of it
+deliberately — a check that provisioned would turn a misconfigured account into a silently corrected one —
+so the infrastructure definition that creates the account is required to attach all five:
+
+| # | Resource | Property the deployment refuses to start without |
+|---|---|---|
+| 1 | staging bucket | public access blocked through **all four** controls: `BlockPublicAcls`, `IgnorePublicAcls`, `BlockPublicPolicy`, `RestrictPublicBuckets` — two govern access-control lists and two govern policies, so three of four leaves one route open |
+| 2 | staging bucket | a bucket policy that grants no principal unconditionally and denies every `s3` action when `aws:SecureTransport` is `false` |
+| 3 | staging bucket | a default server-side encryption algorithm; no writer in this module names one per object, so the bucket default is the whole of the at-rest protection for every statement, report and rejected record |
+| 4 | job queue | a queue policy on the same two terms, denying every `sqs` action over plain transport |
+| 5 | notification topic | a topic policy on the same two terms, denying every `sns` action over plain transport. A topic left with **only** the default policy the notification service attaches fails this check: that default is not an open grant — it confines a wildcard principal to the owning account, which is accepted — but it carries no transport denial at all |
+
+Two rules decide every one of the three policies, they are stated once in `util/AwsResourcePolicyRules`, and
+they are structural: no statement may **allow every principal with no condition confining it**, and some
+statement must **deny every principal every action of the resource's own service over plain transport**. No
+effective permission is calculated anywhere — identity policies, permission boundaries and organisation
+rules are invisible from a resource's own document — so the claim made is about the document and nothing
+more.
+
+[`localstack/init/01-create-aws-resources.sh`](localstack/init/01-create-aws-resources.sh) provisions exactly
+this posture for the local stack and is the worked reference for the document shapes. It is not a
+description: `config/LocalStackBootstrapIT` reads each document back out of a running emulator and judges it
+with the very rule production applies, so the local stack and a production account cannot drift into two
+postures. Recorded as `DL-346` in [`../docs/decision-log.md`](../docs/decision-log.md).
+
 #### Where local and test values actually live
 
 Non-production values are **not** confined to `docker-compose.yml`, and pretending they are would send
@@ -973,23 +1045,33 @@ for which command actually discards it.
 
 ### Database migrations
 
-Flyway runs on start-up and replaces the ten legacy dataset-provisioning job streams. All four
-migrations sit **flat in the single location `db/migration`**, with no subdirectory, so the *version
-ceiling* — not the location list — is the profile scoping mechanism:
+Flyway runs on start-up and replaces the ten legacy dataset-provisioning job streams. The six
+migrations ship from **two sibling locations whose shared parent holds no script at all**, and the
+*location list* — not the version ceiling — is the primary profile scoping mechanism:
 
 | Migration | Applied in | Content |
 |---|---|---|
 | `V1__create_schema.sql` | every profile | **11 tables**, one per verified record layout |
 | `V2__create_indexes.sql` | every profile | The three alternate-index equivalents as B-tree indexes, plus primary and **six** foreign keys. It **creates no table** — the migration says so at its head — and it records there which three relationships are deliberately left unconstrained and why |
+| `V2_1__create_sign_on_attempt_ledger.sql` | every profile | The deployment-wide sign-on attempt ledger and its sweep index. **One operational table, not a twelfth record table** — it holds no business record and derives from no copybook. DL-343 |
+| `V2_2__add_protected_value_invariants.sql` | every profile | Three named `CHECK` constraints: an `ENC1` envelope on each of the two regulated customer identifiers, and a structural BCrypt digest with a cost inside 10–31 on the stored credential. It **creates, alters and writes nothing**. DL-349 |
 | `V3__seed_reference_data.sql` | `local`, `test` | Reference and sample data at the measured fixture counts |
 | `V4__seed_user_security.sql` | `local`, `test` | The ten seed users — five administrator, five standard — stored as **BCrypt hashes** |
 
-Every profile resolves `classpath:db/migration`. `local` and `test` migrate to the latest version and
-so apply all four. `prod` sets an explicit target of `2`, so the two scripts numbered above it are
-never applied and **a production deployment migrates schema and indexes without inheriting sample data
-or seeded credentials**. A directory-scoped location list could not express that separation with all
-four scripts in one folder, which is exactly why the ceiling is the control. `clean` is disabled
-outside `local`, and `validate-on-migrate` is on everywhere.
+The four schema scripts sit in `db/migration/schema`, the two seeds in `db/migration/seed`, and the
+shared parent `db/migration` holds neither. The baseline and `prod` resolve the schema location **alone**,
+so the seeds appear in no migration state whatsoever under production — not applied, not pending, not
+resolved. `local` and `test` resolve both. A **version ceiling sits beside** the location list rather than
+in place of it: the baseline and `prod` pin `target: "2.2"`, the highest version the schema location
+delivers, and the two seeding profiles lift it to `latest` in the same block where they add the seed
+location. So **a production deployment migrates the schema, the indexes, the ledger and the invariants
+without inheriting sample data or seeded credentials**, and the seeds are excluded twice over — by their
+directory and by their number, because every schema version sorts below both seed versions
+(`2 < 2.1 < 2.2 < 3`). The pin is asserted against the versions the schema location actually delivers, so a
+schema script added above it fails the build rather than being silently skipped. `clean` is disabled
+outside the profiles whose database is disposable, and `validate-on-migrate` is on everywhere — which is
+why a migration already applied is immutable and a change of intent arrives as a new version. DL-298 for
+the location split, DL-334 for the ceiling, DL-343 for the numbering rule.
 
 The third alternate-index equivalent is defined even though no online endpoint depends on it: the
 report job's date-range filter would otherwise scan the whole transaction table.
@@ -1296,7 +1378,7 @@ true of an absent file and are false of a present one, so they are withdrawn rat
 |---|---|---|---|
 | 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for the four contractual widths**, compared as byte arrays from one seeded pipeline pass, **and for the supplemental 40-byte width**, compared as a byte array against its own committed golden from a dedicated job run in `batch/CategoryBalanceReportJobConfigIT`. Four of the five reject reason codes are still uncovered by a golden record |
 | 2 | Zero-warning build | `./mvnw -B clean verify` | **complete** — enforced by the compiler |
-| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **eighteen** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
+| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — **twenty-one** measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. The count is derived from that table by `config/DocumentedSourceCountsTest`, so the next measured run updates this sentence or breaks the build. No row is attributed to a source revision, and earlier revisions of this manual claimed three were: a run cannot know the revision it is running, which is why the emitted evidence files carry a separate `Build provenance` line and the table does not (DL-340). Measurements, never thresholds |
 | 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted, by name rather than by directory listing |
 | 5 | Interface contract verification | `./mvnw -B verify` (against a real queue and a real port) | **complete** — the card image drained back out of a real queue, and the sign-on texts and routing asserted against a booted context on a random port |
 | 6 | Unsafe and low-level code audit | the scoped grep list below | **complete** — mechanically re-runnable |
@@ -1680,8 +1762,8 @@ report the opposite of the truth.
 **The scoping rule matters and must be stated explicitly: the audit is scoped to `src/main/java/**`
 only.** The Flyway migration files under `src/main/resources/db/migration/` are `.sql` schema
 artifacts, not application code performing string concatenation. Without that scoping rule an auditor
-would report **four raw-SQL "violations"** that are in fact the versioned schema definition this
-design requires. Test sources are excluded for the same kind of reason — assertion helpers legitimately
+would report **six raw-SQL "violations"** that are in fact the versioned schema definition this
+design requires — one per delivered migration script. Test sources are excluded for the same kind of reason — assertion helpers legitimately
 use casts that production code does not.
 
 The zero-reflection count is **not hygiene, it is architecture**. It is what forbids any bean-mapping
@@ -1733,7 +1815,7 @@ first one changed, which is the failure mode recorded in
 | End-to-end verification | golden fixtures at the **four contractual widths** — 80, 100, 133 and 430 bytes, all four driven through one seeded pipeline pass — plus the **supplemental** 40-byte golden, driven through a dedicated run of the job that emits it | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte golden | **met** — the six-job pipeline runs against a Testcontainers PostgreSQL instance seeded from the fixtures and all four of its goldens are compared as byte arrays from that one run, with the comparison written to `target/gate-evidence/gate1-byte-equivalence.md`; the supplemental golden is compared as a byte array against a real dataset the category-balance job wrote after reading a real server |
 | Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `service/JobSubmissionServiceIT`, and `e2e/OnlineTransactionE2ETest` driving the submission endpoint over HTTP and draining the queue | **met** for the queue contract |
 | Interface contract verification | the seven sign-on literals and the admin/user routing rule | `e2e/OnlineTransactionE2ETest` — a booted context on a random port with a real datasource — backed by `api/AuthControllerIT` and `api/AuthControllerTest` at the narrower boundaries | **met** — the five direct texts compared character for character, the two shared texts at their full padded width, and the destination asserted for all ten delivered identities, because the legacy branch is an `ELSE` rather than a second equality test |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **eighteen** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — **twenty-one** measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. None is attributed to a source revision; the revision belongs to the emitted evidence file's `Build provenance` line, not to a row a run wrote about itself (DL-340). They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
 | Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
 | Zero **unsuppressed** critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included, reading exactly one analyst determination from [`owasp-suppressions.xml`](owasp-suppressions.xml) | `./mvnw -B clean verify`; `GateVerificationTest` asserts the determination's scope and reads both halves of the report | **met as stated, and the statement is the narrower one** — zero *unsuppressed* qualifying findings, plus **one** scoped HIGH determination that is part of the audited result rather than a silence. Set out below. Not "zero findings" |
@@ -1800,11 +1882,14 @@ What remains is one carried HIGH and one reported MEDIUM, and neither is left im
   the array a report check would normally read. The same test asserts that the withdrawn "zero findings"
   wording is absent from both the build file and this page, so the overstatement cannot come back by
   edit.
-- **CVE-2026-41178, CVSS 5.3 MEDIUM, against `opentelemetry-semconv` — reported, under threshold, and
-  deliberately not suppressed.** It describes baggage-header parsing in OpenTelemetry **Go**; the CPE
-  carries `go` as its target software and has been matched to a Java artifact. It is left visible in the
-  report because hiding a sub-threshold finding buys nothing and costs the next reader the chance to
-  re-judge it.
+- **Two sub-threshold mediums, both CVSS 5.3, both reported and deliberately not suppressed.**
+  `CVE-2026-41178` against `opentelemetry-semconv` describes baggage-header parsing in OpenTelemetry
+  **Go**; the CPE carries `go` as its target software and has been matched to a Java artifact.
+  `CVE-2026-64607` against `httpclient5`, which arrives transitively with the container testing
+  transport, appeared between two recorded runs **with no dependency version changing** — the advisory
+  feed moved, not this module. Both are left visible in the report because hiding a sub-threshold
+  finding buys nothing and costs the next reader the chance to re-judge it, and the count is dated in
+  [`../docs/gate-evidence.md`](../docs/gate-evidence.md) rather than presented as standing.
 - **The rules for writing a determination are in the file itself**, and the first of them is that a fix
   outranks a determination. The header also records the case that went the other way: where vulnerable
   classes are physically *present*, this module does not suppress.
@@ -2092,8 +2177,10 @@ carddemo-java/
 ├── src/main/resources/
 │   ├── application.yml  application-local.yml  application-test.yml  application-prod.yml
 │   ├── logback-spring.xml  banner.txt
-│   ├── db/migration/  V1__create_schema.sql   V2__create_indexes.sql
-│   │                  V3__seed_reference_data.sql   V4__seed_user_security.sql
+│   ├── db/migration/schema/  V1__create_schema.sql   V2__create_indexes.sql
+│   │                         V2_1__create_sign_on_attempt_ledger.sql
+│   │                         V2_2__add_protected_value_invariants.sql
+│   ├── db/migration/seed/    V3__seed_reference_data.sql   V4__seed_user_security.sql
 │   └── lookup/     nanpa-area-codes.json  us-state-codes.json  state-zip-prefixes.json
 ├── src/test/java/com/carddemo/     unit (*Test), integration (*IT), support/ base classes
 └── src/test/resources/
@@ -2188,9 +2275,14 @@ permissions, and it:
 11. checks and builds the Dockerfile, resolves and starts the hardened six-service Compose stack,
    waits for application health, verifies Grafana provisioning, executes a Prometheus query and
    checks the Jaeger API, with trap-based teardown of containers and volumes;
-12. runs digest-pinned Trivy scans. The application image and both Temurin base images are strict
-   HIGH/CRITICAL gates; the digest-pinned third-party Compose images are inventoried and their reports
-   are retained because this repository cannot patch those upstream filesystems;
+12. runs digest-pinned Trivy scans over **every image the stack ships at run time** — the application
+   image, both Temurin base images, and every digest-pinned third-party Compose service image — and gates
+   all of them on the same terms. A HIGH or CRITICAL in any of them fails the gate unless a **scoped,
+   reviewed, expiring determination** in [`container-scan-determinations.txt`](container-scan-determinations.txt)
+   covers that one identifier on that one image; an **expired** determination fails the build, and so does
+   an **unused** one. The file ships carrying none, so nothing is accepted today. Nothing is filtered out
+   of any scan or report: the scanner runs with `--exit-code 0` and no ignore list, and the archived JSON
+   carries every finding whether a determination covers it or not. DL-185 and DL-350;
 13. uploads the container-scan reports and the executable jar, and writes the linear gate summary.
 
 ## Troubleshooting

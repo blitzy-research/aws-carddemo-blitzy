@@ -28,7 +28,9 @@ import static org.mockito.Mockito.when;
 import io.awspring.cloud.sns.core.SnsOperations;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -40,19 +42,33 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketPolicyRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketPolicyResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
+import software.amazon.awssdk.services.s3.model.GetPublicAccessBlockRequest;
+import software.amazon.awssdk.services.s3.model.GetPublicAccessBlockResponse;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
 import software.amazon.awssdk.services.s3.model.ObjectVersion;
+import software.amazon.awssdk.services.s3.model.PublicAccessBlockConfiguration;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.ServerSideEncryption;
+import software.amazon.awssdk.services.s3.model.ServerSideEncryptionByDefault;
+import software.amazon.awssdk.services.s3.model.ServerSideEncryptionConfiguration;
+import software.amazon.awssdk.services.s3.model.ServerSideEncryptionRule;
 import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sns.model.GetTopicAttributesRequest;
+import software.amazon.awssdk.services.sns.model.GetTopicAttributesResponse;
 import software.amazon.awssdk.services.sns.model.ListTopicsRequest;
 import software.amazon.awssdk.services.sns.model.ListTopicsResponse;
+import software.amazon.awssdk.services.sns.model.SnsException;
 import software.amazon.awssdk.services.sns.model.Topic;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
@@ -157,6 +173,38 @@ final class AwsResourceTrustVerifierTest {
             assertThat(fixture.versioningRequests())
                     .allSatisfy(request ->
                             assertThat(request.expectedBucketOwner()).isEqualTo(OWNED_ACCOUNT));
+        }
+
+        @Test
+        @DisplayName("establishes each of the five policy and access-posture properties, so a resource "
+                + "that is the deployment's own but reachable by somebody else is still refused")
+        void establishesTheAccessPostureOfEveryResource() {
+            // Ownership, versioning, queue shape and write capability were verified from the
+            // beginning; these five were the gap. Asserted as calls actually made, because a check
+            // that is never reached is indistinguishable from one that always passes.
+            final Fixture fixture = Fixture.trusted();
+
+            fixture.verifier().afterPropertiesSet();
+
+            verify(fixture.objectStore()).getPublicAccessBlock(
+                    ArgumentMatchers.<GetPublicAccessBlockRequest>argThat(request ->
+                            BUCKET.equals(request.bucket())
+                                    && OWNED_ACCOUNT.equals(request.expectedBucketOwner())));
+            verify(fixture.objectStore()).getBucketPolicy(
+                    ArgumentMatchers.<GetBucketPolicyRequest>argThat(request ->
+                            BUCKET.equals(request.bucket())
+                                    && OWNED_ACCOUNT.equals(request.expectedBucketOwner())));
+            verify(fixture.objectStore()).getBucketEncryption(
+                    ArgumentMatchers.<GetBucketEncryptionRequest>argThat(request ->
+                            BUCKET.equals(request.bucket())
+                                    && OWNED_ACCOUNT.equals(request.expectedBucketOwner())));
+            verify(fixture.notificationClient()).getTopicAttributes(
+                    ArgumentMatchers.<GetTopicAttributesRequest>argThat(request ->
+                            ownedTopicArn().equals(request.topicArn())));
+            assertThat(fixture.resolvedQueueAttributeNames())
+                    .as("the queue's own policy is read with the same attribute call as its shape, so "
+                            + "establishing it costs no further request")
+                    .contains(QueueAttributeName.POLICY);
         }
     }
 
@@ -299,23 +347,355 @@ final class AwsResourceTrustVerifierTest {
             assertRefused(fixture, "did not answer an attribute read");
         }
 
+    }
+
+    @Nested
+    @DisplayName("A deployment whose staging bucket is reachable by somebody else")
+    final class ABucketReachableBySomebodyElse {
+
+        @Test
+        @DisplayName("must not start when the bucket's public-access controls cannot be read, which is "
+                + "also how a bucket with no such configuration answers")
+        void becauseThePublicAccessControlsCannotBeRead() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.publicAccessBlockFailure(S3Exception.builder()
+                    .message("NoSuchPublicAccessBlockConfiguration")
+                    .build());
+
+            assertRefused(fixture, "public-access controls could not be read");
+        }
+
+        @Test
+        @DisplayName("must not start when the object store reports no controls at all")
+        void becauseNoPublicAccessControlsAreReported() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.publicAccessBlock(null);
+
+            assertRefused(fixture, "does not block every form of public access");
+        }
+
+        @Test
+        @DisplayName("must not start when any one of the four controls is unset, because each closes a "
+                + "different route and three of four leaves one open")
+        void becauseAnyOneOfTheFourControlsIsUnset() {
+            // Asserted one control at a time rather than as a single perturbation, because the defect
+            // this guards against is a posture that looks configured: a bucket with three of the four
+            // set reads as hardened to anybody who does not count them.
+            assertRefused(fixtureWithControls(false, true, true, true),
+                    "does not block every form of public access");
+            assertRefused(fixtureWithControls(true, false, true, true),
+                    "does not block every form of public access");
+            assertRefused(fixtureWithControls(true, true, false, true),
+                    "does not block every form of public access");
+            assertRefused(fixtureWithControls(true, true, true, false),
+                    "does not block every form of public access");
+        }
+
+        @Test
+        @DisplayName("must not start when a control is reported as neither set nor unset, which a "
+                + "partially-written configuration does")
+        void becauseAControlIsNotReportedAtAll() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.publicAccessBlock(PublicAccessBlockConfiguration.builder()
+                    .blockPublicAcls(true)
+                    .ignorePublicAcls(true)
+                    .blockPublicPolicy(true)
+                    .build());
+
+            assertRefused(fixture, "does not block every form of public access");
+        }
+
         /**
-         * Requires the verification to refuse, and requires the refusal to explain itself.
-         *
-         * @param fixture  the perturbed fixture
-         * @param fragment wording the refusal must carry
+         * @param  blockPublicAcls       whether public access-control lists are refused
+         * @param  ignorePublicAcls      whether existing public access-control lists are disregarded
+         * @param  blockPublicPolicy     whether a public policy is refused
+         * @param  restrictPublicBuckets whether policy-granted public access is confined
+         * @return a trusted fixture perturbed only in its public-access controls
          */
-        private void assertRefused(final Fixture fixture, final String fragment) {
+        private Fixture fixtureWithControls(final boolean blockPublicAcls,
+                final boolean ignorePublicAcls, final boolean blockPublicPolicy,
+                final boolean restrictPublicBuckets) {
+            final Fixture fixture = Fixture.trusted();
+            fixture.publicAccessBlock(publicAccessBlockWith(blockPublicAcls, ignorePublicAcls,
+                    blockPublicPolicy, restrictPublicBuckets));
+            return fixture;
+        }
+    }
+
+    @Nested
+    @DisplayName("A deployment whose resources carry no sound policy of their own")
+    final class ResourcesWithoutASoundPolicy {
+
+        @Test
+        @DisplayName("must not start when the bucket's policy cannot be read, which is also how a "
+                + "bucket with no policy answers")
+        void becauseTheBucketPolicyCannotBeRead() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.bucketPolicyFailure(
+                    S3Exception.builder().message("NoSuchBucketPolicy").build());
+
+            assertRefused(fixture, "own policy could not be read");
+        }
+
+        @Test
+        @DisplayName("must not start when the bucket reports an empty policy")
+        void becauseTheBucketPolicyIsEmpty() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.bucketPolicy(null);
+
+            assertRefused(fixture, "carries no resource policy of its own");
+        }
+
+        @Test
+        @DisplayName("must not start when the bucket's policy is not a policy document")
+        void becauseTheBucketPolicyIsUnreadable() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.bucketPolicy("{\"Version\":\"2012-10-17\"}");
+
+            assertRefused(fixture, "could not be read as a policy document");
+        }
+
+        @Test
+        @DisplayName("must not start when the bucket's policy grants every principal, and the probe "
+                + "object is never written to a bucket in that state")
+        void becauseTheBucketPolicyGrantsEveryPrincipal() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.bucketPolicy(openPolicy("s3"));
+
+            assertRefused(fixture, "grants every principal");
+            // The posture is established before the write-capability probe deliberately: a bucket
+            // anybody can read is one this deployment must not write to at all, not even a
+            // zero-length object under a reserved key.
+            verify(fixture.objectStore(), never()).putObject(any(PutObjectRequest.class),
+                    any(software.amazon.awssdk.core.sync.RequestBody.class));
+        }
+
+        @Test
+        @DisplayName("must not start when the bucket's policy does not deny plain transport, so an "
+                + "object carrying balances could cross the network in clear text")
+        void becauseTheBucketPolicyPermitsPlainTransport() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.bucketPolicy(policyPermittingPlainTransport("s3"));
+
+            assertRefused(fixture, "does not deny every principal every action over an unencrypted");
+        }
+
+        @Test
+        @DisplayName("must not start when the queue reports no policy, because nothing attached to the "
+                + "queue then constrains who may put a job-control card on it")
+        void becauseTheQueueCarriesNoPolicy() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.queueAttributeAbsent(QueueAttributeName.POLICY);
+
+            assertRefused(fixture, "job queue carries no resource policy of its own");
+        }
+
+        @Test
+        @DisplayName("must not start when the queue's policy grants every principal")
+        void becauseTheQueuePolicyGrantsEveryPrincipal() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.queueAttribute(QueueAttributeName.POLICY, openPolicy("sqs"));
+
+            assertRefused(fixture, "job queue's resource policy grants every principal");
+        }
+
+        @Test
+        @DisplayName("must not start when the queue's policy does not deny plain transport")
+        void becauseTheQueuePolicyPermitsPlainTransport() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.queueAttribute(QueueAttributeName.POLICY,
+                    policyPermittingPlainTransport("sqs"));
+
+            assertRefused(fixture, "job queue's resource policy does not deny");
+        }
+
+        @Test
+        @DisplayName("must not start when the topic's attributes cannot be read at all")
+        void becauseTheTopicAttributesCannotBeRead() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.topicAttributesFailure(
+                    SnsException.builder().message("AuthorizationError").build());
+
+            assertRefused(fixture, "attributes could not be read");
+        }
+
+        @Test
+        @DisplayName("must not start when the topic reports no attributes, so its policy is not absent "
+                + "but unknown - and an unknown policy is treated as an absent one")
+        void becauseTheTopicReportsNoAttributes() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.topicAttributesAreAbsent();
+
+            assertRefused(fixture, "notification topic carries no resource policy of its own");
+        }
+
+        @Test
+        @DisplayName("must not start when the topic carries only the default policy the service "
+                + "attaches, because that default says nothing about transport")
+        void becauseTheTopicCarriesOnlyTheServiceDefault() {
+            // The finding this check exists to make. A topic created and left alone carries a policy
+            // that names every principal and confines it to the owning account - which is not an open
+            // grant and is accepted as such - and carries no transport denial at all.
+            final Fixture fixture = Fixture.trusted();
+            fixture.topicPolicy(String.format(Locale.ROOT, """
+                    {"Version":"2008-10-17","Statement":[{"Sid":"__default_statement_ID",\
+                    "Effect":"Allow","Principal":{"AWS":"*"},"Action":["SNS:Publish"],\
+                    "Resource":"%s","Condition":{"StringEquals":{"AWS:SourceOwner":"%s"}}}]}\
+                    """, ownedTopicArn(), OWNED_ACCOUNT));
+
+            assertRefused(fixture, "notification topic's resource policy does not deny");
+        }
+
+        @Test
+        @DisplayName("must not start when the topic's policy grants every principal")
+        void becauseTheTopicPolicyGrantsEveryPrincipal() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.topicPolicy(openPolicy("sns"));
+
+            assertRefused(fixture, "notification topic's resource policy grants every principal");
+        }
+
+        @Test
+        @DisplayName("must not start when the topic reports an empty policy")
+        void becauseTheTopicPolicyIsEmpty() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.topicPolicy(null);
+
+            assertRefused(fixture, "notification topic carries no resource policy of its own");
+        }
+    }
+
+    @Nested
+    @DisplayName("A deployment whose staging bucket does not encrypt what it is given")
+    final class ABucketThatDoesNotEncrypt {
+
+        @Test
+        @DisplayName("must not start when the default encryption cannot be read, which is also how a "
+                + "bucket with none configured answers")
+        void becauseTheEncryptionCannotBeRead() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.encryptionFailure(S3Exception.builder()
+                    .message("ServerSideEncryptionConfigurationNotFoundError")
+                    .build());
+
+            assertRefused(fixture, "default encryption could not be read");
+        }
+
+        @Test
+        @DisplayName("must not start when no configuration is reported")
+        void becauseNoConfigurationIsReported() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.encryption(null);
+
+            assertRefused(fixture, "configures no default server-side encryption algorithm");
+        }
+
+        @Test
+        @DisplayName("must not start when a rule is present and applies nothing by default")
+        void becauseARuleAppliesNothingByDefault() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.encryption(ServerSideEncryptionConfiguration.builder()
+                    .rules(ServerSideEncryptionRule.builder().bucketKeyEnabled(false).build())
+                    .build());
+
+            assertRefused(fixture, "configures no default server-side encryption algorithm");
+        }
+
+        @Test
+        @DisplayName("must not start when the algorithm named is one this deployment cannot resolve")
+        void becauseTheAlgorithmIsUnrecognised() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.encryption(ServerSideEncryptionConfiguration.builder()
+                    .rules(ServerSideEncryptionRule.builder()
+                            .applyServerSideEncryptionByDefault(
+                                    ServerSideEncryptionByDefault.builder()
+                                            .sseAlgorithm("nothing-anybody-has-heard-of")
+                                            .build())
+                            .build())
+                    .build());
+
+            assertRefused(fixture, "configures no default server-side encryption algorithm");
+        }
+
+        @Test
+        @DisplayName("starts when the bucket encrypts with a managed key instead, because the property "
+                + "required is that an unnamed algorithm is still an algorithm")
+        void startsWithAManagedKeyInstead() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.encryption(defaultEncryption(ServerSideEncryption.AWS_KMS));
+
+            fixture.verifier().afterPropertiesSet();
+
+            verify(fixture.objectStore()).getBucketEncryption(any(GetBucketEncryptionRequest.class));
+        }
+    }
+
+    @Nested
+    @DisplayName("What a refusal publishes when a provider is the one that refused")
+    final class WhatARefusalPublishes {
+
+        /** A provider message shaped like the ones a software development kit actually composes. */
+        private static final String PROVIDER_MESSAGE = "Access Denied (Service: S3, Status Code: 403,"
+                + " Request ID: 8XZQ4EXAMPLE, Extended Request ID: aBcDeF, Bucket:"
+                + " somebody-elses-bucket, Owner: 999999999999, Credential:"
+                + " AKIAIOSFODNN7EXAMPLE/20260811/us-east-1/s3/aws4_request, Endpoint:"
+                + " https://s3.us-east-1.amazonaws.com)";
+
+        @Test
+        @DisplayName("carries no cause, because start-up failure reporting renders every cause in full")
+        void carriesNoCause() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.headBucketFailure(S3Exception.builder().message(PROVIDER_MESSAGE).build());
+
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> fixture.verifier().afterPropertiesSet())
-                    .withMessageContaining("must not start")
-                    .withMessageContaining(fragment)
-                    .as("a refusal that named the account, the identifier or the owner reported by the "
-                            + "service would put another account's resource identity into this "
-                            + "deployment's log")
+                    .satisfies(refusal -> assertThat(refusal.getCause()).isNull());
+        }
+
+        @Test
+        @DisplayName("carries no fragment of the provider's own message: not the endpoint, the request "
+                + "identifiers, the bucket, the owning account or the credential")
+        void carriesNoFragmentOfTheProviderMessage() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.headBucketFailure(S3Exception.builder().message(PROVIDER_MESSAGE).build());
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> fixture.verifier().afterPropertiesSet())
                     .satisfies(refusal -> assertThat(refusal.getMessage())
-                            .doesNotContain(FOREIGN_ACCOUNT)
-                            .doesNotContain(OWNED_ACCOUNT));
+                            .doesNotContain("Access Denied")
+                            .doesNotContain("8XZQ4EXAMPLE")
+                            .doesNotContain("aBcDeF")
+                            .doesNotContain("somebody-elses-bucket")
+                            .doesNotContain("999999999999")
+                            .doesNotContain("AKIAIOSFODNN7EXAMPLE")
+                            .doesNotContain("s3.us-east-1.amazonaws.com"));
+        }
+
+        @Test
+        @DisplayName("does carry the failure's classification, so a diagnosing reader has the type "
+                + "chain and the code location to correlate the provider's own record against")
+        void carriesTheClassification() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.headBucketFailure(S3Exception.builder().message(PROVIDER_MESSAGE).build());
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> fixture.verifier().afterPropertiesSet())
+                    .withMessageContaining("classified")
+                    .withMessageContaining("S3Exception");
+        }
+
+        @Test
+        @DisplayName("says nothing about a classification when the refusal was a comparison this "
+                + "deployment made rather than a failure a provider reported")
+        void saysNothingAboutAClassificationWhenNothingFailed() {
+            final Fixture fixture = Fixture.trusted();
+            fixture.versioningStatus(BucketVersioningStatus.SUSPENDED);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> fixture.verifier().afterPropertiesSet())
+                    .withMessageContaining("does not carry enabled object versioning")
+                    .satisfies(refusal -> assertThat(refusal.getMessage())
+                            .doesNotContain("classified"));
         }
     }
 
@@ -345,6 +725,36 @@ final class AwsResourceTrustVerifierTest {
 
             assertThat(fixture.withDeclaredAccount("  " + OWNED_ACCOUNT + "  ")).isNotNull();
         }
+    }
+
+    /**
+     * Requires the verification to refuse, and requires the refusal to explain itself while publishing
+     * nothing a provider handed it.
+     *
+     * <p>Shared by every refusal case in this class, which is what makes the two disclosure properties
+     * below universal rather than asserted in the one place somebody remembered. A refusal carries no
+     * cause of any kind: it is thrown from a bean's initialisation, so the framework's start-up failure
+     * reporting renders whatever it carries, and a provider exception carries the endpoint, the request
+     * identifiers, the resource and - on a signature failure - an access key identifier.</p>
+     *
+     * @param fixture  the perturbed fixture
+     * @param fragment wording the refusal must carry
+     */
+    private static void assertRefused(final Fixture fixture, final String fragment) {
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> fixture.verifier().afterPropertiesSet())
+                .withMessageContaining("must not start")
+                .withMessageContaining(fragment)
+                .as("a refusal that named the account, the identifier or the owner reported by the "
+                        + "service would put another account's resource identity into this "
+                        + "deployment's log")
+                .satisfies(refusal -> assertThat(refusal.getMessage())
+                        .doesNotContain(FOREIGN_ACCOUNT)
+                        .doesNotContain(OWNED_ACCOUNT))
+                .as("a chained provider exception is rendered in full by start-up failure reporting, "
+                        + "so the refusal carries a classification of the failure and never the "
+                        + "failure itself")
+                .satisfies(refusal -> assertThat(refusal.getCause()).isNull());
     }
 
     /**
@@ -396,12 +806,29 @@ final class AwsResourceTrustVerifierTest {
         /** Version identifiers the verifier removed. */
         private final List<String> removedVersions = new ArrayList<>();
 
+        /** Attribute names the queue resolution asked the queue service for. */
+        private final List<QueueAttributeName> resolvedQueueAttributeNames = new ArrayList<>();
+
         /** The queue attributes the double answers with. */
         private final Map<QueueAttributeName, String> queueAttributes =
                 new EnumMap<>(QueueAttributeName.class);
 
         /** Versioning status the double answers with. */
         private BucketVersioningStatus versioningStatus = BucketVersioningStatus.ENABLED;
+
+        /** Public-access controls the bucket reports. */
+        private PublicAccessBlockConfiguration publicAccessBlock = everyPublicAccessRouteBlocked();
+
+        /** The bucket's own policy document, as the object store reports it. */
+        private String bucketPolicy = soundPolicy("s3");
+
+        /** Default encryption the bucket reports. */
+        private ServerSideEncryptionConfiguration encryption =
+                defaultEncryption(ServerSideEncryption.AES256);
+
+        /** Attributes the resolved topic reports, the policy among them. */
+        private Map<String, String> topicAttributes = new HashMap<>(
+                Map.of("TopicArn", ownedTopicArn(), "Policy", soundPolicy("sns")));
 
         /** Whether the probe listing answers with the probe. */
         private boolean probeListed = true;
@@ -424,6 +851,7 @@ final class AwsResourceTrustVerifierTest {
             fixture.queueAttributes.put(QueueAttributeName.QUEUE_ARN, arn("sqs", OWNED_ACCOUNT, QUEUE));
             fixture.queueAttributes.put(QueueAttributeName.FIFO_QUEUE, "true");
             fixture.queueAttributes.put(QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "false");
+            fixture.queueAttributes.put(QueueAttributeName.POLICY, soundPolicy("sqs"));
             fixture.stubObjectStore();
             fixture.stubQueue();
             fixture.stubNotifications();
@@ -444,6 +872,18 @@ final class AwsResourceTrustVerifierTest {
                                 .status(this.versioningStatus)
                                 .build();
                     });
+            when(this.objectStore.getPublicAccessBlock(any(GetPublicAccessBlockRequest.class)))
+                    .thenAnswer(invocation -> GetPublicAccessBlockResponse.builder()
+                            .publicAccessBlockConfiguration(this.publicAccessBlock)
+                            .build());
+            when(this.objectStore.getBucketPolicy(any(GetBucketPolicyRequest.class)))
+                    .thenAnswer(invocation -> GetBucketPolicyResponse.builder()
+                            .policy(this.bucketPolicy)
+                            .build());
+            when(this.objectStore.getBucketEncryption(any(GetBucketEncryptionRequest.class)))
+                    .thenAnswer(invocation -> GetBucketEncryptionResponse.builder()
+                            .serverSideEncryptionConfiguration(this.encryption)
+                            .build());
             when(this.objectStore.putObject(any(PutObjectRequest.class),
                     any(software.amazon.awssdk.core.sync.RequestBody.class)))
                     .thenReturn(PutObjectResponse.builder().build());
@@ -472,10 +912,22 @@ final class AwsResourceTrustVerifierTest {
                             GetQueueUrlResponse.builder().queueUrl(QUEUE_URL).build()));
             when(this.queueClient.getQueueAttributes(
                     ArgumentMatchers.<Consumer<GetQueueAttributesRequest.Builder>>any()))
-                    .thenAnswer(invocation -> CompletableFuture.completedFuture(
-                            GetQueueAttributesResponse.builder()
-                                    .attributes(Map.copyOf(this.queueAttributes))
-                                    .build()));
+                    .thenAnswer(invocation -> {
+                        // The customiser is applied to a builder of this fixture's own so the
+                        // attribute names the resolver asked for can be asserted: the queue's policy
+                        // has to arrive with the same call as its shape, and a second call would be a
+                        // second round trip at every start-up.
+                        final Consumer<GetQueueAttributesRequest.Builder> customiser =
+                                invocation.getArgument(0);
+                        final GetQueueAttributesRequest.Builder request =
+                                GetQueueAttributesRequest.builder();
+                        customiser.accept(request);
+                        this.resolvedQueueAttributeNames.addAll(request.build().attributeNames());
+                        return CompletableFuture.completedFuture(
+                                GetQueueAttributesResponse.builder()
+                                        .attributes(Map.copyOf(this.queueAttributes))
+                                        .build());
+                    });
         }
 
         /** Applies the notification stubbing the trusted path needs. */
@@ -490,6 +942,10 @@ final class AwsResourceTrustVerifierTest {
                             ListTopicsResponse.builder().topics(this.topics).build());
             when(this.notifications.topicExists(any(String.class)))
                     .thenAnswer(invocation -> this.topicExists);
+            when(this.notificationClient.getTopicAttributes(any(GetTopicAttributesRequest.class)))
+                    .thenAnswer(invocation -> GetTopicAttributesResponse.builder()
+                            .attributes(this.topicAttributes)
+                            .build());
         }
 
         /**
@@ -527,9 +983,19 @@ final class AwsResourceTrustVerifierTest {
             return this.queueClient;
         }
 
+        /** @return the notification-client double */
+        SnsClient notificationClient() {
+            return this.notificationClient;
+        }
+
         /** @return the notification-facade double */
         SnsOperations notifications() {
             return this.notifications;
+        }
+
+        /** @return the attribute names the queue resolution asked the queue service for */
+        List<QueueAttributeName> resolvedQueueAttributeNames() {
+            return this.resolvedQueueAttributeNames;
         }
 
         /** @return the head-bucket requests the verifier issued */
@@ -613,5 +1079,146 @@ final class AwsResourceTrustVerifierTest {
         void topicExists(final boolean exists) {
             this.topicExists = exists;
         }
+
+        /** @param configuration the public-access controls the bucket reports */
+        void publicAccessBlock(final PublicAccessBlockConfiguration configuration) {
+            this.publicAccessBlock = configuration;
+        }
+
+        /** @param failure what the public-access-control read raises */
+        void publicAccessBlockFailure(final RuntimeException failure) {
+            when(this.objectStore.getPublicAccessBlock(any(GetPublicAccessBlockRequest.class)))
+                    .thenThrow(failure);
+        }
+
+        /** @param document the policy the bucket reports, or {@code null} for none */
+        void bucketPolicy(final String document) {
+            this.bucketPolicy = document;
+        }
+
+        /** @param failure what the bucket-policy read raises */
+        void bucketPolicyFailure(final RuntimeException failure) {
+            when(this.objectStore.getBucketPolicy(any(GetBucketPolicyRequest.class)))
+                    .thenThrow(failure);
+        }
+
+        /** @param configuration the default encryption the bucket reports, or {@code null} for none */
+        void encryption(final ServerSideEncryptionConfiguration configuration) {
+            this.encryption = configuration;
+        }
+
+        /** @param failure what the encryption read raises */
+        void encryptionFailure(final RuntimeException failure) {
+            when(this.objectStore.getBucketEncryption(any(GetBucketEncryptionRequest.class)))
+                    .thenThrow(failure);
+        }
+
+        /** @param name the attribute the queue stops reporting */
+        void queueAttributeAbsent(final QueueAttributeName name) {
+            this.queueAttributes.remove(name);
+        }
+
+        /** @param document the policy the topic reports, or {@code null} for none */
+        void topicPolicy(final String document) {
+            this.topicAttributes.remove("Policy");
+            if (document != null) {
+                this.topicAttributes.put("Policy", document);
+            }
+        }
+
+        /** Makes the topic report no attributes at all, which a client may do. */
+        void topicAttributesAreAbsent() {
+            when(this.notificationClient.getTopicAttributes(any(GetTopicAttributesRequest.class)))
+                    .thenAnswer(invocation -> GetTopicAttributesResponse.builder().build());
+        }
+
+        /** @param failure what the topic-attribute read raises */
+        void topicAttributesFailure(final RuntimeException failure) {
+            when(this.notificationClient.getTopicAttributes(any(GetTopicAttributesRequest.class)))
+                    .thenThrow(failure);
+        }
+    }
+
+    /**
+     * Composes the policy shape the local bootstrap writes and a production account is required to
+     * carry: one statement denying every principal every action of the service over plain transport.
+     *
+     * @param  namespace the service's action namespace
+     * @return a sound document
+     */
+    private static String soundPolicy(final String namespace) {
+        return String.format(Locale.ROOT, """
+                {"Version":"2012-10-17","Statement":[{"Sid":"DenyInsecureTransport",\
+                "Effect":"Deny","Principal":"*","Action":"%s:*","Resource":"*",\
+                "Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}\
+                """, namespace);
+    }
+
+    /**
+     * Composes a document that grants every principal with nothing confining the grant.
+     *
+     * @param  namespace the service's action namespace
+     * @return an open document
+     */
+    private static String openPolicy(final String namespace) {
+        return String.format(Locale.ROOT, """
+                {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*",\
+                "Action":"%s:*","Resource":"*"}]}\
+                """, namespace);
+    }
+
+    /**
+     * Composes a document that says nothing about transport - the shape a resource carries when a
+     * policy was attached for another purpose and nobody closed plain transport.
+     *
+     * @param  namespace the service's action namespace
+     * @return a document that permits plain transport
+     */
+    private static String policyPermittingPlainTransport(final String namespace) {
+        return String.format(Locale.ROOT, """
+                {"Version":"2012-10-17","Statement":[{"Effect":"Allow",\
+                "Principal":{"AWS":"arn:aws:iam::000000000000:role/synthetic"},\
+                "Action":"%s:*","Resource":"*"}]}\
+                """, namespace);
+    }
+
+    /**
+     * @return public-access controls with all four routes closed
+     */
+    private static PublicAccessBlockConfiguration everyPublicAccessRouteBlocked() {
+        return publicAccessBlockWith(true, true, true, true);
+    }
+
+    /**
+     * @param  blockPublicAcls       whether public access-control lists are refused
+     * @param  ignorePublicAcls      whether public access-control lists already present are disregarded
+     * @param  blockPublicPolicy     whether a public policy is refused
+     * @param  restrictPublicBuckets whether public and cross-account access through a policy is confined
+     * @return the configuration
+     */
+    private static PublicAccessBlockConfiguration publicAccessBlockWith(final boolean blockPublicAcls,
+            final boolean ignorePublicAcls, final boolean blockPublicPolicy,
+            final boolean restrictPublicBuckets) {
+        return PublicAccessBlockConfiguration.builder()
+                .blockPublicAcls(blockPublicAcls)
+                .ignorePublicAcls(ignorePublicAcls)
+                .blockPublicPolicy(blockPublicPolicy)
+                .restrictPublicBuckets(restrictPublicBuckets)
+                .build();
+    }
+
+    /**
+     * @param  algorithm the algorithm applied to an object written without naming one
+     * @return a configuration carrying one rule applying that algorithm
+     */
+    private static ServerSideEncryptionConfiguration defaultEncryption(
+            final ServerSideEncryption algorithm) {
+        return ServerSideEncryptionConfiguration.builder()
+                .rules(ServerSideEncryptionRule.builder()
+                        .applyServerSideEncryptionByDefault(ServerSideEncryptionByDefault.builder()
+                                .sseAlgorithm(algorithm)
+                                .build())
+                        .build())
+                .build();
     }
 }

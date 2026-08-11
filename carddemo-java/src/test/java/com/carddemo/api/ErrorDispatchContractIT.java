@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.carddemo.config.JwtProperties;
 import com.carddemo.config.JwtTokenProvider;
 import com.carddemo.config.SecurityConfig;
+import com.carddemo.config.SignOnThrottleConfig;
 import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.UserType;
@@ -139,8 +140,30 @@ class ErrorDispatchContractIT extends AbstractPostgresIT {
     /** Reads served bodies. Configured like the module's own mapper is for the members under test. */
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    /** A path no mapping claims, used to provoke the unmatched-path condition. */
-    private static final String UNMATCHED_PATH = ApiRoutePaths.API_PATH_PREFIX + "/no-such-route";
+    /**
+     * A path no mapping claims and no authorization rule names, used to provoke the unmatched-path
+     * condition.
+     *
+     * <p><strong>It sits OUTSIDE the API root, and that is load-bearing.</strong> It used to be
+     * {@code /api/no-such-route}, which reached the unmatched-path condition because the chain granted
+     * either sign-on authority the whole API root and left the dispatcher to report that nothing was
+     * mapped there. The chain now names the eleven delivered ordinary addresses and refuses everything
+     * else beneath the root, so an unknown address under {@code /api} is answered before a handler is
+     * looked for and never becomes an unmatched path at all - see {@code docs/decision-log.md} DL-345.
+     * Outside the root the closing rule still asks only for an established identity, so a signed-on
+     * caller reaches the dispatcher and the condition this group exists for still arises. The refusal
+     * that replaced it beneath the root is asserted in its own case below.
+     */
+    private static final String UNMATCHED_PATH = "/no-such-route";
+
+    /**
+     * A path no mapping claims BENEATH the API root, where the chain's closing refusal answers first.
+     */
+    private static final String UNMATCHED_PATH_BENEATH_THE_API_ROOT =
+            ApiRoutePaths.API_PATH_PREFIX + "/no-such-route";
+
+    /** Summary the boundary publishes when a rule refused the caller rather than the caller's session. */
+    private static final String ACCESS_DENIED = "Access denied";
 
     /** A representation no operation of this module produces, used to provoke the negotiation refusal. */
     private static final MediaType UNSATISFIABLE_ACCEPT = MediaType.APPLICATION_PDF;
@@ -258,10 +281,43 @@ class ErrorDispatchContractIT extends AbstractPostgresIT {
                     headers(MediaType.APPLICATION_JSON, null, null));
 
             assertThat(answer.getStatusCode())
-                    .as("this 401 is correct and must stay: the catch-all rule governs an unknown path "
-                            + "on an ordinary request dispatch, and the module never discloses whether "
-                            + "the path exists")
+                    .as("this 401 is correct and must stay: the closing rule governs an unknown path "
+                            + "outside the API root on an ordinary request dispatch, and the module never "
+                            + "discloses whether the path exists")
                     .isEqualTo(HttpStatus.UNAUTHORIZED);
+            assertThat(JSON.readTree(answer.getBody()).path("message").asText())
+                    .isEqualTo(AUTHENTICATION_REQUIRED);
+        }
+
+        @Test
+        @DisplayName("an unknown address BENEATH the API root is refused to a signed-on caller rather "
+                + "than reported absent, because no rule names it")
+        void anUnknownAddressBeneathTheApiRootIsRefused() throws IOException {
+            final ResponseEntity<String> answer = exchange(HttpMethod.GET,
+                    UNMATCHED_PATH_BENEATH_THE_API_ROOT,
+                    headers(MediaType.APPLICATION_JSON, null, session()));
+
+            assertThat(answer.getStatusCode())
+                    .as("the chain grants eleven ordinary addresses and refuses the rest of the root, so "
+                            + "this answer comes from authorization and not from the dispatcher. A 404 "
+                            + "here would mean an address nothing serves had been authorized")
+                    .isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(JSON.readTree(answer.getBody()).path("message").asText())
+                    .as("the refusal names neither the rule that refused nor whether the address exists")
+                    .isEqualTo(ACCESS_DENIED);
+            assertThat(answer.getBody().toUpperCase(Locale.ROOT))
+                    .doesNotContain(UNMATCHED_PATH_BENEATH_THE_API_ROOT.toUpperCase(Locale.ROOT));
+        }
+
+        @Test
+        @DisplayName("and it is refused the same way with no session at all, so the two cases are not "
+                + "distinguishable by whether the address exists")
+        void anUnknownAddressBeneathTheApiRootWithNoSessionIsAuthenticationRequired() throws IOException {
+            final ResponseEntity<String> answer = exchange(HttpMethod.GET,
+                    UNMATCHED_PATH_BENEATH_THE_API_ROOT,
+                    headers(MediaType.APPLICATION_JSON, null, null));
+
+            assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
             assertThat(JSON.readTree(answer.getBody()).path("message").asText())
                     .isEqualTo(AUTHENTICATION_REQUIRED);
         }
@@ -333,7 +389,8 @@ class ErrorDispatchContractIT extends AbstractPostgresIT {
         assertThat(body.toUpperCase(Locale.ROOT))
                 .as("and nothing about the condition is narrated: no type name, no path, no stack")
                 .doesNotContain("EXCEPTION", "ORG.SPRINGFRAMEWORK", "COM.CARDDEMO", "\tAT ",
-                        UNMATCHED_PATH.toUpperCase(Locale.ROOT));
+                        UNMATCHED_PATH.toUpperCase(Locale.ROOT),
+                        UNMATCHED_PATH_BENEATH_THE_API_ROOT.toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -412,7 +469,8 @@ class ErrorDispatchContractIT extends AbstractPostgresIT {
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({AuthController.class, ModuleErrorController.class, SignOnContractAdapter.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, AuthenticationService.class,
-        SignOnAttemptGovernor.class, NavigationService.class, MessageCatalogService.class,
+        SignOnAttemptGovernor.class, SignOnThrottleConfig.class, NavigationService.class,
+        MessageCatalogService.class,
         CredentialDigestService.class, SignOnStateService.class, SecurityConfig.class,
         JwtTokenProvider.class, WebMvcConfig.class})
     @EnableConfigurationProperties(JwtProperties.class)

@@ -21,6 +21,7 @@ import com.carddemo.api.dto.BillPaymentResponse;
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.BillPaymentService;
+import com.carddemo.util.ApiRoutePaths;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -151,7 +152,7 @@ public class BillPaymentController {
      * cannot drift. It also shadows neither the management endpoints nor the published contract document,
      * both of which live outside this prefix.
      */
-    public static final String BILL_PAYMENT_PATH = "/api/bill-payment";
+    public static final String BILL_PAYMENT_PATH = ApiRoutePaths.BILL_PAYMENT_PATH;
 
     /** Diagnostic channel. */
     private static final Logger LOG = LoggerFactory.getLogger(BillPaymentController.class);

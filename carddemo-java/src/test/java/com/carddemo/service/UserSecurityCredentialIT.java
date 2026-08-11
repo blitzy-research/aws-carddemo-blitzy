@@ -40,12 +40,17 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *
  * <h2>Why this test exists</h2>
  * The migrated schema states that {@code user_security.sec_usr_pwd} holds a BCrypt digest and never a
- * cleartext credential, and the entity documentation states the same. Neither statement is
- * self-verifying: a {@code VARCHAR(60)} column accepts any string of sixty characters or fewer, and
- * the entity's constructor and setter are plain assignments by contract. The guarantee therefore
- * rests entirely on {@link CredentialDigestService}, and the only way to show it holds is to write
- * through a real PostgreSQL server, migrated by the real Flyway migrations, and read the column back
- * through plain JDBC without the service in the path.
+ * cleartext credential, and the entity documentation states the same. The guarantee now rests on three
+ * independent layers, and the only way to show they hold is to write through a real PostgreSQL server,
+ * migrated by the real Flyway migrations, and read the column back through plain JDBC without the service
+ * in the path.
+ *
+ * <p>The three layers are {@link CredentialDigestService}, which refuses to hand a non-digest to a writer;
+ * the entity's own credential check, which refuses one on assignment; and - since {@code V2_2} -
+ * {@code ck_user_security_sec_usr_pwd_digest}, which refuses one at the column. The third is the one this
+ * file's assertions changed for: a {@code VARCHAR(60)} column USED TO accept any string of sixty characters
+ * or fewer, and this test used to prove that it did. It no longer does, and the assertion that used to
+ * institutionalise the gap now proves the refusal instead. See {@code docs/decision-log.md} DL-349.
  *
  * <h2>What is asserted</h2>
  * <ol>
@@ -61,9 +66,10 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *       round trip. A column that had been left at the legacy width of eight would truncate it and
  *       every stored credential would become unverifiable.</li>
  *   <li>No fragment of the credential appears anywhere in the stored row.</li>
- *   <li>The database on its own would accept a cleartext value - which is exactly why the guard
- *       exists - and a cleartext value that reached the column that way authenticates nobody, because
- *       verification declines a stored value that is not digest-shaped.</li>
+ *   <li>The database refuses a cleartext value on its own, naming its own constraint - so the guard is
+ *       no longer the only thing between cleartext and storage - and a cleartext value that reached the
+ *       column by any other route would still authenticate nobody, because verification declines a
+ *       stored value that is not digest-shaped.</li>
  *   <li>The guard refuses a cleartext value before any statement is issued, leaving no row behind.</li>
  *   <li>An unrecognised role code stores successfully, preserving the tolerance the legacy sign-on
  *       has through its unconditional alternative branch.</li>
@@ -91,6 +97,23 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
 
     /** A synthetic credential, unlike anything the legacy seed carries. */
     private static final String CREDENTIAL = "synthetic-credential-for-integration-tests";
+
+    /**
+     * An eight-character non-secret literal, being the width the legacy record reserves for a cleartext
+     * credential, used only to make the column refuse one.
+     *
+     * <p>Deliberately NOT {@link #CREDENTIAL}. A PostgreSQL CHECK violation echoes the failing row in its
+     * DETAIL, and the driver folds that into the exception message, so a refusal probed with the credential
+     * would put the credential into an assertion diagnostic - the exact disclosure the rest of this file
+     * takes trouble to avoid. This literal verifies nothing and opens nothing, so echoing it costs nothing.
+     */
+    private static final String LEGACY_WIDTH_CLEARTEXT = "NOTREAL1";
+
+    /** The constraint that refuses a non-digest at the column, added by V2_2. */
+    private static final String DIGEST_CONSTRAINT = "ck_user_security_sec_usr_pwd_digest";
+
+    /** The PostgreSQL SQLSTATE for a violated CHECK constraint. */
+    private static final String SQLSTATE_CHECK_VIOLATION = "23514";
 
     /**
      * Prefix of the identifier range this test reserves for itself.
@@ -274,25 +297,49 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("would accept a cleartext value on its own, which is why the guard exists")
-    void theColumnAloneIsNotTheProtection() throws SQLException {
-        insertUser(TEST_ID, CREDENTIAL, "A");
+    @DisplayName("refuses a cleartext value at the column itself, naming its own constraint, so the guard "
+            + "is no longer the only thing between cleartext and storage")
+    void theColumnItselfRefusesCleartext() throws SQLException {
+        assertThatExceptionOfType(SQLException.class)
+                .as("the column used to accept this row, and this assertion used to prove that it did. "
+                        + "V2_2 requires a structural BCrypt digest, so a cleartext value is refused by "
+                        + "the server rather than stored and later found unverifiable")
+                .isThrownBy(() -> insertUser(TEST_ID, LEGACY_WIDTH_CLEARTEXT, "A"))
+                .satisfies(refusal -> {
+                    assertThat(refusal.getSQLState())
+                            .as("a violated CHECK reports SQLSTATE %s; another state would mean something "
+                                    + "else refused the row and the constraint under test was never "
+                                    + "reached", SQLSTATE_CHECK_VIOLATION)
+                            .isEqualTo(SQLSTATE_CHECK_VIOLATION);
+                    assertThat(refusal.getMessage())
+                            .as("and it must name %s, because asserting only that something was thrown "
+                                    + "would pass with the constraint deleted", DIGEST_CONSTRAINT)
+                            .contains(DIGEST_CONSTRAINT);
+                });
 
-        assertThat(SensitiveValues.fingerprint(readCredential(TEST_ID)))
-                .as("the column accepts a cleartext value unaltered, which is precisely why the guard "
-                        + "exists; compared by fingerprint so neither operand is the cleartext itself")
-                .isEqualTo(SensitiveValues.fingerprint(CREDENTIAL));
-        assertThat(service.isDigest(readCredential(TEST_ID)))
-                .as("and the column's own acceptance says nothing about the value being a digest")
-                .isFalse();
+        assertThat(countTestUsers())
+                .as("and nothing is left behind: the row was refused rather than written and rolled back "
+                        + "by a later cleanup. The seeded rows are irrelevant here and are deliberately "
+                        + "not counted")
+                .isZero();
     }
 
     @Test
-    @DisplayName("authenticates nobody against a cleartext value that reached the column")
-    void aCleartextValueAuthenticatesNobody() throws SQLException {
-        insertUser(TEST_ID, CREDENTIAL, "A");
-
-        assertThat(service.matches(CREDENTIAL, readCredential(TEST_ID))).isFalse();
+    @DisplayName("authenticates nobody against a cleartext value, which is the layer that would still "
+            + "hold if the column's own refusal were dropped")
+    void aCleartextValueAuthenticatesNobody() {
+        // Asserted against the service rather than against a stored row, because the column no longer
+        // accepts the row this test used to write: the write is refused above by DIGEST_CONSTRAINT. The
+        // property being asserted is unchanged and is the reason the three layers are independent - a
+        // cleartext value reaching the column by ANY route, including a restored backup taken before V2_2,
+        // still authenticates nobody.
+        assertThat(service.matches(CREDENTIAL, CREDENTIAL))
+                .as("verification declines a stored value that is not digest-shaped, whatever put it "
+                        + "there")
+                .isFalse();
+        assertThat(service.isDigest(CREDENTIAL))
+                .as("and the value is not digest-shaped, which is why it declines")
+                .isFalse();
     }
 
     @Test

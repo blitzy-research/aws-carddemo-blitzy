@@ -290,15 +290,19 @@ class BillPaymentControllerTest {
                     .isNotEqualTo(SecurityConfig.SIGN_ON_PATH)
                     .as("the administrative prefix is gated on an administrative authority")
                     .doesNotStartWith(SecurityConfig.ADMIN_PATH_PREFIX)
-                    .as("it must lie inside the region the ordinary business rule governs, or it would "
-                            + "fall to the closing rule instead")
+                    .as("it must lie beneath the API root, everything under which is refused unless a "
+                            + "rule names it")
                     .startsWith(SecurityConfig.API_PATH_PREFIX + "/");
             assertThat(SecurityConfig.TransactionRoute.BILL_PAYMENT.getGating())
                     .isEqualTo(SecurityConfig.Gating.AUTHENTICATED);
-            assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPattern())
-                    .as("the ordinary entitlement names one rule over the API root, which requires either "
-                            + "sign-on authority by name rather than merely an established identity")
-                    .isEqualTo(SecurityConfig.API_PATH_PREFIX + "/**");
+            assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPatterns())
+                    .as("the ordinary entitlement names each of its addresses individually, so this one "
+                            + "is reachable because it is listed and not because it sits under a region "
+                            + "the chain grants wholesale")
+                    .contains(BillPaymentController.BILL_PAYMENT_PATH)
+                    .as("a rule over the root would admit an address no controller serves as readily as "
+                            + "this one")
+                    .doesNotContain(SecurityConfig.API_PATH_PREFIX + "/**");
         }
 
         @Test

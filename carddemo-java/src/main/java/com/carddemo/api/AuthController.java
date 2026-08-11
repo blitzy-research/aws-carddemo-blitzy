@@ -128,8 +128,9 @@ public final class AuthController {
      * The one route reachable without a credential, because it is the route that issues them.
      *
      * <p>Declared here so that this mapping and the security rule which exempts it name one authority. A
-     * controller mapped to any other path would be caught by the catch-all authentication rule and would
-     * fail closed, which is the safe direction for that mistake to fail in.
+     * controller mapped to any other path beneath the API root would be refused by the chain's closing
+     * refusal rather than exempted, which is the safe direction for that mistake to fail in - the route
+     * would become unreachable and no caller would reach a sign-on it was not entitled to.
      */
     public static final String SIGN_ON_PATH = ApiRoutePaths.SIGN_ON_PATH;
 

@@ -81,15 +81,42 @@
 # failed write, reports it through the return value and never rethrows. See docs/decision-log.md
 # DL-094.
 #
+# EACH RESOURCE IS ALSO GIVEN AN ACCESS POSTURE, AND THE POSTURE IS PART OF THE CONTRACT. Naming a
+# resource and owning it says nothing about who else can reach it, and every one of the three carries
+# data that must not be reachable: the bucket holds statements, reports and rejected records bearing
+# account identifiers, card numbers and balances; the queue carries the eighty-column job-control cards
+# a scheduler acts on; the topic carries completion notices. So the bucket is given all four
+# public-access controls, a policy, and default encryption; and the queue and the topic are each given a
+# policy. Every one of those is read back and compared, exactly as the queue's two behavioural
+# attributes are, and the production trust check refuses to start a deployment whose resources lack the
+# same five properties - which is why they are provisioned here rather than only described. See
+# docs/decision-log.md DL-346.
+#
+# THE POLICIES GRANT NOTHING AND REFUSE ONE THING. Each attached policy denies every principal every
+# action of its own service when aws:SecureTransport is false, and nothing else. The topic additionally
+# keeps a grant, because the notification service attaches one to every topic it creates and setting a
+# policy replaces it: rather than silently narrowing the service's own access model, the grant is
+# reproduced in a least-privilege form - the two actions this module actually performs, confined by a
+# condition on the owning account - and the denial is added beside it. The bucket and the queue are
+# created with no policy at all and are given no grant, because this module's own access to them is
+# granted by the identity it runs as, not by the resource.
+#
+# A DENIAL OF PLAIN TRANSPORT DOES NOT BREAK THIS STACK, which is the obvious objection to it: the
+# emulator is reached over http. It does not enforce resource policies - identity and resource
+# authorisation are off unless the emulator is asked for them - so the documents are stored, read back
+# and judged here while every call still succeeds. That is exactly the property this hook needs: the
+# same posture a production account is required to carry can be provisioned and verified locally
+# without a certificate, a proxy or a second profile.
+#
 # DELIBERATELY ABSENT, each an explicit decision: publish-only, so no receive path, secondary failure
-# queue, access policy or consumer is created - the legacy definition was output-only; no retention
-# rule, encryption configuration, object lock or replication on the bucket, because versioning alone
-# carries the generation semantics; no service beyond the three; no auxiliary data store, because the
-# legacy system had none and adding one would move the behaviour the performance gate records; no
-# timing, volume or capacity figure anywhere, because no numeric service level is documented in the
-# legacy estate; no paid-tier setting, no sign-in value or key literal - awslocal resolves the edge
-# endpoint, the region and the emulator's throwaway credentials internally, which is why no endpoint
-# flag appears on any command; and no network fetch or package install.
+# queue, permission grant or consumer is created - the legacy definition was output-only; no retention
+# rule, object lock or replication on the bucket, because versioning alone carries the generation
+# semantics; no service beyond the three; no auxiliary data store, because the legacy system had none
+# and adding one would move the behaviour the performance gate records; no timing, volume or capacity
+# figure anywhere, because no numeric service level is documented in the legacy estate; no paid-tier
+# setting, no sign-in value or key literal - awslocal resolves the edge endpoint, the region and the
+# emulator's throwaway credentials internally, which is why no endpoint flag appears on any command; and
+# no network fetch or package install.
 #
 # Traceability is by citation: source checkout 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream
 # stamp CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. No legacy program, job, map, copybook or
@@ -265,6 +292,50 @@ case "${TOPIC}" in
     ;;
 esac
 
+# The statement every attached policy carries: every principal, every action of the one service, denied
+# when the call did not arrive over an encrypted transport. Composed here once so the three resources
+# cannot drift into three different postures, and matched by exactly the rule the production trust check
+# applies - AwsResourcePolicyRules, which requires the wildcard principal, the service's own action
+# wildcard and the boolean condition together, so a denial narrowed to one action or one principal does
+# not satisfy it.
+transport_denial_statement() {
+  printf '{"Sid":"DenyInsecureTransport","Effect":"Deny","Principal":"*","Action":"%s:*","Resource":%s,"Condition":{"Bool":{"aws:SecureTransport":"false"}}}' \
+    "$1" "$2"
+}
+
+# The queue service's attribute flag cannot carry a policy in its shorthand Key=Value form: the
+# document's own quoting ends the value and the tool reports a parse error before any call is made. The
+# attribute map is therefore passed as JSON, in which the document is a JSON *string* and every quote
+# inside it is escaped. Written out rather than escaped by a helper because this file has no pipeline and
+# a character-walking escaper would be more code than the single document it would escape.
+queue_policy_attributes() {
+  printf '{"Policy":"{\\"Version\\":\\"2012-10-17\\",\\"Statement\\":[{\\"Sid\\":\\"DenyInsecureTransport\\",\\"Effect\\":\\"Deny\\",\\"Principal\\":\\"*\\",\\"Action\\":\\"sqs:*\\",\\"Resource\\":\\"%s\\",\\"Condition\\":{\\"Bool\\":{\\"aws:SecureTransport\\":\\"false\\"}}}]}"}' \
+    "$1"
+}
+
+# Holds a policy read back out of a service to the property it was attached for. Both substrings are
+# required: a document that denies nothing and one that never names the transport condition are
+# different failures, and neither is the posture this stack claims.
+require_transport_denial() {
+  case "$2" in
+    *Deny*) ;;
+    *)
+      fail "$1 reports a policy that denies nothing after a denial was attached. The attached" \
+        'document is deliberately not repeated here; re-run this hook against a stack the tool can' \
+        'write policies to.'
+      ;;
+  esac
+  case "$2" in
+    *aws:SecureTransport*)
+      : ;;
+    *)
+      fail "$1 reports a policy that does not name the secure-transport condition. Without it every" \
+        'call to this resource is served whether or not it arrived encrypted, and the production trust' \
+        'check refuses to start against a resource in that state.'
+      ;;
+  esac
+}
+
 # The opening record. Everything above this line is validation, so a stack that fails to provision
 # says so before it claims to have started.
 log "bootstrap starting: region=${REGION} bucket=${BUCKET} queue=${QUEUE} topic=${TOPIC}"
@@ -343,6 +414,28 @@ log "queue ${QUEUE} verified at ${QUEUE_URL}"
 log "queue ${QUEUE} attributes verified: FifoQueue=${QUEUE_IS_FIFO}" \
   "ContentBasedDeduplication=${QUEUE_CONTENT_DEDUP}"
 
+# The queue's access posture. Its own identifier is read first, because a policy names the resource it
+# governs and a document naming a different queue would be attached without complaint. The attribute is
+# written outside the existence guard, so a queue that already existed without a policy acquires one on
+# the next run rather than keeping whatever it had.
+QUEUE_ARN="$(queue_attribute QueueArn)"
+require_bounded_value 'the queue identifier returned by the queue service' "${QUEUE_ARN}" 512
+case "${QUEUE_ARN}" in
+  arn:aws:sqs:*:*:"${QUEUE}") ;;
+  *)
+    fail "the queue service reported ${QUEUE_ARN} as the identifier of queue ${QUEUE}, which does" \
+      'not name that queue. No policy is attached, because it would govern a resource other than the' \
+      'one under contract.'
+    ;;
+esac
+awslocal sqs set-queue-attributes \
+  --queue-url "${QUEUE_URL}" \
+  --attributes "$(queue_policy_attributes "${QUEUE_ARN}")" \
+  >/dev/null
+QUEUE_POLICY="$(queue_attribute Policy)"
+require_transport_denial "queue ${QUEUE}" "${QUEUE_POLICY}"
+log "queue ${QUEUE} policy verified: every sqs action denied over plain transport, nothing granted"
+
 # RESOURCE 2 - the staging bucket. Object versioning is enabled and then read back, because
 # versioning is what carries the generation semantics of the retained legacy output data sets: without
 # it each write would replace its predecessor irrecoverably.
@@ -368,6 +461,64 @@ if [ "${BUCKET_VERSIONING}" != 'Enabled' ]; then
 fi
 log "bucket ${BUCKET} object versioning verified: ${BUCKET_VERSIONING}"
 
+# The bucket's access posture, in the order the production trust check establishes it: every public
+# route closed, then the policy that governs the rest, then the algorithm applied to an object written
+# without naming one. All three are applied outside the existence guard, so a bucket that already
+# existed unhardened is hardened on the next run.
+awslocal s3api put-public-access-block \
+  --bucket "${BUCKET}" \
+  --public-access-block-configuration \
+  'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true' \
+  >/dev/null
+# Read back one control per call, for the same reason the queue's attributes are: four values in one
+# response are separated by a control byte this script deletes before it logs anything, and a comparison
+# against the wrong control is exactly the mistake a single combined read would hide. All four are
+# required - two govern access-control lists and two govern policies, so three of four leaves one route
+# to the objects open.
+for PUBLIC_ACCESS_CONTROL in \
+  BlockPublicAcls IgnorePublicAcls BlockPublicPolicy RestrictPublicBuckets; do
+  PUBLIC_ACCESS_STATE="$(awslocal s3api get-public-access-block \
+    --bucket "${BUCKET}" \
+    --query "PublicAccessBlockConfiguration.${PUBLIC_ACCESS_CONTROL}" \
+    --output text)"
+  if [ "${PUBLIC_ACCESS_STATE}" != 'True' ]; then
+    fail "bucket ${BUCKET} reports ${PUBLIC_ACCESS_CONTROL}=${PUBLIC_ACCESS_STATE}, and it must be" \
+      'set. Each of the four controls closes a different route to the statements, reports and rejected' \
+      'records written here, so one unset control is one open route.'
+  fi
+done
+log "bucket ${BUCKET} public access verified: all 4 controls set"
+
+BUCKET_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[$(transport_denial_statement s3 \
+  "[\"arn:aws:s3:::${BUCKET}\",\"arn:aws:s3:::${BUCKET}/*\"]")]}"
+awslocal s3api put-bucket-policy --bucket "${BUCKET}" --policy "${BUCKET_POLICY}" >/dev/null
+BUCKET_POLICY_ATTACHED="$(awslocal s3api get-bucket-policy \
+  --bucket "${BUCKET}" \
+  --query 'Policy' \
+  --output text)"
+require_transport_denial "bucket ${BUCKET}" "${BUCKET_POLICY_ATTACHED}"
+log "bucket ${BUCKET} policy verified: every s3 action denied over plain transport, nothing granted"
+
+# The bucket's default is the whole of the at-rest protection, because no writer in this module names an
+# algorithm per object. The managed algorithm is chosen rather than a customer-managed key: a key would
+# be an account resource this hook has no business creating, and the property being provisioned is that
+# an unnamed algorithm is still an algorithm.
+awslocal s3api put-bucket-encryption \
+  --bucket "${BUCKET}" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' \
+  >/dev/null
+BUCKET_ENCRYPTION="$(awslocal s3api get-bucket-encryption \
+  --bucket "${BUCKET}" \
+  --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' \
+  --output text)"
+if [ "${BUCKET_ENCRYPTION}" != 'AES256' ]; then
+  fail "bucket ${BUCKET} reports default encryption ${BUCKET_ENCRYPTION}, and it must be AES256." \
+    'No writer in this module names an algorithm per object, so the bucket default is the whole of the' \
+    'at-rest protection for every statement, report and rejected record written here.'
+fi
+log "bucket ${BUCKET} default encryption verified: ${BUCKET_ENCRYPTION}"
+
 # RESOURCE 3 - the notification topic. Creating a topic that already exists is idempotent in the
 # service itself, so no existence probe is needed; the returned identifier is checked to name this
 # topic and is then resolved back through the service.
@@ -388,6 +539,40 @@ if [ "${RESOLVED_TOPIC_ARN}" != "${TOPIC_ARN}" ]; then
   fail "topic ${TOPIC} was created as ${TOPIC_ARN} but resolves to ${RESOLVED_TOPIC_ARN}."
 fi
 log "topic ${TOPIC} verified at ${TOPIC_ARN}"
+
+# The topic's access posture. Setting a policy replaces the one the notification service attached when
+# it created the topic, so the grant is reproduced rather than dropped - narrowed to the two actions this
+# module performs and confined by the same condition on the owning account the service's own default
+# uses. The owning account is read from the service instead of being derived from the identifier, so a
+# mistake in either would be a mismatch rather than a policy naming an account nobody checked.
+TOPIC_OWNER="$(awslocal sns get-topic-attributes \
+  --topic-arn "${TOPIC_ARN}" \
+  --query 'Attributes.Owner' \
+  --output text)"
+case "${TOPIC_OWNER}" in
+  '' | *[!0-9]*)
+    fail "the notification service reported ${TOPIC_OWNER} as the account owning topic ${TOPIC}," \
+      'which is not an account number. No policy is attached, because the grant it carries is confined' \
+      'to that account and a policy confined to a non-account would grant nothing or everything.'
+    ;;
+esac
+TOPIC_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":\
+[{\"Sid\":\"AllowOwningAccountToPublish\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\
+\"Action\":[\"sns:Publish\",\"sns:GetTopicAttributes\"],\"Resource\":\"${TOPIC_ARN}\",\
+\"Condition\":{\"StringEquals\":{\"AWS:SourceOwner\":\"${TOPIC_OWNER}\"}}},\
+$(transport_denial_statement sns "\"${TOPIC_ARN}\"")]}"
+awslocal sns set-topic-attributes \
+  --topic-arn "${TOPIC_ARN}" \
+  --attribute-name Policy \
+  --attribute-value "${TOPIC_POLICY}" \
+  >/dev/null
+TOPIC_POLICY_ATTACHED="$(awslocal sns get-topic-attributes \
+  --topic-arn "${TOPIC_ARN}" \
+  --query 'Attributes.Policy' \
+  --output text)"
+require_transport_denial "topic ${TOPIC}" "${TOPIC_POLICY_ATTACHED}"
+log "topic ${TOPIC} policy verified: publish confined to the owning account, every sns action denied" \
+  'over plain transport'
 
 # The completion record the gate runbook reads. It claims verification rather than mere readiness
 # because every read-back above ends the script instead of warning.

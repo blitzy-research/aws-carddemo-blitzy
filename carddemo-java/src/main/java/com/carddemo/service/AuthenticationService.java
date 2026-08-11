@@ -458,7 +458,11 @@ public final class AuthenticationService {
             LOG.info("Sign-on rejected: rule=secret-does-not-match");
             return rejection(Decision.WRONG_PASSWORD, userId, false, FIELD_PASSWORD);
         }
-        attemptGovernor.recordSuccess(userId, sourceKey);
+        // The identity only. A success releases this identity's own failure history and deliberately
+        // does NOT release the source's: the source namespace catches the sweep that never repeats an
+        // identity, and a caller holding any one valid credential could otherwise clear that record on
+        // demand and resume. See SignOnAttemptGovernor#recordSuccess and decision log DL-342.
+        attemptGovernor.recordSuccess(userId);
 
         final String rawUserTypeCode = record.getSecUsrType();
         final UserType authorityUserType = UserType.fromCode(rawUserTypeCode).orElse(UserType.USER);

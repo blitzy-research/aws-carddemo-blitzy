@@ -2592,7 +2592,12 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
             // exists to withhold, and a submission to the base address is the shape a bulk start would take.
             assertNoOperationAt(false, BatchJobController.BATCH_JOBS_PATH, 404);
             assertNoOperationAt(true, BatchJobController.BATCH_JOBS_PATH, 404);
-            assertNoOperationAt(false, BatchJobController.BATCH_CONTROL_PATH_PREFIX, 404);
+            // The prefix ABOVE the job surface is not merely unmapped: no authorization rule names it
+            // either, so the chain's closing refusal over the API root answers it before a handler is
+            // looked for. That is a stronger answer than the 404 this used to assert - an address the
+            // module does not serve is refused rather than reported absent, and the two batch operations
+            // above are still the whole of the surface. See docs/decision-log.md DL-345.
+            assertNoOperationAt(false, BatchJobController.BATCH_CONTROL_PATH_PREFIX, 403);
         }
 
         @Test

@@ -261,17 +261,17 @@ are of the source files actually present in the module.
 
 | Package | Files | Responsibility | Legacy antecedent |
 | :------ | ----: | :------------- | :---------------- |
-| `config` | 18 | Wiring: security, JWT, batch, AWS clients, observability, JPA auditing, schema migration, the menu catalog, the published interface description | the CICS resource definition's transaction and program tables; the sign-on program's role split |
+| `config` | 19 | Wiring: security, JWT, batch, AWS clients, observability, JPA auditing, schema migration, the menu catalog, the published interface description, the scope of the sign-on attempt allowance | the CICS resource definition's transaction and program tables; the sign-on program's role split |
 | `api` | 21 | REST controllers, the global error surface, and the contract adapters that map service turn results onto the transport contract | the 17 3270 screen transactions |
 | `api.dto` | 32 | Request and response contracts, navigation context, page metadata, the field-error contract | the 17 generated symbolic maps |
 | `domain` | 12 | The 11 JPA entities, plus the shared natural-key and stored-amount shape rules | the 11 verified record layouts |
 | `domain.id` | 3 | The three composite primary keys | the three multi-field cluster keys |
 | `domain.enums` | 9 | Typed state: account and card status, user type, transaction source, key action, file status, reject reason, date format, report period | the 508 level-88 condition names |
 | `repository` | 18 | 11 entity-facing Spring Data interfaces, plus 4 batch scan projections and the insert and write seams | the 10 VSAM base clusters plus the daily-transaction sequential input |
-| `service` | 65 | 38 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 12 focused support services — and 27 further files holding their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
+| `service` | 68 | 38 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 12 focused support services — and 30 further files holding their command, outcome and turn-result types, together with the sign-on attempt store: its contract and the two implementations whose difference is where the throttle's state lives | the 28 programs and 2 procedural copybooks |
 | `batch` | 13 | 9 job configurations, the shared parameter contract, the launch coordinator, staging and completion notification | the 9 application job steps |
 | `batch.step` | 11 | The step template, the item processors, the reject writer, the reader factory and the publication locks | the batch programs' read-process-write skeletons |
-| `util` | 36 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters | the record layouts, the string verbs, the function-key copybook |
+| `util` | 38 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters, and the three diagnostic primitives — failure-chain rendering, observation propagation and the sanitised observation every outbound boundary is observed through | the record layouts, the string verbs, the function-key copybook |
 | `exception` | 6 | Abend, file status, record-not-found, validation, optimistic-lock conflict, job submission | the abend paths and the file-status error branches |
 
 The `service` row is the one whose two figures are easiest to confuse, so both are stated and both are
@@ -297,7 +297,7 @@ those classes exchange, and they are not services. Counted directly:
 
 ```bash
 ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 38
-ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 65
+ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 68
 ```
 
 Every figure in the table above and in this paragraph is now **asserted against the directory it describes**
@@ -859,15 +859,22 @@ sits at offset 304 and the origin timestamp at 278, which is exactly what the so
 
 ## Schema evolution
 
-Schema evolution is **versioned and forward-only**, in four migrations under
+Schema evolution is **versioned and forward-only**, in six migrations under
 `carddemo-java/src/main/resources/db/migration/`, split across two sibling locations:
 
 | Migration | Location | Contents |
 | :-------- | :------- | :------- |
 | `V1__create_schema.sql` | `db/migration/schema/` | the 11 tables, one per verified record layout |
 | `V2__create_indexes.sql` | `db/migration/schema/` | the three alternate-index equivalents, plus primary and foreign keys |
+| `V2_1__create_sign_on_attempt_ledger.sql` | `db/migration/schema/` | the deployment-wide sign-on attempt ledger and its sweep index — one operational table, not a twelfth record table |
+| `V2_2__add_protected_value_invariants.sql` | `db/migration/schema/` | three `CHECK` constraints: an `ENC1` envelope on each regulated customer identifier, a BCrypt digest on the stored credential |
 | `V3__seed_reference_data.sql` | `db/migration/seed/` | the nine reference and sample datasets |
 | `V4__seed_user_security.sql` | `db/migration/seed/` | the ten known sign-on identities, credentials hashed |
+
+The two dotted versions are **schema** scripts, and each takes a version between the indexes and the
+fixtures so that every schema version sorts below every seed version: `2 < 2.1 < 2.2 < 3`. Three controls
+depend on that ordering; `docs/decision-log.md` DL-343 records what broke when a schema script was numbered
+above the seeds instead, and DL-349 records the invariants script.
 
 ### The two seeds can never reach production
 
@@ -877,7 +884,7 @@ pending and **not resolved at all** — they appear in no migration state. Only 
 add `classpath:db/migration/seed`, and that is one of the two settings a seeding profile carries.
 
 A **version ceiling sits beside the location list** rather than in place of it. The shared baseline and the
-production overlay both declare `spring.flyway.target: "2"`, which is the highest version the schema
+production overlay both declare `spring.flyway.target: "2.2"`, which is the highest version the schema
 location delivers; `local` and `test` lift it to `latest` in the same block where they add the seed
 location. Production refuses any other value in either direction, the head marker included, and corrects
 silence to the pin. The two controls are not redundant and they fail differently: the location list is what
@@ -894,11 +901,16 @@ about migrations inherits the production posture rather than the permissive one;
 default. A location a profile never lists is not a value an operator can widen. And a startup callback
 independently **refuses a production start** against a database whose migration history records a seed or
 whose tables still hold seeded rows, so a production instance cannot be pointed at a seeded database even
-by mistake. The one cost the ceiling carries is that a future `V5` schema migration is skipped rather than
-applied, and it is made loud rather than silent: `FlywayConfigTest` asserts the pin **equals** the highest
-version the schema location delivers, so shipping a fifth schema script fails the build until the pin is
-raised with it. The reasoning, the arrangement that preceded it and the restoration of the ceiling are
-recorded in `docs/decision-log.md` at DL-298 and DL-334.
+by mistake. The one cost the ceiling carries is that a schema migration numbered above the pin is skipped
+rather than applied, and it is made loud rather than silent: `FlywayConfigTest` asserts the pin **equals**
+the highest version the schema location delivers, so shipping a further schema script fails the build until
+the pin is raised with it. **A further schema script takes the next dotted version below 3 — `2.3` — and
+never a number above the seeds.** A schema script was once numbered `V5`, above both seeds, and three
+separate controls broke on it: the ceiling stopped excluding the seeds by number, the seed-detection
+callback read a correctly-migrated production database as contaminated, and adding the seed location to a
+schema-only database left the seeds pending below an applied version, which Flyway refuses as out of order.
+The reasoning, the arrangement that preceded it and the restoration of the ceiling are recorded in
+`docs/decision-log.md` at DL-298 and DL-334, and the numbering rule with what broke at DL-343.
 
 ### Seed volumes
 
@@ -1073,6 +1085,17 @@ the management endpoints sit behind a separate management authority, so an opera
 reused as an application credential. The anonymous metrics-scrape relaxation exists **only** in the local
 and test overlays.
 
+**Every admitted address is named, and everything else beneath the API root is refused.** The eleven
+ordinary screen addresses each carry a rule of their own requiring one of the two sign-on authorities;
+beneath them a closing `denyAll` covers the whole root, so a path this module does not serve is refused
+rather than admitted by a catch-all and then answered as not-found. An earlier arrangement granted the
+entire `/api` subtree to any signed-on caller on the argument that a table-driven rule would withdraw
+itself and leave the surface wider than before. That objection is answered rather than ignored: with
+`denyAll` beneath the root, withdrawing a rule fails **closed**, and a route added without a classification
+fails the **build**, because the delivered-surface oracle requires the router's own inventory, the
+published route table and the chain's ordinary roster to be the same set. `docs/decision-log.md` DL-345
+records it.
+
 ### Isolation is stronger than the baseline, and that is deliberate
 
 Every file definition in the CICS resource definition specifies uncommitted-read integrity, no recovery and
@@ -1084,6 +1107,21 @@ This is stated explicitly so that a reviewer does not mistake the stronger isola
 regression: it is an **improvement, not a divergence to be corrected**. The full argument, including why a
 stronger guarantee cannot alter any output the legacy system produced, is in
 [decision-log.md](decision-log.md).
+
+### Six controls the legacy system had no equivalent of
+
+Each of these guards a boundary the 3270 and VSAM estate did not have, so none of them is a translation of
+anything and none may be read as parity. Each is stated with what it does **not** claim, and each is
+recorded in [decision-log.md](decision-log.md) at the entry named.
+
+| Boundary | The control | What it does not do | Entry |
+| :------- | :---------- | :------------------ | :---- |
+| Repeated sign-on | A spent allowance is refused before any credential is read, counted per identity and per caller address, and a **successful** sign-on releases the identity subject alone — the caller address decays only by its own window, so one valid low-privilege login cannot clear a sweep across generated identifiers | It does not lock an identity out permanently, and it refuses nobody when its store is unreachable | DL-342 |
+| Repeated sign-on, across replicas | That allowance is counted **once per deployment** rather than once per process: the state lives in one shared table under a ledger-wide advisory lock, so replicas share one allowance and a refusal survives a restart. Production cannot select the per-process store — the bean refuses to be created | It is not a rate limiter in front of the deployment, and it does not survive the table being dropped | DL-343 |
+| Anonymous readiness probing | Each provider-backed contributor answers from its own recent result for a bounded window and coalesces concurrent evaluations onto one, so probe volume does not become provider call volume. Every outcome is reused, including the failing ones | It does not withdraw the anonymity of the three health addresses — a container probe has no credential to present — and it does not hide a resource that goes away for longer than one window | DL-344 |
+| The cloud account this deployment runs against | Start-up verifies the **posture** of the three resources rather than their existence alone: public access blocked through all four controls, a bucket, queue and topic policy that grant no principal unconditionally and deny every action over plain transport, and a default encryption algorithm on the bucket. Absent or permissive, production does not start | It does not provision any of them in production — that is infrastructure work this migration has no authority over — and it audits nothing outside those three resources | DL-346 |
+| What a diagnostic is allowed to carry | An outbound failure reaches a span as a bounded classification of its type chain and never as the provider's own failure object; a start-up refusal carries the same classification and no chained cause; and a refusal about a configured credential names the rule broken and never a property of the value — not the matched word, not the observed length | It does not reduce what an operator can act on: a refusal still names the variable and the property, and a classification still names the failure type | DL-341, DL-347, DL-348 |
+| The three columns widened to hold a protected value | The **database** refuses anything else in them: an `ENC1` envelope on each regulated customer identifier and a structurally well-formed BCrypt digest at an accepted cost on the stored credential, so a bulk load, a repair script or a restored backup cannot put cleartext where the application would never have put it | The constraints are a necessary condition and not a sufficient one — a SQL `CHECK` cannot decode an envelope, so the application stays the precise gate | DL-349 |
 
 ### Secrets
 
@@ -1224,7 +1262,7 @@ running mainframe.
 
 | Service | Role |
 | :------ | :--- |
-| PostgreSQL 16 | the relational store the eleven tables live in |
+| PostgreSQL 16 | the relational store the eleven record tables and the sign-on attempt ledger live in |
 | LocalStack Community | object storage, the FIFO queue and the notification topic; **Community edition only, no licence token** |
 | Jaeger | the OTLP trace collector and its query interface |
 | Prometheus | scrapes `/actuator/prometheus` |
@@ -1233,7 +1271,11 @@ running mainframe.
 
 All images are pinned by digest, and every published port binds to the loopback interface by default.
 `carddemo-java/localstack/init/01-create-aws-resources.sh` bootstraps the staging bucket, the FIFO queue and
-the topic on startup. Bring-up and gate-execution instructions live in the module's own
+the topic on startup, together with the access posture the production start-up check requires of all three —
+public access blocked through all four controls, a bucket policy and a queue and topic policy that grant no
+principal unconditionally and deny every action over plain transport, and a default encryption algorithm on
+the bucket. The local stack therefore carries the same posture the check refuses production without, which
+is what makes the check exercisable without an AWS account; `docs/decision-log.md` DL-346 records it. Bring-up and gate-execution instructions live in the module's own
 `carddemo-java/README.md`, and [onboarding-guide.md](onboarding-guide.md) restates them as a first-run
 walkthrough.
 

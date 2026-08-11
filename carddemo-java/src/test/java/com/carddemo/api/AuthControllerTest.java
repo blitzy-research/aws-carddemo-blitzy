@@ -28,6 +28,7 @@ import com.carddemo.service.AuthenticationService;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
+import com.carddemo.service.InMemorySignOnAttemptLedger;
 import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.util.SessionTokenIssuer;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -151,7 +152,7 @@ class AuthControllerTest {
      */
     private static SignOnAttemptGovernor shippedGovernor() {
         return new SignOnAttemptGovernor(true, 10, Duration.ofMinutes(5), Duration.ofMinutes(1),
-                10_000, FIXED_CLOCK, new SimpleMeterRegistry());
+                10_000, FIXED_CLOCK, new SimpleMeterRegistry(), new InMemorySignOnAttemptLedger());
     }
 
     /** Assembles the controller over a real service and a stubbed issuer. */

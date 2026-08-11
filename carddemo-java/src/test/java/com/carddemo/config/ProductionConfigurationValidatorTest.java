@@ -489,8 +489,11 @@ final class ProductionConfigurationValidatorTest {
                             .validateRequiredSettings(environmentWith(variables)))
                     .withMessageContaining(reportLineFor(
                             settingFor(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY)))
-                    .withMessageContaining("requires at least " + floor)
-                    .withMessageContaining("openssl rand -hex 16");
+                    .withMessageContaining("shorter than the " + floor + " characters")
+                    .withMessageContaining("openssl rand -hex 16")
+                    .as("the requirement is what makes the refusal actionable; the actual length is a "
+                            + "property of the credential and is withheld - see DL-348")
+                    .withMessageNotContaining("is " + (floor - 1) + " characters");
         }
 
         @Test
@@ -499,10 +502,16 @@ final class ProductionConfigurationValidatorTest {
             final Map<String, String> variables = everyRequiredVariable();
             variables.put(OPERATOR_CREDENTIAL_VARIABLE, "x");
 
+            // The refusal names the requirement and NOT the measurement. It used to publish the exact
+            // stripped length, which is the search space a guesser needs and a property of a live
+            // credential; a deployer already knows how long their own value is. Recorded as DL-348.
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> ProductionConfigurationValidator
                             .validateRequiredSettings(environmentWith(variables)))
-                    .withMessageContaining("is 1 characters");
+                    .withMessageContaining("shorter than the "
+                            + ProductionConfigurationValidator.MINIMUM_MANAGEMENT_TOKEN_LENGTH
+                            + " characters")
+                    .withMessageNotContaining("is 1 characters");
         }
 
         @Test
@@ -513,12 +522,23 @@ final class ProductionConfigurationValidatorTest {
             final Map<String, String> variables = everyRequiredVariable();
             variables.put(OPERATOR_CREDENTIAL_VARIABLE, " ".repeat(floor) + "short" + " ".repeat(floor));
 
+            // Stripping is proved by the refusal itself rather than by reading a length out of it: the
+            // configured value is longer than the floor before stripping, so a check that measured the
+            // unstripped text would have accepted it. That is a stronger statement than the old one,
+            // which inferred stripping from the message publishing the figure 5 - a figure that is a
+            // property of the credential and is no longer published at all. Recorded as DL-348.
+            assertThat(variables.get(OPERATOR_CREDENTIAL_VARIABLE).length())
+                    .as("the unstripped value must clear the floor, or this proves nothing about "
+                            + "stripping")
+                    .isGreaterThanOrEqualTo(floor);
+
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> ProductionConfigurationValidator
                             .validateRequiredSettings(environmentWith(variables)))
                     .as("SecurityConfig strips the configured token before comparing it, so an attacker "
                             + "guessing this value does not have to guess the padding")
-                    .withMessageContaining("is 5 characters");
+                    .withMessageContaining("shorter than the " + floor + " characters")
+                    .withMessageNotContaining("is 5 characters");
         }
 
         @Test

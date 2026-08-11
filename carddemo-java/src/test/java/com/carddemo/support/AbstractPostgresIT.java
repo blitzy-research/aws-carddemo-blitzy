@@ -16,9 +16,11 @@
  */
 package com.carddemo.support;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -115,11 +117,12 @@ import org.testcontainers.utility.DockerImageName;
  * per class also removes a source of ordering surprise.
  *
  * <h2>Why the migration runs to the head and is not pinned</h2>
- * The four delivered migrations ship from two sibling locations: {@code db/migration/schema} carries
- * {@code V1} and {@code V2}, which create the schema and the indexes, and {@code db/migration/seed}
+ * The six delivered migrations ship from two sibling locations: {@code db/migration/schema} carries
+ * {@code V1} and {@code V2}, which create the schema and the indexes, and {@code V2_1} and {@code V2_2},
+ * which add the sign-on attempt ledger and the protected-value invariants; {@code db/migration/seed}
  * carries {@code V3} and {@code V4}, which seed sample reference rows and ten sign-on identities. Two
  * controls separate them - production resolves the schema location alone AND pins
- * {@code spring.flyway.target: 2}, so the two seed scripts are neither resolved nor reachable there.
+ * {@code spring.flyway.target: 2.2}, so the two seed scripts are neither resolved nor reachable there.
  * <strong>This base reproduces the
  * TEST profile rather than the production one</strong>, because that is the posture the module actually
  * ships for tests: {@code src/test/resources/application-test.yml} declares both locations and
@@ -228,7 +231,7 @@ public abstract class AbstractPostgresIT {
      * the seed location from the list rather than by imposing a version ceiling.
      *
      * <p>Their shared parent {@code classpath:db/migration} is deliberately NOT used, even though it
-     * would resolve the same four scripts: Flyway records a script under a name relative to its
+     * would resolve the same six scripts: Flyway records a script under a name relative to its
      * location, so migrating from the parent would write {@code schema/V1__create_schema.sql} into the
      * history where every shipped profile writes {@code V1__create_schema.sql} - and a context booted
      * by a subclass, which migrates from the two children, would then validate against a history that
@@ -245,13 +248,15 @@ public abstract class AbstractPostgresIT {
     protected static final String SEED_MIGRATION_LOCATION = "classpath:db/migration/seed";
 
     /**
-     * The highest migration version that belongs to the schema rather than to the seeds.
+     * The seed scripts a reset re-applies, in the order their versions deliver them.
      *
-     * <p>This is the same boundary the production profile enforces as a Flyway target, which is what
-     * makes it the right boundary for {@link #restoreSeededState()} to re-run from: everything above it
-     * is seed data, everything at or below it is structure that a reseed must leave alone.</p>
+     * <p>Classpath resources rather than versions, because {@link #restoreSeededState()} re-applies the
+     * seed <em>rows</em> and has no business re-applying the seed <em>versions</em>. The distinction is
+     * the whole reason this roster is script paths: see that method for what depended on it.
      */
-    private static final int SCHEMA_CEILING_VERSION = 2;
+    private static final List<String> SEED_SCRIPTS = List.of(
+            "db/migration/seed/V3__seed_reference_data.sql",
+            "db/migration/seed/V4__seed_user_security.sql");
 
     /**
      * Concurrent client ceiling the one shared server is started with.
@@ -325,8 +330,10 @@ public abstract class AbstractPostgresIT {
      * should be written against; {@link #applicationTableNames()} is the live counterpart read back
      * from the running server.</p>
      *
-     * <p>The job-repository tables and the migration history table are deliberately absent - see
-     * {@link #applicationTableNames()} for why counting them would be wrong.</p>
+     * <p>The job-repository tables, the migration history table and the operational sign-on attempt
+     * ledger are deliberately absent - see {@link #applicationTableNames()} for why counting any of them
+     * here would be wrong, and {@link #OPERATIONAL_TABLES} for the one that is a delivered table rather
+     * than a framework's.</p>
      */
     protected static final List<String> APPLICATION_TABLES = List.of(
             "account",
@@ -340,6 +347,22 @@ public abstract class AbstractPostgresIT {
             "transaction_type",
             "transaction_category",
             "user_security");
+
+    /**
+     * The operational tables the schema migration creates, which are not record layouts.
+     *
+     * <p>Exactly one today: the deployment-wide sign-on attempt ledger created by
+     * {@code V2_1__create_sign_on_attempt_ledger.sql}. It holds no business record and derives from no
+     * copybook - it holds the running count of failed sign-on attempts per subject, so that the
+     * allowance is counted once across every instance rather than once per process. See
+     * {@code docs/decision-log.md} DL-343.
+     *
+     * <p>Held apart from {@link #APPLICATION_TABLES} rather than folded into it, because that roster
+     * means something precise - the eleven verified record layouts, in record-layout order - and a
+     * twelfth entry with no record image would quietly falsify every assertion written against it.
+     * {@link #operationalTableNames()} is the live counterpart.
+     */
+    protected static final List<String> OPERATIONAL_TABLES = List.of("sign_on_attempt");
 
     /**
      * The one server every subclass shares, started and migrated before any subclass is constructed.
@@ -357,7 +380,7 @@ public abstract class AbstractPostgresIT {
     /**
      * Starts the server and brings it to the head of the migration set.
      *
-     * <p>Both delivered locations are declared and no ceiling is set, so all four delivered
+     * <p>Both delivered locations are declared and no ceiling is set, so all six delivered
      * migrations are applied in version order and the seeded reference rows and sign-on identities are
      * present. That matches the test profile the module ships and is what the container-backed
      * assertions read.
@@ -521,15 +544,21 @@ public abstract class AbstractPostgresIT {
     /**
      * Reads back the application tables that actually exist on the shared server, in name order.
      *
-     * <p>Two families of table are excluded, and excluding them is the whole point of this method.
-     * Spring Batch provisions its own job-repository tables from its bundled script because every
-     * shipped profile asks it to, and the migration tool keeps a history table of its own. Both are
-     * real and expected, and neither belongs to the eleven-table business inventory - so a count that
-     * included them would fail for a reason that has nothing to do with the record schema. Nothing
-     * else is excluded: the migrations create exactly the eleven business tables and no operational
-     * table of any kind, so an unrecognised name here is a genuine schema regression.</p>
+     * <p>Three exclusions, and making them is the whole point of this method. Spring Batch provisions
+     * its own job-repository tables from its bundled script because every shipped profile asks it to,
+     * and the migration tool keeps a history table of its own; both are real and expected and neither
+     * belongs to the eleven-table business inventory. The third is the module's own
+     * {@code sign_on_attempt} ledger, which IS a delivered table but is not a record layout: it holds
+     * the deployment-wide count of failed sign-on attempts and derives from no copybook. Counting any of
+     * the three here would fail an assertion for a reason that has nothing to do with the record schema.
      *
-     * <p>The exclusion is written against lower-case names because the server folds unquoted
+     * <p><strong>The third exclusion is by exact name, not by pattern, and that is what preserves the
+     * property this method exists for.</strong> Only {@code sign_on_attempt} is excluded, so any OTHER
+     * table appearing here is still a genuine schema regression and still surfaces loudly. A pattern
+     * would have hidden the next one too. The excluded table is not merely dropped either - it is
+     * asserted to exist by {@link #operationalTableNames()}, so it cannot vanish unnoticed.</p>
+     *
+     * <p>Every exclusion is written against lower-case names because the server folds unquoted
      * identifiers, so the job-repository tables land lower-cased however they were declared.</p>
      *
      * <p>Compare against {@link #APPLICATION_TABLES} without regard to order: this result is sorted by
@@ -544,6 +573,29 @@ public abstract class AbstractPostgresIT {
                  WHERE table_schema = 'public'
                    AND table_name NOT LIKE 'batch\\_%'
                    AND table_name <> 'flyway_schema_history'
+                   AND table_name <> 'sign_on_attempt'
+                 ORDER BY table_name
+                """);
+    }
+
+    /**
+     * Reads back the operational tables that actually exist on the shared server, in name order.
+     *
+     * <p>The counterpart of {@link #applicationTableNames()} for the tables that carry no record layout.
+     * It exists so the one table that method filters out is <em>asserted</em> rather than merely hidden:
+     * a delivered table excluded from one roster and named in no other could be dropped from the
+     * migration set and nothing would notice.
+     *
+     * <p>Compare against {@link #OPERATIONAL_TABLES}.
+     *
+     * @return the names of the operational tables present on the shared server
+     * @throws SQLException if the catalogue cannot be read
+     */
+    protected static List<String> operationalTableNames() throws SQLException {
+        return queryOneColumn("""
+                SELECT table_name FROM information_schema.tables
+                 WHERE table_schema = 'public'
+                   AND table_name = 'sign_on_attempt'
                  ORDER BY table_name
                 """);
     }
@@ -606,10 +658,30 @@ public abstract class AbstractPostgresIT {
      *
      * <p>The order matters and is not interchangeable. The seed scripts carry no conflict clause by
      * design - applying one to a table that already holds rows is meant to fail loudly rather than merge
-     * silently - so the tables must be emptied <em>before</em> the seeds are re-applied. The history of
-     * the seed versions is then removed so the migration tool sees them as pending; only rows above the
-     * schema ceiling are removed, so the schema versions keep their history and their checksums are
-     * still validated. The history table itself is never truncated.</p>
+     * silently - so the tables must be emptied <em>before</em> the seeds are re-applied.</p>
+     *
+     * <p><strong>The seed scripts are executed directly, and the migration history is never touched.
+     * That is a correction.</strong> This method used to delete the seed versions' history rows and run
+     * the migration tool again to make it re-apply them. That worked only while every schema version sat
+     * below every seed version: once the delivered schema reached version 5 - the sign-on attempt ledger,
+     * numbered above the already-applied seeds for the reason {@code docs/decision-log.md} DL-343
+     * records - forgetting versions 3 and 4 left them pending <em>below</em> an applied 5. The tool
+     * reported that as a validation failure and applied nothing, so every seeded row went missing and the
+     * next assertion failed for a reason unrelated to what it tested. Allowing it instead, by declaring
+     * the re-migration out-of-order, applied the rows but recorded the two versions in the
+     * {@code OUT_OF_ORDER} state rather than {@code SUCCESS} - which then falsified every assertion that
+     * reads the tool's own view of what is applied, and permanently rather than once.</p>
+     *
+     * <p>Both of those are consequences of using migration history as the mechanism for a job it was
+     * never the mechanism for. This method wants the seeded <em>rows</em> back; it has no interest in the
+     * seeded <em>versions</em>, which are applied, correct and should stay exactly as they are. Running
+     * the two scripts is the direct expression of that, and it leaves history, checksums and every
+     * migration state untouched. Neither script carries a placeholder or any other construct that needs
+     * the tool to interpret it, so running them is not an approximation of migrating them.</p>
+     *
+     * <p>The operational tables are emptied too, because a fresh migration leaves them empty: the
+     * sign-on attempt ledger ships no row and is correct with none. Leaving accumulated throttle state
+     * behind would let one test's refused sign-ons refuse another test's admitted one.</p>
      *
      * <p>Afterwards {@link #appliedMigrationVersions()} again reports every delivered version as
      * successfully applied.</p>
@@ -618,29 +690,69 @@ public abstract class AbstractPostgresIT {
      */
     protected static void restoreSeededState() throws SQLException {
         truncateApplicationTables();
-        forgetSeedMigrationHistory();
-        Flyway.configure()
-                .dataSource(jdbcUrl(), databaseUser(), databasePassword())
-                .locations(MIGRATION_LOCATION, SEED_MIGRATION_LOCATION)
-                .load()
-                .migrate();
+        truncateOperationalTables();
+        applySeedScripts();
     }
 
     /**
-     * Removes the history rows of the seed migrations so they are pending again.
+     * Empties the operational tables, leaving the schema and the migration history untouched.
      *
-     * <p>Bound as a parameter against the numeric value of the version column, so the boundary is stated
-     * once as {@link #SCHEMA_CEILING_VERSION} and no version literal is assembled into the statement.
-     * Every delivered version is a whole number, so the numeric reading is well defined.</p>
+     * <p>Separate from {@link #truncateApplicationTables()} rather than folded into it, so that method
+     * keeps meaning exactly what its name and its Javadoc say: the eleven record-layout tables. A test
+     * clearing business rows is not necessarily asking to clear throttle state, and one clearing
+     * throttle state is not necessarily asking to delete every account.
      *
-     * @throws SQLException if the history cannot be amended
+     * @throws SQLException if the tables cannot be emptied
      */
-    private static void forgetSeedMigrationHistory() throws SQLException {
+    protected static void truncateOperationalTables() throws SQLException {
+        // Identifiers come from the roster above; no value and no caller input is interpolated.
+        final String truncate = "TRUNCATE TABLE " + String.join(", ", OPERATIONAL_TABLES);
         try (Connection connection = connect();
-                PreparedStatement delete = connection.prepareStatement(
-                        "DELETE FROM flyway_schema_history WHERE CAST(version AS numeric) > ?")) {
-            delete.setInt(1, SCHEMA_CEILING_VERSION);
-            delete.executeUpdate();
+                Statement statement = connection.createStatement()) {
+            statement.execute(truncate);
+        }
+    }
+
+    /**
+     * Runs the delivered seed scripts against the shared server, in version order.
+     *
+     * <p>The text is the shipped script, read from the same classpath location the migration tool
+     * resolves it from, so a reset cannot drift from what a migration delivers: there is no second copy
+     * of the seed data to keep in step. Nothing is interpolated into it - the scripts are constants on
+     * the classpath and carry no placeholder - so no caller input reaches a statement.</p>
+     *
+     * @throws SQLException if a script cannot be read or applied
+     */
+    private static void applySeedScripts() throws SQLException {
+        for (final String script : SEED_SCRIPTS) {
+            final String sql = readClasspathScript(script);
+            try (Connection connection = connect();
+                    Statement statement = connection.createStatement()) {
+                statement.execute(sql);
+            }
+        }
+    }
+
+    /**
+     * Reads a delivered SQL script from the classpath.
+     *
+     * @param  resource the classpath-relative path of the script
+     * @return the script text
+     * @throws SQLException if the script is absent or unreadable, reported as a data-access failure
+     *                      because that is what every caller of this class already handles
+     */
+    private static String readClasspathScript(final String resource) throws SQLException {
+        try (InputStream stream =
+                AbstractPostgresIT.class.getClassLoader().getResourceAsStream(resource)) {
+            if (stream == null) {
+                throw new SQLException("the delivered seed script " + resource + " is not on the test"
+                        + " classpath, so the seeded state cannot be restored from the shipped"
+                        + " definition");
+            }
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (final IOException failure) {
+            throw new SQLException("the delivered seed script " + resource + " could not be read",
+                    failure);
         }
     }
 

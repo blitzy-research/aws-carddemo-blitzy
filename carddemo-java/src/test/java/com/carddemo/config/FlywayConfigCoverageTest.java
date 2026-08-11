@@ -122,7 +122,7 @@ final class FlywayConfigCoverageTest {
      * The ceiling the shared baseline and the production overlay declare, typed independently of the
      * class under test so a change to the constant cannot silently change what is asserted about it.
      */
-    private static final String EXPECTED_TARGET = "2";
+    private static final String EXPECTED_TARGET = "2.2";
 
     /** The profile the refusal is scoped to. */
     private static final String EXPECTED_PROFILE = "prod";
@@ -151,10 +151,19 @@ final class FlywayConfigCoverageTest {
      */
     private static final String TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 
-    /** The scripts that build the schema, which ship from the schema location. */
+    /**
+     * The scripts that build the schema, which ship from the schema location.
+     *
+     * <p>Four, and the last two take dotted versions between the indexes and the fixtures: the
+     * deployment-wide sign-on attempt ledger at 2.1 and the protected-value invariants at 2.2. Every
+     * schema version sorts below every seed version, which is an invariant three controls rest on - see
+     * {@code docs/decision-log.md} DL-343 and DL-349.
+     */
     private static final List<String> SCHEMA_MIGRATIONS = List.of(
             "V1__create_schema.sql",
-            "V2__create_indexes.sql");
+            "V2__create_indexes.sql",
+            "V2_1__create_sign_on_attempt_ledger.sql",
+            "V2_2__add_protected_value_invariants.sql");
 
     /** The scripts that seed rows, which ship from the seed location. */
     private static final List<String> SEED_MIGRATIONS =
@@ -163,9 +172,31 @@ final class FlywayConfigCoverageTest {
     /**
      * The ceiling production is pinned at, which a seeding profile must have lifted for itself.
      */
-    private static final String SCHEMA_CEILING = "2";
+    private static final String SCHEMA_CEILING = "2.2";
 
-    /** A numeric ceiling that reaches the seed versions, refused under production. */
+    /**
+     * A ceiling that stops short of the seed versions, which is the case the lift exists for.
+     *
+     * <p>It is the value the shared baseline pins, which is the value a seeding profile inherits when it
+     * declares no ceiling of its own. That is the case the lift exists for: a fixture-bearing profile
+     * left at the production ceiling would migrate the schema and load no fixtures. The same lift also
+     * covers a low ceiling an operator supplies - on the command line, in an environment variable, in a
+     * merged property source.
+     *
+     * <p>Held as its own constant rather than written as {@link #SCHEMA_CEILING} so the assertions below
+     * say which property of the value they depend on: this one is used because it stops below the seeds,
+     * and it would still be the right value to start from if the pin moved above them.
+     */
+    private static final String CEILING_BELOW_THE_SEEDS = SCHEMA_CEILING;
+
+    /**
+     * A numeric ceiling that reaches the seed versions and is refused under production.
+     *
+     * <p>Now BELOW the pin rather than above it, which is the same refusal reached from the other
+     * direction: production refuses every value but the pin, and a ceiling of 4 would stop before the
+     * sign-on attempt ledger while reporting a successful migration. It reaches the seeds too, which is
+     * what the name says, but that is no longer why it is refused.
+     */
     private static final String SEED_REACHING_CEILING = "4";
 
     @Nested
@@ -182,8 +213,9 @@ final class FlywayConfigCoverageTest {
                     .isEqualTo(EXPECTED_TARGET);
             assertThat(deliveredMigrations(EXPECTED_SCHEMA_PATH))
                     .as("and it must be measured against the delivered scripts rather than written down: "
-                            + "a pin that is never checked freezes the schema, so a V5 script added here "
-                            + "without raising the pin has to fail a build")
+                            + "a pin that is never checked freezes the schema, so a script added here "
+                            + "above the pin has to fail a build - which is what caught this constant "
+                            + "when the sign-on attempt ledger arrived")
                     .isNotEmpty()
                     .allSatisfy(script -> assertThat(versionOf(script)
                             .compareTo(MigrationVersion.fromVersion(FlywayConfig.PRODUCTION_TARGET)))
@@ -267,7 +299,7 @@ final class FlywayConfigCoverageTest {
                     .isEmpty();
 
             assertThat(scriptsSittingDirectlyIn(EXPECTED_SCHEMA_PATH))
-                    .as("while the schema location must carry its two scripts DIRECTLY, so that a "
+                    .as("while the schema location must carry its four scripts DIRECTLY, so that a "
                             + "recursive scan and a listing of the directory agree")
                     .containsExactlyInAnyOrderElementsOf(SCHEMA_MIGRATIONS);
             assertThat(scriptsSittingDirectlyIn(EXPECTED_SEED_PATH))
@@ -276,12 +308,12 @@ final class FlywayConfigCoverageTest {
         }
 
         @Test
-        @DisplayName("the delivered inventory is exactly the four scripts the frozen plan names, split "
+        @DisplayName("the delivered inventory is exactly the six delivered scripts, split "
                 + "across the two locations with nothing interleaved and nothing hidden below")
-        void theDeliveredInventoryIsExactlyTheFourNamedScripts() {
+        void theDeliveredInventoryIsExactlyTheSixNamedScripts() {
             assertThat(deliveredMigrations(EXPECTED_SHARED_PARENT_PATH))
-                    .as("a recursive scan of the whole migration tree must find exactly the four "
-                            + "delivered scripts and no fifth: an extra script is what would make the "
+                    .as("a recursive scan of the whole migration tree must find exactly the six "
+                            + "delivered scripts and no seventh: an extra script is what would make the "
                             + "delivered inventory stop describing what a profile applies")
                     .containsExactlyInAnyOrderElementsOf(Stream.concat(SCHEMA_MIGRATIONS.stream(),
                             SEED_MIGRATIONS.stream()).toList());
@@ -289,34 +321,46 @@ final class FlywayConfigCoverageTest {
             MigrationVersion first = versionOf("V1__create_schema.sql");
             MigrationVersion second = versionOf("V2__create_indexes.sql");
             MigrationVersion firstSeed = versionOf("V3__seed_reference_data.sql");
+            MigrationVersion ledger = versionOf("V2_1__create_sign_on_attempt_ledger.sql");
 
             assertThat(first)
-                    .as("the schema half is flatly numbered 1 then 2; a dotted version such as 1.1 "
-                            + "would sort between them and would be read as version 1 by anything that "
-                            + "took one leading integer")
+                    .as("the delivered set is flatly numbered; a dotted version such as 1.1 would sort "
+                            + "between two of them and would be read as version 1 by anything that took "
+                            + "one leading integer")
                     .isEqualTo(MigrationVersion.fromVersion("1"))
                     .isLessThan(second);
             assertThat(second).isEqualTo(MigrationVersion.fromVersion("2"));
 
             assertThat(second)
-                    .as("and the numbering must agree with the placement. Flyway orders by VERSION "
-                            + "across every resolved location rather than by location, so the two "
-                            + "sibling directories only compose into a correct apply order while every "
-                            + "schema script is numbered below every seed - a seed numbered V1_2 would "
-                            + "be applied BEFORE the indexes it relies on")
+                    .as("the SCHEMA scripts a seed depends on must be numbered below every seed. Flyway "
+                            + "orders by VERSION across every resolved location rather than by location, "
+                            + "so a seed numbered V1_2 would be applied BEFORE the indexes it relies on")
+                    .isLessThan(firstSeed);
+            assertThat(ledger)
+                    .as("and the ledger script is numbered below them too, by a DOTTED version between "
+                            + "the indexes and the fixtures. An earlier revision numbered it above the "
+                            + "seeds on the reasoning that a dotted version beneath already-applied "
+                            + "seeds would be out-of-order. That traded one problem for three: the "
+                            + "production ceiling stopped excluding the seeds by number, the "
+                            + "database-level seed refusal - which fires on a successful history row at "
+                            + "or above the first seed version - refused a correctly migrated production "
+                            + "database, and a schema-only database later resolving the seed location "
+                            + "found the seeds pending BELOW an applied schema version. DL-343")
                     .isLessThan(firstSeed);
         }
 
         @Test
-        @DisplayName("the placement rather than the numbering is what excludes the seeds, so a seed "
-                + "renumbered downwards is still excluded")
+        @DisplayName("the placement alone excludes the seeds, so a seed renumbered downwards is still "
+                + "excluded even though the ceiling would also have declined it")
         void placementRatherThanNumberingIsTheExclusion() {
             for (final String seedMigration : SEED_MIGRATIONS) {
                 assertThat(deliveredMigrations(EXPECTED_SCHEMA_PATH))
                         .as("%s must not be resolvable from the location production reads. That is the "
                                 + "whole of the exclusion, and it does not depend on the version the "
-                                + "seed carries: renumber it to V1_5 and it is still excluded, whereas "
-                                + "the ceiling of %s alone would then have admitted it",
+                                + "seed carries: renumber it to V1_5 and it is still excluded, while "
+                                + "the ceiling of %s declines both seed versions as they stand - so the "
+                                + "two controls act independently and the placement is the one that acts "
+                                + "whatever the number says",
                                 seedMigration, SCHEMA_CEILING)
                         .doesNotContain(seedMigration);
             }
@@ -483,9 +527,13 @@ final class FlywayConfigCoverageTest {
                 + "target - which is the other half of the same resolution")
         void completesASeedingProfilesInheritedScope(final String profile) {
             runner(profile).run(context -> {
+                // Started from a ceiling that stops BELOW the seeds, because that is the case the lift
+                // exists for - and it is the case a seeding profile reaches by INHERITANCE, since the
+                // shared baseline pins exactly this value. Every schema version sorts below every seed
+                // version, so the inherited pin always stops short of the fixtures.
                 FluentConfiguration configuration = Flyway.configure()
                         .locations(EXPECTED_SCHEMA_LOCATION)
-                        .target(MigrationVersion.fromVersion(SCHEMA_CEILING));
+                        .target(MigrationVersion.fromVersion(CEILING_BELOW_THE_SEEDS));
 
                 context.getBean(FlywayConfigurationCustomizer.class).customize(configuration);
 
@@ -496,14 +544,55 @@ final class FlywayConfigCoverageTest {
                                 + "schema it no longer creates", profile)
                         .containsExactly(EXPECTED_SCHEMA_LOCATION, EXPECTED_SEED_LOCATION);
                 assertThat(configuration.getTarget())
-                        .as("and an inherited ceiling reaching %s would migrate the schema and none of "
-                                + "the fixtures the profile exists to load", profile)
+                        .as("and a ceiling of %s under %s would migrate the schema and none of the "
+                                + "fixtures the profile exists to load, so it is lifted to the head",
+                                CEILING_BELOW_THE_SEEDS, profile)
                         .isEqualTo(MigrationVersion.LATEST);
                 for (final String seedMigration : SEED_MIGRATIONS) {
                     assertThat(versionOf(seedMigration))
                             .as("%s must be reachable once the scope is completed", seedMigration)
                             .isLessThanOrEqualTo(configuration.getTarget());
                 }
+            });
+        }
+
+        @ParameterizedTest(name = "the {0} profile keeps a ceiling that already reaches every seed")
+        @ValueSource(strings = {"local", "test"})
+        @DisplayName("leaves a seeding profile's ceiling alone when it already reaches the seeds, so the "
+                + "lift is conditional rather than unconditional")
+        void leavesASeedingProfilesReachingCeilingAlone(final String profile) {
+            // A ceiling that already reaches both seeds. No shipped profile declares one - the baseline
+            // pin stops below them - so this value is supplied here to exercise the branch an operator
+            // reaches by raising the ceiling themselves. The lift must be a no-op then: raising a
+            // ceiling that is already high enough would be a change with no purpose, and it would mask
+            // whether the customizer distinguishes the two cases at all.
+            final MigrationVersion alreadyReachingTheSeeds = SEED_MIGRATIONS.stream()
+                    .map(FlywayConfigCoverageTest::versionOf)
+                    .max(MigrationVersion::compareTo)
+                    .orElseThrow();
+
+            runner(profile).run(context -> {
+                FluentConfiguration configuration = Flyway.configure()
+                        .locations(EXPECTED_SCHEMA_LOCATION)
+                        .target(alreadyReachingTheSeeds);
+
+                context.getBean(FlywayConfigurationCustomizer.class).customize(configuration);
+
+                assertThat(configuration.getTarget())
+                        .as("a ceiling of %s under %s already reaches every seed version, so it is "
+                                + "returned unchanged rather than lifted to the head",
+                                alreadyReachingTheSeeds, profile)
+                        .isEqualTo(alreadyReachingTheSeeds);
+                for (final String seedMigration : SEED_MIGRATIONS) {
+                    assertThat(versionOf(seedMigration))
+                            .as("%s must already be reachable at that ceiling, which is the reason it is "
+                                    + "left alone", seedMigration)
+                            .isLessThanOrEqualTo(configuration.getTarget());
+                }
+                assertThat(Stream.of(configuration.getLocations()).map(Object::toString).toList())
+                        .as("and the location completion still happens: the ceiling and the location "
+                                + "list are independent halves of the same resolution")
+                        .containsExactly(EXPECTED_SCHEMA_LOCATION, EXPECTED_SEED_LOCATION);
             });
         }
 
@@ -518,7 +607,7 @@ final class FlywayConfigCoverageTest {
                         .target(MigrationVersion.fromVersion(EXPECTED_SEEDING_TARGET));
 
                 assertThatExceptionOfType(IllegalStateException.class)
-                        .as("the parent resolves the same four scripts under %s, so it looks like a "
+                        .as("the parent resolves the same six scripts under %s, so it looks like a "
                                 + "harmless simplification. It is not: Flyway records a script under a "
                                 + "name relative to its location, so the history would read "
                                 + "schema/V1__create_schema.sql where the bring-up check reads "
@@ -587,7 +676,7 @@ final class FlywayConfigCoverageTest {
      * directory beneath it.
      *
      * <p>This is what tells the two delivered locations apart from their shared parent. A recursive scan
-     * of the parent finds all four scripts because both children are beneath it; a direct listing of the
+     * of the parent finds all six scripts because both children are beneath it; a direct listing of the
      * parent must find none. The distinction is the load-bearing one, because a script left in the
      * parent is applied by any profile that names the parent and by no profile that names a child -
      * which is precisely the state two earlier attempts at this split were left in.</p>

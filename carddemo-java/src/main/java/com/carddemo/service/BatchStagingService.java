@@ -34,6 +34,8 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.WritableResource;
 import org.springframework.stereotype.Service;
 
+import com.carddemo.util.SanitisedObservation;
+
 /**
  * The batch tier's staging store: the object store that replaced the legacy sequential datasets and
  * generation-data-group bases, reached only through validated logical names.
@@ -420,16 +422,20 @@ public final class BatchStagingService {
      * @return whatever the call answered
      */
     private <T> T observed(final String operation, final String key, final Supplier<T> call) {
-        // Observation.observe records a failure on the span before rethrowing it, so an outbound failure
-        // sets the span's error attributes rather than ending the trace at an untraced boundary. The two
-        // stream-returning operations observe the RESOLUTION of a handle rather than the byte transfer,
-        // because the transfer happens when the caller writes and closes; the whole-image write below
-        // observes the transfer itself, which is why the archive path uses it.
-        return Observation.createNotStarted(OBSERVATION_NAME, this.observationRegistry)
-                .lowCardinalityKeyValue(TAG_STORE, STORE_OBJECT)
-                .lowCardinalityKeyValue(TAG_OPERATION, operation)
-                .highCardinalityKeyValue(TAG_OBJECT_KEY, key)
-                .observe(call);
+        // SanitisedObservation records a failure on the span before rethrowing it, so an outbound failure
+        // sets the span's error attributes rather than ending the trace at an untraced boundary - and it
+        // records the bounded type chain this module composed rather than the object store's own
+        // exception, whose message names the bucket, the key and the endpoint and which the tracing
+        // bridge exports verbatim. The observation's own observe() did the latter; see decision log
+        // DL-341. The two stream-returning operations observe the RESOLUTION of a handle rather than the
+        // byte transfer, because the transfer happens when the caller writes and closes; the whole-image
+        // write below observes the transfer itself, which is why the archive path uses it.
+        return SanitisedObservation.observe(
+                Observation.createNotStarted(OBSERVATION_NAME, this.observationRegistry)
+                        .lowCardinalityKeyValue(TAG_STORE, STORE_OBJECT)
+                        .lowCardinalityKeyValue(TAG_OPERATION, operation)
+                        .highCardinalityKeyValue(TAG_OBJECT_KEY, key),
+                call);
     }
 
     /**

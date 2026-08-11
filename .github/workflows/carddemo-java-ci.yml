@@ -82,9 +82,13 @@
 #                        report live on the same group the container image probes.
 #   container and      : the digest-pinned image and complete Compose stack are built, scanned,
 #   monitoring           started and queried through application, Prometheus, Grafana and Jaeger
-#   deployability        endpoints before the artifact is published. Nothing is filtered out of the
-#                        scans - a finding with no fix available upstream is retained in both the
-#                        verdict and the archived report rather than dropped from both.
+#   deployability        endpoints before the artifact is published. EVERY image the stack ships at
+#                        run time is gated on the same terms - the application image, both base
+#                        images and every third-party service image - and a HIGH or CRITICAL fails
+#                        the gate unless a scoped, reviewed, expiring determination covers it.
+#                        Nothing is filtered out of the scans: a finding with no fix available
+#                        upstream, and a finding a determination covers, are both retained in the
+#                        archived report rather than dropped from it.
 #
 # Stopping at package instead of verify would run none of the build-phase gates and a green run
 # would prove nothing, so the build invocation below always goes all the way to verify.
@@ -1571,10 +1575,19 @@ jobs:
       # one did not, so a reader counting banners counted one short of the steps that can fail.
       #
       # The full operational boundary: build the image with the same identity as Maven, resolve and
-      # start Compose without rebuilding, verify every service and monitoring contract, then scan the
-      # application and both base images strictly. Third-party Compose images are scanned and archived
-      # too; their upstream findings are inventory evidence rather than a claim this repository can
-      # patch inside someone else's binary. No finding is filtered out of any of those scans.
+      # start Compose without rebuilding, verify every service and monitoring contract, then scan
+      # EVERY IMAGE THIS REPOSITORY SHIPS AT RUN TIME and gate all of them alike - the application
+      # image, both digest-pinned Dockerfile bases, and every digest-pinned third-party Compose
+      # service image. A HIGH or CRITICAL finding in any of them fails this gate unless it is covered
+      # by a scoped, reviewed, expiring determination in container-scan-determinations.txt, and an
+      # expired or unused determination fails it too. No finding is filtered out of any scan.
+      #
+      # THE INVENTORY-ONLY VERDICT IS GONE, AND THAT IS THE CHANGE. Third-party service images used to
+      # be scanned and archived without being judged, on the reasoning that this repository cannot
+      # patch inside someone else's binary. It cannot - but it chooses which digest to run, and a
+      # database or emulator image carrying a CRITICAL is shipped by whoever runs this stack whether or
+      # not this repository authored the binary. An unjudged scan is evidence of looking rather than
+      # evidence of a decision. Decision log DL-350.
       - name: Validate and scan the container and monitoring stack
         id: container_gate
         run: |
@@ -1714,16 +1727,73 @@ jobs:
           # The two can no longer disagree either, because the count that is printed is the count that is
           # judged - previously one came from the report and the other from the scanner.
           #
-          # WHAT TO DO WHEN A STRICT IMAGE FAILS ON A FINDING WITH NO FIX. There are exactly two honest
+          # WHAT TO DO WHEN AN IMAGE FAILS ON A FINDING WITH NO FIX. There are exactly two honest
           # actions and no mechanism here pre-empts either: move the digest pin to a rebuilt upstream
-          # image that no longer carries it, or record a reviewed acceptance for that specific
-          # identifier. There is deliberately no ignore file in this repository, so nothing is accepted
-          # today by default, and accepting something has to be a visible edit rather than a flag.
-          # Decision log DL-185 records the whole decision.
+          # image that no longer carries it, or record a reviewed determination for that one identifier
+          # on that one image. The determination file ships EMPTY, so nothing is accepted today, and
+          # accepting something is a reviewed edit to a tracked file rather than a flag.
+          #
+          # WHY THE DETERMINATION IS APPLIED HERE AND NOT BY THE SCANNER. Handing the file to the
+          # scanner as an ignore list would delete the covered findings from the archived JSON, which is
+          # exactly the defect DL-185 removed when it deleted --ignore-unfixed: the report a reviewer
+          # signs off from would stop showing what had been accepted. Deciding here keeps every finding
+          # in the report and prints which ones were covered, by whom, and until when. It also buys two
+          # properties an ignore file does not have: an EXPIRED determination fails the build rather
+          # than quietly resuming enforcement, and an UNUSED one fails it too - the same discipline
+          # failBuildOnUnusedSuppressionRule already holds over the dependency gate, and the reason is
+          # the same, that a determination nothing matches is a statement nobody has re-read.
+          # Decision log DL-185 for the retention rule, DL-350 for this gate.
+          determination_file="${PWD}/container-scan-determinations.txt"
+          test -f "${determination_file}"
+          determination_shape='^[[:space:]]*(#.*)?$'
+          determination_shape="${determination_shape}|^[^|[:space:]]+\\|[A-Z][A-Z0-9]*-[A-Za-z0-9._-]+\\|[0-9]{4}-[0-9]{2}-[0-9]{2}\\|[^|]+\\|[^|]+$"
+          if grep -nvE "${determination_shape}" "${determination_file}"; then
+            printf 'Every determination must read image|IDENTIFIER|YYYY-MM-DD|reviewer|reason, with no\n' >&2
+            printf 'whitespace around a separator. The lines above do not.\n' >&2
+            exit 1
+          fi
+
+          today="$(date -u +%Y-%m-%d)"
+          # Deliberately NOT inside report_dir. That directory holds one report per scanned image and
+          # nothing else, because the upload below treats an empty directory on a green run as an error -
+          # a file created before the first scan would satisfy that check on a run that never scanned
+          # anything.
+          determinations_used="${PWD}/target/container-scan-determinations-used.txt"
+          : > "${determinations_used}"
+
+          # An expiry in the past fails the build on its own, before any image is scanned. A reviewed
+          # acceptance is a decision with a date on it; once the date passes the decision has lapsed and
+          # the build says so rather than silently reverting to enforcement and reporting an unexplained
+          # new failure weeks later.
+          expired=0
+          while IFS='|' read -r d_key d_id d_expiry d_reviewer d_reason || [ -n "${d_key}" ]; do
+            case "${d_key}" in ''|'#'*) continue ;; esac
+            if [ "${d_expiry}" \< "${today}" ]; then
+              printf 'Determination %s / %s expired on %s (reviewer %s) and must be re-reviewed or removed.\n' \
+                "${d_key}" "${d_id}" "${d_expiry}" "${d_reviewer}" >&2
+              expired=1
+            fi
+          done < "${determination_file}"
+          if [ "${expired}" -ne 0 ]; then
+            exit 1
+          fi
+
+          # Returns the expiry of the determination covering one identifier on one image, or fails when
+          # there is none. Scoped to BOTH, so an acceptance on one image never silences another.
+          determination_expiry() {
+            awk -F '|' -v key="$1" -v id="$2" '
+              /^[[:space:]]*(#|$)/ { next }
+              $1 == key && $2 == id { print $3 "|" $4; found = 1; exit }
+              END { if (!found) { exit 1 } }
+            ' "${determination_file}"
+          }
+          # The report file is named after the DETERMINATION KEY rather than the image reference, so the
+          # application image's report has a stable name across builds even though its own identifier is
+          # a fresh content digest on every one.
           scan_image() {
             image="$1"
-            verdict="$2"
-            name="$(printf '%s' "${image}" | sha256sum | cut -d ' ' -f 1)"
+            key="$2"
+            name="$(printf '%s' "${key}" | sha256sum | cut -d ' ' -f 1)"
             docker run --rm \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v "${HOME}/.cache/trivy:/root/.cache/" \
@@ -1740,25 +1810,50 @@ jobs:
             unfixed="$(jq '[.Results[]?.Vulnerabilities[]?
               | select((.FixedVersion // "") == "")] | length' \
               "${report_dir}/${name}.json")"
-            printf 'Image %s (%s): %s HIGH/CRITICAL finding(s), %s of them with no fix available.\n' \
-              "${image}" "${verdict}" "${count}" "${unfixed}"
-            if [ "${verdict}" = 'strict' ] && [ "${count}" -ne 0 ]; then
-              printf 'This image is gated strictly and must carry no HIGH or CRITICAL finding:\n' >&2
-              jq -r '.Results[]?.Vulnerabilities[]?
-                | "  " + .VulnerabilityID + " " + .Severity + " " + .PkgName
-                  + " installed=" + (.InstalledVersion // "unknown")
-                  + " fixed_in=" + (if (.FixedVersion // "") == "" then "no fix available"
-                                    else .FixedVersion end)' \
-                "${report_dir}/${name}.json" >&2
+            printf 'Image %s (key %s): %s HIGH/CRITICAL finding(s), %s of them with no fix available.\n' \
+              "${image}" "${key}" "${count}" "${unfixed}"
+
+            # Every identifier is either covered by a determination scoped to this image or it fails the
+            # gate. Both halves are printed, so the run's own log says what was accepted as well as what
+            # was refused, and the archived JSON still carries all of it either way.
+            uncovered=0
+            while IFS= read -r finding_id; do
+              case "${finding_id}" in '') continue ;; esac
+              if covering="$(determination_expiry "${key}" "${finding_id}")"; then
+                printf '  COVERED %s until %s by %s\n' \
+                  "${finding_id}" "${covering%%|*}" "${covering#*|}"
+                printf '%s|%s\n' "${key}" "${finding_id}" >> "${determinations_used}"
+              else
+                uncovered=$((uncovered + 1))
+                jq -r --arg id "${finding_id}" '.Results[]?.Vulnerabilities[]?
+                  | select(.VulnerabilityID == $id)
+                  | "  UNCOVERED " + .VulnerabilityID + " " + .Severity + " " + .PkgName
+                    + " installed=" + (.InstalledVersion // "unknown")
+                    + " fixed_in=" + (if (.FixedVersion // "") == "" then "no fix available"
+                                      else .FixedVersion end)' \
+                  "${report_dir}/${name}.json" >&2
+              fi
+            done < <(jq -r '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique | .[]' \
+              "${report_dir}/${name}.json")
+
+            if [ "${uncovered}" -ne 0 ]; then
+              printf 'Image %s carries %s HIGH/CRITICAL finding(s) that no determination covers.\n' \
+                "${image}" "${uncovered}" >&2
+              printf 'Move the digest pin to a rebuilt image, or record a reviewed determination in\n' >&2
+              printf 'carddemo-java/container-scan-determinations.txt naming key %s.\n' "${key}" >&2
               return 1
             fi
           }
 
-          # The product and its two immutable bases are this repository's deployable supply chain.
+          # EVERY IMAGE THIS STACK SHIPS AT RUN TIME IS GATED, AND ALL OF THEM ALIKE. The product, its
+          # two immutable bases, and every third-party service image Compose resolves.
           application_image_id="$(docker image inspect \
             --format '{{.Id}}' "${COMPOSE_PROJECT_NAME}-app:local")"
           case "${application_image_id}" in sha256:*) ;; *) exit 1 ;; esac
-          scan_image "${application_image_id}" strict
+          # The application image is keyed by the literal 'application' rather than by its identifier,
+          # which is a fresh digest on every build: a determination pinned to a content digest could
+          # never be matched twice, so it would be unusable and would fail the unused check immediately.
+          scan_image "${application_image_id}" application
           while IFS= read -r image; do
             case "${image}" in
               *@sha256:*) ;;
@@ -1767,10 +1862,11 @@ jobs:
                 exit 1
                 ;;
             esac
-            scan_image "${image}" strict
+            scan_image "${image}" "${image}"
           done < <(awk '/^FROM / {print $2}' Dockerfile)
 
-          # Every third-party service image is still scanned by its immutable reference and archived.
+          # Every third-party service image, gated on the same terms. Its digest-pinned reference is its
+          # determination key, so a determination lapses by construction the moment the pin moves.
           while IFS= read -r image; do
             case "${image}" in
               "${COMPOSE_PROJECT_NAME}-app:local") continue ;;
@@ -1780,8 +1876,24 @@ jobs:
                 exit 1
                 ;;
             esac
-            scan_image "${image}" inventory
+            scan_image "${image}" "${image}"
           done < <(docker compose config --images | sort -u)
+
+          # A determination that matched nothing fails the build. It is either stale - the finding is
+          # gone, or the pin moved - or it names a key or identifier that does not exist, in which case
+          # it was never protecting anything and its presence misrepresents the gate.
+          unused=0
+          while IFS='|' read -r d_key d_id d_rest || [ -n "${d_key}" ]; do
+            case "${d_key}" in ''|'#'*) continue ;; esac
+            if ! grep -Fxq "${d_key}|${d_id}" "${determinations_used}"; then
+              printf 'Determination %s / %s matched no finding in this run and must be removed.\n' \
+                "${d_key}" "${d_id}" >&2
+              unused=1
+            fi
+          done < "${determination_file}"
+          if [ "${unused}" -ne 0 ]; then
+            exit 1
+          fi
 
           echo 'Container, Compose and monitoring validation passed.'
 

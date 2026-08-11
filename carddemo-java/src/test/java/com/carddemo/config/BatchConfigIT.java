@@ -296,9 +296,14 @@ class BatchConfigIT extends AbstractPostgresIT {
                         .as("and it disturbs none of the application tables the migrations own")
                         .containsAll(SchemaColumnCatalog.load().tableNames());
                 assertThat(present.stream().filter(name -> !name.startsWith("batch_")
-                                && !name.startsWith("flyway_")).toList())
-                        .as("a business-table census excludes framework and migration-history "
-                                + "tables; exactly eleven record-layout tables remain")
+                                && !name.startsWith("flyway_")
+                                // Excluded BY EXACT NAME, not by a prefix: the sign-on attempt ledger
+                                // is an operational table with no record layout behind it, so it is not
+                                // one of the eleven this census counts. Naming it keeps any OTHER
+                                // unexpected table failing this assertion. DL-343.
+                                && !name.equals("sign_on_attempt")).toList())
+                        .as("a business-table census excludes framework, migration-history and "
+                                + "operational tables; exactly eleven record-layout tables remain")
                         .hasSize(SchemaColumnCatalog.load().tableNames().size());
             });
         }

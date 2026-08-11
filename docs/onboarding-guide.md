@@ -182,7 +182,7 @@ only removing.
 
 | Service | Role | Host port |
 | :------ | :--- | --------: |
-| `postgres` | PostgreSQL 16 — the relational store the eleven migrated tables live in | 5432 |
+| `postgres` | PostgreSQL 16 — the relational store the eleven migrated tables and the sign-on attempt ledger live in | 5432 |
 | `localstack` | LocalStack Community — the S3 staging bucket, the SQS FIFO job queue and the SNS topic | 4566 |
 | `jaeger` | OTLP trace collection and its query interface | 16686 |
 | `prometheus` | Scrapes `/actuator/prometheus` | 9090 |
@@ -205,6 +205,14 @@ queue** that replaced the legacy transient data queue, and the **SNS topic** for
 reads each one back rather than assuming the create succeeded, which is why the container's health check
 only reports healthy once all three exist.
 
+**It also provisions the access posture, and that is not decoration.** A production start-up check refuses
+to run against a bucket whose public access is not blocked through all four controls, or whose policy grants
+a principal unconditionally or permits plain transport, or which has no default encryption algorithm — and
+against a queue or topic whose policy carries no transport denial. The hook writes exactly those five
+properties locally and reads each document back, so the check is exercisable here rather than only in an AWS
+account. Rerunning the hook is safe: every write is idempotent and the documents are byte-identical on a
+second run. `docs/decision-log.md` DL-346 records the two rules and what a production account must carry.
+
 **LocalStack Community is sufficient and is what the stack uses.** S3, SQS and SNS are the full extent of
 the AWS surface this module needs, so there is no licence token to supply and no Pro subscription to buy.
 Nothing in the module reads one.
@@ -222,21 +230,27 @@ cannot be produced here by accident, which is the whole point of the friction.
 
 ### Schema evolution
 
-Flyway migrates the database forward only — there is no rollback script — from four scripts under
+Flyway migrates the database forward only — there is no rollback script — from six scripts under
 `carddemo-java/src/main/resources/db/migration/`, in two sibling locations:
 
 | Migration | Location | What it creates |
 | :-------- | :------- | :-------------- |
 | `V1__create_schema.sql` | `schema/` | The eleven tables derived from the eleven verified record layouts |
 | `V2__create_indexes.sql` | `schema/` | The three alternate-index equivalents as B-tree indexes, plus the primary and foreign keys |
+| `V2_1__create_sign_on_attempt_ledger.sql` | `schema/` | The deployment-wide sign-on attempt ledger and its sweep index — one operational table, not a twelfth record table. DL-343 |
+| `V2_2__add_protected_value_invariants.sql` | `schema/` | Three `CHECK` constraints requiring the two regulated customer identifiers to be `ENC1` envelopes and the stored credential to be a BCrypt digest. DL-349 |
 | `V3__seed_reference_data.sql` | `seed/` | The sample reference and transaction data |
 | `V4__seed_user_security.sql` | `seed/` | The ten seeded identities, stored as BCrypt hashes |
+
+**The two dotted versions are schema scripts and are numbered deliberately.** Every schema version sorts
+below every seed version — `2 < 2.1 < 2.2 < 3` — because three separate controls depend on it. DL-343 records
+what happened when a schema script was numbered above the seeds instead.
 
 **`V3` and `V4` apply under the `local` and `test` profiles only.** Both profiles declare BOTH locations;
 the shared configuration and the `prod` profile declare `classpath:db/migration/schema` alone, so a
 production migration does not resolve the seed scripts at all. That location list is what separates the
 seeds from the schema. A **version ceiling sits beside it**: the shared baseline and `prod` declare
-`spring.flyway.target: "2"`, the highest version the schema location delivers, and the two seeding profiles
+`spring.flyway.target: "2.2"`, the highest version the schema location delivers, and the two seeding profiles
 lift it to `latest` in the same block where they add the seed location. Under `prod` any other value is
 refused in either direction — `latest` included — and an absent value is corrected to the pin. A production
 migration therefore gets the schema and the indexes and inherits neither the sample data nor a seeded
@@ -245,9 +259,11 @@ are.
 
 Never declare the shared parent `classpath:db/migration`. A Flyway location is scanned recursively, so it
 reaches both children, and it records every script under a name relative to itself; `FlywayConfig` refuses
-it under every profile. Adding a `V5` schema migration means raising the ceiling with it: the pin is
+it under every profile. Adding a further schema migration means raising the ceiling with it: the pin is
 asserted against the delivered scripts, so the build fails until `FlywayConfig.PRODUCTION_TARGET` and the
-two documents that declare it are raised together. See `docs/decision-log.md` DL-298 and DL-334.
+two documents that declare it are raised together. A new schema script takes the **next dotted version below
+3** — `2.3`, and so on — never a number above the seeds. See `docs/decision-log.md` DL-298 and DL-334 for the
+ceiling, and DL-343 for the numbering rule.
 
 **`clean` follows the same split, and it is not disabled everywhere.** The shared baseline and `prod` set
 `clean-disabled: true`, which is the half that matters: an inherited relaxation would reach production. The
@@ -422,7 +438,7 @@ cd carddemo-java
 # 1 - the forbidden constructs of Gate 6's own scope. Expect no output at all: all five are zero.
 grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery' src/main/java/
 
-# 2 - cast candidates: every cast whose target is a parameterised type. Expect exactly five lines.
+# 2 - cast candidates: every cast whose target is a parameterised type. Expect exactly six lines.
 grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*<[^<>()]*>\s*\)\s*[A-Za-z_$(]' src/main/java/
 
 # 3 - a statement verb inside a literal, joined to something that is not a literal. Expect EXACTLY ONE
@@ -444,7 +460,7 @@ What each one returns today, so you can tell a clean run from a broken command:
 | Command | Measured result |
 | :------ | :-------------- |
 | 1 — forbidden constructs | **no output**. No `Runtime.exec`, no `ProcessBuilder`, no `java.lang.reflect`, no `Class.forName` and no `createNativeQuery` |
-| 2 — cast candidates | **exactly five lines**, which is the budget rather than a coincidence: `service/PostgresJobSubmissionCoordinator.java`, `batch/step/AdvisoryGenerationPublicationLock.java`, `batch/BatchLaunchCoordinator.java`, `repository/TransactionInsertRepositoryImpl.java` and `config/FlywayConfig.java`. All five cast a lambda onto a parameterised `ConnectionCallback` or `PreparedStatementCallback` so the JDBC template resolves the right overload. **None is an unchecked operation** — the compiler would have made it an error, because every warning is one |
+| 2 — cast candidates | **exactly six lines**, which is the budget rather than a coincidence: `service/PostgresJobSubmissionCoordinator.java`, `service/PostgresSignOnAttemptLedger.java`, `batch/step/AdvisoryGenerationPublicationLock.java`, `batch/BatchLaunchCoordinator.java`, `repository/TransactionInsertRepositoryImpl.java` and `config/FlywayConfig.java`. All six cast a lambda onto a parameterised `ConnectionCallback` or `PreparedStatementCallback` so the JDBC template resolves the right overload. **None is an unchecked operation** — the compiler would have made it an error, because every warning is one. The budget was five and was met with nothing to spare until the shared sign-on attempt ledger arrived and took its advisory lock through the same idiom as the other coordination points; raising the cap to six was recorded as a decision rather than absorbed — see [Gate Evidence](gate-evidence.md#gate-6-unsafe-and-low-level-code-audit) and DL-343 |
 | 3 — verb-only SQL shape | **exactly one line**, and it is a false positive rather than a finding: `service/MenuService.java`'s `"SELECT OPTION " + optionNumber`, the legacy 3270 menu prompt joined to the option the user typed. Nothing about it reaches a database. It is published rather than filtered out, because a command whose output is edited to agree with a claim is no longer evidence for the claim |
 | 3b — census-shaped SQL assembly | **no output**. Requiring a clause keyword beside the verb is what separates a query from a prompt, and it is the shape the gated census uses. Every query string in the production tree is a compile-time literal; a variable reaches a statement as a bound `?` or a named JPQL parameter, never joined into the text |
 | 4 — warning suppression | **exactly twelve lines over both trees, and none over `src/main/java` alone.** All twelve are in test sources and every one is a *mention* — a comment, a string literal or an assertion argument saying the annotation must not appear. **Not one is an annotation**, so the whole-source budget of three is unspent. The gated figure of zero is measured over source with comments, literals and text blocks blanked, by `GateVerificationTest.noWarningSuppressionExistsInEitherSourceTree`; a `grep` cannot tell a mention from a use, which is why the raw population and the gated figure are published as two numbers rather than one |
@@ -456,10 +472,11 @@ one of them an English diagnostic message containing a word like "from" or "valu
 resolves that by stripping comments and string literals before matching, which is what makes its figures
 the authoritative ones — and after that filtering the two searches above are exact.
 
-The same test also publishes the census behind row 3: **17 query-string literals** exist in the production
+The same test also publishes the census behind row 3: **23 query-string literals** exist in the production
 tree — a literal counts when it opens with a statement verb *and* carries a clause keyword — comprising the
-seven JPQL `@Query` declarations on the repositories and ten native-SQL constants in the JDBC callbacks,
-and **zero** of the 17 is joined to a non-literal on either side. Every variable reaches a statement as a
+seven JPQL `@Query` declarations on the repositories, ten native-SQL constants in the two Flyway callbacks
+and six in the shared sign-on attempt ledger, and **zero** of the 23 is joined to a non-literal on either
+side. Every variable reaches a statement as a
 bound `?` parameter or a named JPQL parameter.
 
 The suppression line reaches both trees on purpose, and it is the only line here that does. Gate 6 counts
@@ -472,7 +489,7 @@ several comments and asserted-on literals; see [Gate Evidence](gate-evidence.md#
 **The audit is scoped to `src/main/java/` — everything beneath it and nothing else — and that scoping is
 load-bearing rather than cosmetic.** The Flyway files under `src/main/resources/db/migration/` are `.sql`
 schema artefacts, not application code assembling a query out of strings; an unscoped grep would report
-**four phantom raw-SQL violations** that are in fact the versioned schema definition the design requires.
+**six phantom raw-SQL violations** that are in fact the versioned schema definition the design requires.
 Test sources are excluded for a related reason: assertion helpers legitimately do things production code
 does not.
 

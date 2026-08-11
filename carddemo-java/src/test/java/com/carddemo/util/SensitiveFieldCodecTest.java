@@ -348,14 +348,38 @@ class SensitiveFieldCodecTest {
 
         @ParameterizedTest(name = "a key of {0} bytes is refused")
         @ValueSource(ints = {0, 1, 15, 16, 24, 31, 33, 64})
-        @DisplayName("a key of any other length is refused with the observed length named")
+        @DisplayName("a key of any other length is refused by the requirement, and the refusal does not "
+                + "vary with the length that was supplied")
         void aKeyOfAnyOtherLengthIsRefused(int length) {
-            byte[] wrongLength = new byte[length];
+            // The assertion used to require the OBSERVED length in the message, which made the suite the
+            // reason a property of the key material reached the deployment log: this exception aborts
+            // start-up, and start-up failure reporting renders whatever it carries. The requirement is
+            // still asserted, because that is what makes the refusal actionable; the finding is now
+            // asserted absent, and absent in the strongest available form - two wrong lengths must
+            // produce the same message, so no part of it can be derived from either. Recorded as DL-348.
+            final byte[] wrongLength = new byte[length];
+            final String reference = refusalMessageForKeyOfLength(7);
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> SensitiveFieldCodec.protect(NINE_DIGIT_IDENTIFIER, wrongLength))
-                    .withMessageContaining("exactly 32 bytes")
-                    .withMessageContaining(String.valueOf(length));
+                    .withMessageContaining("exactly " + SensitiveFieldCodec.KEY_LENGTH_BYTES + " bytes")
+                    .satisfies(refusal -> assertThat(refusal.getMessage())
+                            .as("the refusal must not vary with the length supplied")
+                            .isEqualTo(reference));
+        }
+
+        /**
+         * Returns the refusal one wrong-length key produces, for comparison against another's.
+         *
+         * @param  length a length other than the required one
+         * @return the refusal message
+         */
+        private String refusalMessageForKeyOfLength(final int length) {
+            return assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SensitiveFieldCodec.protect(NINE_DIGIT_IDENTIFIER,
+                            new byte[length]))
+                    .actual()
+                    .getMessage();
         }
 
         @Test

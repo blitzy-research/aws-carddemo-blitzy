@@ -18,6 +18,7 @@ package com.carddemo.service;
 
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.ObservationPropagation;
+import com.carddemo.util.SanitisedObservation;
 import io.awspring.cloud.sns.core.SnsNotification;
 import io.awspring.cloud.sns.core.SnsOperations;
 import io.micrometer.core.instrument.Counter;
@@ -496,14 +497,20 @@ public final class JobCompletionNotificationService
             final String payload = payload(event, jobName);
             final SnsNotification<String> notification =
                     SnsNotification.builder(payload).subject(SUBJECT).build();
-            Observation.createNotStarted(OBSERVATION_NAME, this.observationRegistry)
-                    .lowCardinalityKeyValue(TAG_SYSTEM, SYSTEM_SNS)
-                    .lowCardinalityKeyValue(TAG_OPERATION, OPERATION_PUBLISH)
-                    .lowCardinalityKeyValue(TAG_EVENT_TYPE, EVENT_TYPE)
-                    .highCardinalityKeyValue(TAG_TOPIC, this.topic)
-                    .highCardinalityKeyValue(TAG_JOB, jobName)
-                    .highCardinalityKeyValue(TAG_EXECUTION, executionId)
-                    .observe(() -> this.snsOperations.sendNotification(this.topic, notification));
+            // Sanitised rather than the observation's own observe(): that convenience records the raw
+            // provider failure on the span, which the tracing bridge exports message and stack trace
+            // included - so the very text the handler below deliberately reduces to a type chain was
+            // leaving the process by the other channel. The span still shows a failure; it shows only the
+            // authored classification of one. See decision log DL-341.
+            SanitisedObservation.observeRunnable(
+                    Observation.createNotStarted(OBSERVATION_NAME, this.observationRegistry)
+                            .lowCardinalityKeyValue(TAG_SYSTEM, SYSTEM_SNS)
+                            .lowCardinalityKeyValue(TAG_OPERATION, OPERATION_PUBLISH)
+                            .lowCardinalityKeyValue(TAG_EVENT_TYPE, EVENT_TYPE)
+                            .highCardinalityKeyValue(TAG_TOPIC, this.topic)
+                            .highCardinalityKeyValue(TAG_JOB, jobName)
+                            .highCardinalityKeyValue(TAG_EXECUTION, executionId),
+                    () -> this.snsOperations.sendNotification(this.topic, notification));
             LOGGER.info("Job-completion notification published: job={} jobExecutionId={} topic={}",
                     jobName, executionId, this.topic);
             return true;

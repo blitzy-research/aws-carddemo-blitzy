@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
+import java.util.Locale;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -101,6 +102,32 @@ class ManagementCredentialQualityTest {
                 .withMessageContaining(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY)
                 .withMessageContaining(because)
                 .withMessageNotContaining(configured);
+    }
+
+    /**
+     * Asserts that a credential carrying a typed word is refused for carrying one, <em>without</em> the
+     * refusal saying which.
+     *
+     * <p>The distinction is the whole point of this helper. The matched word is a substring of a live
+     * credential, so a refusal that named it published part of the value into the log of the deployment
+     * that rejected it - and it narrowed a guess at the rest, because a reader then knows one run of the
+     * credential exactly. The rule is what a deployer needs; the finding is what a log reader gains.
+     * Recorded as {@code DL-348}.</p>
+     *
+     * @param configured  the credential to offer
+     * @param typedWord   the word it carries, which must not appear anywhere in the refusal
+     */
+    private static void assertRefusedWithoutNamingTheWord(final String configured,
+            final String typedWord) {
+        assertThatExceptionOfType(IllegalStateException.class)
+                .as("refused a credential carrying a typed word")
+                .isThrownBy(() -> ProductionConfigurationValidator
+                        .validateManagementCredentialQuality(withCredential(configured)))
+                .withMessageContaining(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY)
+                .withMessageContaining("must not contain any of the")
+                .withMessageNotContaining(configured)
+                .withMessageNotContaining(typedWord)
+                .withMessageNotContaining(typedWord.toUpperCase(Locale.ROOT));
     }
 
     @Nested
@@ -208,21 +235,71 @@ class ManagementCredentialQualityTest {
                     .isGreaterThanOrEqualTo(
                             ProductionConfigurationValidator
                                     .MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS);
-            assertRefused(typed, "changeme");
+            assertRefusedWithoutNamingTheWord(typed, "changeme");
         }
 
         @Test
         @DisplayName("the forbidden words are matched without regard to case, because a deployer who "
                 + "capitalised the example did not change it")
         void forbiddenWordsAreMatchedWithoutCase() {
-            assertRefused("Xk9-PLACEHOLDER-Rb8TpWn5Yc1Hd6Js4", "placeholder");
+            assertRefusedWithoutNamingTheWord("Xk9-PLACEHOLDER-Rb8TpWn5Yc1Hd6Js4", "placeholder");
         }
 
         @Test
         @DisplayName("the module's own name is forbidden, because a credential naming the application it "
                 + "protects is a credential somebody typed")
         void theApplicationNameIsForbidden() {
-            assertRefused("carddemo-Xk9-Rb8TpWn5Yc1Hd6Js4Gu0z", "carddemo");
+            // Asserted through the rule rather than through the word, and deliberately not through
+            // assertRefusedWithoutNamingTheWord: the property key is `carddemo.security.management.token`,
+            // so this one word appears in every refusal this check composes and its presence would say
+            // nothing either way. What proves the finding is withheld in general is
+            // theRefusalIsTheSameWhicheverWordWasFound below, which compares two whole messages.
+            assertRefused("carddemo-Xk9-Rb8TpWn5Yc1Hd6Js4Gu0z", "must not contain any of the");
+        }
+
+        @Test
+        @DisplayName("the refusal is the same message whichever word was found, so it cannot be read "
+                + "backwards to the word - which is the disclosure, stated as an invariant")
+        void theRefusalIsTheSameWhicheverWordWasFound() {
+            // The strongest available statement of the property, and stronger than asserting that one
+            // word is absent: two credentials that differ only in which refused word they carry must
+            // produce byte-identical refusals. If any part of the message were derived from the finding -
+            // the word, its position, its length - these two would differ.
+            final String carryingChangeme = "Xk9-changeme-Rb8TpWn5Yc1Hd6Js4Gu0";
+            final String carryingPlaceholder = "Xk9-placeholder-Rb8TpWn5Yc1Hd6J4";
+
+            assertThat(carryingChangeme.length())
+                    .isGreaterThanOrEqualTo(SecurityConfig.MANAGEMENT_TOKEN_MINIMUM_BYTES);
+            assertThat(carryingPlaceholder.length())
+                    .isGreaterThanOrEqualTo(SecurityConfig.MANAGEMENT_TOKEN_MINIMUM_BYTES);
+            assertThat(carryingChangeme.chars().distinct().count())
+                    .as("both must break the word rule and nothing else, or the comparison below would "
+                            + "be between two different fault sets")
+                    .isGreaterThanOrEqualTo(
+                            ProductionConfigurationValidator
+                                    .MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS);
+            assertThat(carryingPlaceholder.chars().distinct().count())
+                    .isGreaterThanOrEqualTo(
+                            ProductionConfigurationValidator
+                                    .MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS);
+
+            assertThat(refusalFor(carryingChangeme))
+                    .as("no part of the refusal may be derived from which word was found")
+                    .isEqualTo(refusalFor(carryingPlaceholder));
+        }
+
+        /**
+         * Offers one credential and returns the refusal it produces.
+         *
+         * @param  configured the credential to offer
+         * @return the refusal message
+         */
+        private String refusalFor(final String configured) {
+            return assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateManagementCredentialQuality(withCredential(configured)))
+                    .actual()
+                    .getMessage();
         }
     }
 
@@ -234,14 +311,21 @@ class ManagementCredentialQualityTest {
         @DisplayName("names every broken rule rather than the first, because a deployer fixing one at a "
                 + "time learns about them one start-up at a time")
         void namesEveryBrokenRule() {
+            // The credential offered breaks all three rules: it is shorter than the byte floor, it holds
+            // seven distinct characters where sixteen are required, and it is one of the refused words
+            // outright. It used to be "secret", and the assertion used to require the refusal to quote
+            // the matched word back - which is the disclosure this suite now forbids. "changeme" is
+            // offered instead because, unlike "secret" and "token", it appears nowhere in the refusal's
+            // own prose, so its absence is a statement about the finding rather than about the wording.
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> ProductionConfigurationValidator
-                            .validateManagementCredentialQuality(withCredential("secret")))
+                            .validateManagementCredentialQuality(withCredential("changeme")))
                     .satisfies(refusal -> assertThat(refusal.getMessage())
                             .contains("bytes")
                             .contains("distinct characters")
-                            .contains("secret\"")
-                            .contains("3 rule(s)"));
+                            .contains("must not contain any of the")
+                            .contains("3 rule(s)")
+                            .doesNotContain("changeme"));
         }
 
         @Test

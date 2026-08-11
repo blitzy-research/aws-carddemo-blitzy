@@ -147,11 +147,12 @@ same eight-character width. All ten are seeded, with their identifiers, names an
 exactly, and every credential stored as a **BCrypt hash**. The seeding migration reaches the local and
 test profiles only, so a production deployment migrates schema and indexes without inheriting a seeded
 credential of any kind. **The delivered mechanism is a profile-scoped location split, with a production
-version ceiling beside it**: the two schema scripts ship from `classpath:db/migration/schema` and the two
+version ceiling beside it**: the four schema scripts ship from `classpath:db/migration/schema` and the two
 seed scripts from `classpath:db/migration/seed`, local and test resolve both locations and migrate through
 V4, production resolves the schema location alone — so it does not resolve a seed script at all — and
-additionally declares `spring.flyway.target: "2"` and refuses a database whose history or contents show a
-seed was applied. Cite DL-298 for the location split, DL-334 for why the ceiling is held alongside it, and
+additionally declares `spring.flyway.target: "2.2"` and refuses a database whose history or contents show a
+seed was applied. Cite DL-298 for the location split, DL-334 for why the ceiling is held alongside it,
+DL-343 and DL-349 for the two dotted schema versions that keep every schema version below both seeds, and
 DL-127 and row D-47 of the conflict table in section 9 only for how the question was previously answered.
 
 **Nothing on this page reproduces a credential.** The field width and the fact that one literal is shared
@@ -2265,7 +2266,7 @@ invents a service level and then tests against the invention.
 
 ## 14. Citation index
 
-Every reference to this log from the target module, mapped to the entry that answers it. The
+References to this log from the target module, mapped to the entry that answers each. The
 index is in two parts because the module cites two identifier schemes; the concordance at the
 end pairs the entries that record the same decision under both.
 
@@ -2280,14 +2281,20 @@ retained as written. One artefact of a genuinely withdrawn layout, `resources/db
 in DL-127's citation list and does not exist: the shared parent is left empty by holding two directories
 rather than a marker file.
 
-This index lists *citations*, not entries. An entry with no row here is not unindexed — it is simply not
-yet cited from the module's own source, which is the ordinary state of an entry that records a
-documentation-level decision. Sections 16 to 19 are wholly of that kind: their entries carry stable
-identifiers so that `traceability-matrix.md`, `gate-evidence.md`, `architecture.md` and
-`onboarding-guide.md` can cite them by name, and they appear here only if and when module source cites
-them too. `config/DecisionLogIdentifierContractTest` enforces the property that actually matters in both
-directions — every heading is a well-formed, unique identifier, and every identifier the module cites
-resolves to exactly one entry.
+This index lists *citations*, not entries, and **it is hand-written rather than mechanically extracted,
+so the absence of a row proves nothing.** Rows are added as entries are written, and entries added
+after this table settled carry the same information the other way round instead — an
+*Embodied in* line and, where module source cites them, a *Cited by* line naming the citing files.
+A reader looking up a file should therefore search this document for the file name rather than
+assume this table is exhaustive; a reader looking up an entry has its own provenance lines. An
+earlier revision of this paragraph said that an entry with no row here was simply not yet cited
+from module source, and that was not true of every entry: several are cited and have no row,
+because a hand-maintained reverse index is exactly the artefact that falls behind. Sections 16 to 19
+are of the genuinely-uncited kind: their entries carry stable identifiers so that
+`traceability-matrix.md`, `gate-evidence.md`, `architecture.md` and `onboarding-guide.md` can cite
+them by name. `config/DecisionLogIdentifierContractTest` enforces the property that actually matters
+in both directions — every heading is a well-formed, unique identifier, and every identifier the
+module cites resolves to exactly one entry — and it is the mechanical guarantee this table is not.
 
 ### 14.1 `DL-nnn` citations
 
@@ -15646,6 +15653,19 @@ named column moved.
 
 ### DL-334 — The production version ceiling is restored and held beside the location split, and the defect DL-298 found in it is answered by asserting the pin against the delivered scripts *(restores the pin half of DL-298)*
 
+> **Correction, and the delivered pin is no longer `2`.** Everything below about *why* a ceiling is
+> held, how it is refused in both directions, and why asserting it against the delivered scripts
+> answers `DL-298`'s objection is current and unchanged. The **value** has moved twice since: the
+> deployment-wide sign-on attempt ledger arrived as a schema script and the protected-value
+> invariants after it, so `FlywayConfig.PRODUCTION_TARGET` is now **`2.2`** and the pin declines
+> every version above it. Each of those two scripts takes a **dotted** version between the indexes
+> and the fixtures — `2 < 2.1 < 2.2 < 3` — precisely so that this ceiling keeps excluding the seeds
+> arithmetically as well as by directory. Read every `2` below as the value of the day and
+> `PRODUCTION_TARGET` as the value now; read every `V5` below as "a schema script numbered above
+> the pin", which is a hypothetical that still holds and is no longer a number anyone may use —
+> `DL-343` records what broke when one was. See `DL-343` for the numbering rule and the ledger, and
+> `DL-349` for the invariants script.
+
 **This restores one half of `DL-298` and leaves the other half exactly as delivered.** `DL-298` withdrew
 the production ceiling `spring.flyway.target=2` and made the profile-scoped location list the sole
 control. The location list is unchanged and remains the **primary** boundary. What is restored is the
@@ -16162,6 +16182,985 @@ transcribing. The mechanism is the decision; the corrections are a consequence o
 *Embodied in:* two new workflow steps, a `Sign-off status:` line and a discharge block in the emitted
 checklist, a complete-tuple and build-provenance reconciliation for Gate 3, three new derived-count nests,
 and the corrected figures and commands in the published pages.
+
+---
+
+### DL-341 - A span records a classification of an outbound failure, never the provider's own failure object
+
+*Context.* Five outbound boundaries - the queue publish, the notification publish, the two object-store
+families and the batch publication callback - each ran their provider call through
+`Observation.observe(...)`. That convenience does three things in one call: it starts the observation, opens
+its scope, and on a failure hands the **raw throwable** to `Observation.error(...)` before rethrowing it.
+The tracing bridge turns a recorded error into exported span data - the exception type, **its message and
+its stack trace** - and sends it to whichever collector the deployment points at.
+
+*The defect this entry records.* A provider failure is the one value crossing these boundaries whose text
+this module does not author. An object-store refusal names the bucket and the key it refused; a queue
+failure names the queue and often the endpoint and the credential's principal; a driver failure names the
+connection string. `util/FailureDiagnostics` exists precisely because of that, and every boundary **log**
+site in this module already publishes a bounded chain of type names rather than the throwable. The span was
+the channel still carrying the unedited object, so the value the log deliberately withheld was exported
+anyway, to a destination with a different audience and a different retention period. It is a volume lever
+as well as a disclosure one: a caller who can provoke a failure whose message they influence chooses how
+many bytes each of their requests writes into the collector.
+
+*Decision.* `util/SanitisedObservation` replaces the convenience form at every outbound boundary. It
+reproduces the same lifecycle - start, scope open for the duration of the call so a nested observation still
+descends from it, error recorded, scope closed, observation stopped on every path - and records a
+`SanitisedBoundaryFailure` whose message is composed only of `FailureDiagnostics.failureChainOf` and
+`failureOriginOf`: a bounded chain of type names and bounded frame metadata, both properties of the code
+rather than of any request. The stand-in carries **no cause**, so a handler that walks the chain finds
+nothing beneath it, and it is constructed with its stack trace suppressed, so there is no frame list to
+render.
+
+*What deliberately does not change.* The call's outcome. The original failure is rethrown unwrapped and
+unaltered, so every existing handler, every non-fatal verdict and every sanitised log record at the call
+site behaves exactly as before. The observation is still marked as a failure rather than left looking
+successful - an untraced failure would trade a disclosure for a blind spot, which is not the trade being
+made.
+
+*Why a helper rather than five hand-written blocks.* Five boundaries need this, and a hand-written
+start/scope/error/stop block at each is five chances to omit a `stop()` on one path or to pass the raw
+throwable at one site. One helper makes it a single decision and makes "does any boundary export a raw
+provider failure" answerable by reading one file. The scope is opened and closed explicitly rather than
+through a resource declaration because the reference is never read in the body, which `-Xlint:try` reports
+and this build treats as an error - the same reason `util/ObservationPropagation` is written that way.
+
+*Cited by:* `src/main/java/com/carddemo/service/JobSubmissionService.java`,
+`src/main/java/com/carddemo/service/JobCompletionNotificationService.java`,
+`src/main/java/com/carddemo/service/BatchStagingService.java`,
+`src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`,
+`src/main/java/com/carddemo/config/BatchConfig.java`,
+`src/main/java/com/carddemo/util/SanitisedObservation.java`.
+
+*Asserted by:* `util/SanitisedObservationTest` - the recorded error is the classification and not the
+provider's object, carries no cause, no frames and no suppressed throwable, and its message excludes
+planted provider text while still naming the type chain; the observation is stopped and the scope closed on
+both paths; an `Error` is classified the same way. The same class carries the **canary**: it reads every
+production source with comments and literals blanked and fails if any `.observe(` or `.observeChecked(`
+call on an observation remains, so a sixth boundary written later cannot reintroduce the family, and it
+positively requires the five named files to observe through the helper so the disclosure cannot be removed
+by removing the telemetry. The five per-boundary suites -
+`service/BatchStagingServiceTest`, `service/JobSubmissionServiceObservationTest`,
+`service/JobCompletionNotificationServiceTest`, `batch/step/StagedGenerationStoreTest` and
+`config/BatchConfigTest` - each plant provider text in the failure and assert it cannot reach the recorded
+error. Every one of those five previously asserted the opposite, which is why the canary exists.
+
+*Embodied in:* `util/SanitisedObservation` and the five boundary call sites.
+
+---
+
+### DL-342 - A successful sign-on releases the authenticated identity and never the source, because the source record is what catches a sweep
+
+*Context.* Failures are counted under two independent subjects (DL-268): the identity, which catches a
+stuffing run against one identifier, and the source, which catches an enumeration sweep that never repeats
+an identifier and therefore never accumulates under any identity. A successful sign-on released **both**,
+on the reasoning that a source which produced a genuine sign-on is by that evidence not mid-sweep.
+
+*The defect this entry records.* The reasoning does not hold, and the gap it left is the one the source
+namespace exists to close. A sweep is driven from somewhere, and the caller driving it needs only one
+credential it is entitled to - its own, a colleague's, a shared low-privilege operator account, an identity
+it created through the very surface it is enumerating - to clear the source-wide failure record on demand.
+The sweep then resumed at full rate: exhaust the source allowance, sign in once legitimately from the same
+address, resume. The counter existed, counted correctly, and was resettable by the party it was counting.
+
+*Decision.* `recordSuccess` takes the identifier alone and releases the identity subject alone. A success
+says only "this identity's own history is spent", which is the whole of what a correct credential
+establishes. The source's history is released by **time** and by nothing else: an entry outside its failure
+window restarts its count on the next failure, an engaged refusal lifts when its period expires, and the
+capacity sweep removes an entry that is neither refusing nor inside its window. None of those is reachable
+by presenting a credential. The two-argument method is not kept beside the new one, because an unsafe
+release left in place is an unsafe release a future call site can take.
+
+*The cost, stated rather than hidden.* An operator behind an address that has genuinely spent its allowance
+- a shared office egress address, or several operators mistyping inside one window - waits out the refusal
+period even after presenting a correct credential. The allowance, the window and the refusal period are all
+configuration for that reason, and their defaults are ten failures in five minutes and a one-minute
+refusal. The alternative is a bypass any caller can take, which is not a trade worth making for the
+convenience.
+
+*Why not count only failures against distinct identifiers, which would separate the two shapes exactly.*
+That is a better discriminator and it was rejected on a memory argument: it requires per-source state
+proportional to the identifiers a caller invents, which is the second denial-of-service channel the
+fixed-size record and the tracked-subject ceiling exist to prevent. The simple counter with time-based
+decay keeps the record one fixed-size entry per subject.
+
+*Cited by:* `src/main/java/com/carddemo/service/SignOnAttemptGovernor.java`,
+`src/main/java/com/carddemo/service/AuthenticationService.java`.
+
+*Asserted by:* `service/SignOnAbuseResistanceTest` - a success clears the identity's own count (proven with
+the failures spread across addresses, so the identity namespace is the only one measured); a success does
+**not** clear the source, so a sweep driven to one attempt short of the allowance, interrupted by a
+legitimate sign-on from the same address, is refused on its next attempt; the source's own refusal lifts by
+time alone; and at the transaction level the same bypass is driven through `AuthenticationService` and the
+sweep's attempt after the admission is refused without reaching the credential store. The first of those
+previously asserted that a success cleared both subjects.
+
+*Embodied in:* `service/SignOnAttemptGovernor#recordSuccess(String)` and its one call site in
+`service/AuthenticationService`.
+
+---
+
+### DL-343 - The sign-on attempt allowance is counted once per deployment rather than once per process, so the throttle state moves into the shared database
+
+*Context.* DL-268 delivers a bounded sign-on attempt allowance and DL-342 corrects what a success releases.
+Both are about *how* the allowance is counted. Neither says *where* the count lives, and it lived in one
+process's memory: a `ConcurrentHashMap` inside `SignOnAttemptGovernor`, with an `AtomicInteger` beside it
+holding the tracked-subject reservation (DL-308).
+
+*The defect this entry records.* An allowance is only an allowance if it is counted once, and a count held
+in a process is counted once **per process**. Two replicas behind one address grant a caller twice the
+attempts before a refusal, because neither can see the other's map; ten grant ten times. And every restart -
+a release, a crash, an autoscaler reclaiming an instance - returns every allowance to full without anyone
+authenticating, so a caller able to provoke a restart, or simply patient enough to wait for one, resets the
+bound at will. None of that is visible from inside a replica, which is what let it stand: every unit test of
+the governor passes against a per-process map, because a unit test runs one process. The multiplier applies
+to exactly the budget the governor exists to bound, so the protection was weakest in the only deployment
+shape that needs it.
+
+*Decision.* The state is extracted behind `service/SignOnAttemptLedger` and a deployment chooses a store
+whose scope matches its shape. `InMemorySignOnAttemptLedger` keeps the delivered behaviour and is the
+default, which is correct for a single instance and is what a fresh clone, the local Compose stack and every
+slice test run with. `PostgresSignOnAttemptLedger` holds the same state in the database every replica
+already shares, so one allowance is one allowance however many instances there are and it survives all of
+them restarting. `config/SignOnThrottleConfig` selects between them from
+`carddemo.security.sign-on.state-scope`, `application-prod.yml` pins that to `deployment`, and the
+configuration **refuses** a production start-up that asks for the per-instance store - at bean creation,
+before the context finishes refreshing. It refuses an unrecognised value too rather than defaulting one: a
+misspelling is the likeliest way this setting goes wrong, and falling back to the per-instance store would
+turn a typo into a per-process allowance on exactly the deployment that had tried to ask for the shared one.
+
+*The policy stays in one place and the state machine in another.* The governor keeps the four thresholds,
+the two namespaces, the metrics and the log records, and hands the thresholds to the store on every call as
+a `Policy` rather than injecting them into it - so the figures are read from configuration in exactly one
+place and a store cannot hold a second opinion of what the allowance is. The transition itself is a static
+pure function on the interface, `nextAfterFailure`, because two stores that each implemented it would be two
+answers to one question and the interesting cases - a refusal already in force, a lapsed window, the failure
+that exhausts an allowance - are exactly where two implementations drift.
+
+*Exclusion made atomic across replicas, and what it costs.* A failure is a read, a decision and a write, and
+two replicas cannot see each other's locks in memory. The Postgres store therefore takes a transaction-scoped
+advisory lock over a fixed two-part key inside a new transaction, exactly as the card-stream coordinator does
+(DL-304), so a crash mid-transition releases it with no second statement and no cleanup job. The lock is
+**ledger-wide rather than per subject**, deliberately: the tracked-subject ceiling is a property of the whole
+table rather than of one row, and enforcing it under per-subject locks means counting rows while other
+transactions insert them - the same read-then-insert race that made the in-memory store need a separate
+reservation counter. One lock makes the ceiling an exact bound by construction. What it serializes is four
+short statements against a table capped at the configured ceiling, taken only on a **failure** - never on an
+admitted attempt and never on the refusal probe that precedes a credential read - so the serialized path is
+the one whose throughput a deployment has no interest in protecting. The wait is bounded at five seconds by
+a statement query timeout rather than by written `SET` text, so the unsafe-code audit's raw-SQL count stays
+at zero.
+
+*A store fault does not drive the throttle, and that direction is argued rather than assumed.* An expired
+wait, a lost connection or any other database fault is reported as `STORE_UNAVAILABLE` and refuses nothing.
+The reasoning is that the only store that can be unreachable is the shared one, it lives in the same database
+as the credential store, and while it is unreachable no credential can be verified either - every attempt
+already ends in the legacy inability-to-verify reply without a credential being read. Counting nothing during
+that interval therefore withholds no protection that was available, because there is no admission to be had.
+Refusing instead would convert one database fault into a deployment-wide sign-on outage lasting a whole
+refusal period beyond the fault, and would let anyone able to disturb the database lock every operator out.
+It is counted on its own meter, `carddemo.signon.ledger.unavailable`, rather than folded into the
+ceiling's - the two mean opposite things about the protection, and presenting a database fault as a capacity
+decision would mislead the operator reading it.
+
+*The subject is bounded in length as well as in number.* A subject is partly caller-supplied, and the
+delivered sign-on contract stops an identifier at eight characters - but a caller reaching the service below
+that contract could otherwise choose the size of a stored key, which in a durable ledger is a storage lever
+and an index-size one besides. `MAX_SUBJECT_LENGTH` is 64, the column is `VARCHAR(64)`, and the cut steps
+back off a trailing high surrogate because a lone surrogate is not a character any encoding can represent
+and a rejected write is an uncounted failure. Two over-long subjects that coincide once cut share one
+allowance, which can only happen between values no delivered identity could hold and which makes the
+throttle stricter rather than weaker.
+
+*The table is a twelfth table and is not a twelfth record layout.* `V2_1__create_sign_on_attempt_ledger.sql`
+creates `sign_on_attempt` in the schema location, because production is the profile that needs it most. It
+holds no business record, derives from no copybook, and is self-limiting without a scheduler: a spent entry
+is removed by the application inside the same serialized transition that would otherwise have to refuse a
+new subject. It is therefore held apart from the eleven-table record inventory rather than folded into it -
+`AbstractPostgresIT.applicationTableNames()` excludes it **by exact name rather than by pattern**, so any
+other unexpected table still surfaces as the schema regression it would be, and
+`AbstractPostgresIT.operationalTableNames()` asserts it exists so that excluding it cannot become a way for
+it to disappear.
+
+*The version is 2.1, and the first attempt at 5 was wrong in three measurable ways.* The ledger script is
+`V2_1__…`, between the indexes and the fixtures, so `FlywayConfig.PRODUCTION_TARGET` moves from `"2"` to
+`"2.1"` and every schema version still sorts below every seed version. It was first written as `V5__…`, above
+the seeds, on the reasoning that versions 3 and 4 are already applied and a dotted version beneath them would
+be out-of-order against any database holding them. That reasoning avoided one problem by creating three worse
+ones, each of which was then measured rather than predicted:
+
+1. **A correctly migrated production database refused to start.** `ProductionSeedRejectionCallback` reads seed
+   contamination off the history as a successful row **at or above** the first seed version. A *schema* script
+   numbered 5 satisfies that test, so a production database holding exactly 1, 2 and 5 was refused with the
+   message that it had already had a seed migration applied and held fifty synthetic customer rows. The
+   control was right; the numbering was wrong. Caught by
+   `ProductionSeedRejectionCallbackIT.aDatabaseThatWasNeverSeededStartsUnderProduction`.
+2. **The arrangement this module ships stopped working.** Production resolves the schema location alone and
+   the seeding profiles resolve both, so a database migrated production-shaped and later seeded is a path the
+   design intends. With a schema version 5 applied, versions 3 and 4 are pending **below** it, which Flyway
+   refuses as out-of-order. Caught by `SeedMigrationIT.addingTheSeedLocationAloneAppliesBothSeeds`.
+3. **The ceiling stopped excluding the seeds by arithmetic**, as DL-334 described - the cost that was
+   identified up front and compensated with an object-disjointness assertion. It turned out to be the least
+   serious of the three.
+
+Numbering the script 2.1 removes all three at once and needs no compensating control: the pin sits below both
+seeds again, the contamination rule is sound again, and adding the seed location to a schema-only database
+applies 3 and 4 in order. Flyway compares version parts numerically, so 2 < 2.1 < 3; a further schema script
+takes 2.2. `FlywayConfigTest.noSchemaScriptIsNumberedAboveASeedScript` now asserts the invariant directly and
+names all three controls that rest on it, so this cannot be rediscovered a third time.
+
+*What the reversal cost.* A database that had already applied the script as version 5 must have its volume
+recreated, because version 5 is then in its history with no script to resolve. Nothing is deployed, the
+Testcontainers server is rebuilt on every run, and the local Compose volume is recreated with
+`docker compose down -v`. V1 through V4 each state in their own header that the production ceiling is `"2"`;
+the pin is now `"2.1"` because one more schema version exists to reach, and the property those headers assert
+- that the seeds are excluded by number as well as by directory - is untouched, so nothing in them needed
+correcting. They are applied and checksum validation is on, so none of them could have been edited in place
+in any case.
+
+*A second correction the reversal exposed, in the seed reset.* `AbstractPostgresIT.restoreSeededState()` used
+to delete the seed versions' history rows and re-run the migration tool to re-apply them. That worked only
+while every schema version sat below every seed version. Under a schema version 5 it broke twice over: with
+default settings the tool reported the forgotten seeds as a validation failure and applied nothing, so every
+seeded row went missing; declaring the re-migration out-of-order applied the rows but recorded versions 3 and
+4 as `OUT_OF_ORDER` rather than `SUCCESS`, which then falsified every assertion reading the tool's own view of
+what is applied. Both are consequences of using migration history as the mechanism for a job it was never the
+mechanism for: the reset wants the seeded **rows** back and has no interest in the seeded **versions**, which
+are applied and correct. It now executes the two delivered seed scripts directly from the classpath and leaves
+history, checksums and every migration state untouched. That is the better design under either numbering, so
+it is kept.
+
+*Alternatives considered and rejected.* Keeping the script at version 5 and narrowing
+`ProductionSeedRejectionCallback` to an exact-membership test against the seed versions was rejected: an
+enumerated list fails **open** when a future seed is added and not registered, whereas "at or above the first
+seed version" fails closed, and a security control should degrade in the safe direction. Keeping version 5 and
+enabling out-of-order in the seeding profiles was rejected because it would ship a setting that permanently
+records the seeds in a non-success state and would make the shipped profiles depend on an override to work at
+all. Keeping the state in memory and documenting the multiplier was rejected because the multiplier is
+the vulnerability. A cache or an external key-value store was rejected because the module has no such
+dependency and adding one to hold a counter would be a new operational surface for no gain over the database
+every replica already has. Per-subject advisory locks were rejected for the ceiling reason above. Refusing
+on store unavailability was rejected for the outage reason above.
+
+*Cited by:* `src/main/java/com/carddemo/service/SignOnAttemptLedger.java`,
+`src/main/java/com/carddemo/service/InMemorySignOnAttemptLedger.java`,
+`src/main/java/com/carddemo/service/PostgresSignOnAttemptLedger.java`,
+`src/main/java/com/carddemo/service/SignOnAttemptGovernor.java`,
+`src/main/java/com/carddemo/config/SignOnThrottleConfig.java`,
+`src/main/java/com/carddemo/config/FlywayConfig.java`,
+`src/main/resources/db/migration/schema/V2_1__create_sign_on_attempt_ledger.sql`,
+`src/main/resources/application.yml`, `src/main/resources/application-prod.yml`,
+`src/main/resources/application-local.yml`, `src/main/resources/application-test.yml`,
+`src/test/resources/application-test.yml`.
+
+*Asserted by:* `service/SignOnAttemptLedgerTest` - the shared state machine, every outcome and both
+bounds; `service/InMemorySignOnAttemptLedgerTest` - the per-process store, its exact ceiling under
+contention and its refusal to evict a refusing subject; `service/PostgresSignOnAttemptLedgerIT` - two
+governor instances over one database share an allowance, the state survives a store rebuilt around the same
+table, the ceiling is exact, and a subject satisfies the schema's own namespace constraint;
+`config/SignOnThrottleConfigTest` - the selection, the production refusal and the unrecognised-value
+refusal; `config/FlywayConfigTest` and `config/FlywayConfigCoverageTest` - the raised pin measured against
+the delivered scripts, and the invariant that no schema script is numbered above a seed script;
+`e2e/GateVerificationTest` - eleven record tables, one operational table, five applied migrations.
+
+*Embodied in:* `service/SignOnAttemptLedger`, `service/InMemorySignOnAttemptLedger`,
+`service/PostgresSignOnAttemptLedger`, `service/SignOnAttemptGovernor`, `config/SignOnThrottleConfig` and
+`db/migration/schema/V2_1__create_sign_on_attempt_ledger.sql`.
+
+---
+
+### DL-344 - A readiness contributor answers from its own recent result, because an anonymous probe must not be able to set the rate at which this deployment calls its provider
+
+*Context.* Three contributors ask an external provider whether a resource exists: the staging bucket, the
+job queue and the notification topic (DL-155, DL-339). Each carries a deadline of its own so that one
+evaluation cannot hold a probe open on a provider that accepts a connection and then stops answering, and
+the two synchronous ones run on a bounded, direct-handoff pool so that a stuck call cannot occupy the
+process. Two of the three are in the readiness group, and the aggregate health endpoint together with the
+liveness and readiness groups are reachable with no credential - deliberately, because an orchestrator and a
+Compose dependent must be able to ask whether an instance can serve before they have any way to obtain a
+credential, and the container image's own probe is exactly such a caller.
+
+*The defect this entry records.* A deadline bounds how long **one** evaluation may take and says nothing
+about **how many** evaluations happen, and the caller chose that number. Every anonymous request to the
+aggregate or to the readiness group started a fresh bucket existence call, a fresh queue attribute
+resolution and, for the aggregate, a fresh topic listing and topic attribute read - so an unauthenticated
+caller set the rate at which this deployment queried its object store, its queue and its topic. Three
+consequences follow, and the third is the one that turns a cost problem into an availability problem: the
+provider throttles a caller that asks too often, so a burst degrades the very answer readiness depends on;
+the requests are metered, so an outsider spends the deployment's money; and because a check that exceeds
+its deadline does **not** free its worker - the deadline returns control to the probe while the abandoned
+worker stays inside the provider call until the transport releases it - a stream of probes against a slow
+provider exhausts the four worker slots and the contributor then reports capacity exhaustion, which is a
+self-inflicted DOWN produced entirely from outside. The amplification was worst in precisely the state the
+mechanism exists for: a provider that is failing or absent was re-asked once per probe.
+
+*Decision.* Each contributor answers from its own most recent result for a bounded freshness window, and
+concurrent evaluations that all find the window closed are coalesced onto the single evaluation the first of
+them starts. The resource behind a component is therefore asked at most once per window however often the
+component is probed, and a burst costs one call rather than one call per member of the burst - which reuse
+alone cannot achieve, because every member of a simultaneous burst misses the same expired window. Two
+properties are load-bearing and neither is obvious. **Every outcome is reused, not only the healthy one**: a
+DOWN from an absent resource, an expired deadline or a refusing provider is exactly the state in which
+re-asking per probe hurts most, so a window that skipped failures would leave the amplification in place for
+the situation it was added for. **A repeat is not an evaluation**: the wrapped contributor still decides
+every outcome, still reduces a failure to a bounded type chain and still logs its own state transitions, so
+what a caller is told is unchanged and a transition is still logged when the state actually changes.
+
+*Why the window is two seconds.* It is longer than one check deadline, so a result cannot expire before the
+evaluation that produced it was even allowed to finish, and shorter than the ten-second interval the
+container image's probe runs at, so a probe arriving on that documented cadence still causes a fresh
+evaluation and readiness keeps tracking the resource rather than a memory of it. Both bounds are asserted
+rather than asserted-in-prose: the deadline comparison is arithmetic over the two constants, and the probe
+interval is read out of the `Dockerfile` so that a changed cadence fails the build. The figure is not a
+service level and asserts nothing about how fast a provider ought to be.
+
+*The endpoint's own cache is the outer of two bounds, not the fix.* `application.yml` also sets
+`management.endpoint.health.cache.time-to-live` to the same window, which additionally bounds the endpoint's
+aggregation work and the data-source contributor beside it. It is stated as an addition rather than as the
+remedy because the framework applies that cache only to an endpoint operation that takes no selector: the
+aggregate qualifies and a group address such as `/actuator/health/readiness` carries the group name as a
+selector and is answered afresh. The bound that holds for every caller of every path is the
+per-contributor one.
+
+*Why the anonymity of the probe was not withdrawn instead.* Requiring a credential would close the hole and
+would break a contract this module publishes in four places: the image's own `HEALTHCHECK`, the workflow's
+gate on the aggregate and the liveness group, the module manual and the onboarding guide all document those
+three addresses as reachable without one, and a container probe has no credential to present. Withdrawing
+the grant would also not have been the narrowest available fix, which caching is: the cost of a probe is
+bounded without changing who may probe.
+
+*The cost, stated rather than hidden.* A caller can meet an answer up to one window old, so a resource that
+vanishes is reported up to two seconds late - well inside the several probe periods an orchestrator waits
+before acting on a change of state, and far shorter than the interval at which a resource is provisioned or
+withdrawn. A specification that needs two different answers from one contributor must move the clock rather
+than call twice, which is why the clock is a parameter of each contributor's builder; the bean methods pass
+the process clock and a specification passes one it moves, so the composition under test is the delivered
+one rather than a re-assembly of its parts.
+
+*Alternatives considered and rejected.* Internalising the checks - moving them off the anonymous surface to
+a scheduled evaluation the endpoint only reads - was rejected as a larger change with the same effect: a
+scheduled evaluation *is* a freshness window with a fixed phase, and it additionally makes the first probe
+after start-up answer from nothing. Authenticating the readiness group was rejected for the contract reason
+above. Rate-limiting the endpoint by address was rejected because a probe legitimately arrives from a
+rotating set of addresses and the limit would then have to be per-instance state of the kind DL-343 has just
+moved out of memory. Caching only the healthy outcome was rejected because it leaves the amplification in
+the failing state. Caching inside each provider client was rejected because the clients are auto-configured
+and shared with the publishing paths, where a cached answer would be wrong.
+
+*Cited by:* `src/main/java/com/carddemo/config/AwsResourceHealthConfig.java`,
+`src/main/resources/application.yml`.
+
+*Asserted by:* `config/AwsResourceHealthConfigTest` - repeated probes inside one window ask the object
+store exactly once; the resource is asked again once the window has closed; an absent resource's DOWN and a
+refusing provider's bounded failure chain are both reused; simultaneous probes that all find the window
+closed share one evaluation, counted at the provider; the queue and topic contributors reuse their answers
+too; all three **bean** methods carry the window, so none of the three is left as the one an anonymous
+caller can amplify; the window outlasts a check deadline and is shorter than the probe interval read out of
+the image; the endpoint cache is set to the same window; and the four specifications that require two
+different answers from one contributor - the two bucket outcomes, the five-evaluation transition count, the
+change of reason while down, and the healthy component's silence - now move the clock between evaluations, so
+each still measures two evaluations rather than one answer repeated.
+
+*Embodied in:* `config/AwsResourceHealthConfig#freshnessBounded(HealthIndicator, LongSupplier)`, the three
+clock-carrying contributor builders it wraps, and the `management.endpoint.health.cache.time-to-live`
+setting in `application.yml`.
+
+---
+
+### DL-345 - The ordinary business grant names its eleven addresses, and everything else beneath the API root is refused
+
+*Context.* The application chain's ordinary rule has been rewritten twice. It began as
+`anyRequest().authenticated()`, which asks whether an identity was established and not whose - so any
+authority minted anywhere in the process, `MANAGEMENT_AUTHORITY` included, reached every account, card,
+transaction and statement route. That was corrected by naming the two authorities a sign-on token can carry
+and installing them over `/api` and everything beneath it. The route-to-role table already drove the
+anonymous permit and the administrative rule; this one rule was written unconditionally instead, on the
+reasoning that a table-driven rule could withdraw itself if the last ordinary transaction were reclassified
+and the closing catch-all would then widen the surface again.
+
+*The defect this entry records.* A grant over a region is as wide as the region and not as wide as the
+surface, and the difference is every address beneath the root that nothing serves. A caller holding an
+ordinary sign-on token was **authorized** for `/api/anything-at-all`; what separated it from a real route
+was the dispatcher's own not-found answer, which means authorization decided nothing and the router decided
+everything. Three consequences follow. An address that is mapped later - by a new controller, by an
+auto-configuration, by a path variable widening an existing mapping - is admitted from the moment it exists,
+before anybody has decided who should reach it. A caller can enumerate the surface by the difference between
+403 and 404, since the authorization layer answers uniformly and only the dispatcher distinguishes. And the
+whole arrangement rested on rule order: the sign-on permit and the two administrative rules had to be
+registered first, because the ordinary rule spanned their addresses too.
+
+*Decision.* The ordinary entitlement carries the eleven delivered ordinary addresses themselves -
+`ApiRoutePaths.ORDINARY_ROUTE_PATHS` - and the chain installs one rule per address, each requiring
+`ROLE_ADMIN` or `ROLE_USER` by name. After them the chain installs `denyAll()` over `/api` and everything
+beneath it, and only what lies **outside** the root reaches the closing `authenticated()` rule, where an
+established identity remains the right default because the container's own error path is reached that way.
+The grant is now exactly as wide as the delivered surface: an address beneath the root that no rule names is
+refused, whoever asks.
+
+*Why the fail-open objection to a table-driven rule no longer holds.* It was the right objection to the
+arrangement it was made about. Withdrawing a grant used to hand its address to a closing rule that admitted
+any established identity, so an edit that read as a narrowing widened the surface. The closing rule beneath
+the root is now a refusal, so withdrawing a grant makes its address unreachable instead. Both directions of
+the same mistake therefore fail closed, and the ordinary rules can be read out of the table exactly as the
+other two are - which is what makes the table the source of all three rules rather than of two.
+
+*Why forgetting to classify a new route cannot ship.* This is the cost of enumeration and it is paid by a
+control rather than by vigilance. `api.DeliveredApiSurfaceOracleTest` holds an independently written literal
+table of all twenty operations, requires the started router's own inventory to equal it, and now also
+requires the ordinary entries of that table to equal the chain's roster exactly. A route added beneath the
+root and not classified fails the first comparison; a roster that names an address nothing serves fails the
+second; a wildcard reintroduced into the roster fails a third assertion written for that purpose. The
+omission is a build failure, and in production the same omission is a refusal.
+
+*A second, smaller thing this exposed.* The suite that specified the ordinary surface probed
+`/api/accounts/00000000001` - a plausible-looking address no controller has ever mapped - and asserted that
+a signed-on identity reached it. It was, without saying so, asserting the over-grant. Its ordinary probes
+now use the delivered account addresses, and the invented address is kept as the probe that proves the
+refusal: it is given a handler in the slice, so a `200` is what the chain would have to permit for the
+assertion to be vacuous, and it is asserted refused to a standard identity, refused to an administrative
+identity, and unauthorized with no credential at all.
+
+*The cost, stated rather than hidden.* Eleven rules where there was one, and a roster that has to be
+extended when a route is added. The eleven addresses are declared once in the base-layer route contract and
+read by both the controller that serves each one and the rule that admits it, so extending the surface is
+one declaration rather than several; and the two comparisons above make the extension impossible to forget
+silently.
+
+*Alternatives considered and rejected.* Deriving the allow-list at run time from the dispatcher's own
+mappings was rejected because it fails open by construction: a route mapped by accident would be granted
+because it was mapped. Keeping the region grant and adding a deny-list of unmapped addresses was rejected
+because a deny-list cannot enumerate what does not exist yet. Gating by HTTP method as well as address was
+rejected as a change of contract rather than of authorization - the dispatcher already answers a wrong
+method as unsupported, and adding the method to the rule would turn that into a refusal and tell a caller
+less. Keeping the invented probe address as an ordinary route in the suite was rejected outright: it is the
+defect written as a specification.
+
+*Cited by:* `src/main/java/com/carddemo/util/ApiRoutePaths.java`,
+`src/main/java/com/carddemo/config/SecurityConfig.java`, `README.md`.
+
+*Asserted by:* `config/SecurityConfigTest` - an address beneath the root that no rule names is refused to a
+standard identity, refused to an administrative identity and unauthorized with no credential, while every
+delivered ordinary address remains reachable to both; `config/SecurityConfigRouteTableTest` - the
+entitlement's patterns are the eleven addresses, hold no wildcard, and name neither the anonymous route nor
+anything beneath the administrative or batch-control prefixes; `api.DeliveredApiSurfaceOracleTest` - the
+chain's ordinary roster equals the ordinary operations of the independent literal oracle, which in turn
+equals the started router's inventory; `util/ApiRoutePathsTest` - the roster is the eleven exact addresses,
+unmodifiable, duplicate-free, and each ordinary controller composes its mapping from the same contract;
+`api/BillPaymentControllerTest` - the bill-payment address is reachable because it is listed rather than
+because it sits beneath a granted region.
+
+*Embodied in:* `util/ApiRoutePaths#ORDINARY_ROUTE_PATHS`, `config/SecurityConfig.Gating#AUTHENTICATED`,
+`config/SecurityConfig.TransactionRoute#enforcementPatternsFor(Gating)` and the ordinary loop plus closing
+`denyAll` in `config/SecurityConfig#securityFilterChain(HttpSecurity)`.
+
+---
+
+### DL-346 - An account this deployment will run against opens its three resources to nobody and refuses plain transport, and the deployment refuses to start until it does
+
+*Context.* Three checks already stood between a production deployment and the wrong cloud resource, and all
+three answered a question about *identity*. `config/AwsProperties` refuses a malformed name;
+`config/ProductionConfigurationValidator` refuses a missing variable, a redirected endpoint and a queue or
+topic locator outside the declared account; `config/AwsResourceTrustVerifier` then asks the services
+themselves, before any bean that could publish exists, and establishes that the bucket is owned by the
+declared account, carries object versioning and can be written to and cleaned up, that the queue is owned,
+first-in-first-out and not deduplicating, and that the topic is owned and answers an attribute read of its
+own. Recorded as DL-302. The local validation stack's bootstrap hook provisioned the matching resources:
+a fifo queue with deduplication off, a versioned bucket, a topic.
+
+*The defect this entry records.* Ownership and openness are independent properties, and only the first was
+ever established. A bucket in the declared account whose policy grants `s3:GetObject` to every principal is
+the correct bucket, owned by the correct account, publishing statements, reports and rejected records -
+bearing account identifiers, card numbers and monetary balances - to anybody who can name it, while the
+readiness probe reports it UP throughout. A queue in the declared account whose policy grants
+`sqs:SendMessage` to every principal accepts eighty-column job-control cards from anybody, and a scheduler
+cannot tell those from this deployment's own. A topic in the declared account and open to every principal
+receives completion notices for jobs that never ran. None of the three states failed any check, and none of
+them is visible from anything this module logged. Three narrower gaps sat beside them: the bucket had no
+public-access-block configuration, so a single later access-control list or policy could open it; it
+configured no default encryption, and since no writer in this module names an algorithm per object, that
+meant nothing written there was encrypted at rest; and no resource required that a call reach it over an
+encrypted transport, so the same data could cross the network in clear text and be served.
+
+*Decision.* Five further properties are required of the account, and a deployment that cannot establish all
+five does not start. The staging bucket must block public access through all four controls, must carry a
+policy, and must configure a default server-side encryption algorithm; the queue and the topic must each
+carry a policy. Every one of the three policies is held to exactly two rules, stated once in
+`util/AwsResourcePolicyRules` and applied identically to all three: **no statement may allow every principal
+with no condition confining it**, and **some statement must deny every principal every action of the
+resource's own service when `aws:SecureTransport` is false**. The same posture is provisioned for the local
+validation stack by `localstack/init/01-create-aws-resources.sh`, and the production infrastructure
+definition is required to attach it - documented in `application-prod.yml` beside the account declaration
+itself.
+
+*Why the rules are exactly these two, and not a permission calculation.* What a caller may actually do
+depends on identity policies, permission boundaries, service control policies and organisation rules, none
+of which is visible from a resource's own document, and asking a policy simulator would add a dependency and
+a call this module makes nowhere else. The two rules above are instead *structural*: a document either
+carries an unconditioned grant to everybody or it does not, and it either closes plain transport or it does
+not. Both are decidable from the document alone, both are the properties whose absence is an exposure rather
+than a narrowing, and the class that decides them says in its own documentation that no effective permission
+is computed - so a reader of the evidence is not left to assume the stronger claim.
+
+*Why a conditioned grant to every principal is accepted.* The notification service attaches a policy to
+every topic it creates, and that default names `{"AWS":"*"}` as its principal with a condition confining it
+to the owning account. A rule that read a wildcard principal as an exposure would refuse every
+correctly-provisioned topic, and the refusal would be discovered by the deployment that could not start.
+An `Allow` is therefore an open grant only when nothing conditions it - and an `Allow` carrying
+`NotPrincipal` is treated as open too, because allowing everybody except a named few is a grant to everybody
+else, which is the form an exposure most often takes because it reads as a restriction.
+
+*Why the local hook provisions the posture rather than only describing it.* Because the two would otherwise
+drift, and the drift would be discovered at deployment time. The hook writes the three documents with the
+emulator's own tool; `config/LocalStackBootstrapIT` reads each back through the AWS software development kit
+and hands it to `util/AwsResourcePolicyRules` - the same rule the production check applies - so a document
+the hook writes that production would refuse is a test failure rather than a refused deployment. A second
+control pairs the two files directly: `config/LocalStackBootstrapContractTest` requires that for each
+property the verifier reads, the hook carries the call that provisions it.
+
+*Why a denial of plain transport does not break a stack reached over http.* It is the obvious objection, and
+the answer is measured rather than argued: the emulator does not enforce resource policies unless it is
+asked to, so the documents are stored, read back and judged while every call still succeeds. That is the
+property the local tier needs - the same posture a production account is required to carry, provisioned and
+verified with no certificate, no proxy and no second profile.
+
+*Why the topic keeps a grant and the bucket and queue do not.* Setting a topic policy replaces the one the
+service attached on creation, so dropping the grant would silently narrow the service's own access model.
+It is reproduced instead, in a least-privilege form - `sns:Publish` and `sns:GetTopicAttributes`, the two
+actions this module performs, confined by the same condition on the owning account the default uses. The
+bucket and the queue are created with no policy at all and are given no grant, because this module's access
+to them is granted by the identity it runs as rather than by the resource.
+
+*The cost, stated rather than hidden.* An account provisioned without the posture now refuses to start where
+it previously started and ran. That is the intended direction - the alternative is a deployment that runs
+against an open resource and reports healthy - but it means an existing account has to be hardened before it
+can be deployed to, and the five properties are named individually in `application-prod.yml` for exactly
+that reason. Three further calls are made at start-up, once per process, against the bucket; the queue's
+policy arrives with the attribute read that was already being made, and the topic's with an attribute read
+of its own.
+
+*Alternatives considered and rejected.* Provisioning the posture from the application when it is found
+missing - rejected outright: it would turn a misconfigured account into a silently corrected one, which is
+the same failure the queue-resolution strategy already refuses by declining to create an absent queue.
+Reporting the posture through a health contributor rather than refusing the start - rejected, because an
+operator cannot tell a resource that is momentarily unreachable from one that is open to the world, and only
+the first is a transient condition. Evaluating the policies with a simulator - rejected as a dependency and
+a call this module makes nowhere else, for a claim the two structural rules already make. Requiring a
+customer-managed encryption key rather than any algorithm - rejected: the property that matters is that an
+object written without naming an algorithm is encrypted anyway, and a key is an account resource this
+module has no business requiring. Reading the policies through the health contributors that already call
+these services - rejected, because those answer whether a resource is reachable *now* and this is a
+question about the deployment, settled once, before anything can publish.
+
+*Cited by:* `src/main/java/com/carddemo/config/AwsResourceTrustVerifier.java`,
+`src/main/resources/application-prod.yml`,
+`localstack/init/01-create-aws-resources.sh`.
+
+*Asserted by:* `config/AwsResourceTrustVerifierTest` - a deployment whose bucket lacks any one of the four
+public-access controls, whose bucket, queue or topic policy is absent, unreadable, openly granting or silent
+about transport, or whose bucket configures no default algorithm, does not start; and the write-capability
+probe is never written to a bucket whose policy is open, because the posture is established first;
+`util/AwsResourcePolicyRulesTest` - the two rules accept the shapes a correct account carries, including the
+notification service's own default grant beside a denial, and refuse each near miss: a denial narrowed to one
+action, to one principal, to another service, to secure transport, or written with an operator that does not
+compare a boolean; `config/LocalStackBootstrapIT` - the hook's own three documents, read back through the
+software development kit, are judged sound by the production rule, all four bucket controls are set, the
+bucket encrypts by default, and a rerun leaves each document byte-identical;
+`config/LocalStackBootstrapContractTest` - every property the production check reads is provisioned by the
+hook, the denial is composed once so three resources cannot drift into three postures, and each posture call
+sits outside its resource's existence guard.
+
+*Embodied in:* `util/AwsResourcePolicyRules`,
+`config/AwsResourceTrustVerifier#verifyPublicAccessPosture`, `#verifyBucketPolicy`,
+`#verifyDefaultEncryption`, `#verifyQueuePolicy` within `#verifyJobQueue`, `#verifyTopicPolicy`, and the
+posture section of `localstack/init/01-create-aws-resources.sh`.
+
+---
+
+### DL-347 - A start-up refusal classifies the provider failure that produced it and never carries the failure itself
+
+*Context.* `config/AwsResourceTrustVerifier` refuses a production start-up by throwing an
+`IllegalStateException` whose message this module composes with care: it names the property that could not
+be established and why it matters, and it deliberately carries no account, no resource identifier, no owner
+reported by the service and no part of a credential, because a deployer already has the values they
+configured and a log record naming a resource in another account would put that resource's identity into
+this deployment's log. Where the refusal followed a provider failure, that failure was chained as the
+exception's cause, on the reasoning that a diagnosing reader should have the provider's own exception
+without the message repeating its text. The same pattern is used by `util/FailureDiagnostics` and
+`util/SanitisedObservation` at every other boundary, in the opposite direction - DL-317 and DL-341.
+
+*The defect this entry records.* A chained cause reads as free diagnosis and is not. This exception is
+thrown from a bean's initialisation, so the framework's own start-up failure reporting renders it *and every
+cause beneath it* into the deployment log, in full and verbatim. Those causes are composed by the provider's
+software development kit, and in practice they carry the endpoint that was called, the request and extended
+request identifiers, the resource name, the owning account as the service reported it and, on a signature
+failure, the access key identifier - every one of which the outer message is at pains not to publish.
+Chaining therefore discarded the whole point of composing the message carefully, and it did so at the one
+moment whose output is most widely read and most often pasted into a ticket.
+
+*Decision.* The refusal carries no cause of any kind. Where a provider failure produced it, the message
+carries that failure's *classification* instead: the bounded chain of failure type names and the bounded code
+origin, both rendered by `util/FailureDiagnostics`, which reads no message, no localised message, no
+suppressed throwable and no rendered frame. A refusal that follows a comparison this deployment made, rather
+than a failure a provider reported, carries no classification at all - so the presence of one is itself
+information.
+
+*Why a type chain and an origin are enough.* They are what a diagnosing reader actually needs from this
+message: the chain says which layer refused - a service exception beneath a client exception beneath this
+check - and the origin says where. Both are fixed at compile time and identical for every deployment, so no
+value of any kind can travel through either. The provider's own record still holds its own detail for
+whoever is entitled to read it, and the classification is what correlates the two.
+
+*The cost, stated rather than hidden.* A reader of the deployment log no longer sees the provider's message
+there and has to look it up where the provider recorded it. That is the trade this entry makes deliberately:
+the message is available to somebody with access to the provider's logs, and unavailable to everybody with
+access to this deployment's.
+
+*Alternatives considered and rejected.* Chaining a sanitised stand-in rather than nothing - rejected as
+appearing to offer a cause worth reading while offering the same text the message already carries.
+Chaining the raw failure and relying on the logging configuration's throwable bounds - rejected: those bound
+the *size* of a disclosure and cannot prevent one, because a bounded rendering of an endpoint and an access
+key identifier is still an endpoint and an access key identifier. Logging the provider failure at a lower
+level before refusing - rejected, because the same appender writes both and the disclosure would simply
+happen one line earlier.
+
+*Cited by:* `src/main/java/com/carddemo/config/AwsResourceTrustVerifier.java`.
+
+*Asserted by:* `config/AwsResourceTrustVerifierTest` - every refusal in the suite carries no cause, a
+refusal following a provider failure whose message carries an endpoint, request identifiers, a bucket, an
+owning account and an access key identifier reproduces none of them while naming the failure's type, and a
+refusal following a comparison names no classification.
+
+*Embodied in:* `config/AwsResourceTrustVerifier#refusal(String, Throwable)`.
+
+---
+
+### DL-348 - A refusal names the rule the configured credential broke and never a property of the credential
+
+*Context.* `config/ProductionConfigurationValidator` refuses a production start-up whose management
+credential is too short, built from too few distinct characters, or drawn from a short list of words that
+only appear in values somebody typed. The class's stated discipline is that a refusal names the property a
+deployer must repair and never repeats the configured value, because start-up failure reporting renders the
+text into the deployment log, where it outlives the correction - DL-105, DL-311 and DL-312 all rest on it.
+The value itself was indeed never repeated.
+
+*The defect this entry records.* Two of the refusals described the value rather than the rule, and a
+description of a credential is part of a credential once it is written down.
+
+The dictionary-word refusal named the word it had found: *must not contain the word "changeme"*. That word is
+a **substring of the live credential**, so the refusal published a run of the value verbatim - and it did
+worse than that, because a reader who knows one run exactly knows the remaining material is shorter than the
+whole and has that much less to guess. The other refusal published the credential's exact stripped length:
+*the value is 17 characters and this credential requires at least 32*. A length is the search space, and it
+is the one figure a guesser needs before anything else. Both appeared in the same message that took care to
+withhold the value, and both were in it deliberately - written as helpfulness, on the assumption that the
+reader of a start-up failure is the deployer. The reader of a start-up failure is everybody with access to
+the deployment's logs.
+
+*Decision.* Every fault in this class now states its **requirement** and never its **finding**. The
+dictionary-word fault reports that the credential contains one of the *n* refused words, with *n* read from
+the list itself, and does not say which; the length fault reports that the value is shorter than the required
+minimum and does not say by how much. The byte-count and distinct-character faults already read this way and
+are unchanged. The refused word list remains a constant in the source for anybody who wants to read it - the
+list is not the secret, and which entry a particular credential matches is.
+
+*Why this costs a deployer nothing.* They are holding the value. They know its length and they can see the
+word in it; what they need from the refusal is which rule it broke and how to produce something that does
+not break it, and both are still there, including the generator command. The only party who gains from the
+finding is the party who does not have the value, which is exactly the party this withholding is aimed at.
+
+*How the property is asserted rather than asserted-about.* Naming one absent word is a weak statement,
+because a message could carry the finding in some other form - its position, its length, a hash of it. The
+suite therefore states the property as an **invariant**: two credentials that differ only in which refused
+word they carry must produce byte-identical refusals. If any part of the message were derived from the
+finding, the two would differ. The length rule is held the same way - the padded-credential case now proves
+stripping by the *refusal happening at all* on a value whose unstripped length clears the floor, rather than
+by reading the figure 5 out of the message, which is both a stronger proof and one that survives the figure
+being withheld.
+
+*One collision worth recording, because it looks like an omission.* The refusal cannot assert the absence of
+every refused word, and does not try. Four of the twelve - `token`, `secret`, `carddemo` and `example` -
+appear in the refusal's own prose or in the property key `carddemo.security.management.token`, so their
+presence says nothing either way. The per-word assertions therefore use words that appear nowhere in the
+wording, and the invariant above is what covers the rest.
+
+*The cost, stated rather than hidden.* A deployer who mistypes and cannot see why now has one fewer clue in
+the log, and a support conversation may need the deployer to look at their own value. That is the trade, and
+it is the same one this module makes everywhere else a configured value is refused.
+
+*Alternatives considered and rejected.* Masking the matched word - showing its first character, or its length
+- rejected, because a partial disclosure of a substring of a credential is still a disclosure and is harder
+to reason about than none. Rounding the length to a bucket - rejected for the same reason: a bucket is a
+smaller search space, not no search space. Logging the finding at DEBUG rather than in the refusal -
+rejected, because the same appender writes both and the disclosure would happen one line earlier. Reporting
+the finding only when the deployment is not production - rejected: this check runs only in production, and a
+control with a mode that discloses is a control somebody will run in the wrong mode.
+
+*The same shape, found once and corrected with it.* A sweep for the pattern - a message interpolating a
+measured property of a secret - found one sibling outside the two the review named:
+`util/SensitiveFieldCodec` refused key material of the wrong length by naming the length supplied. It is the
+same defect for the same reason: the exception aborts start-up, so the text is rendered into the deployment
+log, and an operator about to regenerate their key gains nothing from being told how long the rejected one
+was. It now states the required length only. Every other length-bearing message in the module was checked and
+left alone, because each describes a non-secret with a fixed structural width - a record image, a status code,
+a job card, a BCrypt digest, a statement template - where the observed width is the diagnosis.
+
+*Cited by:* `src/main/java/com/carddemo/config/ProductionConfigurationValidator.java`,
+`src/main/java/com/carddemo/util/SensitiveFieldCodec.java`.
+
+*Asserted by:* `util/SensitiveFieldCodecTest` - two keys of different wrong lengths produce the same
+refusal, so no part of it is derived from either; `config/ManagementCredentialQualityTest` - a credential carrying a typed word is refused for
+carrying one without the refusal naming it, and two credentials differing only in which word they carry
+produce byte-identical refusals; `config/ProductionConfigurationValidatorTest` - a one-character credential
+and a credential one character below the floor are both refused by the requirement rather than by their
+length, and a padded credential whose unstripped length clears the floor is still refused, which is what
+proves the measurement is taken after stripping.
+
+*Embodied in:* the dictionary-word fault in
+`config/ProductionConfigurationValidator#validateManagementCredentialQuality`, the minimum-length branch
+of `#rejectionReason(RequiredSetting, String)`, and `util/SensitiveFieldCodec#requireKeyLength(byte[])`.
+
+---
+
+### DL-349 - The three columns widened to hold a protected value now refuse anything else at the column, and the rule arrives as version 2.2
+
+*Context.* `V1__create_schema.sql` widens three columns beyond their legacy record widths so that each can
+hold a protected value rather than the cleartext the record image carries. `customer.cust_ssn` and
+`customer.govt_issued_id` become `VARCHAR(255)` for an `ENC1` envelope where the copybook reserves 9 and 20
+cleartext bytes; `user_security.sec_usr_pwd` becomes `VARCHAR(60)` for a BCrypt digest where the copybook
+reserves 8 cleartext characters. `V1` says so at length in its own header, and every statement it makes is
+accurate. The application enforces it too: `domain/Customer`'s two regulated write paths refuse a value that
+is not envelope-shaped, and `domain/UserSecurity`'s credential setter refuses one that is not structurally a
+BCrypt digest.
+
+*The defect this entry records.* Prose is not a constraint, and an entity guard runs only for a writer that
+constructs an entity. What the three columns actually constrained was width and byte repertoire:
+`ck_customer_single_byte_text` and `ck_user_security_single_byte_text` require `octet_length = char_length`,
+which every US-ASCII value satisfies. A nine-digit national identifier is US-ASCII and fits `VARCHAR(255)`;
+an eight-character password is US-ASCII and fits `VARCHAR(60)`. Both would have been stored without
+complaint by a bulk load, a repair script, a `COPY`, an operator at a prompt, a restored backup, or a future
+component reaching the column through a native statement - and by the reference seed itself, which the
+migration tool applies as SQL rather than through the entity. `V1` already makes exactly this argument for
+its key-shape constraints, in these words: *the entities enforce the same rules before the write; these
+constraints catch a bulk load, a migration script or any future writer that never constructs one.* The
+argument had simply not been extended to the three columns where what is at stake is regulated data rather
+than the shape of a key.
+
+*Decision.* `V2_2__add_protected_value_invariants.sql` adds one named `CHECK` per column. The two envelope
+constraints require the `ENC1:` marker, a body drawn from the basic Base64 alphabet, and a total length of at
+least 43 characters. The digest constraint requires the four conditions `UserSecurity` itself applies: one of
+the three recognised version markers, a two-digit cost between 10 and 31 inclusive, the separator, and 53
+characters of BCrypt's radix-64 alphabet - which is `./A-Za-z0-9` and deliberately not standard Base64.
+Nothing is created, altered, dropped or written; `V1`'s own declarations are untouched.
+
+*Where the length floor comes from, and why it is 43 rather than 45.* `util/SensitiveFieldCodec` accepts an
+envelope whose body decodes to at least `IV_LENGTH_BYTES + TAG_LENGTH_BYTES` = 12 + 16 = 28 bytes, being a
+96-bit initialisation vector and a 128-bit authentication tag before a single byte of ciphertext. The fewest
+basic-Base64 characters that decode to 28 bytes is 38 - a two-character tail is the shortest valid unpadded
+tail, and 4x9+2 characters yield 9x3+1 = 28 bytes - so the shortest value the application accepts is 5 + 38 =
+43 characters. This module's own encoder always pads, so every envelope it writes is 45 or more and the fifty
+seeded customer rows carry 81 and 101. A floor of 45 would have been true of every value the module writes
+and still wrong, because a constraint that refuses a value the application accepts is a defect rather than a
+control. The floor states the reader's rule, not the writer's habit, and the suite proves a 43-character
+envelope is accepted.
+
+*Why the pattern is deliberately looser than the decoder.* A `CHECK` cannot decode Base64, so padding
+placement is not policed: `'QQQ=='` matches the character class and the decoder refuses it, so the constraint
+admits a few values the application rejects. That direction is safe. The reverse cannot occur, because the
+basic alphabet is exactly `A-Z`, `a-z`, `0-9`, `+` and `/` plus the pad character, so no character the
+decoder accepts falls outside the class. What is written is a **necessary** condition and never a sufficient
+one; the application remains the precise gate and this is the floor beneath it. Its job is to make cleartext
+unstorable, not to re-implement a codec in SQL.
+
+*Why the cost window is part of the constraint.* A digest at cost 4 is structurally a BCrypt digest and is
+orders of magnitude cheaper to attack - the work factor is a power of two, so each step down halves the cost
+of a guess. `UserSecurity` refuses a cost below 10 and so does this. Note that `service/CredentialDigestService`
+accepts a cost as low as 4 when merely *recognising* a digest, which is a reader's tolerance rather than a
+writer's licence: it encodes at 12, the ten seeded identities are at 12, and no path in the module writes a
+cost below 10.
+
+*Null.* `customer.cust_ssn` is the one nullable column among the eleven record tables, because the reference
+seed leaves the national identifier absent and `V1` records that as an intentional state. A `CHECK` yields
+unknown for a null input and PostgreSQL treats unknown as satisfied, so the exemption would have held
+silently; the null branch is written out anyway so the script states the intent rather than resting on a rule
+the next reader has to recall. The other two columns are `NOT NULL`, so a null branch would be unreachable
+and none is written.
+
+*Why the version is 2.2 and not 5.* Checksum validation is enabled on migrate and `V1` is applied wherever it
+will ever be applied, so no character of it may change - which is why the constraints arrive by `ALTER` in a
+new version rather than inside the `CREATE TABLE` that would have been their natural home. The number is
+dotted for the reason DL-343 records at length: every schema version must sort below every seed version,
+because the production ceiling excludes the seeds by their number as well as their directory, because the
+production seeded-database refusal reads contamination off the history as a successful row at or above
+version 3, and because a database migrated production-shaped and later resolving the seed location would find
+the seeds pending *below* an applied schema version. So 2 < 2.1 < 2.2 < 3, and
+`config/FlywayConfig.PRODUCTION_TARGET` moves from `"2.1"` to `"2.2"` in the same commit, asserted against the
+versions the schema location actually delivers.
+
+*One operational consequence, stated because it will be met.* A database that already holds versions 3 and 4 -
+the Compose volume on a developer machine, for instance - finds 2.2 pending *below* them, which the tool
+refuses as out-of-order and which no shipped profile overrides. `docker compose down -v` before the next
+bring-up, exactly as DL-343 states for the same reason. Testcontainers is unaffected: each run migrates a
+fresh server from empty.
+
+*What this does not claim.* It does not prove a value decrypts, does not identify which key sealed it, does
+not prove a digest verifies any credential, and does not replace the application's guards or the deployment's
+key management. It refuses cleartext, and it refuses a value of the wrong family.
+
+*One test was inverted rather than deleted.* `service/UserSecurityCredentialIT` carried an assertion titled
+*would accept a cleartext value on its own, which is why the guard exists*, which wrote cleartext through raw
+JDBC and required the column to store it unaltered. That assertion was true and is now false, and it is the
+clearest example of a suite recording a gap as a specification. It now requires the refusal instead, naming
+`ck_user_security_sec_usr_pwd_digest` and the `23514` SQLSTATE. Its companion - that a cleartext value
+authenticates nobody - keeps its claim and changes its subject: it is asserted against the verifier directly,
+because the row it used to write is now refused, and the property still matters for a value that reaches the
+column by some route this constraint did not exist for, such as a backup taken before 2.2.
+
+*One fixture was wrong and is corrected.* `repository/SchemaConstraintNegativeProofIT`'s customer fixture
+wrote `ENC1:` followed by two colon-separated groups, 38 characters in total. That is not an envelope by the
+codec's own rule - the body is one field, not two, and 38 characters is below the floor - and the schema
+accepted it because nothing yet required otherwise. It now carries a correctly shaped 45-character envelope
+whose body decodes to the ASCII text `SYNTHETIC-TEST-ENVELOPE-0001`, so it is self-evidently not sealed
+regulated data and no key in this module would open it.
+
+*Why the refusal probe uses a literal that is not the test credential.* A PostgreSQL `CHECK` violation echoes
+the failing row in its `DETAIL`, and the driver folds that into the exception message. A refusal probed with
+the suite's synthetic credential would therefore put that credential into an assertion diagnostic - the exact
+disclosure `UserSecurityCredentialIT` takes trouble elsewhere to avoid. The probe uses an eight-character
+non-secret literal instead, being the width the legacy record reserves, which verifies nothing and opens
+nothing.
+
+*Alternatives considered and rejected.* A start-up invariant scan over the three columns instead of
+constraints - rejected as the primary control, because it detects a violation that has already been committed
+rather than preventing the write, and a deployment that starts once a day would find it a day late. Editing
+`V1` in place - impossible, and the reason is recorded above. A domain type or an SQL function shared by the
+constraint and the code - rejected, because a `CHECK` may not call a non-immutable function and a
+schema-level function is a second place for the rule to live and drift from; two literal patterns a reader
+can compare against `SensitiveFieldCodec` and `UserSecurity` by eye is the arrangement that stays honest. One
+constraint per table rather than per column - rejected, because the three rules are not identical and a
+refusal has to name the column that caused it. Adding a `char_length(body) % 4 = 0` clause to match the
+encoder's padding - rejected as stricter than the codec's reader, for the reason the floor is 43.
+
+*Asserted by:* `config/FlywayConfigTest` - the six-script inventory, the statement counts both `V2_1` and
+`V2_2` call contractual, the constraint names and both patterns read out of the delivered script text, and
+the hundred seeded envelopes and ten seeded digests checked against the same patterns;
+`repository/SchemaConstraintNegativeProofIT` - twelve refusals and acceptances against a real server,
+including cleartext at both legacy widths, an envelope one byte short of the authenticated minimum, an
+envelope at the floor accepted, a URL-safe alphabet refused, a missing marker refused, a cost below the window
+refused, an unrecognised version marker refused, a tail outside radix-64 refused, and both ends of the cost
+window accepted; `service/UserSecurityCredentialIT` - the inverted assertion above;
+`config/FlywayConfigCoverageTest` and `config/ConfigurationProfileBaselineTest` - the raised pin and the
+four-script schema location.
+
+*Cited by:* `resources/db/migration/schema/V2_2__add_protected_value_invariants.sql`,
+`resources/application.yml`, `resources/application-local.yml`, `resources/application-test.yml`,
+`resources/application-prod.yml`, `src/test/resources/application-test.yml`,
+`config/FlywayConfigTest.java`, `config/FlywayConfigCoverageTest.java`,
+`config/ConfigurationProfileBaselineTest.java`, `config/ApplicationProfileStartupTest.java`,
+`CardDemoApplicationIT.java`, `batch/BatchMetadataProvisioningIT.java`,
+`e2e/BatchPipelineE2ETest.java`, `e2e/GateVerificationTest.java`,
+`repository/SchemaConstraintNegativeProofIT.java`, `repository/CustomerRepositoryIT.java` and
+`service/UserSecurityCredentialIT.java`.
+
+*Embodied in:* `src/main/resources/db/migration/schema/V2_2__add_protected_value_invariants.sql` and
+`config/FlywayConfig.PRODUCTION_TARGET`.
+
+---
+
+### DL-350 - Every image this stack ships is gated on the same terms, and a finding is excused only by a scoped, reviewed, expiring determination
+
+*Context, and what this supersedes.* DL-185 established two separate things about the container gate. The
+first - that no flag may delete a finding from the archived report, and that the verdict is decided in the
+workflow from the retained report rather than by the scanner's exit code - **stands unchanged and is
+reinforced below.** The second was the *strict / inventory split*: the application image and the two
+digest-pinned Dockerfile bases were gated with a failing verdict, while every third-party Compose service
+image was scanned with an `inventory` verdict that reported and archived its findings and could not fail the
+build. DL-185 also recorded, as part of the same decision, that *there is deliberately no ignore file.* **This
+entry supersedes both of those two.**
+
+*The defect this entry records.* An `inventory` verdict is evidence of looking, not evidence of a decision.
+The reasoning behind it was that this repository cannot patch inside someone else's binary, and that is true -
+but it is not the question. This repository chooses **which digest it runs**, and a PostgreSQL, LocalStack,
+Prometheus, Grafana or Jaeger image carrying an unfixed CRITICAL is shipped at run time by whoever brings this
+stack up, whoever authored the layers. Five of the seven images in the shipped supply chain were therefore
+scanned and not judged, and a CRITICAL appearing in any of them would have been archived into a report
+nobody's build failure forced anybody to open.
+
+*Decision.* The verdict parameter is gone and every image is gated alike: the application image, both
+digest-pinned Dockerfile bases, and every digest-pinned third-party Compose service image. A HIGH or CRITICAL
+finding in any of them fails the container gate **unless it is covered by a determination in
+`carddemo-java/container-scan-determinations.txt`** that is scoped to that one image and that one identifier,
+carries a reviewer, and carries an expiry date. The file ships **empty of determinations**, so nothing is
+accepted in the delivered state.
+
+*Why a determination file exists at all, when DL-185 refused one.* DL-185 refused an *ignore file* - a
+mechanism handed to the scanner. That refusal was right and is kept: handing this file to Trivy as an ignore
+list would delete the covered findings from the JSON, which is precisely the defect DL-185 removed when it
+deleted `--ignore-unfixed`. The scanner still runs with `--exit-code 0`, no ignore list and no filter, so
+every finding stays in the archived report whether or not a line covers it, and the run's own log prints which
+ones were covered, by whom, and until when. What DL-185 could not have is the alternative it named as the
+honest action - *record a reviewed acceptance for that identifier* - because there was nowhere to record one.
+Now there is, and it is read by the gate rather than by the scanner.
+
+*Two properties an ignore file does not have, and they are the reason the decision is taken in the workflow.*
+An **expired** determination fails the build, naming the key, the identifier, the date and the reviewer, and
+it does so before any image is scanned. An ignore file with an expiry does the opposite: it quietly resumes
+enforcement and produces an unexplained new failure weeks later, at which point nobody remembers the
+acceptance. An **unused** determination fails the build too - the finding is gone, or the digest pin moved and
+took the old key with it, or a field was mistyped, and in every case the line is protecting nothing while
+making the gate look weaker than it is. That is the same rule `failBuildOnUnusedSuppressionRule` already holds
+over the dependency-vulnerability gate, for the same reason: a determination nothing matches is a statement
+nobody has re-read.
+
+*Scoping, and the one key that is a literal.* A determination names one image and one identifier. There is no
+wildcard, no severity-wide form and no image-wide form, so an acceptance on the database image can never
+silence the same identifier on the application image. For a base or third-party image the key is its full
+digest-pinned reference, which means a determination **lapses by construction the moment the pin moves** - the
+old key stops matching, and the unused check turns that into a build failure rather than a silence. The
+application image is the exception and is keyed by the literal word `application`, because its own identifier
+is a fresh content digest on every build: a determination pinned to one could never match twice, so it would
+be unusable and would fail the unused check on the run after the one that added it.
+
+*The shape is validated before anything is scanned.* Five fields, one vertical bar between each, no
+whitespace around a separator, an identifier the scanner would actually report, and an ISO date. A line that
+does not read that way fails the gate immediately rather than sitting in the file covering nothing while
+looking like an acceptance - which is the quiet failure a free-text file invites.
+
+*What this costs, stated rather than hidden.* CI now fails on a HIGH or CRITICAL in an upstream image this
+repository did not build, and the only closures are moving the digest pin to a rebuilt upstream image or
+writing a dated, attributed determination. That is more work than archiving a report, and it is the work the
+gate is for. The alternative on offer was a gate that could not fail on five of the seven images it scanned.
+
+*How the mechanism was verified rather than asserted.* The preamble, the `scan_image` function and the
+unused-determination check were extracted verbatim from the workflow and driven against synthetic scanner
+reports outside CI. Eight cases, each behaving as designed: no determinations fails; both findings covered
+passes; one covered and one not fails; an expired line fails before any scan; an unused extra line fails; a
+line scoped to a different image key fails; a malformed line fails on the shape check; and the delivered
+empty file against an image with no findings passes.
+
+*Alternatives considered and rejected.* Trivy's own `.trivyignore.yaml` with `expiredAt` - rejected on the
+DL-185 grounds above, and additionally because it neither fails on an expired entry nor fails on an unused
+one, which are the two properties that make an acceptance a decision rather than a silence. Keeping the
+inventory verdict and raising an alert instead - rejected: an alert nobody's build failure forces them to read
+is the state this entry is correcting. Gating third-party images at CRITICAL only and inventorying HIGH -
+rejected as a severity-wide acceptance with no reviewer, no date and no scope, which is exactly what the
+determination format refuses to express. Excluding the monitoring images on the grounds that Prometheus,
+Grafana and Jaeger are development conveniences - rejected, because `docker-compose.yml` is the stack this
+repository ships and documents for local validation, and a gate that judges only the images somebody
+considers important is a gate whose scope is an opinion.
+
+*Asserted by:* `config/BuildAndCiContractTest` - the verdict parameter and the word `inventory` are absent
+from every executable line; both loops call the scan the same way; the determination file is read, its shape
+validated before any scan, its match scoped to both fields, and an expired or unused entry fails; the scanner
+is handed no `--ignorefile`, no `--ignore-policy` and no `.trivyignore`; and the delivered file carries no
+determination while documenting the review protocol.
+
+*Cited by:* `.github/workflows/carddemo-java-ci.yml`,
+`carddemo-java/container-scan-determinations.txt`, `config/BuildAndCiContractTest.java` and
+`carddemo-java/README.md`.
+
+*Embodied in:* the container gate of `.github/workflows/carddemo-java-ci.yml` and
+`carddemo-java/container-scan-determinations.txt`.
 
 ---
 

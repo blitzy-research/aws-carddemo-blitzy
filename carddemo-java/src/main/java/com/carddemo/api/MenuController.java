@@ -22,6 +22,7 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.ConversationState;
 import com.carddemo.service.MenuService;
+import com.carddemo.util.ApiRoutePaths;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -92,8 +93,9 @@ import org.springframework.web.bind.annotation.RestController;
  * makes it.
  *
  * <p><strong>Why the administrative address is written out here.</strong> The filter chain gates one
- * prefix and everything beneath it, so this route has to sit beneath that prefix or it would fall
- * through to the catch-all rule and admit any signed-on caller. The prefix is published by the
+ * prefix and everything beneath it, so this route has to sit beneath that prefix or it would be refused
+ * outright by the chain's closing refusal over the API root, which is what answers every address beneath
+ * the root that no rule names. The prefix is published by the
  * security configuration as the authority a route binds against, but this module's layering forbids
  * the API layer from importing the configuration layer, and that direction is asserted rather than
  * merely stated. The address is therefore spelled here and the agreement between the two is pinned by
@@ -142,10 +144,11 @@ public final class MenuController {
      * Address of one turn of the main menu, legacy transaction {@code CM00}.
      *
      * <p>Deliberately outside the administrative prefix: the estate lets every signed-on operator
-     * reach this menu, whatever type the credential carries. It therefore carries no dedicated
-     * authorization rule and is answered by the chain's closing rule, which requires a credential.
+     * reach this menu, whatever type the credential carries. The chain names this exact address among
+     * the ordinary ones it grants to either sign-on authority; it is not left to a closing rule, and an
+     * address beneath the root that the chain does not name is refused rather than admitted.
      */
-    public static final String USER_MENU_PATH = "/api/menu";
+    public static final String USER_MENU_PATH = ApiRoutePaths.MENU_PATH;
 
     /**
      * Address of one turn of the administrative menu, legacy transaction {@code CA00}.

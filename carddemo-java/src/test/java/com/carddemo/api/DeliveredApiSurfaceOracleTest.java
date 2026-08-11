@@ -392,10 +392,28 @@ class DeliveredApiSurfaceOracleTest {
     }
 
     /**
+     * The distinct paths the oracle classifies as reachable by any verified caller, in declaration order.
+     *
+     * <p>Declaration order rather than sorted, because the roster the chain installs its ordinary rules
+     * from is itself an ordered list and the comparison is against that list as it stands.
+     *
+     * @return the ordinary paths
+     */
+    private static List<String> oracleOrdinaryPaths() {
+        final List<String> paths = new ArrayList<>();
+        for (final PublishedOperation operation : ORACLE) {
+            if (operation.access() == Access.AUTHENTICATED && !paths.contains(operation.path())) {
+                paths.add(operation.path());
+            }
+        }
+        return paths;
+    }
+
+    /**
      * Classifies a literal path by the prefixes the filter chain publishes.
      *
      * <p>This is the chain's precedence written once: the sign-on exemption is declared before the region
-     * rules, the region rules before the closing rule, and the closing rule admits any verified caller.
+     * rules, the region rules before the closing rule, and the closing rule refuses what no rule named.
      *
      * @param path the full path
      * @return the entitlement the chain requires of it
@@ -498,13 +516,40 @@ class DeliveredApiSurfaceOracleTest {
         @DisplayName("and the literal prefixes it classifies by are the prefixes the filter chain "
                 + "actually publishes")
         void theLiteralPrefixesAreTheChainsOwn() {
-            // The only place this class touches the configuration: the literals above are compared to the
-            // constants the chain gates by, so a renamed prefix fails here instead of silently leaving
-            // every classification below measuring an address nothing gates.
+            // One of the two places this class touches the configuration: the literals above are compared
+            // to the constants the chain gates by, so a renamed prefix fails here instead of silently
+            // leaving every classification below measuring an address nothing gates.
             assertAll(
                     () -> assertThat(SecurityConfig.ADMIN_PATH_PREFIX).isEqualTo(ADMIN_REGION),
                     () -> assertThat(SecurityConfig.BATCH_CONTROL_PATH_PREFIX)
                             .isEqualTo(BATCH_REGION));
+        }
+
+        @Test
+        @DisplayName("and the ordinary addresses the chain grants are exactly the ordinary operations "
+                + "written down here, so a route added and left unclassified fails the build rather than "
+                + "becoming unreachable or open")
+        void theOrdinaryGrantsAreExactlyTheOrdinaryOperations() {
+            // THIS IS THE CONTROL THAT MAKES AN ENUMERATED ALLOW-LIST SAFE, and it is the reason the chain
+            // could stop granting the whole API root. The chain names the eleven ordinary addresses
+            // individually and refuses everything else beneath the root, so an address left out of its
+            // roster is refused - the right direction to fail in, but still a defect. The omission cannot
+            // ship, because the router's own inventory is required to equal the literal table above and the
+            // table's ordinary entries are required to equal the roster here. Any of the three drifting
+            // fails one of these two comparisons.
+            assertAll(
+                    () -> assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPatterns())
+                            .as("the entitlement's own patterns")
+                            .isEqualTo(oracleOrdinaryPaths()),
+                    () -> assertThat(SecurityConfig.TransactionRoute.enforcementPatternsFor(
+                            SecurityConfig.Gating.AUTHENTICATED))
+                            .as("and the rules the chain installs, read out of the route-to-role table, "
+                                    + "which is what a request is actually decided by")
+                            .isEqualTo(oracleOrdinaryPaths()),
+                    () -> assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPatterns())
+                            .as("no ordinary grant may be a region: a wildcard would re-admit whatever is "
+                                    + "mapped beneath it next, which is the grant this replaced")
+                            .allSatisfy(pattern -> assertThat(pattern).doesNotContain("*")));
         }
     }
 

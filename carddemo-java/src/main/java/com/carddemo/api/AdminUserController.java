@@ -103,11 +103,11 @@ import org.springframework.web.bind.annotation.RestController;
  * security is not enabled anywhere in this module, so a method-level authority annotation here would
  * be a silent no-op - it would read as a guard while enforcing nothing, which is strictly worse than
  * no annotation. Mapping beneath the gated prefix is the first of the two arrangements the navigation
- * layer names as acceptable, and it is the one that works. A route placed outside the prefix would
- * still be caught by the chain's closing rule and would admit any signed-on caller, so the failure
- * mode of forgetting the prefix is a route that is too permissive rather than one that is open, which
- * is the safer direction for that mistake to fail in - but it is a failure all the same, which is why
- * the prefix is read from the published constant instead of being retyped as a literal.
+ * layer names as acceptable, and it is the one that works. A route placed outside the prefix but still
+ * beneath the API root is now refused outright by the chain's closing refusal, because the ordinary
+ * grants name eleven exact addresses and this would not be one of them - so the failure mode of
+ * forgetting the prefix is a route nobody can reach rather than one every signed-on caller can, which
+ * is why the prefix is read from the published constant instead of being retyped as a literal.
  *
  * <p>No credential is parsed here and no identity is inspected here. The bearer session is established
  * upstream by the chain's own filter, and the published interface description applies its bearer
@@ -202,10 +202,11 @@ public class AdminUserController {
      * and the configuration reads it.
      *
      * <p>What that costs is a textual coupling, so it is stated plainly: this value must remain
-     * beneath {@code /api/admin}. A route moved outside that prefix would still be caught by the
-     * chain's closing rule and would admit any signed-on caller rather than nobody, so the mistake
-     * degrades the gate instead of removing it - which is the safer direction to fail in, but a
-     * regression all the same. The coupling is not merely documented: the security configuration's
+     * beneath {@code /api/admin}. A route moved outside that prefix is refused by the chain's closing
+     * refusal over the API root, because it would be neither an administrative address nor one of the
+     * eleven named ordinary ones - so the mistake makes the surface unreachable instead of widening it.
+     * That is the direction it must fail in, and it is still a regression. The coupling is not merely
+     * documented: the security configuration's
      * own suite probes this exact base path, admitting an administrator's session and refusing a
      * standard user's with a forbidden answer, so a drift here is caught there.
      *
@@ -214,16 +215,16 @@ public class AdminUserController {
     public static final String USERS_PATH = ApiRoutePaths.ADMIN_USERS_PATH;
 
     /** Sub-path of the list turn, legacy transaction {@code CU00}. */
-    public static final String LIST_SUBPATH = "/list";
+    public static final String LIST_SUBPATH = ApiRoutePaths.LIST_SUBPATH;
 
     /** Sub-path of the add turn, legacy transaction {@code CU01}. */
-    public static final String ADD_SUBPATH = "/add";
+    public static final String ADD_SUBPATH = ApiRoutePaths.ADD_SUBPATH;
 
     /** Sub-path of the fetch-and-update turn, legacy transaction {@code CU02}. */
-    public static final String UPDATE_SUBPATH = "/update";
+    public static final String UPDATE_SUBPATH = ApiRoutePaths.UPDATE_SUBPATH;
 
     /** Sub-path of the fetch-and-delete turn, legacy transaction {@code CU03}. */
-    public static final String DELETE_SUBPATH = "/delete";
+    public static final String DELETE_SUBPATH = ApiRoutePaths.DELETE_SUBPATH;
 
     /** Diagnostic channel. */
     private static final Logger LOG = LoggerFactory.getLogger(AdminUserController.class);

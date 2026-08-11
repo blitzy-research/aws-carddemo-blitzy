@@ -70,6 +70,8 @@ import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.ItemStreamWriter;
 
+import com.carddemo.util.SanitisedObservation;
+
 /**
  * Verifies the durable batch-artifact boundary independently of every job that registers with it.
  *
@@ -869,9 +871,16 @@ class StagedGenerationStoreTest {
                     .filteredOn(context -> StagedGenerationStore.OPERATION_UPLOAD
                             .equals(lowTag(context, StagedGenerationStore.TAG_OPERATION)))
                     .singleElement()
-                    .satisfies(context -> assertThat(context.getError())
-                            .as("the refused call is a failure on its span rather than a gap in the trace")
-                            .isInstanceOf(IllegalStateException.class));
+                    .satisfies(context -> {
+                        assertThat(context.getError())
+                                .as("the refused call is a failure on its span rather than a gap in the "
+                                        + "trace, and it is the authored classification rather than the "
+                                        + "object store's own failure, whose message and stack trace the "
+                                        + "exporter would publish")
+                                .isInstanceOf(SanitisedObservation.SanitisedBoundaryFailure.class);
+                        assertThat(context.getError().getCause()).isNull();
+                        assertThat(context.getError().getStackTrace()).isEmpty();
+                    });
         }
 
         @Test

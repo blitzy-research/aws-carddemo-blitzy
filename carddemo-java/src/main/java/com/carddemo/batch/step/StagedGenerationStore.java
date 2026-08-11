@@ -16,6 +16,7 @@
  */
 package com.carddemo.batch.step;
 
+import com.carddemo.util.SanitisedObservation;
 import com.carddemo.util.SecureStagedFiles;
 
 import io.awspring.cloud.s3.S3Operations;
@@ -1112,10 +1113,14 @@ public final class StagedGenerationStore {
     /**
      * Runs one outbound object-store call inside an observation, and returns what it returned.
      *
-     * <p>{@code observe} opens the scope, records a failure on the span before rethrowing it, and stops
-     * the observation, so a refused call is visible as a failure rather than as a gap. The shape is the
-     * one {@code service/BatchStagingService} already uses for the staging surface, so the two families
-     * read alike even though they answer different questions.
+     * <p>{@link SanitisedObservation} opens the scope, records a <em>sanitised</em> classification of a
+     * failure on the span before rethrowing the failure itself, and stops the observation - so a refused
+     * call is visible as a failure rather than as a gap, and the span carries only the bounded type chain
+     * this module composed. The observation's own {@code observe} was used here and recorded the raw
+     * object-store failure instead, which the tracing bridge exported message and stack trace included:
+     * the bucket, the key and the endpoint the refusal named all left the process that way. The shape is
+     * the one {@code service/BatchStagingService} already uses for the staging surface, so the two
+     * families read alike even though they answer different questions. See decision log DL-341.
      *
      * @param  <T>       the call's result type
      * @param  operation the operation tag value
@@ -1124,10 +1129,11 @@ public final class StagedGenerationStore {
      * @return whatever the call returned
      */
     private <T> T observed(final String operation, final String key, final Supplier<T> call) {
-        return Observation.createNotStarted(OBSERVATION_NAME, this.observationRegistry)
-                .lowCardinalityKeyValue(TAG_OPERATION, operation)
-                .highCardinalityKeyValue(TAG_OBJECT_KEY, key)
-                .observe(call);
+        return SanitisedObservation.observe(
+                Observation.createNotStarted(OBSERVATION_NAME, this.observationRegistry)
+                        .lowCardinalityKeyValue(TAG_OPERATION, operation)
+                        .highCardinalityKeyValue(TAG_OBJECT_KEY, key),
+                call);
     }
 
     /**

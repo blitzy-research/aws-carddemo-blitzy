@@ -120,7 +120,14 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
             "batch_job_seq",
             "batch_step_execution_seq");
 
-    /** The eleven application tables the framework must not disturb. */
+    /**
+     * The eleven record-layout tables the framework must not disturb.
+     *
+     * <p>Eleven rather than twelve: the delivered schema also creates the operational sign-on attempt
+     * ledger, which the base class's roster excludes by name because it carries no record layout. This
+     * class's subject is the framework's own family, so the figure it measures against is the record
+     * inventory. See {@code docs/decision-log.md} DL-343.</p>
+     */
     private static final int APPLICATION_TABLE_COUNT = 11;
 
     /** Whether the initialiser reported that it did work, captured once for the assertions to read. */
@@ -225,7 +232,7 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
 
         @Test
         @DisplayName("no delivered migration creates a metadata object, so the framework is the single "
-                + "owner and the delivered inventory stays at four scripts")
+                + "owner and the delivered inventory stays at six scripts")
         void noDeliveredMigrationCreatesAMetadataObject() throws IOException {
             List<String> offending = new ArrayList<>();
             for (final Resource migration : deliveredMigrations()) {
@@ -241,24 +248,29 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
                             + "silently on the next upgrade because nothing in the module reads either. "
                             + "AAP 0.3.1 assigns this metadata to Spring Batch; if the framework's "
                             + "provisioning ever has to be replaced, replace it deliberately and update "
-                            + "this test rather than adding a fifth migration quietly")
+                            + "this test rather than adding a further migration quietly")
                     .isEmpty();
         }
 
         @Test
-        @DisplayName("the delivered migrations are exactly the four the frozen plan names, so the "
-                + "framework taking the metadata has not changed the inventory")
-        void theDeliveredMigrationsAreExactlyTheFourNamed() {
+        @DisplayName("the delivered migrations are exactly the six named, so the framework taking the "
+                + "metadata has not changed the inventory")
+        void theDeliveredMigrationsAreExactlyTheSixNamed() {
             assertThat(deliveredMigrations())
                     .extracting(Resource::getFilename)
-                    .as("AAP 0.3.1 and 0.4.2 name exactly these four scripts, in two profile-scoped "
-                            + "locations. A fifth would mean something took on work this arrangement "
+                    .as("AAP 0.3.1 and 0.4.2 name the first four scripts, in two profile-scoped "
+                            + "locations; the fifth is the deployment-wide sign-on attempt ledger and "
+                            + "the sixth the protected-value invariants, both added as schema scripts "
+                            + "by the security remediation and recorded in docs/decision-log.md DL-343 "
+                            + "and DL-349. A SEVENTH would mean something took on work this arrangement "
                             + "assigns elsewhere")
                     .containsExactlyInAnyOrder(
                             "V1__create_schema.sql",
                             "V2__create_indexes.sql",
                             "V3__seed_reference_data.sql",
-                            "V4__seed_user_security.sql");
+                            "V4__seed_user_security.sql",
+                            "V2_1__create_sign_on_attempt_ledger.sql",
+                            "V2_2__add_protected_value_invariants.sql");
         }
     }
 
@@ -378,13 +390,12 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
      * @throws SQLException when the catalogue read fails
      */
     private static int applicationTableCount() throws SQLException {
-        return queryNames("""
-                SELECT table_name FROM information_schema.tables
-                 WHERE table_schema = 'public'
-                   AND table_name NOT LIKE 'batch\\_%'
-                   AND table_name <> 'flyway_schema_history'
-                 ORDER BY table_name
-                """).size();
+        // Delegated rather than re-queried. The exclusion list this figure depends on has three entries
+        // now - the framework's own family, the migration history, and the operational sign-on attempt
+        // ledger - and a second copy of it drifts from the first the moment a fourth is added. The base
+        // class is the one authority; the local queryNames below still serves the metadata rosters, which
+        // are this class's own subject.
+        return applicationTableNames().size();
     }
 
     /**

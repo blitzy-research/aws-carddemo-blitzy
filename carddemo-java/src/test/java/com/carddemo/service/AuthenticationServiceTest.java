@@ -360,7 +360,8 @@ class AuthenticationServiceTest {
 
         governorMeters = new SimpleMeterRegistry();
         attemptGovernor = new SignOnAttemptGovernor(true, GOVERNOR_ALLOWANCE,
-                Duration.ofMinutes(5), Duration.ofMinutes(1), 10_000, FIXED_CLOCK, governorMeters);
+                Duration.ofMinutes(5), Duration.ofMinutes(1), 10_000, FIXED_CLOCK, governorMeters,
+                new InMemorySignOnAttemptLedger());
         subject = new AuthenticationService(userSecurityRepository, credentialDigestService,
                 navigationService, messageCatalogService, FIXED_CLOCK, attemptGovernor);
         // The stored column holds a digest in every case this class describes. Stated leniently because

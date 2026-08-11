@@ -303,23 +303,45 @@ spring:
   # -----------------------------------------------------------------------------------------------
   # SCHEMA EVOLUTION - AND BOTH SETTINGS BELOW ARE SECURITY CONTROLS, NOT TIDINESS PREFERENCES.
   #
-  # TWO CONTROLS, INDEPENDENT, AND NEITHER SUBSTITUTES FOR THE OTHER. Four migrations exist in this
+  # TWO CONTROLS, INDEPENDENT, AND NEITHER SUBSTITUTES FOR THE OTHER. Six migrations exist in this
   # module and they ship from two sibling directories whose shared parent holds no script at all:
   #
   #   classpath:db/migration/schema     RESOLVED HERE, and the only location this profile resolves
   #     V1__create_schema.sql           the eleven application tables         APPLIED HERE
   #     V2__create_indexes.sql          keys and alternate-index equivalents  APPLIED HERE
-  #   ------------------------------------------------------------ ceiling: target 2
+  #     V2_1__create_sign_on_attempt_ledger.sql
+  #                                     deployment-wide sign-on throttle      APPLIED HERE
+  #     V2_2__add_protected_value_invariants.sql
+  #                                     ciphertext and digest constraints     APPLIED HERE
+  #   ------------------------------------------------------------ ceiling: target 2.2
   #   classpath:db/migration/seed       NEVER RESOLVED HERE
   #     V3__seed_reference_data.sql     sample reference rows                 NEVER APPLIED HERE
   #     V4__seed_user_security.sql      sign-on identities                    NEVER APPLIED HERE
   #
   # THE LOCATION LIST decides which scripts are resolved: this profile names the schema location alone,
   # so the two seeds appear in no state whatsoever here - not applied, not pending, not resolved. THE
-  # CEILING decides how far a resolved list may be applied: target 2 is the highest version the schema
-  # location delivers, so a seed-numbered script would be declined by its number even if some other
-  # location ever presented one. See docs/decision-log.md DL-298 for the location split and DL-334 for
-  # why the ceiling is held alongside it rather than removed.
+  # CEILING decides how far a resolved list may be applied: target 2.2 is the highest version the schema
+  # location delivers, so anything above the delivered schema is declined by its number even if some
+  # other location ever presented it.
+  #
+  # THE CEILING STILL EXCLUDES THE TWO SEED VERSIONS BY ARITHMETIC, and that is stated here rather than
+  # left to be inferred from the numbers above. The two schema scripts after the indexes carry DOTTED
+  # versions precisely so that it does: 2 < 2.1 < 2.2 < 3, so a pin at 2.2 stops below the first seed
+  # whatever the location list says. The deployment-wide sign-on attempt ledger is a SCHEMA script -
+  # production needs it more than any other profile, because production is the only one that runs more
+  # than one instance - and an earlier revision numbered it 5, above the seeds, on the reasoning that
+  # the applied seed versions could not be renumbered. Three controls broke on that at once: this
+  # ceiling stopped excluding the seeds arithmetically, ProductionSeedRejectionCallback read a
+  # correctly-migrated production database as seeded because its rule is "at or above 3", and adding
+  # the seed location to a schema-only database left 3 and 4 pending BELOW an applied 5, which Flyway
+  # refuses as out-of-order. What keeps a seed out of THIS profile is therefore checked four ways: the
+  # location list below, matched by EQUALITY; this ceiling, by number; FlywayConfigTest, which asserts
+  # which directory each delivered script sits in and that no schema version sorts above a seed
+  # version, so either mistake fails the build; and ProductionSeedRejectionCallback, which refuses a
+  # start against a database that actually HOLDS seeded content - the outcome the arithmetic is only
+  # ever a proxy for, checked against the data. See docs/decision-log.md DL-298 for the location split,
+  # DL-334 for the ceiling, DL-343 for the ledger and the numbering rule, and DL-349 for the invariants
+  # script.
   #
   # BOTH ARE RE-ASSERTED HERE rather than inherited - the shared baseline in application.yml already
   # carries the same restrictive pair, so a profile that forgets either property inherits the safe one,
@@ -328,13 +350,14 @@ spring:
   # override or a merged property source cannot change either in silence.
   #
   # THE CEILING CANNOT GO STALE, WHICH IS THE ONE OBJECTION A PIN HAS TO ANSWER. A number written down
-  # and never checked would freeze the schema: the day a V5 schema script shipped, this deployment would
-  # stop below it, apply nothing and report success. FlywayConfigTest therefore asserts the pinned
-  # version against the versions classpath:db/migration/schema actually delivers, so raising the schema
-  # without raising the pin fails the BUILD rather than under-migrating a deployment later.
+  # and never checked would freeze the schema: the day a further schema script shipped above the pin,
+  # this deployment would stop below it, apply nothing and report success - which is exactly what would
+  # have happened to the ledger script had the pin stayed at 2. FlywayConfigTest therefore asserts the
+  # pinned version against the versions classpath:db/migration/schema actually delivers, so raising the
+  # schema without raising the pin fails the BUILD rather than under-migrating a deployment later.
   #
   # The batch framework's own metadata tables are created by Spring Batch itself rather than by a
-  # migration, which is why the inventory above is four scripts and not five; see the batch block
+  # migration, which is why the inventory above is five scripts and not six; see the batch block
   # below.
   #
   # WHY THE TWO SEEDS MUST NOT REACH THIS PROFILE. The sign-on seed inserts ten known identities -
@@ -354,16 +377,18 @@ spring:
   # script comes from but how far a resolved list may be applied - and it is measured against the script
   # NUMBER, which is part of the file name and therefore cannot drift from the file. Verified against
   # Flyway 11.7.2 and PostgreSQL 16: with the seed location unresolved the two seeds are not discovered
-  # at all, and where they are discovered under a seeding profile the ceiling reports them as
-  # above-target without executing them, and the migration validates successfully either way.
+  # at all, and the migration validates successfully.
   #
-  # THE RULE FOR ANY FUTURE SCRIPT: a script production MUST run belongs in db/migration/schema and is
-  # numbered at or below the ceiling; a script production must NEVER run belongs in db/migration/seed and
-  # is numbered above it. Do not resolve the shared parent from any profile. Raise this ceiling only in
-  # the same commit that adds a production-required script above it, and never to admit a seed - and the
-  # build enforces that pairing rather than trusting it, because FlywayConfigTest asserts the pin against
-  # the versions the schema location delivers. A sign-on credential is stored only as a hash regardless,
-  # so that even a mistake here leaks no usable secret.
+  # THE RULE FOR ANY FUTURE SCRIPT: a script production MUST run belongs in db/migration/schema; a script
+  # production must NEVER run belongs in db/migration/seed. The DIRECTORY decides that, and the NUMBER
+  # must agree with it: every schema version sorts below every seed version, so a new schema script takes
+  # a dotted version below 3 - the sign-on attempt ledger is 2.1, the next is 2.2 - and a new seed takes
+  # the next free version at or above 3. Numbering a schema script above the seeds breaks three controls
+  # at once and was tried once; see docs/decision-log.md DL-343. Do not resolve the shared parent from any profile.
+  # Raise this ceiling only in the same commit that adds a production-required script above it, and never
+  # to admit a seed - and the build enforces that pairing rather than trusting it, because
+  # FlywayConfigTest asserts the pin against the versions the schema location delivers. A sign-on
+  # credential is stored only as a hash regardless, so that even a mistake here leaks no usable secret.
   #
   # NEITHER SETTING WEAKENS VALIDATION: validate-on-migrate stays on, and it catches a CHANGED
   # already-applied script. What neither of them catches, and this was measured rather than assumed, is a
@@ -457,15 +482,23 @@ spring:
     # name, which is why containment will not do.
     locations: classpath:db/migration/schema
     # THE SECOND CONTROL: THE CEILING, PINNED AT THE HIGHEST VERSION THE SCHEMA LOCATION DELIVERS.
-    # "2" applies V1 and V2 and declines everything above them, so the two seed versions are excluded by
-    # their NUMBER as well as by their DIRECTORY. FlywayConfig refuses every other value under this
-    # profile and re-applies the pin after binding: a higher value - `latest` among them - would apply
-    # whatever a resolved location carried above the delivered schema, and a lower one would stop before
-    # the indexes and constraints and report success anyway. The pin is asserted against the delivered
-    # schema scripts by FlywayConfigTest, so it cannot silently under-migrate a later release.
+    # "2.2" applies V1, V2, V2_1 and V2_2 - the whole delivered schema - and declines everything above
+    # them, the two seed versions included, because every schema version sorts below every seed version.
+    # The seeds are therefore excluded by their DIRECTORY and by their NUMBER; the block at the head of
+    # this section explains why and names the four controls that carry the separation. FlywayConfig
+    # refuses every other value under this profile and re-applies the
+    # pin after binding: a higher value - `latest` among them - would apply whatever a resolved location
+    # carried above the delivered schema, and a lower one would stop before the indexes, the sign-on
+    # attempt ledger or the protected-value invariants and report success anyway. The pin is asserted
+    # against the delivered schema scripts by FlywayConfigTest, so it cannot silently under-migrate a
+    # later release.
     # ProductionSeedRejectionCallback remains the third control and refuses a start against a database
-    # that was seeded before this profile was pointed at it.
-    target: "2"
+    # that was seeded before this profile was pointed at it - a control that reads contamination off the
+    # history as a successful row at or above version 3, and which therefore requires every SCHEMA
+    # version to sort below 3. That is why the ledger script is 2.1 and the invariants script 2.2: the
+    # ledger numbered 5 made a correctly migrated production database refuse to start. See
+    # docs/decision-log.md DL-343 and DL-349.
+    target: "2.2"
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
@@ -983,6 +1016,35 @@ carddemo:
     # start rather than reporting DOWN, because an instance that cannot address its own account is not
     # temporarily unhealthy.
     #
+    # THE ACCOUNT MUST ALSO CARRY AN ACCESS POSTURE, AND THIS DEPLOYMENT WILL NOT START WITHOUT IT.
+    # Naming a resource and owning it says nothing about who else can reach it, so the same verifier
+    # additionally requires five properties that whatever provisions the account has to create - this
+    # application creates none of them, deliberately, because a check that provisioned would turn a
+    # misconfigured account into a silently corrected one:
+    #
+    #   1. the staging bucket blocks public access through all four controls - BlockPublicAcls,
+    #      IgnorePublicAcls, BlockPublicPolicy and RestrictPublicBuckets - because two govern
+    #      access-control lists and two govern policies, so three of four leaves one route open;
+    #   2. the staging bucket carries a policy that grants no principal unconditionally and denies
+    #      every s3 action when aws:SecureTransport is false;
+    #   3. the staging bucket configures a default server-side encryption algorithm, because no writer
+    #      in this module names one per object, so the bucket default is the whole of the at-rest
+    #      protection for every statement, report and rejected record;
+    #   4. the job queue carries a policy on the same two terms, denying every sqs action over plain
+    #      transport;
+    #   5. the notification topic carries a policy on the same two terms, denying every sns action over
+    #      plain transport. A topic left with only the default policy the notification service attaches
+    #      FAILS this check: that default is not an open grant - it confines a wildcard principal to the
+    #      owning account, which is accepted - but it carries no transport denial at all.
+    #
+    # The infrastructure definition that provisions this account is therefore required to attach all
+    # five. localstack/init/01-create-aws-resources.sh provisions exactly the same posture for the local
+    # validation stack and is the worked reference for the document shapes, and a test judges what it
+    # writes with the very rule this deployment applies - so the two cannot drift. What is NOT claimed
+    # is any effective-permission calculation: identity policies, permission boundaries and
+    # organisation-level rules are invisible from a resource's own document, and each of the five above
+    # is a structural property of that document. See docs/decision-log.md DL-346.
+    #
     # A BARE NAME NEEDS NO CHECK AND IS THE PREFERRED FORM. A bare queue or topic name carries no
     # account, so the client resolves it against this deployment's own credentials and nothing can be
     # redirected. Requiring a resource identifier instead would be strictly weaker: it would replace a
@@ -1208,3 +1270,36 @@ carddemo:
     # provisioning, which is outside this executor's authority. See docs/decision-log.md DL-312.
     management:
       token: ${CARDDEMO_MANAGEMENT_TOKEN}
+
+    # -------------------------------------------------------------------------------------------
+    # WHERE THE SIGN-ON ATTEMPT ALLOWANCE IS COUNTED. Not a secret, not an environment reference, and
+    # deliberately pinned here rather than left to its default.
+    #
+    # The allowance itself is delivered and on by default: the sign-on surface reports an unknown
+    # identifier and a wrong secret with different messages and verifies a secret with a deliberately
+    # expensive digest, so without a limit it is an enumeration oracle, a credential-stuffing channel
+    # and a processor-budget drain at once. See docs/decision-log.md DL-268 for the allowance and
+    # DL-342 for why a successful sign-on releases only the identity and never the source.
+    #
+    # WHAT WAS WRONG WAS WHERE THE COUNT LIVED. The default scope holds it in ONE PROCESS'S MEMORY,
+    # which is correct for a single instance and wrong for anything else. A production deployment runs
+    # more than one instance and restarts, and both multiply the allowance: N instances grant N times
+    # the attempts before a refusal, because no instance can see another's count; and every restart -
+    # a release, a crash, an autoscaler reclaiming an instance - returns every allowance to full
+    # without anyone authenticating, so a caller able to provoke a restart or patient enough to wait
+    # for one resets the bound at will. None of that is visible from inside an instance.
+    #
+    # `deployment` holds the count in the shared PostgreSQL database instead, so one allowance is one
+    # allowance however many instances there are and it survives all of them restarting. It needs
+    # nothing provisioned: the table ships as migration V2_1 in the schema location this profile already
+    # resolves, it is correct empty, it holds no business record, and it is self-limiting - a spent
+    # entry is removed by the application inside the same serialized transition that would otherwise
+    # have to refuse a new subject, so there is no clean-up job and no runbook step.
+    #
+    # THIS PROFILE REFUSES `instance` RATHER THAN ACCEPTING IT. config/SignOnThrottleConfig aborts the
+    # start-up at bean creation if this profile is active and the scope is per-instance, and it also
+    # refuses an unrecognised value rather than defaulting one - a misspelling here would otherwise
+    # become a per-process allowance on exactly the deployment that had tried to ask for the shared
+    # one. See docs/decision-log.md DL-343.
+    sign-on:
+      state-scope: deployment

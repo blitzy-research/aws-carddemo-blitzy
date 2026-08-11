@@ -49,6 +49,8 @@ final class BuildAndCiContractTest {
 
     private static final Path POM_PATH = Path.of("pom.xml");
     private static final Path SUPPRESSIONS_PATH = Path.of("owasp-suppressions.xml");
+    private static final Path CONTAINER_DETERMINATIONS_PATH =
+            Path.of("container-scan-determinations.txt");
     private static final Path DOCKERFILE_PATH = Path.of("Dockerfile");
     private static final Path COMPOSE_PATH = Path.of("docker-compose.yml");
     private static final Path README_PATH = Path.of("README.md");
@@ -1238,13 +1240,109 @@ final class BuildAndCiContractTest {
                 .as("the unfixed subset must be counted and reported rather than dropped")
                 .contains("select((.FixedVersion // \"\") == \"\")")
                 .contains("of them with no fix available")
-                .as("a strictly gated image must fail on any HIGH or CRITICAL, fixed or not")
-                .contains("if [ \"${verdict}\" = 'strict' ] && [ \"${count}\" -ne 0 ]; then")
+                .as("an image must fail on any HIGH or CRITICAL no determination covers, fixed or not")
+                .contains("if [ \"${uncovered}\" -ne 0 ]; then")
                 .as("and the failure must enumerate what it is failing on")
-                .contains("no fix available")
-                .as("third-party Compose images stay inventory-only, which is a different decision")
-                .contains("scan_image \"${image}\" inventory")
-                .contains("scan_image \"${application_image_id}\" strict");
+                .contains("no fix available");
+    }
+
+    @Test
+    @DisplayName("every shipped runtime image is gated on the same terms, and the inventory-only verdict "
+            + "is gone")
+    void everyShippedImageIsGatedAlike() throws IOException {
+        // The finding this test was rewritten for: the application image and the two Dockerfile bases
+        // were gated with a failing verdict while every third-party Compose image was scanned with an
+        // 'inventory' verdict that could not fail. An unjudged scan is evidence of looking rather than
+        // evidence of a decision, and this repository chooses which digest it runs even where it did not
+        // author the binary. Decision log DL-350.
+        final String workflow = read(WORKFLOW_PATH);
+        final String executable = executableLinesOf(workflow);
+
+        assertThat(executable)
+                .as("no verdict parameter may survive, because a second verdict is how the unjudged one "
+                        + "came back last time")
+                .doesNotContain("inventory")
+                .doesNotContain("verdict")
+                .as("the three call sites must pass a determination KEY rather than a verdict")
+                .contains("scan_image \"${application_image_id}\" application")
+                .contains("scan_image \"${image}\" \"${image}\"");
+        assertThat(countOccurrences(executable, "scan_image \"${image}\" \"${image}\""))
+                .as("both loops - the Dockerfile bases and the Compose images - must call it the same "
+                        + "way, so neither can be softened without the other being seen")
+                .isEqualTo(2);
+        assertThat(workflow)
+                .as("and the header must say what changed, so the next reader does not restore the "
+                        + "inventory verdict as a simplification")
+                .contains("THE INVENTORY-ONLY VERDICT IS GONE");
+    }
+
+    @Test
+    @DisplayName("a container finding is excused only by a scoped, reviewed, expiring determination, and "
+            + "an expired or unused one fails the build")
+    void aContainerFindingIsExcusedOnlyByAnExpiringDetermination() throws IOException {
+        final String workflow = read(WORKFLOW_PATH);
+        final String executable = executableLinesOf(workflow);
+
+        assertThat(executable)
+                .as("the gate must read the determination file and must refuse to run without it")
+                .contains("determination_file=\"${PWD}/container-scan-determinations.txt\"")
+                .contains("test -f \"${determination_file}\"")
+                .as("the file's shape is validated before anything is scanned, so a mistyped line cannot "
+                        + "silently cover nothing while looking like an acceptance")
+                .contains("grep -nvE \"${determination_shape}\" \"${determination_file}\"")
+                .as("a determination is scoped to ONE image and ONE identifier - the awk match is on "
+                        + "both fields, and there is no wildcard form")
+                .contains("$1 == key && $2 == id")
+                .as("an expiry in the past fails the build on its own")
+                .contains("[ \"${d_expiry}\" \\< \"${today}\" ]")
+                .contains("expired=1")
+                .as("and a determination that matched nothing fails it too")
+                .contains("matched no finding in this run and must be removed")
+                .contains("unused=1")
+                .as("the record of which determinations were applied must NOT land in the report "
+                        + "directory: the upload treats an empty directory on a green run as an error, "
+                        + "and a file created before the first scan would satisfy that check on a run "
+                        + "that never scanned anything")
+                .contains("determinations_used=\"${PWD}/target/container-scan-determinations-used.txt\"")
+                .doesNotContain("determinations_used=\"${report_dir}");
+        assertThat(executable)
+                .as("the scanner must NOT be handed the file as an ignore list: that would delete the "
+                        + "covered findings from the archived report, which is the defect DL-185 removed")
+                .doesNotContain("--ignorefile")
+                .doesNotContain("--ignore-policy")
+                .doesNotContain(".trivyignore");
+        assertThat(workflow)
+                .as("both properties an ignore file lacks must be stated, because they are the reason "
+                        + "the decision is taken here")
+                .contains("an EXPIRED determination fails the build")
+                .contains("failBuildOnUnusedSuppressionRule already holds over the dependency gate");
+    }
+
+    @Test
+    @DisplayName("the container determination file ships carrying no determination at all")
+    void theContainerDeterminationFileShipsEmpty() throws IOException {
+        final String file = read(CONTAINER_DETERMINATIONS_PATH);
+        final List<String> determinations = file.lines()
+                .map(String::strip)
+                .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                .toList();
+
+        assertThat(determinations)
+                .as("nothing is accepted in the delivered state. A determination here is a reviewed "
+                        + "edit, and a file that shipped with one would be accepting a finding nobody "
+                        + "reading this repository had reviewed. Actual: %s", determinations)
+                .isEmpty();
+        assertThat(file)
+                .as("and the protocol a reviewer must follow is documented in the file itself, because "
+                        + "that is the document the person adding a line is already looking at")
+                .contains("<image key>|<IDENTIFIER>|<expires YYYY-MM-DD>|<reviewer>|")
+                .contains("EXPIRED")
+                .contains("UNUSED")
+                .contains("REVIEW PROTOCOL")
+                .as("including the one key that is a literal rather than a digest-pinned reference")
+                .contains("literal word  application ")
+                .as("and the reason the scanner is not handed this file")
+                .contains("DL-185 and DL-350");
     }
 
     @Test
