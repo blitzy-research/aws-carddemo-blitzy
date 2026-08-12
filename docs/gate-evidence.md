@@ -1195,7 +1195,7 @@ with a claim is no longer evidence for it.
 
 **Why commands 2 and 3 are written narrowly, since a looser pattern looks more thorough and is worse.**
 Making the type argument optional, so that a cast to a bare type or a type variable is admitted as well —
-`grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*(<[^<>()]*>)?\s*\)\s*[A-Za-z_$(]' src/main/java/` — matches **163**
+`grep -rnP '\(\s*[A-Za-z_$][\w.$]*\s*(<[^<>()]*>)?\s*\)\s*[A-Za-z_$(]' src/main/java/` — matches **161**
 lines, and **83** of them carry no cast at all: they are comment text and message strings in which a
 parenthesised word happens to precede an identifier. Command 3 is already the loose form of its own
 question, and the single line it returns is the screen prompt above rather than a query; loosening it

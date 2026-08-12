@@ -5,9 +5,11 @@ How to build, run and validate the migrated Java module on your own machine, fro
 This is the first-run walkthrough. It tells you which command to run, what each one proves, and what to
 do when one of them fails. It does not restate the design — that is [Architecture](architecture.md) — and
 it does not restate why any translation decision was made — that is
-[Migration Decision Log](decision-log.md). The module's own
-[`carddemo-java/README.md`](../carddemo-java/README.md) is the exhaustive reference behind this page; when
-the two overlap, this page is the short path and the README is the detail.
+[Migration Decision Log](decision-log.md). The module's own `carddemo-java/README.md` is the exhaustive
+reference behind this page; when the two overlap, this page is the short path and the README is the detail.
+That one is named as a path rather than linked, deliberately and for the same reason the documentation home
+names it that way: it is a file inside the delivered module rather than a page of this site, so it is read
+from the checkout you are already building in, beside the `pom.xml` every command below runs against.
 
 Everything here runs locally. **No gate requires a production environment, a staging environment or a
 running COBOL system.** Every check runs on a developer machine through Docker Compose, Testcontainers and
@@ -382,7 +384,7 @@ than a secret — a bucket name, a topic name, a message group, a token lifetime
 Sign-on is the entry point, and it carries the attention-key field the 3270 contract required: omit
 `keyAction` and the service answers with the legacy invalid-key message, which is faithful behaviour
 rather than a validation bug. Supply the seeded credential yourself, using the same pattern
-[the repository README](../README.md) uses:
+[the repository README](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/README.md){ target="_blank" rel="noopener" } uses:
 
 ```bash
 read -rsp 'seeded sample password: ' SEED_PASSWORD; echo
@@ -594,13 +596,13 @@ machine, never as thresholds — and when you add your own, name your machine to
 
 ## 6. Contribution conventions
 
-These come from [`CONTRIBUTING.md`](../CONTRIBUTING.md) at the repository root, which is the authority;
+These come from [`CONTRIBUTING.md`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/CONTRIBUTING.md){ target="_blank" rel="noopener" } at the repository root, which is the authority;
 the summary below is the module-specific reading of it.
 
 > **Security issues never go in a public GitHub issue.** If you discover a potential security problem,
 > notify AWS/Amazon Security through their
-> [vulnerability reporting page](https://aws.amazon.com/security/vulnerability-reporting/) instead. This is
-> the one convention here whose consequences a follow-up commit cannot undo.
+> [vulnerability reporting page](https://aws.amazon.com/security/vulnerability-reporting/){ target="_blank" rel="noopener" aria-label="AWS and Amazon Security vulnerability reporting page - external site, opens in a new tab" }
+> instead. This is the one convention here whose consequences a follow-up commit cannot undo.
 
 **Before you write anything.** Work against the latest source on the **main** branch. Check the existing
 open and recently merged pull requests, so you do not spend an afternoon on something already addressed.
@@ -621,8 +623,8 @@ executes. Commit with clear messages, answer the default questions in the pull r
 attention to the automated CI failures reported on the pull request and stay involved in the conversation.
 
 **Conduct and licensing.** The project has adopted the Amazon Open Source Code of Conduct; see
-[`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md). The project is licensed under **Apache-2.0** — see
-[`LICENSE`](../LICENSE), with [`NOTICE`](../NOTICE) attributing Amazon.com, Inc. or its affiliates — and
+[`CODE_OF_CONDUCT.md`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/CODE_OF_CONDUCT.md){ target="_blank" rel="noopener" }. The project is licensed under **Apache-2.0** — see
+[`LICENSE`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/LICENSE){ target="_blank" rel="noopener" }, with [`NOTICE`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/NOTICE){ target="_blank" rel="noopener" } attributing Amazon.com, Inc. or its affiliates — and
 you will be asked to confirm the licensing of your contribution. **Every generated Java source, SQL
 migration and comment-capable configuration file in the module carries the same Apache-2.0 header the
 legacy members carry, so keep it on anything new.** The qualifier is exact rather than decorative: the
@@ -656,8 +658,8 @@ definition are headerless by necessity, and that is the whole of the exception.
 | Which Java method corresponds to a given COBOL paragraph? | [Traceability Matrix](traceability-matrix.md) |
 | Why does this code truncate instead of rounding? Why is that method deliberately empty? | [Migration Decision Log](decision-log.md) |
 | What does each gate prove today, and what did the recorded run measure? | [Gate Evidence](gate-evidence.md) |
-| How do I configure, extend or operate the module in full detail? | [`carddemo-java/README.md`](../carddemo-java/README.md) |
-| What did the mainframe application actually do? | [`README.md`](../README.md) |
+| How do I configure, extend or operate the module in full detail? | `carddemo-java/README.md`, in the checkout beside the module's `pom.xml` |
+| What did the mainframe application actually do? | [`README.md`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/README.md){ target="_blank" rel="noopener" } |
 
 Two pieces of vocabulary, because they are easy to mislabel. The eight gates are **acceptance criteria**,
 and the COBOL-to-Java construct mapping with its preservation requirements is a **requirement** of the

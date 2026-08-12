@@ -1,6 +1,6 @@
 # Technical Specification
 
-# 0. Agent Action Plan
+## 0. Agent Action Plan
 
 ## 0.1 Intent Clarification
 

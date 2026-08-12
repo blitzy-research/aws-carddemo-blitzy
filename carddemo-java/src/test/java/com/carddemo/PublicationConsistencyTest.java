@@ -410,10 +410,20 @@ final class PublicationConsistencyTest {
             // The deferral has to be reachable rather than merely asserted, so the link is checked as a
             // link. The fragment is the identifier Python-Markdown generates for the authority's Gate 8
             // heading, which is what the documentation site serves.
+            //
+            // THE PATH IS THE PUBLISHED FORM, NOT THE SOURCE FILENAME, AND THE DISTINCTION IS THE POINT OF
+            // THE ASSERTION. This expectation read `../gate-evidence.md#...` until QA established that the
+            // deck is read as a published page rather than as a file: MkDocs renders each source page to its
+            // own directory, so from /presentation/ the source-filename form resolves to
+            // /gate-evidence.md, which the site does not serve and which answers 404. The assertion was
+            // therefore pinning the one form that cannot reach the authority, which is the opposite of what
+            // it exists to guarantee - a link checked as a link has to be checked in the form a reader
+            // follows. The directory form is verified to answer 200 with the fragment landing on the Gate 8
+            // heading.
             checks.add(() -> assertThat(deck)
                     .as("the deck must send a reader to the authority for the Gate 8 outcome; a deferral "
                             + "with no link is a dead end rather than a separation of concerns")
-                    .contains("../gate-evidence.md#gate-8-integration-sign-off-checklist"));
+                    .contains("../gate-evidence/#gate-8-integration-sign-off-checklist"));
             assertAll("the deck defers the vulnerability outcome to the authority", checks);
         }
     }
@@ -433,7 +443,8 @@ final class PublicationConsistencyTest {
      * <h2>What is resolved, and against what</h2>
      *
      * <p>Every Markdown link and every HTML link in the publications, whose destination carries a fragment and
-     * whose path is a local Markdown file or the document itself, is resolved against that document's own
+     * whose path is a local Markdown file, the published directory that file is served as, or the document
+     * itself, is resolved against that document's own
      * identifiers: the ones the documentation site generates from its headings, any explicit identifier
      * written on a heading, and any identifier an HTML element declares - which is how the front page's table
      * of contents addresses itself. The generation rule is the site's own: fold to ASCII, discard everything
@@ -467,12 +478,18 @@ final class PublicationConsistencyTest {
                         }
                         final String fragment = destination.substring(hash + 1);
                         final String pathPart = destination.substring(0, hash);
-                        if (fragment.isEmpty() || !(pathPart.isEmpty() || pathPart.endsWith(".md"))) {
+                        if (fragment.isEmpty()
+                                || !(pathPart.isEmpty() || pathPart.endsWith(".md")
+                                        || pathPart.endsWith("/"))) {
                             continue;
                         }
-                        final Path target = pathPart.isEmpty()
+                        final String documentPath = sourceOf(pathPart);
+                        if (documentPath == null) {
+                            continue;
+                        }
+                        final Path target = documentPath.isEmpty()
                                 ? publication
-                                : publication.resolveSibling(pathPart).normalize();
+                                : publication.resolveSibling(documentPath).normalize();
                         if (!Files.isRegularFile(target)) {
                             unresolved.add(publication + " line " + number + " links to " + destination
                                     + ", whose document is not at " + target);
@@ -511,6 +528,43 @@ final class PublicationConsistencyTest {
     // ===================================================================================================
     // HELPERS
     // ===================================================================================================
+
+    /**
+     * Maps the path half of a link destination onto the Markdown source it is served from.
+     *
+     * <h2>Why two forms have to resolve to one document</h2>
+     *
+     * <p>These publications address each other in two spellings, and both are correct in their own place. A
+     * Markdown page links to a sibling by source filename, {@code ../gate-evidence.md}, and the site
+     * generator rewrites that on the way out. A published HTML page - the deck - cannot use that spelling,
+     * because it is served as {@code /presentation/} and nothing named {@code gate-evidence.md} exists on the
+     * site to receive it; it has to link to {@code ../gate-evidence/}, the directory the generator publishes.
+     * Both spellings name the same source document, so both are resolved against it here.</p>
+     *
+     * <p>Accepting only the source spelling is what let a defect through once already. When the deck's links
+     * were corrected from the filename form to the directory form - because the filename form answered 404
+     * for every reader - the deck silently left this check rather than failing it, since a destination this
+     * method could not map was simply not counted. The links kept working and the guarantee quietly stopped
+     * applying, which is precisely the failure this class was written to catch: nothing reports a fragment
+     * that no longer lands.</p>
+     *
+     * @param pathPart the path half of a link destination, empty for a same-document fragment
+     * @return the Markdown source path, empty for a same-document fragment, or {@code null} when the
+     *         destination names no page and is therefore not this check's business
+     */
+    private static String sourceOf(final String pathPart) {
+        if (pathPart.isEmpty() || pathPart.endsWith(".md")) {
+            return pathPart;
+        }
+        final String withoutSlash = pathPart.substring(0, pathPart.length() - 1);
+        final String name = withoutSlash.substring(withoutSlash.lastIndexOf('/') + 1);
+        // A trailing slash after nothing, after `.` or after `..` is a directory reference rather than a
+        // page reference - `../#fragment` addresses the parent index, not a document this check can name.
+        if (name.isEmpty() || ".".equals(name) || "..".equals(name)) {
+            return null;
+        }
+        return withoutSlash + ".md";
+    }
 
     /**
      * Reads the frozen contractual widths out of the authority's own inventory table.

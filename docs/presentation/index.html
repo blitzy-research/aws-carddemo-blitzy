@@ -22,6 +22,12 @@ language governing permissions and limitations under the License
 <title>AWS CardDemo — Migration Summary Deck — z/OS COBOL to Java 25 and Spring Boot</title>
 <meta name="description" content="Six-slide summary of the AWS CardDemo migration from z/OS COBOL, CICS, VSAM and JCL onto Java 25 and Spring Boot: the estate, the construct mapping, the target module, the load-bearing decisions, the eight validation gates and where the detail lives.">
 <meta name="author" content="AWS CardDemo migration">
+<!-- An empty data URI, declared so the browser does not fall back to requesting /favicon.ico from
+     whatever root this file is opened under. That default request is the one fetch this deck cannot
+     otherwise avoid, and it answers 404 both from a file system and from the published site, putting an
+     error in the console of a page whose whole point is that it needs nothing from the network. A data URI
+     is not a request, so declaring it removes the fetch rather than redirecting it. -->
+<link rel="icon" href="data:,">
 <style>
 /* Single self-contained stylesheet. No external sheet, no import, no web font:
    the deck must render from the file system, from the published documentation
@@ -283,16 +289,28 @@ figure {
   background: #f6f9fd;
   padding: 10px;
 }
+/* The dark fill is deliberate: it holds the figure's box while the image loads, and it holds it at the
+   right aspect ratio when the image does not arrive at all, so nothing on the slide shifts. That second
+   case is what the colour declaration below is for. When an image fails, the alt text becomes the sighted
+   reader's only copy of it, and it is painted by the img element itself - so it inherits the body colour,
+   which is near-black and was landing on this near-black fill at a contrast ratio of 1.04:1: present,
+   announced to assistive technology, and invisible to everyone else. Declaring the light colour here
+   pairs it with the fill it is actually drawn on, and it costs nothing when the image does arrive,
+   because a loaded image paints over its own text. */
 figure img {
   display: block;
   width: 100%;
   height: auto;
   background: #10203a;
+  color: #f6f9fd;
   border: 1px solid #ccd6e3;
   border-radius: 4px;
 }
 figcaption { font-size: 13px; color: #40536b; margin-top: 8px; }
 figcaption b { color: #14243a; }
+/* The caption's closing reference to the asset in the repository. Set apart from the described content so
+   the caption still reads as a description first. */
+figcaption span.assetref { display: block; margin-top: 6px; font-size: 12.5px; }
 
 /* SECTION: footer */
 
@@ -311,12 +329,21 @@ footer.deck p { margin: 6px 0; }
    unavailable the class is never added, so every slide stays visible and the deck
    reads as one continuous document. */
 
-noscript p.noscript {
-  max-width: 1040px;
-  margin: 0 auto;
+/* The no-script notice belongs to the header stack, so it is banded exactly the way .deckbar below is
+   banded: the outer element carries the background, the rule beneath it and the horizontal padding, and an
+   inner element carries the measure. Putting both on one element is what made this strip read as a floating
+   inset bar above 1040px - its white fill and its 1px rule stopped roughly 200px short of each viewport
+   edge while the masthead above and the slide band below ran full width. The selectors stay descended from
+   noscript so the browser's own noscript { display: none } still hides all of it when scripting is
+   available; nothing here makes the notice visible to a reader who does not need it. */
+noscript .noscriptband {
   padding: 10px 22px;
   background: #ffffff;
   border-bottom: 1px solid #ccd6e3;
+}
+noscript p.noscript {
+  max-width: 1040px;
+  margin: 0 auto;
   color: #40536b;
   font-size: 13px;
 }
@@ -388,7 +415,7 @@ html.presenting section.slide { min-height: 60vh; }
   .masthead code { background: transparent; border-color: #999999; color: #000000; }
   h1 { font-size: 18pt; }
   .masthead p.kicker, .masthead dl, .masthead dt { color: #333333; }
-  nav.toc, .deckbar, html.enhanced .deckbar, noscript p.noscript { display: none; }
+  nav.toc, .deckbar, html.enhanced .deckbar, noscript .noscriptband { display: none; }
   main { padding: 0; max-width: none; }
   section.slide {
     border: none;
@@ -432,8 +459,10 @@ html.presenting section.slide { min-height: 60vh; }
 </header>
 
 <noscript>
-  <p class="noscript">Scripting is unavailable, so the optional presenter mode is not offered. Nothing is
-  missing: every slide below is visible and the deck reads as one continuous document.</p>
+  <div class="noscriptband">
+    <p class="noscript">Scripting is unavailable, so the optional presenter mode is not offered. Nothing is
+    missing: every slide below is visible and the deck reads as one continuous document.</p>
+  </div>
 </noscript>
 
 <div class="deckbar">
@@ -486,14 +515,14 @@ html.presenting section.slide { min-height: 60vh; }
 
   <p>The 544 is <strong>528</strong> paragraphs across the programs' procedure divisions plus
   <strong>14</strong> from the date-validation copybook and <strong>2</strong> from the attention-key
-  copybook. Each has a row in <a href="../traceability-matrix.md">the traceability matrix</a> naming its
+  copybook. Each has a row in <a href="../traceability-matrix/">the traceability matrix</a> naming its
   source member, its source line, its target class, its target method and the test that covers it.</p>
 
   <h3>The inventory, and why two totals are both load-bearing</h3>
   <div class="scroller">
     <table>
       <caption>Measured at the analysed checkout. Counts are reproduced from
-      <a href="../architecture.md">architecture.md</a>, which is the authority for them.</caption>
+      <a href="../architecture/">architecture.md</a>, which is the authority for them.</caption>
       <thead>
         <tr><th scope="col">Legacy artifact</th><th scope="col" class="num">Count</th><th scope="col">What it is</th></tr>
       </thead>
@@ -551,7 +580,9 @@ html.presenting section.slide { min-height: 60vh; }
       <figcaption><b>End-user flow.</b> Sign-on leads to the main menu, which fans out into four groups:
       account management (view and update an account, reaching view card), card management (list, view and
       update a card), transactions (view details, list, add, and request a report) and bill payment. Every
-      one of these screens becomes a REST endpoint group; none becomes a web page.</figcaption>
+      one of these screens becomes a REST endpoint group; none becomes a web page.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Application-Flow-User.png" target="_blank"
+      rel="noopener">diagrams/Application-Flow-User.png in the repository (external)</a></span></figcaption>
     </figure>
     <figure>
       <img src="../../diagrams/Application-Flow-Admin.png" width="1017" height="515"
@@ -559,7 +590,9 @@ html.presenting section.slide { min-height: 60vh; }
       <figcaption><b>Administrator flow.</b> Sign-on leads to a separate administrative menu, reached only
       by the delivered user type, and from there to user management, which fans out into add, update, list
       and delete a user. The split is reproduced as role gating on the corresponding endpoints rather than
-      as a second application.</figcaption>
+      as a second application.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Application-Flow-Admin.png" target="_blank"
+      rel="noopener">diagrams/Application-Flow-Admin.png in the repository (external)</a></span></figcaption>
     </figure>
   </div>
 </section>
@@ -636,7 +669,9 @@ html.presenting section.slide { min-height: 60vh; }
       type an identifier and press ENTER, two empty eight-character input fields, and a key legend offering
       sign-on and exit. The seven operator-visible message texts this screen can emit are part of the
       external contract and are reproduced character for character, and the eight-character field widths
-      survive as request-contract constraints.</figcaption>
+      survive as request-contract constraints.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Signon-Screen.png" target="_blank"
+      rel="noopener">diagrams/Signon-Screen.png in the repository (external)</a></span></figcaption>
     </figure>
     <figure>
       <img src="../../diagrams/Main-Menu.png" width="3518" height="1640"
@@ -646,7 +681,9 @@ html.presenting section.slide { min-height: 60vh; }
       and bill payment &mdash; followed by a two-character option field. The ten are carried as a catalog
       rather than as a screen. The legacy rule that an option whose target program is a placeholder answers
       "coming soon" survives, and so does the blank-to-zero normalisation of a right-justified two-character
-      entry.</figcaption>
+      entry.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Main-Menu.png" target="_blank"
+      rel="noopener">diagrams/Main-Menu.png in the repository (external)</a></span></figcaption>
     </figure>
     <figure>
       <img src="../../diagrams/Admin-Menu.png" width="3518" height="1640"
@@ -654,7 +691,9 @@ html.presenting section.slide { min-height: 60vh; }
       <figcaption><b>Administrative menu, transaction CA00, program COADM01C.</b> The same layout as the main
       menu, carrying the four user-management options and its own two-character option field, and reached
       only by the administrative user type. The destination the delivered type decides is reproduced as role
-      gating on the corresponding endpoints.</figcaption>
+      gating on the corresponding endpoints.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Admin-Menu.png" target="_blank"
+      rel="noopener">diagrams/Admin-Menu.png in the repository (external)</a></span></figcaption>
     </figure>
   </div>
 
@@ -709,7 +748,7 @@ html.presenting section.slide { min-height: 60vh; }
   <h3>Layers, and a dependency direction that only runs downward</h3>
   <div class="scroller">
     <table>
-      <caption>The permitted edges. <a href="../architecture.md">architecture.md</a> is the authority, and
+      <caption>The permitted edges. <a href="../architecture/">architecture.md</a> is the authority, and
       records the import census that verifies the direction rather than asserting it.</caption>
       <thead>
         <tr><th scope="col">Package</th><th scope="col">May depend on</th><th scope="col">What lives there</th></tr>
@@ -735,7 +774,7 @@ html.presenting section.slide { min-height: 60vh; }
   <div class="note">
     <p><strong>Where the 544 units actually live, because "twenty-six services own them all" is the tidy
     version and it is wrong in two directions.</strong> Counted from the target-class column of
-    <a href="../traceability-matrix.md">traceability-matrix.md</a>, the rows resolve to
+    <a href="../traceability-matrix/">traceability-matrix.md</a>, the rows resolve to
     <strong>twenty-two</strong> owning classes: twenty-one services, plus <code>util.PfKeyTranslator</code>,
     which owns the two paragraphs of the attention-key copybook and is a utility precisely because five
     online programs include that copybook rather than one owning it.</p>
@@ -753,11 +792,11 @@ html.presenting section.slide { min-height: 60vh; }
   toggle datasets. <strong>Only nine steps invoke an application program</strong>, which is why the module
   carries nine job configurations rather than one per step. Everything else is absorbed by the Flyway
   migrations, the Compose service definitions and the test fixtures. The step-level accounting is recorded in
-  <a href="../decision-log.md">the decision log</a>.</p>
+  <a href="../decision-log/">the decision log</a>.</p>
   <div class="note">
     <p><strong>There is no master orchestrator class, and none is implied.</strong> Each job is
     independently launchable, and the order in which the jobs are normally run is an <strong>operational
-    convention</strong> documented in <a href="../architecture.md">architecture.md</a> — not a coded
+    convention</strong> documented in <a href="../architecture/">architecture.md</a> — not a coded
     dependency between jobs. One job is defined without any legacy driver at all, because the program it
     reproduces is complete but is invoked by no job member, procedure or resource definition. It is
     <strong>registered as launchable by name like the other eight and excluded from every sequence</strong>:
@@ -855,7 +894,7 @@ html.presenting section.slide { min-height: 60vh; }
     database sequence would diverge permanently after the first rollback, so none is used.</li>
     <li><strong>Thirty-one source anomalies</strong> — misspelled field names, a duplicated paragraph label,
     a duplicated step name, a conflicting generation limit, a dangling program definition — are recorded in
-    the anomaly register in <a href="../decision-log.md">the decision log</a>. Fourteen of the thirty-one were
+    the anomaly register in <a href="../decision-log/">the decision log</a>. Fourteen of the thirty-one were
     named in the migration plan, together with a fifteenth observation; the remaining sixteen were found at
     the same checkout during translation. Where correcting one would alter a
     record layout or an external contract, it is preserved as-is and the defect is noted instead.</li>
@@ -907,7 +946,7 @@ html.presenting section.slide { min-height: 60vh; }
   <p class="lede">Eight <strong>acceptance criteria</strong>, every one of them executable locally. None
   requires a production environment, a staging environment or a running mainframe: each runs against the
   Compose stack or against a container the test itself starts. This slide states what each criterion
-  <em>verifies</em>; <a href="../gate-evidence.md">gate-evidence.md</a> is the single authority for what any
+  <em>verifies</em>; <a href="../gate-evidence/">gate-evidence.md</a> is the single authority for what any
   given run recorded, and it names the command and the artefact behind every result.</p>
 
   <div class="scroller">
@@ -986,7 +1025,7 @@ html.presenting section.slide { min-height: 60vh; }
           because such a finding is still a finding and an obligation that let it be rounded away would be the
           reason a reader stops checking. <strong>What any given scan found belongs to the evidence page and is
           deliberately not reproduced here</strong>: read it in
-          <a href="../gate-evidence.md#gate-8-integration-sign-off-checklist">Gate Evidence</a>, dated and
+          <a href="../gate-evidence/#gate-8-integration-sign-off-checklist">Gate Evidence</a>, dated and
           beside its report, and re-run the scan before any sign-off, because a scan result ages. Plus
           traceability covering <strong>100%</strong> of the estate's procedure units.</td>
         </tr>
@@ -1001,7 +1040,7 @@ html.presenting section.slide { min-height: 60vh; }
     the job streams, not in the resource definitions. There is therefore nothing to compare against, which is
     exactly why the third criterion <strong>establishes</strong> a baseline instead of asserting one. This
     deck publishes no such figure at all, and any figure belonging to one run on one machine is recorded in
-    <a href="../gate-evidence.md">gate-evidence.md</a> beside the date and the machine, to be re-measured
+    <a href="../gate-evidence/">gate-evidence.md</a> beside the date and the machine, to be re-measured
     rather than quoted.</dd>
 
     <dt>The coverage floor is on line coverage, and only line coverage is gated</dt>
@@ -1016,7 +1055,7 @@ html.presenting section.slide { min-height: 60vh; }
     re-run: 28 programs, 544 procedure units, eleven record layouts, nine fixtures. The separation is
     deliberate: a summary that restates a measured figure goes stale the moment the figure is re-measured, and
     a reader would then hold two answers with no way to tell which is current. There is one authority for
-    outcomes, and it is <a href="../gate-evidence.md">gate-evidence.md</a>.</dd>
+    outcomes, and it is <a href="../gate-evidence/">gate-evidence.md</a>.</dd>
   </dl>
 </section>
 
@@ -1034,32 +1073,32 @@ html.presenting section.slide { min-height: 60vh; }
       <tbody>
         <tr>
           <th scope="row">Which Java method is this COBOL paragraph, and what covers it?</th>
-          <td><a href="../traceability-matrix.md">traceability-matrix.md</a> &mdash; one row per procedure
+          <td><a href="../traceability-matrix/">traceability-matrix.md</a> &mdash; one row per procedure
           unit, each naming the source member, the source line, the target class, the target method and the
           covering test, with both provenance identifiers in its header.</td>
         </tr>
         <tr>
           <th scope="row">Why does it behave like that instead of the obvious way?</th>
-          <td><a href="../decision-log.md">decision-log.md</a> &mdash; every judgement where faithful
+          <td><a href="../decision-log/">decision-log.md</a> &mdash; every judgement where faithful
           reproduction and idiomatic Java diverged, the anomaly register at its thirty-one legacy defects, and
           the record of conflicts between legacy artifacts and how each was resolved.</td>
         </tr>
         <tr>
           <th scope="row">How is the module put together?</th>
-          <td><a href="../architecture.md">architecture.md</a> &mdash; the layer map and its verified
+          <td><a href="../architecture/">architecture.md</a> &mdash; the layer map and its verified
           dependency direction, the package responsibilities, the entity model, the alternate-index
           equivalents, the complete table of contractual output widths, and why the batch tier is shaped the
           way it is.</td>
         </tr>
         <tr>
           <th scope="row">How do I build it, run it and drive the criteria myself?</th>
-          <td><a href="../onboarding-guide.md">onboarding-guide.md</a> &mdash; prerequisites, the build
+          <td><a href="../onboarding-guide/">onboarding-guide.md</a> &mdash; prerequisites, the build
           commands and what each one proves, bringing up the local stack, signing on, and running the
           criteria.</td>
         </tr>
         <tr>
           <th scope="row">What did a run actually record?</th>
-          <td><a href="../gate-evidence.md">gate-evidence.md</a> &mdash; the command, the artefact and the
+          <td><a href="../gate-evidence/">gate-evidence.md</a> &mdash; the command, the artefact and the
           recorded status behind each of the eight criteria, the audit counts, the named artefact inventory
           and the recorded baseline figures.</td>
         </tr>
@@ -1068,12 +1107,16 @@ html.presenting section.slide { min-height: 60vh; }
   </div>
 
   <div class="note">
-    <p>Those five targets are Markdown. Opening this file straight off a file system means a browser will
-    <em>download</em> a <code>.md</code> link rather than render it &mdash; expected, and harmless. Inside the
-    published documentation site the reader arrives here from the documentation home and the same links
-    resolve as pages. The images on slides 1 and 2 are linked read-only from the repository's diagram folder
-    and are never copied or modified; where that folder sits outside a publication root the images may not
-    resolve, which is why every one of them carries a caption that states its content in words.</p>
+    <p>Those five targets are written in the published site's own page form rather than as file names, so
+    inside the published documentation site &mdash; where the reader arrives here from the documentation
+    home &mdash; every one of them resolves as a page, including the deep link into the eighth criterion.
+    Opening this file straight off a file system is the other case and is worth stating plainly: a page path
+    has no directory to resolve against there, so those five links will not open, and the Markdown they are
+    built from sits one directory up, beside the folder holding this file. The images on slides 1 and 2 are
+    linked read-only from the repository's diagram folder and are never copied or modified; where that folder
+    sits outside a publication root the images may not resolve, which is why every one of them carries a
+    caption that states its content in words &mdash; and, for the same reason, a link to the asset in the
+    repository, so the figure is reachable even where the image itself is not.</p>
   </div>
 
   <h3>On provenance, and on where the obligations came from</h3>
@@ -1085,7 +1128,7 @@ html.presenting section.slide { min-height: 60vh; }
   <p>Two bodies of binding content are easy to misattribute, so they are named for what they are. The
   construct pairing on slide 2 is a <strong>requirement</strong> of the refactor. The eight criteria on slide
   5 are <strong>acceptance criteria</strong>, and their evidence is published on
-  <a href="../gate-evidence.md">gate-evidence.md</a>. Separately, <strong>no user-specified rules were
+  <a href="../gate-evidence/">gate-evidence.md</a>. Separately, <strong>no user-specified rules were
   provided for this engagement</strong> &mdash; a verified absence rather than an unread document. That is not
   licence to lower the standard: the work is held to enterprise-standard best practice instead, as a
   conscious position, and the two standards binding this page in particular are licence continuity, which is

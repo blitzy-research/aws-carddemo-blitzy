@@ -1322,14 +1322,21 @@ and entity fact used on this page was read from the map definitions, the copyboo
 with the images serving as a cross-check rather than as a specification. None of them is modified by this
 migration.
 
+Each row below links the asset **in the repository** rather than as a page of this site, and the reason is
+worth stating because it is the same constraint the assets themselves are under: `diagrams/` sits at the
+repository root, outside the documentation root this site is built from, and it is never copied or
+modified — so there is no in-site copy to link to, and manufacturing one would break the read-only
+guarantee that makes these images usable as corroboration at all. A repository link is therefore the only
+reference that resolves for a reader of the published site, and it resolves to the byte-identical original.
+
 | Asset | What it corroborates |
 | :---- | :------------------- |
-| [`../diagrams/CARDDEMO-DataModel.drawio`](../diagrams/CARDDEMO-DataModel.drawio) | the entity-relationship view behind the eleven-table schema; its second page is the unimplemented product, fee and feature set |
-| [`../diagrams/Application-Flow-User.png`](../diagrams/Application-Flow-User.png) | the standard-user navigation flow that the route constants reproduce |
-| [`../diagrams/Application-Flow-Admin.png`](../diagrams/Application-Flow-Admin.png) | the administrative navigation flow and its gated entry points |
-| [`../diagrams/Signon-Screen.png`](../diagrams/Signon-Screen.png) | the sign-on field and message inventory |
-| [`../diagrams/Main-Menu.png`](../diagrams/Main-Menu.png) | the ten standard-user menu options |
-| [`../diagrams/Admin-Menu.png`](../diagrams/Admin-Menu.png) | the four administrative menu options |
+| [`diagrams/CARDDEMO-DataModel.drawio`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/CARDDEMO-DataModel.drawio){ target="_blank" rel="noopener" } | the entity-relationship view behind the eleven-table schema; its second page is the unimplemented product, fee and feature set |
+| [`diagrams/Application-Flow-User.png`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Application-Flow-User.png){ target="_blank" rel="noopener" } | the standard-user navigation flow that the route constants reproduce |
+| [`diagrams/Application-Flow-Admin.png`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Application-Flow-Admin.png){ target="_blank" rel="noopener" } | the administrative navigation flow and its gated entry points |
+| [`diagrams/Signon-Screen.png`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Signon-Screen.png){ target="_blank" rel="noopener" } | the sign-on field and message inventory |
+| [`diagrams/Main-Menu.png`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Main-Menu.png){ target="_blank" rel="noopener" } | the ten standard-user menu options |
+| [`diagrams/Admin-Menu.png`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Admin-Menu.png){ target="_blank" rel="noopener" } | the four administrative menu options |
 
 ## Standards this architecture is held to
 
