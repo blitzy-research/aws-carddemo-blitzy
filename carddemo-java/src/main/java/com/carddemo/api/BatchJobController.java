@@ -26,6 +26,7 @@ import com.carddemo.service.BatchLaunchGateway.LaunchRejectedException;
 import com.carddemo.service.BatchLaunchGateway.RejectionReason;
 import com.carddemo.service.BatchJobLaunchService;
 import com.carddemo.util.ApiRoutePaths;
+import com.carddemo.util.FailureDiagnostics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -455,6 +456,9 @@ public final class BatchJobController {
      *                                 an execution of that job is already active, because the generated
      *                                 instance already exists, or because the job's own validator rejected
      *                                 the parameters
+     * @throws LaunchRejectedException if the reservation met a store-level serialization conflict that
+     *                                 outlasted its bounded retries, which is answered as a retryable
+     *                                 {@code 409} because the request is valid and no run of the job exists
      * @throws IllegalStateException   if an allow-listed name is not registered, which is a wiring fault
      *                                 rather than a caller fault
      */
@@ -492,7 +496,14 @@ public final class BatchJobController {
                 description = "The credential presented verified but does not carry the administrative "
                         + "authority this surface requires."),
         @ApiResponse(responseCode = "404",
-                description = "The name is not one of the nine jobs this surface will start.")})
+                description = "The name is not one of the nine jobs this surface will start."),
+        @ApiResponse(responseCode = "409",
+                description = "The launch could not be reserved because the batch metadata store "
+                        + "cancelled the reservation as a serialization conflict, which concurrent "
+                        + "launches of DIFFERENT jobs can provoke. Nothing about the request is wrong "
+                        + "and no execution of this job is running: the same request may be submitted "
+                        + "again. The reservation is already retried on a bounded schedule before this "
+                        + "is answered.")})
     public ResponseEntity<BatchJobLaunchResponse> launchTypedJob(
             @PathVariable(name = JOB_NAME_PATH_VARIABLE) final String jobName,
             @Valid @RequestBody(required = false) final BatchJobLaunchRequest launchRequest) {
@@ -534,8 +545,16 @@ public final class BatchJobController {
             throw refused;
         } catch (final LaunchRejectedException rejected) {
             recordLaunch(sample, stableJobName, OUTCOME_REFUSED);
-            LOG.warn("Batch job launch refused: job={} reason={}",
-                    stableJobName, rejected.rejectionReason().name());
+            LOG.warn("Batch job launch refused: job={} reason={} detail={}",
+                    stableJobName, rejected.rejectionReason().name(), refusalDetail(rejected));
+            if (rejected.rejectionReason() == RejectionReason.TRANSIENT_STORE_CONFLICT) {
+                // Carried out rather than converted. The other three refusals are things the caller can
+                // correct or wait for, which is a caller fault; this one says the store cancelled the
+                // reservation and the same request may succeed as submitted, which is neither a bad request
+                // nor a malfunction. The failure adapter answers it as a retryable conflict. The timer has
+                // already recorded it under the refused outcome, so the two paths are counted alike.
+                throw rejected;
+            }
             throw new ValidationException(messageFor(rejected.rejectionReason()));
         } catch (final NoSuchJobException notRegistered) {
             recordLaunch(sample, stableJobName, OUTCOME_ABSENT);
@@ -668,12 +687,64 @@ public final class BatchJobController {
     // Adapting an allow-listed request onto the service's own calls
     // ==================================================================================================
 
+    /**
+     * Names the operator text for one caller-addressable refusal.
+     *
+     * <p>Three reasons only, and the omission is the point: a launch refused because the metadata store
+     * cancelled the reservation as a serialization conflict is not something the caller can correct, so it
+     * is not translated into a caller fault here. That reason is carried out of this class unchanged and
+     * answered by the boundary's failure adapter as a retryable conflict. The switch is exhaustive over the
+     * closed vocabulary rather than defaulted, so a reason added later cannot silently acquire one of these
+     * three texts - it fails to compile until a decision is taken about it.
+     *
+     * @param  reason the refusal reason, which must be one this boundary renders
+     * @return the fixed operator text for that reason
+     * @throws IllegalStateException if asked for the text of the retryable store conflict, which this
+     *                               boundary deliberately does not render
+     */
     private static String messageFor(final RejectionReason reason) {
         return switch (Objects.requireNonNull(reason, "reason must not be null")) {
             case ACTIVE_EXECUTION -> ACTIVE_EXECUTION_MESSAGE;
             case INSTANCE_ALREADY_EXISTS -> INSTANCE_ALREADY_EXISTS_MESSAGE;
             case INVALID_PARAMETERS -> PARAMETERS_INVALID_MESSAGE;
+            case TRANSIENT_STORE_CONFLICT -> throw new IllegalStateException(
+                    "the retryable store conflict is answered by the failure adapter, not rendered here");
         };
+    }
+
+    /**
+     * Renders a refusal's own explanation for the server-side log, and for nowhere else.
+     *
+     * <h2>Why the explanation has to be logged at all</h2>
+     *
+     * <p>The four frozen refusal texts this boundary answers with are deliberately unspecific: they tell a
+     * caller to correct the parameters and submit again, and they name no parameter, because the caller
+     * supplied them and the response must not become a probe. That is right for the response and wrong for
+     * the operator, who is the reader the batch tier replaced a condition code for. Before this method
+     * existed the reason code was the whole of the record - {@code reason=INVALID_PARAMETERS} - while the
+     * refusal's cause carried a sentence naming the offending parameter, its value and the legal set, and
+     * that sentence reached no sink at all. Nothing in the response and nothing in the log said which
+     * parameter was wrong. This is what closes that gap, and it closes it on the server side only: the
+     * response body is unchanged.
+     *
+     * <h2>Why it is rendered rather than passed through</h2>
+     *
+     * <p>The refusals raised for an invalid parameter set carry text this module composed and already
+     * rendered safe, but the same carrier also wraps the framework's own refusals for an active execution
+     * or a completed instance, and those messages are not this module's text - they can embed the parameter
+     * set a caller submitted. Rendering every one of them through the module's diagnostic renderer makes
+     * the record inert whatever composed it: only printable ASCII survives, so a line terminator cannot
+     * split one log record into two or overwrite a terminal's line, and the length is bounded, so a caller
+     * cannot choose how many bytes each refused request writes into centralised logging. A refusal with no
+     * cause renders as the renderer's absent marker rather than as {@code null}.
+     *
+     * @param  rejected the refusal being reported
+     * @return a bounded, single-line, printable rendering of the refusal's own explanation
+     */
+    // See docs/decision-log.md entry DL-360.
+    private static String refusalDetail(final LaunchRejectedException rejected) {
+        final Throwable cause = rejected.getCause();
+        return FailureDiagnostics.printableForm(cause == null ? null : cause.getMessage());
     }
 
     /**

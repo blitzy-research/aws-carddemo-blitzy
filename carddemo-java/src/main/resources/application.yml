@@ -90,8 +90,35 @@ spring:
     generator:
       write-bigdecimal-as-plain: true
 
+  # The one datasource setting here that is not the driver name is a DRIVER property rather than pool
+  # tuning, and the distinction matters because this file states above that it imposes "no pool sizing
+  # and no time-out override on the datasource". That posture is unchanged: nothing below sizes the pool,
+  # bounds a wait or alters a time-out. `data-source-properties` is the pool's pass-through channel to
+  # the JDBC driver it wraps, so this is the only place a pgjdbc property can be set for every profile
+  # at once, which is exactly what is wanted here.
+  #
+  # logServerErrorDetail=false makes pgjdbc build a PSQLException's message from the server error's
+  # non-sensitive form - severity, SQLSTATE and the primary message, including the violated constraint's
+  # name - instead of the full form that also carries DETAIL, HINT, WHERE and the inlined parameter
+  # values. For a CHECK violation PostgreSQL puts the ENTIRE ATTEMPTED ROW in DETAIL, so with the
+  # default setting a single rejected insert folds that row into the exception's own message. From there
+  # it reaches any sink that prints the exception, and one of them is not ours to configure: Hibernate's
+  # SqlExceptionHelper logs that message at ERROR by default. Suppressing it by log level is not
+  # possible, because the same logger emits the SQLSTATE line at WARN and the message at ERROR, so any
+  # level that drops the second also drops the first and OFF loses both. Sanitising the exception at the
+  # driver boundary is therefore the only fix that holds for every sink, every constraint type and every
+  # profile, which is why it is set here in the shared baseline and not in an overlay.
+  #
+  # This changes what a failure DISCLOSES, never whether it happens or what the caller is told. The
+  # database remains the enforcement point for these invariants: a row that violates one is still
+  # refused by the schema, the refusal still surfaces as the same response the legacy transaction
+  # returns, and the constraint name still names which invariant was broken, so the failure stays
+  # diagnosable. Recorded in docs/decision-log.md DL-355.
   datasource:
     driver-class-name: org.postgresql.Driver
+    hikari:
+      data-source-properties:
+        logServerErrorDetail: false
 
   # open-in-view is off deliberately: no entity may be loaded lazily during rendering, which is what
   # keeps every fetch inside the transaction that owns it. ddl-auto is validate because Flyway owns
@@ -485,7 +512,8 @@ logging:
     # counts every failed export batch on carddemo.tracing.export, tagged by outcome, which is a bounded
     # signal this module composes. Both categories reach logback through the JUL bridge the framework
     # installs, so they are named here in the same list as every other level. Measured against
-    # OpenTelemetry 1.49.0. See docs/decision-log.md DL-311.
+    # OpenTelemetry 1.56.0; both are internal names, so DL-358 confirmed each one still exists under
+    # exactly this name before the version moved. See docs/decision-log.md DL-311 and DL-358.
     io.opentelemetry.exporter.internal.http.HttpExporter: "OFF"
     io.opentelemetry.exporter.internal.grpc.GrpcExporter: "OFF"
 

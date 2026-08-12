@@ -86,11 +86,38 @@ public interface BatchLaunchGateway {
      */
     long start(Job job, Map<String, String> callerParameters);
 
-    /** Closed refusal reasons the transport boundary may translate without exposing framework text. */
+    /**
+     * Closed refusal reasons the transport boundary may translate without exposing framework text.
+     *
+     * <p>Three of the four are caller-addressable states: an overlapping run of the same job, a run
+     * identity that could not be advanced, and parameters the job's own validator refused. The fourth,
+     * {@link #TRANSIENT_STORE_CONFLICT}, is not about the caller at all - it says the reservation itself
+     * could not be committed because the metadata store cancelled it as a serialization conflict, and that
+     * the same request may well succeed as submitted. It is declared separately from
+     * {@link #ACTIVE_EXECUTION} because those two answers are true of different situations and lead an
+     * operator to different actions: waiting for a run that exists, versus submitting the same request
+     * again. Reporting one as the other told operators a job was running when none was (decision log
+     * DL-364, refining DL-218).
+     */
     enum RejectionReason {
+        /** An execution of the same job is genuinely active, or the per-job launch guard is held. */
         ACTIVE_EXECUTION,
+
+        /** The generated run identity already exists, so no new instance could be created for it. */
         INSTANCE_ALREADY_EXISTS,
-        INVALID_PARAMETERS
+
+        /** The job's own parameter validator refused the parameters supplied. */
+        INVALID_PARAMETERS,
+
+        /**
+         * The reservation met a store-level serialization conflict that outlasted the bounded retries.
+         *
+         * <p>Retryable by nature: nothing about the request is wrong and no execution of the job is
+         * running. Concurrent launches of <em>different</em> jobs contend on the framework's shared
+         * metadata tables, which it writes at serializable isolation, so the store may cancel one of them
+         * as a pivot - the condition PostgreSQL itself reports with the hint that a retry may succeed.
+         */
+        TRANSIENT_STORE_CONFLICT
     }
 
     /**

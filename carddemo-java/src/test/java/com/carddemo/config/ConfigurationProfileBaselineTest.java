@@ -129,6 +129,24 @@ final class ConfigurationProfileBaselineTest {
     private static final String JOB_LAUNCHER_LOG_CATEGORY =
             "logging.level.org.springframework.batch.core.launch.support.SimpleJobOperator";
 
+    /**
+     * The driver property that decides whether a server error's detail reaches the exception's message.
+     *
+     * <p>It is stated as a literal here for the same reason the category above is: the key names a
+     * third-party setting, and reading it back from the file it is asserted against would make the
+     * assertion agree with whatever the file happens to say.
+     *
+     * <p>PostgreSQL reports a CHECK violation with the <em>entire attempted row</em> in the error's detail
+     * field, and pgjdbc's default folds that detail into {@code PSQLException}'s own message, from where any
+     * sink that prints an exception carries it - including Hibernate's {@code SqlExceptionHelper}, which logs
+     * that message at {@code ERROR} and is not this module's to silence by level, because the same logger
+     * emits the SQLSTATE line at {@code WARN}. Turning the property off sanitises the exception itself, so
+     * the row image is never present to be logged by any sink, for any constraint, in any profile. Recorded
+     * in {@code docs/decision-log.md} DL-355.
+     */
+    private static final String SERVER_ERROR_DETAIL_PROPERTY =
+            "spring.datasource.hikari.data-source-properties.logServerErrorDetail";
+
     /** The shared baseline every profile inherits. */
     private static final String SHARED = "application.yml";
 
@@ -812,6 +830,33 @@ final class ConfigurationProfileBaselineTest {
             assertThat(resolvedAcrossSharedThen(overlay, JOB_LAUNCHER_LOG_CATEGORY))
                     .as("an overlay that named the parent category alone must not affect this one")
                     .isEqualTo("WARN");
+        }
+
+        @Test
+        @DisplayName("suppresses the driver's server-error detail, because a rejected row's detail is the "
+                + "whole attempted row and one of its sinks is the provider's rather than this module's")
+        void suppressesServerErrorDetailAtTheDriverBoundary() {
+            assertThat(text(SHARED, SERVER_ERROR_DETAIL_PROPERTY))
+                    .as("left at the driver's default, a single multi-byte character in ordinary input "
+                            + "folds the whole rejected row - a real card number on one path, a freshly "
+                            + "computed credential digest on another - into the exception message that "
+                            + "the provider's own exception helper logs at ERROR. Sanitising the exception "
+                            + "is the only remedy that holds for every sink and every constraint, and it "
+                            + "belongs in the shared baseline because it must hold for every profile")
+                    .isEqualTo("false");
+        }
+
+        @ParameterizedTest(name = "{0} does not restore the driver's server-error detail")
+        @ValueSource(strings = {LOCAL, TEST, PRODUCTION})
+        @DisplayName("pins that driver property in the shared baseline, so no overlay restores the row "
+                + "image by declaring a data-source block of its own")
+        void noOverlayRestoresServerErrorDetail(final String overlay) {
+            assertThat(resolvedAcrossSharedThen(overlay, SERVER_ERROR_DETAIL_PROPERTY))
+                    .as("every overlay declares its own spring.datasource block, and an overlay that "
+                            + "reached this key - directly or by replacing the pass-through map it sits "
+                            + "in - would reopen the disclosure for that profile alone, which is the "
+                            + "hardest form of this defect to notice")
+                    .isEqualTo("false");
         }
     }
 

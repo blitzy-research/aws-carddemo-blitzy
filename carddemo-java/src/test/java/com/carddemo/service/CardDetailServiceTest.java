@@ -195,11 +195,17 @@ class CardDetailServiceTest {
 
     private static final String FIELD_CARD_NUMBER = "CARDSID";
 
-    /** The account-filter property name a response layer decorates. */
-    private static final String PROPERTY_ACCOUNT_ID = "accountId";
+    /**
+     * The account-filter property name a response layer decorates.
+     *
+     * <p>The name the request declares for the filter the operator types, not the name the response uses
+     * for the account the fetch resolved. Both exist on this screen's contract and they are different
+     * fields.
+     */
+    private static final String PROPERTY_ACCOUNT_ID = "accountIdFilter";
 
-    /** The card-number property name a response layer decorates. */
-    private static final String PROPERTY_CARD_NUMBER = "cardNumber";
+    /** The card-number filter property name a response layer decorates. */
+    private static final String PROPERTY_CARD_NUMBER = "cardNumberFilter";
 
     /** {@code WS-PROMPT-FOR-INPUT}, COCRDSLC lines 131 to 132. */
     private static final String MSG_PROMPT_FOR_INPUT = "Please enter Account and Card Number";
@@ -872,20 +878,26 @@ class CardDetailServiceTest {
         }
 
         @Test
-        @DisplayName("2100-RECEIVE-MAP 596: the two message fields keep their own declared widths, "
-                + "measured on encoded bytes")
-        void theTwoMessageFieldsKeepTheirOwnWidths() {
+        @DisplayName("2100-RECEIVE-MAP 596: the two message fields carry their composed values as "
+                + "coded, each bounded by its own declared width but not padded out to it")
+        void theTwoMessageFieldsCarryTheirComposedValues() {
             final CardDetailService.CardDetailResult result =
                     service.processCardDetail(reSubmission(null, null, AID_ENTER));
 
+            // Both are composed values - a literal moved into a wider work field - so each arrives at its
+            // own length and neither is right-filled. The declared widths are still real and still bound:
+            // each value is proved to fit inside its field. These two were the only message fields on this
+            // screen that padded, against twelve on the surface that did not; docs/decision-log.md DL-356
+            // records the single rule they now follow.
             assertAll(
+                    () -> assertThat(result.screen().errorMessage()).isEqualTo(MSG_NO_INPUT),
                     () -> assertThat(result.screen().errorMessage()
                             .getBytes(StandardCharsets.US_ASCII))
-                            .hasSize(ERROR_MESSAGE_FIELD_WIDTH),
+                            .hasSizeLessThanOrEqualTo(ERROR_MESSAGE_FIELD_WIDTH),
+                    () -> assertThat(result.screen().infoMessage()).isEqualTo(MSG_PROMPT_FOR_INPUT),
                     () -> assertThat(result.screen().infoMessage()
                             .getBytes(StandardCharsets.US_ASCII))
-                            .hasSize(FORTY_CHARACTER_FIELD),
-                    () -> assertThat(result.screen().errorMessage()).startsWith(MSG_NO_INPUT),
+                            .hasSizeLessThanOrEqualTo(FORTY_CHARACTER_FIELD),
                     () -> assertThat(result.workArea().returnMessage()).isEqualTo(MSG_NO_INPUT));
         }
     }
@@ -1413,17 +1425,23 @@ class CardDetailServiceTest {
         }
 
         @Test
-        @DisplayName("the summary field is eighty characters wide, so the fifty-byte value is PADDED "
-                + "into it and never truncated")
-        void theFiftyByteValueIsPaddedIntoTheEightyCharacterField() {
+        @DisplayName("the summary field is eighty characters wide, so the fifty-byte value passes "
+                + "through it UNTRUNCATED and is not padded out to eighty")
+        void theFiftyByteValueSurvivesTheEightyCharacterFieldIntact() {
             when(messageCatalogService.invalidKeyMessage()).thenReturn(MSG_INVALID_KEY);
 
             final CardDetailService.CardDetailResult result =
                     service.processCardDetail(firstEntry(AID_UNRECOGNISED));
 
+            // The catalogue literal arrives whole, at its own fifty-byte contractual width - its trailing
+            // spaces are part of the value as coded and are preserved - and the eighty-character field
+            // adds none of its own. Both halves of the one rule are visible in a single assertion: a
+            // composed value is carried as composed, and a bound truncates without padding. See
+            // docs/decision-log.md DL-356.
+            assertThat(result.screen().errorMessage()).isEqualTo(MSG_INVALID_KEY);
             assertThat(result.screen().errorMessage().getBytes(StandardCharsets.US_ASCII))
-                    .hasSize(ERROR_MESSAGE_FIELD_WIDTH);
-            assertThat(result.screen().errorMessage()).startsWith(MSG_INVALID_KEY);
+                    .hasSize(COMMON_MESSAGE_WIDTH);
+            assertThat(COMMON_MESSAGE_WIDTH).isLessThan(ERROR_MESSAGE_FIELD_WIDTH);
         }
 
         @Test

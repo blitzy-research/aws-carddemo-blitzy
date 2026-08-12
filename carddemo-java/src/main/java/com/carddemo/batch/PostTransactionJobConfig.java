@@ -651,12 +651,17 @@ public final class PostTransactionJobConfig {
      * progress, so this is one of the two places such state may live in this file and it lives here
      * rather than anywhere else.
      *
-     * <p>The declared type is the stream-reader interface rather than an implementation class, and that
-     * matters twice. The framework opens and closes a reader that is also a stream around the step, so
-     * the whole pass happens inside the step it is attributed to. And a scoped bean declared by an
-     * interface is proxied <em>through</em> that interface, so no subclass of an implementation type is
-     * generated - which keeps this path clear of the class generation this module's reflection budget
-     * rules out.
+     * <p><strong>The declared type is the implementation class, and that is a corrected decision.</strong>
+     * It was the stream-reader interface until runtime verification showed what an interface-declared
+     * scoped bean costs: the proxy's target class is the interface, so the framework cannot query the
+     * class behind it for listener annotations and says so at every start-up. The warning is one line
+     * per boot and a silent trap for any listener annotation added here later. What survives from the
+     * original reasoning, and is why the type is a <em>stream</em> reader, is that the framework opens
+     * and closes it around the step, so the whole pass happens inside the step it is attributed to. The
+     * module's reflection budget is unaffected: the low-level audit counts source-level uses of the
+     * platform's reflection package and its by-name class loader, a generated subclass is neither, and
+     * the interface-proxied arrangement it replaces was itself a platform dynamic proxy dispatching
+     * every call reflectively. See {@code docs/decision-log.md} entry DL-359.
      *
      * <p>The layout is the factory's, not this method's: no offset, field width or padding rule of the
      * 350-byte record appears in this file. The reader is bound to the one resource the member reads
@@ -667,7 +672,7 @@ public final class PostTransactionJobConfig {
      */
     @Bean(name = DAILY_TRANSACTION_READER_BEAN_NAME)
     @StepScope
-    public ItemStreamReader<DailyTransaction> postTransactionDailyTransactionReader(
+    public DiagnosingDailyTransactionReader postTransactionDailyTransactionReader(
             final BatchStagingArea stagingArea) {
         final org.springframework.core.io.Resource input =
                 stagingArea.holds(this.dalytranDataset)
@@ -710,8 +715,13 @@ public final class PostTransactionJobConfig {
      *
      * <p>The delegate is a stream, so this decorator is one too: the framework opens and closes it
      * around the step, which is what keeps the whole pass attributed to the step that performs it.
+     *
+     * <p>Visible to its own package and open to subclassing for exactly one reason: the bean method
+     * that publishes it declares this type, so the framework generates a step-scoped subclass of it.
+     * Nothing else in the module names it and nothing extends it. See {@code docs/decision-log.md}
+     * entry DL-359.
      */
-    private static final class DiagnosingDailyTransactionReader
+    static class DiagnosingDailyTransactionReader
             implements ItemStreamReader<DailyTransaction> {
 
         /** The reader that actually reads; the layout and the strictness are entirely its own. */
@@ -768,9 +778,11 @@ public final class PostTransactionJobConfig {
      * assigned, so two executions cannot resolve the same generation and neither can overwrite the
      * other's rejects.
      *
-     * <p>Declared by the stream-writer interface for the same two reasons the reader is, and with one
-     * more that is decisive here: the implementation is a final class, so a scoped bean declared by that
-     * class could not be proxied at all.
+     * <p>Declared by the completing wrapper's own class for the same corrected reason the reader is
+     * (DL-359). The wrapper is what this method actually returns, and naming it is what lets the
+     * framework see a class rather than an interface behind the step-scoped proxy. The writer it wraps -
+     * {@code RejectRecordWriter}, which owns the record - stays final and unexported: it is a
+     * constructor argument here, never the declared bean type, so nothing about it needs to change.
      *
      * <p>The staging directory is created before the writer is handed the destination, because the legacy
      * allocation <em>created</em> the dataset rather than requiring it to exist. Everything about the
@@ -786,7 +798,8 @@ public final class PostTransactionJobConfig {
      */
     @Bean(name = REJECT_RECORD_WRITER_BEAN_NAME)
     @StepScope
-    public ItemStreamWriter<RejectRecordWriter.RejectedTransaction> postTransactionRejectRecordWriter(
+    public StagedGenerationStore.CompletingItemStreamWriter<RejectRecordWriter.RejectedTransaction>
+            postTransactionRejectRecordWriter(
             @Value("#{stepExecution.jobExecutionId}") final Long jobExecutionId,
             @Value("#{stepExecution}") final StepExecution stepExecution) {
         final long executionId = Objects.requireNonNull(jobExecutionId,

@@ -1231,6 +1231,29 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
 
         @Test
+        @DisplayName("★ a page that carries no row at all still reports the ten-row window, because the "
+                + "figure is the screen's and not the population's")
+        void aPageCarryingNoRowStillReportsTheTenRowWindow() throws Exception {
+            // Positioned beyond the last identifier the store can hold in this range, so the browse walks
+            // and finds nothing - the same turn the transaction list answers with an empty row list. The
+            // figure under test is the one a client uses to tell a short page from a full one, so it has to
+            // mean the same thing on every turn of every one of the three list screens. It once meant the
+            // populated count here and the screen's window on the other two, which left a client unable to
+            // read it without knowing which endpoint had answered, and an empty page reported nought -
+            // a window no screen has, and one the paging contract's own positive bound forbids (DL-363).
+            final JsonNode body = turn(AdminUserController.LIST_SUBPATH,
+                    listBody("ZZZZZZZZ", null, null, null, null, KeyAction.ENTER),
+                    sessionFor(OWNED_ADMIN));
+
+            assertThat(rowIdentifiersOf(body))
+                    .as("nothing sorts after the position asked for, so the page is empty")
+                    .isEmpty();
+            assertThat(pageMetadataOf(body).get("pageSize").asInt())
+                    .as("and the window is still the screen's ten rows")
+                    .isEqualTo(USER_LIST_ROWS);
+        }
+
+        @Test
         @DisplayName("an eleventh marker corresponds to no row and is refused rather than truncated")
         void anEleventhMarkerIsRefused() throws Exception {
             final List<String> tooMany = new ArrayList<>(selectionsMarking(1, MARKER_UPDATE_UPPER));

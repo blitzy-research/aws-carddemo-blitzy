@@ -3633,6 +3633,11 @@ public final class CardListService {
      * this one is the source's own test of not being on the first page, at lines 440 and 502, rather than a
      * separately retained flag.
      *
+     * <p>The reported page size is {@value #PAGE_SIZE}, this screen's row window, on every turn including a
+     * short final page: the map declares seven row families and the source blanks the ones a short page did
+     * not fill, so the window is a property of the screen rather than of the page. The number of rows the
+     * page carries is the length of the row list this outcome also returns (decision log DL-363).
+     *
      * @param state the turn's working storage
      * @return the paging state the turn leaves, never null
      */

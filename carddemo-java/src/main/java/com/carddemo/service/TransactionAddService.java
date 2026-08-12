@@ -378,38 +378,68 @@ public final class TransactionAddService {
     private static final String FIELD_CONFIRM = "CONFIRM";
 
     // ==========================================================================================
-    // Property names a consumer binds to, one per screen field the cascade can fault
+    // Property names a consumer binds to, one per screen field the cascade can fault.
+    //
+    // EACH VALUE IS THE NAME THE PUBLISHED CONTRACT ACTUALLY DECLARES for the field the paired
+    // screen identifier above names, and nothing else may be used here. A per-field error carries
+    // the two names together so that a client can act on either: the property name to highlight the
+    // form field the operator typed into, and the BMS identifier to position a cursor on a rendered
+    // screen. A name that resolves to no published property therefore breaks the first of those
+    // uses silently - the operator sees a message with no field attribution - which is exactly what
+    // happened while five of these read typeCd, categoryCd, source, origDate and procDate against a
+    // request declaring typeCode, categoryCode, transactionSource, originationDate and
+    // processingDate, and while the identifier fault named a tranId this screen never publishes.
+    // com.carddemo.api.PublishedFieldIdentityAuditTest now holds every name here to that rule.
+    // See docs/decision-log.md DL-354.
     // ==========================================================================================
 
+    /** {@code TransactionAddRequest.accountId}, paired with {@link #FIELD_ACCOUNT_ID}. */
     private static final String PROPERTY_ACCOUNT_ID = "accountId";
 
+    /** {@code TransactionAddRequest.cardNumber}, paired with {@link #FIELD_CARD_NUMBER}. */
     private static final String PROPERTY_CARD_NUMBER = "cardNumber";
 
-    private static final String PROPERTY_TYPE_CD = "typeCd";
+    /** {@code TransactionAddRequest.typeCode}, paired with {@link #FIELD_TYPE_CD}. */
+    private static final String PROPERTY_TYPE_CD = "typeCode";
 
-    private static final String PROPERTY_CATEGORY_CD = "categoryCd";
+    /** {@code TransactionAddRequest.categoryCode}, paired with {@link #FIELD_CATEGORY_CD}. */
+    private static final String PROPERTY_CATEGORY_CD = "categoryCode";
 
-    private static final String PROPERTY_SOURCE = "source";
+    /**
+     * {@code TransactionAddRequest.transactionSource}, paired with {@link #FIELD_SOURCE}.
+     *
+     * <p>The submitted name, deliberately, and not the {@code source} the response echoes the stored
+     * value under: a field error names the field the operator has to correct, which is the one they
+     * filled in.
+     */
+    private static final String PROPERTY_SOURCE = "transactionSource";
 
+    /** {@code TransactionAddRequest.description}, paired with {@link #FIELD_DESCRIPTION}. */
     private static final String PROPERTY_DESCRIPTION = "description";
 
+    /** {@code TransactionAddRequest.amount}, paired with {@link #FIELD_AMOUNT}. */
     private static final String PROPERTY_AMOUNT = "amount";
 
-    private static final String PROPERTY_ORIG_DATE = "origDate";
+    /** {@code TransactionAddRequest.originationDate}, paired with {@link #FIELD_ORIG_DATE}. */
+    private static final String PROPERTY_ORIG_DATE = "originationDate";
 
-    private static final String PROPERTY_PROC_DATE = "procDate";
+    /** {@code TransactionAddRequest.processingDate}, paired with {@link #FIELD_PROC_DATE}. */
+    private static final String PROPERTY_PROC_DATE = "processingDate";
 
+    /** {@code TransactionAddRequest.merchantId}, paired with {@link #FIELD_MERCHANT_ID}. */
     private static final String PROPERTY_MERCHANT_ID = "merchantId";
 
+    /** {@code TransactionAddRequest.merchantName}, paired with {@link #FIELD_MERCHANT_NAME}. */
     private static final String PROPERTY_MERCHANT_NAME = "merchantName";
 
+    /** {@code TransactionAddRequest.merchantCity}, paired with {@link #FIELD_MERCHANT_CITY}. */
     private static final String PROPERTY_MERCHANT_CITY = "merchantCity";
 
+    /** {@code TransactionAddRequest.merchantZip}, paired with {@link #FIELD_MERCHANT_ZIP}. */
     private static final String PROPERTY_MERCHANT_ZIP = "merchantZip";
 
+    /** {@code TransactionAddRequest.confirm}, paired with {@link #FIELD_CONFIRM}. */
     private static final String PROPERTY_CONFIRM = "confirm";
-
-    private static final String PROPERTY_TRAN_ID = "tranId";
 
     // ==========================================================================================
     // Screen field widths, from app/cpy-bms/COTRN02.CPY. Every value is bounded to its declared
@@ -1572,7 +1602,11 @@ public final class TransactionAddService {
         final String tranTypeCd = moveToField(state.typeCd, TYPE_CD_WIDTH);
         final String tranCatCd = moveToField(state.categoryCd, CATEGORY_CD_WIDTH);
         final String tranSource = moveToField(state.source, SOURCE_WIDTH);
-        final String tranDesc = moveToField(state.description, TRAN_DESC_WIDTH);
+
+        // The four free-text columns are stored in their CONTENT form - bounded to the record width, with
+        // the screen field's own right-fill removed - because that is the convention every other writer of
+        // this table already follows. See storedText and docs/decision-log.md DL-356.
+        final String tranDesc = storedText(state.description, TRAN_DESC_WIDTH);
 
         // Lines 456 and 457 convert the edited screen amount to its numeric value, and line 458
         // carries it into TRAN-AMT. The lexeme is the edited form the normalisation wrote
@@ -1582,16 +1616,21 @@ public final class TransactionAddService {
             // Defensive: the format test at lines 339 to 351 has already proved the shape, so this arm
             // is unreachable. It raises the operator-visible failure the source's own catch-all raises
             // rather than writing a record with no amount.
-            faultField(state, MSG_UNABLE_TO_ADD, PROPERTY_AMOUNT, FIELD_ACCOUNT_ID,
+            //
+            // The two names are the account identifier's, not the amount's, because the cursor target the
+            // source's catch-all moves minus one into is ACTIDIN. Naming the amount property beside that
+            // identifier described two different fields in one entry, so a client highlighting the amount
+            // and a client positioning a cursor would have disagreed about which field went wrong.
+            faultField(state, MSG_UNABLE_TO_ADD, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
             return null;
         }
 
         final String tranCardNum = moveToField(state.cardNumber, CARD_NUMBER_WIDTH);
         final String merchantId = moveToField(state.merchantId, MERCHANT_ID_WIDTH);
-        final String merchantName = moveToField(state.merchantName, TRAN_MERCHANT_NAME_WIDTH);
-        final String merchantCity = moveToField(state.merchantCity, TRAN_MERCHANT_CITY_WIDTH);
-        final String merchantZip = moveToField(state.merchantZip, MERCHANT_ZIP_WIDTH);
+        final String merchantName = storedText(state.merchantName, TRAN_MERCHANT_NAME_WIDTH);
+        final String merchantCity = storedText(state.merchantCity, TRAN_MERCHANT_CITY_WIDTH);
+        final String merchantZip = storedText(state.merchantZip, MERCHANT_ZIP_WIDTH);
 
         // Line 464 carries TORIGDTI into TRAN-ORIG-TS and carries TPROCDTI into TRAN-PROC-TS at line 465: two
         // distinct ten-character senders, each left justified and space filled into twenty-six positions.
@@ -2015,7 +2054,7 @@ public final class TransactionAddService {
             // WHEN OTHER at lines 661 to 667, including the DISPLAY at line 662.
             LOG.error("Positioning the transaction browse at the highest key failed:"
                     + " failureChain={}", FailureDiagnostics.failureChainOf(browseFailure));
-            faultField(state, MSG_TRANSACTION_LOOKUP_FAILED, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
+            faultField(state, MSG_TRANSACTION_LOOKUP_FAILED, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
         }
     }
@@ -2155,7 +2194,7 @@ public final class TransactionAddService {
                 LOG.error("Positioning the transaction browse at the highest key failed:"
                                 + " file=TRANSACT failureChain={}",
                         FailureDiagnostics.failureChainOf(writeFailure));
-                faultField(state, MSG_TRANSACTION_LOOKUP_FAILED, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
+                faultField(state, MSG_TRANSACTION_LOOKUP_FAILED, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                         ValidationException.FieldState.INVALID);
                 return;
             }
@@ -2165,14 +2204,14 @@ public final class TransactionAddService {
                 // attempt inside it could not commit.
                 LOG.warn("The transaction master already holds the minted identifier: file=TRANSACT"
                         + " failureChain={}", FailureDiagnostics.failureChainOf(writeFailure));
-                faultField(state, MSG_TRAN_ID_ALREADY_EXISTS, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
+                faultField(state, MSG_TRAN_ID_ALREADY_EXISTS, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                         ValidationException.FieldState.INVALID);
                 return;
             }
             // WHEN OTHER at lines 742 to 748, including the DISPLAY at line 743.
             LOG.error("Writing the transaction failed: file=TRANSACT failureChain={}",
                     FailureDiagnostics.failureChainOf(writeFailure));
-            faultField(state, MSG_UNABLE_TO_ADD, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
+            faultField(state, MSG_UNABLE_TO_ADD, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
             return;
         }
@@ -2181,7 +2220,7 @@ public final class TransactionAddService {
             // store to merge a record whose assigned key is already present.
             LOG.warn("The transaction master already holds the minted identifier and the allocation"
                     + " attempts are exhausted: file=TRANSACT");
-            faultField(state, MSG_TRAN_ID_ALREADY_EXISTS, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
+            faultField(state, MSG_TRAN_ID_ALREADY_EXISTS, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
             return;
         }
@@ -2544,6 +2583,43 @@ public final class TransactionAddService {
     private static String delimitedBySpace(final String field) {
         final int firstSpace = field.indexOf(SPACE);
         return firstSpace < 0 ? field : field.substring(0, firstSpace);
+    }
+
+    /**
+     * A free-text value in the form this table stores it: bounded to the column width, with the screen
+     * field's right-fill removed.
+     *
+     * <h4>The convention this joins</h4>
+     *
+     * <p>Every other writer of the transaction table already stores free text in its content form. The
+     * batch poster copies each daily-transaction value across verbatim and re-pads nothing. The
+     * bill-payment screen stores its literals as coded - a twenty-one-character description, a
+     * twelve-character merchant name, two three-character placeholders. The reference seed derived from
+     * the legacy fixtures does the same, keeping trailing spaces only where the fixture value itself
+     * carries them. This screen alone re-padded, to the copybook width, which meant the shared
+     * transaction-view contract rendered the same four DTO components at one hundred, fifty, fifty and ten
+     * characters for a row this screen wrote and at twenty-one, twelve, three and three for a row the
+     * bill-payment screen wrote - two widths for one field, decided by nothing a consumer can see.
+     *
+     * <h4>Why the record image is unaffected, which is what makes this safe</h4>
+     *
+     * <p>{@code TransactionRecordMapper} places every character field left-justified and space-padded on
+     * the encode path, so a value stored in content form and the same value stored space-filled render the
+     * <em>byte-identical</em> three-hundred-and-fifty-byte image. The parity comparison is therefore
+     * untouched: what changes is only what the column holds and what the contract echoes.
+     *
+     * <p>Only the right-hand fill is removed, never a leading space, because a left-justified screen field
+     * adds spaces on the right and any on the left were transmitted by the operator. All four fields this
+     * is applied to are proved non-blank by the empty-field cascade before the record is assembled, so an
+     * all-space value cannot arrive here and the column's not-null constraint is never in question. See
+     * {@code docs/decision-log.md} DL-356.
+     *
+     * @param value the screen value, already bounded to its own screen width; may be {@code null}
+     * @param width the column's width, which bounds an over-long value
+     * @return the value without its right-hand fill, truncated to {@code width} when longer
+     */
+    private static String storedText(final String value, final int width) {
+        return moveToField(value, width).stripTrailing();
     }
 
     /**

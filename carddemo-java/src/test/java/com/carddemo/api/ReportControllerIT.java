@@ -296,14 +296,17 @@ public class ReportControllerIT extends AbstractPostgresIT {
     /** The confirmation position. */
     private static final String FIELD_CONFIRM = "CONFIRM";
 
-    /** Bound property of the report-type evaluation's own fault. */
-    private static final String PROPERTY_REPORT_TYPE = "reportType";
+    /**
+     * Bound property of the report-type evaluation's own fault.
+     *
+     * <p>The monthly marker, not an aggregate: the screen declares three independent one-character
+     * markers and no report-type field, and the arm that fires when none was marked positions the
+     * cursor on the monthly one.
+     */
+    private static final String PROPERTY_MONTHLY_SELECTION = "monthlySelection";
 
     /** Bound property of the start-date month position. */
     private static final String PROPERTY_START_MONTH = "startMonth";
-
-    /** Bound property of the assembled start date. */
-    private static final String PROPERTY_START_DATE = "startDate";
 
     /** A position the operator left blank: highlighted and marked. */
     private static final String STATE_MISSING = "MISSING";
@@ -989,7 +992,7 @@ public class ReportControllerIT extends AbstractPostgresIT {
             assertThat(flagOf(screen, R_GENERAL_ERROR)).isTrue();
             assertThat(textOf(screen, R_FOCUS_FIELD)).isEqualTo(FIELD_MONTHLY);
             final JsonNode faulted = screen.get(R_FIELD_ERRORS).get(0);
-            assertThat(textOf(faulted, "fieldName")).isEqualTo(PROPERTY_REPORT_TYPE);
+            assertThat(textOf(faulted, "fieldName")).isEqualTo(PROPERTY_MONTHLY_SELECTION);
             assertThat(textOf(faulted, "screenFieldId")).isEqualTo(FIELD_MONTHLY);
             assertThat(textOf(faulted, "state")).isEqualTo(STATE_MISSING);
             assertNothingWasHandedOver();
@@ -1176,8 +1179,10 @@ public class ReportControllerIT extends AbstractPostgresIT {
             assertThat(textOf(screen, R_FOCUS_FIELD)).isEqualTo(FIELD_START_MONTH);
             final JsonNode faulted = screen.get(R_FIELD_ERRORS).get(0);
             assertThat(textOf(faulted, "fieldName"))
-                    .as("the fault is against the assembled date rather than one of its parts")
-                    .isEqualTo(PROPERTY_START_DATE);
+                    .as("the message is about the assembled date, but the field a client can act on"
+                            + " is the month part the cursor lands on, which is the only one of the"
+                            + " three parts the contract declares that the fault could name")
+                    .isEqualTo(PROPERTY_START_MONTH);
             assertThat(textOf(faulted, "state")).isEqualTo(STATE_INVALID);
             assertNothingWasHandedOver();
         }
@@ -1339,8 +1344,9 @@ public class ReportControllerIT extends AbstractPostgresIT {
                     .as("and says nothing at all while doing so")
                     .isEmpty();
             assertThat(textOf(screen, R_ERROR_MESSAGE))
-                    .as("the outbound message field carries only blanks, untrimmed, at its width")
-                    .isEqualTo(BLANK_SELECTION.repeat(OUTBOUND_MESSAGE_WIDTH));
+                    .as("no message was composed, so the outbound field carries the no-message state "
+                            + "rather than a run of blanks to its width - docs/decision-log.md DL-356")
+                    .isEmpty();
             assertThat(flagOf(screen, R_SUBMISSION_ACCEPTED)).isFalse();
             assertThat(screen.get(R_FIELD_ERRORS).size())
                     .as("a silent refusal faults no individual position either")
@@ -1502,18 +1508,21 @@ public class ReportControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the outbound message field carries the acknowledgement at its declared width, "
-                + "space-filled and untrimmed")
-        void theOutboundMessageFieldCarriesTheTextAtItsDeclaredWidth() throws Exception {
-            // The move at line 560 puts the eighty-character work field into a narrower outbound field,
-            // so the served value is the text followed by blanks to that width.
+        @DisplayName("the outbound message field carries the acknowledgement as composed, bounded by "
+                + "its declared width and not space-filled to it")
+        void theOutboundMessageFieldCarriesTheTextAsComposed() throws Exception {
+            // The move at line 560 puts the eighty-character work field into a narrower outbound field.
+            // The narrower width is real and still bounds the value, but the fill is not part of what the
+            // contract publishes: this screen serves the same text twice, once through this field and once
+            // bare, and while this one padded a single response carried two lengths of one literal. See
+            // docs/decision-log.md DL-356.
             final String acknowledgement = PERIOD_VALUE_MONTHLY + SUBMITTED_SUFFIX;
             final JsonNode screen = servedScreen(monthlyTurn(CONFIRM_YES));
 
             assertThat(textOf(screen, R_ERROR_MESSAGE))
-                    .hasSize(OUTBOUND_MESSAGE_WIDTH)
-                    .isEqualTo(acknowledgement + BLANK_SELECTION.repeat(
-                            OUTBOUND_MESSAGE_WIDTH - acknowledgement.length()));
+                    .isEqualTo(acknowledgement)
+                    .isEqualTo(textOf(screen, R_MESSAGE))
+                    .hasSizeLessThanOrEqualTo(OUTBOUND_MESSAGE_WIDTH);
         }
 
         @Test
@@ -1633,8 +1642,8 @@ public class ReportControllerIT extends AbstractPostgresIT {
                             + "that inspects only the status line")
                     .isFalse();
             assertThat(textOf(JSON.readTree(bodyOf(result)), R_ERROR_MESSAGE))
-                    .hasSize(OUTBOUND_MESSAGE_WIDTH)
-                    .startsWith(JobSubmissionException.DEFAULT_MESSAGE);
+                    .startsWith(JobSubmissionException.DEFAULT_MESSAGE)
+                    .hasSizeLessThanOrEqualTo(OUTBOUND_MESSAGE_WIDTH);
         }
     }
 

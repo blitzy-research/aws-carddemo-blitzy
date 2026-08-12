@@ -906,22 +906,35 @@ public class CardControllerIT extends AbstractPostgresIT {
     }
 
     /**
-     * Pads a value to the width of the fixed field it is moved into, exactly as a COBOL move does.
+     * The expected form of a composed message carried in a field of the stated width: the message as coded.
      *
-     * <p>Padding rather than trimming, deliberately. The trailing spaces of a fixed-width space-filled
-     * screen field are part of what was displayed, so an assertion that trimmed either side would accept a
-     * value the screen never carried. Nothing anywhere in this class trims or strips a served value.
+     * <p><strong>Bounded, not padded.</strong> The width is a real property of the map field and is still
+     * enforced here - a message that could not be carried whole fails rather than passing quietly - but the
+     * field's right-fill is not part of the value this contract publishes. A message is composed rather
+     * than read from a record: the source moves a literal into a work field wider than the literal, so the
+     * value is the literal.
      *
-     * @param  value the sending value
-     * @param  width the receiving width
-     * @return exactly {@code width} characters
+     * <p>This method space-filled until {@code docs/decision-log.md} DL-356, and its expectations were met,
+     * which is what kept the inconsistency invisible: twelve of the surface's fifteen message-bearing
+     * fields emitted the literal bare while this screen's two padded. Every one of the seven call sites
+     * below is a message field; nothing else in this class routes through here, so no record-derived or
+     * title value is affected - those keep arriving at their declared widths and are asserted directly.
+     *
+     * <p>Nothing here trims the <em>received</em> value, which is the property the previous form was
+     * written to protect and which is preserved: a received text that had lost or gained a trailing
+     * character still differs from this expectation.
+     *
+     * @param  value the composed message
+     * @param  width the receiving field's width, which bounds but no longer pads
+     * @return the message, unchanged
+     * @throws IllegalArgumentException if the message is wider than the field it is carried in
      */
-    private static String padded(final String value, final int width) {
-        final StringBuilder field = new StringBuilder(width).append(value);
-        while (field.length() < width) {
-            field.append(' ');
+    private static String atMessageWidth(final String value, final int width) {
+        if (value.length() > width) {
+            throw new IllegalArgumentException("a screen message cannot exceed the " + width
+                    + " characters its field declares, but this one needs " + value.length());
         }
-        return field.toString();
+        return value;
     }
 
     /**
@@ -1701,22 +1714,25 @@ public class CardControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("a first entry prompts for both keys, at the declared forty characters, with the error "
-                + "field blank at its declared eighty")
-        void aFirstEntryPromptsForBothKeysAtFullWidth() throws Exception {
-            // COCRDSLC line 132 declares the prompt; the move into the outbound field pads it to forty.
+        @DisplayName("a first entry prompts for both keys with the prompt exactly as coded, and the error "
+                + "field empty rather than absent")
+        void aFirstEntryPromptsForBothKeysWithTheLiteralAsCoded() throws Exception {
+            // COCRDSLC line 132 declares the prompt as a thirty-six-character literal in a forty-character
+            // work field. The forty characters bound the value and the assertion below proves it fits; they
+            // are not added to it. See docs/decision-log.md DL-356.
             final JsonNode screen = detailTurn(turnWith(KeyAction.ENTER));
 
             assertThat(textOf(screen, "infoMessage"))
-                    .as("the trailing spaces of a fixed-width field are part of what the screen carried, "
-                            + "so the value is asserted at full width and never trimmed")
-                    .isEqualTo(padded(PROMPT_FOR_SEARCH_KEYS, DETAIL_INFO_WIDTH))
-                    .hasSize(DETAIL_INFO_WIDTH);
+                    .as("the composed value is the literal, so it crosses at its own length; the field's "
+                            + "declared width bounds it and is not fill this contract publishes")
+                    .isEqualTo(atMessageWidth(PROMPT_FOR_SEARCH_KEYS, DETAIL_INFO_WIDTH))
+                    .isEqualTo(PROMPT_FOR_SEARCH_KEYS)
+                    .hasSizeLessThanOrEqualTo(DETAIL_INFO_WIDTH);
             assertThat(CardDetailResponse.MSG_PROMPT_FOR_INPUT).isEqualTo(PROMPT_FOR_SEARCH_KEYS);
             assertThat(textOf(screen, "errorMessage"))
-                    .as("the error field is blank rather than absent, and it is blank at its own width")
-                    .hasSize(DETAIL_ERROR_WIDTH)
-                    .isBlank();
+                    .as("the error field is present and empty rather than absent, which is the no-message "
+                            + "state - the field still exists, it just carries nothing")
+                    .isEmpty();
             assertThat(flagOf(screen, "generalError")).isFalse();
         }
 
@@ -1741,9 +1757,13 @@ public class CardControllerIT extends AbstractPostgresIT {
             final JsonNode screen = detailTurn(submission);
 
             assertThat(textOf(screen, "errorMessage"))
-                    .isEqualTo(padded(ACCOUNT_NOT_PROVIDED, DETAIL_ERROR_WIDTH));
+                    .isEqualTo(atMessageWidth(ACCOUNT_NOT_PROVIDED, DETAIL_ERROR_WIDTH));
             assertThat(CardDetailResponse.MSG_PROMPT_FOR_ACCOUNT).isEqualTo(ACCOUNT_NOT_PROVIDED);
-            final JsonNode finding = findingFor(screen, PROPERTY_ACCOUNT_ID).orElseThrow();
+            // The finding names the property the operator SUBMITTED, which on this screen is the filter and
+            // not the account the response echoes back once a card has been resolved. Both names exist on
+            // this operation and they mean different things, so the lookup has to pick the submitted one -
+            // that is what lets a client put the cursor back in its own form field. Decision log DL-354.
+            final JsonNode finding = findingFor(screen, PROPERTY_ACCOUNT_ID_FILTER).orElseThrow();
             assertThat(textOf(finding, "state"))
                     .as("a field left blank is the missing state, which is a different remedy from a "
                             + "value that failed its edit")
@@ -1759,9 +1779,10 @@ public class CardControllerIT extends AbstractPostgresIT {
             final JsonNode screen = detailTurn(submission);
 
             assertThat(textOf(screen, "errorMessage"))
-                    .isEqualTo(padded(CARD_NOT_PROVIDED, DETAIL_ERROR_WIDTH));
+                    .isEqualTo(atMessageWidth(CARD_NOT_PROVIDED, DETAIL_ERROR_WIDTH));
             assertThat(CardDetailResponse.MSG_PROMPT_FOR_CARD).isEqualTo(CARD_NOT_PROVIDED);
-            final JsonNode finding = findingFor(screen, PROPERTY_CARD_NUMBER).orElseThrow();
+            // The submitted filter again, for the reason given on the account case above (DL-354).
+            final JsonNode finding = findingFor(screen, PROPERTY_CARD_NUMBER_FILTER).orElseThrow();
             assertThat(textOf(finding, "state")).isEqualTo(ErrorResponse.FieldState.MISSING.name());
             assertThat(textOf(finding, "screenFieldId")).isEqualTo(SCREEN_FIELD_CARD);
         }
@@ -1775,7 +1796,7 @@ public class CardControllerIT extends AbstractPostgresIT {
             final JsonNode screen = detailTurn(resubmission(detailTurn(turnWith(KeyAction.ENTER))));
 
             assertThat(textOf(screen, "errorMessage"))
-                    .isEqualTo(padded(NO_INPUT_RECEIVED, DETAIL_ERROR_WIDTH));
+                    .isEqualTo(atMessageWidth(NO_INPUT_RECEIVED, DETAIL_ERROR_WIDTH));
             assertThat(CardDetailResponse.MSG_NO_SEARCH_CRITERIA_RECEIVED).isEqualTo(NO_INPUT_RECEIVED);
             assertThat(flagOf(screen, "generalError")).isTrue();
         }
@@ -1793,7 +1814,7 @@ public class CardControllerIT extends AbstractPostgresIT {
             final JsonNode screen = detailTurn(submission);
 
             assertThat(textOf(screen, "errorMessage"))
-                    .isEqualTo(padded(ACCOUNT_FILTER_REJECTED, DETAIL_ERROR_WIDTH));
+                    .isEqualTo(atMessageWidth(ACCOUNT_FILTER_REJECTED, DETAIL_ERROR_WIDTH));
             assertThat(CardDetailResponse.MSG_ACCOUNT_FILTER_NOT_NUMERIC)
                     .isEqualTo(ACCOUNT_FILTER_REJECTED);
             assertThat(CardDetailResponse.MSG_SEARCHED_ACCOUNT_ZEROES)
@@ -1823,7 +1844,7 @@ public class CardControllerIT extends AbstractPostgresIT {
                     .as("sixteen characters, carried in full and unaltered")
                     .isEqualTo(SINGLE_CARD_NUMBER);
             assertThat(textOf(screen, "infoMessage"))
-                    .isEqualTo(padded(DISPLAYING_REQUESTED_DETAILS, DETAIL_INFO_WIDTH));
+                    .isEqualTo(atMessageWidth(DISPLAYING_REQUESTED_DETAILS, DETAIL_INFO_WIDTH));
             assertThat(CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT)
                     .as("the three leading spaces are part of the value")
                     .isEqualTo(DISPLAYING_REQUESTED_DETAILS)
@@ -1846,12 +1867,13 @@ public class CardControllerIT extends AbstractPostgresIT {
             final JsonNode screen = detailTurn(submission);
 
             assertThat(textOf(screen, "errorMessage"))
-                    .isEqualTo(padded(NO_CARDS_FOR_SEARCH, DETAIL_ERROR_WIDTH));
+                    .isEqualTo(atMessageWidth(NO_CARDS_FOR_SEARCH, DETAIL_ERROR_WIDTH));
             assertThat(CardDetailResponse.MSG_NO_CARDS_FOR_SEARCH_CONDITION)
                     .isEqualTo(NO_CARDS_FOR_SEARCH);
-            assertThat(findingFor(screen, PROPERTY_ACCOUNT_ID)).isPresent();
-            assertThat(findingFor(screen, PROPERTY_CARD_NUMBER)).isPresent();
-            assertThat(textOf(findingFor(screen, PROPERTY_ACCOUNT_ID).orElseThrow(), "state"))
+            // Both findings name the submitted filters rather than the response echoes (DL-354).
+            assertThat(findingFor(screen, PROPERTY_ACCOUNT_ID_FILTER)).isPresent();
+            assertThat(findingFor(screen, PROPERTY_CARD_NUMBER_FILTER)).isPresent();
+            assertThat(textOf(findingFor(screen, PROPERTY_ACCOUNT_ID_FILTER).orElseThrow(), "state"))
                     .as("both fields were supplied, so both are in the invalid state rather than the "
                             + "missing one")
                     .isEqualTo(ErrorResponse.FieldState.INVALID.name());
@@ -2112,6 +2134,59 @@ public class CardControllerIT extends AbstractPostgresIT {
             assertThat(storedCardOrEmpty(RESERVED_NON_ASCII_CARD))
                     .as("and nothing landed: the refusal is the whole outcome")
                     .isEmpty();
+        }
+
+        /**
+         * The refusal above names the invariant and discloses nothing about the row that broke it.
+         *
+         * <p>This is the confidentiality half of the same event, and it is asserted here rather than over a
+         * raw connection for a reason that is the whole point: PostgreSQL reports a CHECK violation with the
+         * <strong>entire attempted row</strong> in the error's detail field, and the driver's default folds
+         * that detail into the exception's own message. On this path the attempted row carries a card
+         * primary account number, so with the default in force one rejected insert put a real card number
+         * into the exception - and from there into every sink that prints one, including the persistence
+         * provider's own exception helper, which logs it at {@code ERROR} and which this module cannot
+         * silence by level because the same logger emits the SQLSTATE line at {@code WARN}.
+         *
+         * <p>The remedy is to sanitise the exception at the driver boundary rather than to chase its sinks:
+         * {@code spring.datasource.hikari.data-source-properties.logServerErrorDetail} is {@code false} in
+         * the shared configuration baseline, so the message is built from the server error's non-sensitive
+         * form. That property reaches the driver only through the pooled data source the application uses,
+         * which is the one this class writes through. A raw {@code DriverManager} connection does not carry
+         * it and would still see the detail, which is why this proof lives on an application write path and
+         * not beside the schema-refusal proofs that connect directly.
+         *
+         * <p>Both halves are asserted together because either alone is misleading. Requiring the constraint
+         * name proves the message is still the diagnostic a developer needs and that the assertion is not
+         * passing over an empty or unrelated message; requiring the absence of the row image proves the
+         * disclosure is closed. Recorded in {@code docs/decision-log.md} DL-355.
+         */
+        @Test
+        @DisplayName("that refusal names the invariant but discloses no part of the rejected row, so a "
+                + "rejected insert cannot put a card number into a log line")
+        void thatRefusalDisclosesNoPartOfTheRejectedRow() {
+            assertThatExceptionOfType(DataIntegrityViolationException.class)
+                    .isThrownBy(() -> writeReservedCard(RESERVED_NON_ASCII_CARD, NON_ASCII_NAME_UPPER,
+                            STATUS_ACTIVE))
+                    .satisfies(refusal -> {
+                        final String rendered = String.valueOf(refusal.getMessage());
+
+                        assertThat(rendered)
+                                .as("the message must still name the violated invariant, or this assertion "
+                                        + "would pass over a message that says nothing at all")
+                                .contains("ck_card_single_byte_text");
+                        assertThat(rendered)
+                                .as("the card number of the attempted row must not appear: it is the "
+                                        + "regulated value this path carries, and the server offers it in "
+                                        + "the detail field that the driver is configured not to fold in")
+                                .doesNotContain(RESERVED_NON_ASCII_CARD);
+                        assertThat(rendered)
+                                .as("nor may the row image arrive under either of the two headings "
+                                        + "PostgreSQL publishes it beneath, which is what would carry every "
+                                        + "other column of the row along with the card number")
+                                .doesNotContain("Failing row contains")
+                                .doesNotContain("Detail:");
+                    });
         }
 
         @Test

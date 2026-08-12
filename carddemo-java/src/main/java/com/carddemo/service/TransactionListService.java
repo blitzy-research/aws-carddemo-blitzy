@@ -1545,7 +1545,10 @@ public final class TransactionListService {
      * reported as forward. Whether a further page exists comes from the echoed next-page flag as the
      * paging paragraphs settled it, and whether one precedes is the same first-page test the seventh key
      * itself applies at line 245. Both boundary keys travel on every turn because the legacy retains both
-     * at once.
+     * at once. The reported page size is {@code SCREEN_ROW_COUNT}, this screen's row window, on every turn
+     * including a short page and a turn that presented no rows at all - the ten slots exist whether or not
+     * records arrived to fill them, and the number that did is the length of the row list beside it
+     * (decision log DL-363).
      *
      * <p>The route defaults to this screen itself when no transfer occurred, which is the legacy's own
      * behaviour: it re-arms its own transaction at lines 138-141 and the operator stays on the list.

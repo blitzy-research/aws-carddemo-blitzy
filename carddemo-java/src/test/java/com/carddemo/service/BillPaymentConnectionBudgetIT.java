@@ -55,12 +55,13 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *
  * <h2>What this specification exists to catch</h2>
  *
- * <p>The confirmed turn performs two durable writes: it settles the held account row, and it stores the
- * transaction independently of that settlement. When the second write ran in a unit of work
- * <em>nested inside</em> the first, a thread held the settlement unit's connection while asking the pool
- * for a second one. At a pool sized to the number of simultaneous turns, every thread then held one
- * connection and waited for one that every other thread was holding, and no turn could finish: the pool
- * was exhausted by the shape of the choreography rather than by load.
+ * <p>The confirmed turn performs two durable writes: it stores the transaction while holding the account
+ * row, and it settles that row afterwards, independently of the store - the source's own order, recorded
+ * as {@code docs/decision-log.md} DL-323. When the two ran as <em>nested</em> units rather than
+ * sequential ones, a thread held the outer unit's connection while asking the pool for a second one. At a
+ * pool sized to the number of simultaneous turns, every thread then held one connection and waited for one
+ * that every other thread was holding, and no turn could finish: the pool was exhausted by the shape of
+ * the choreography rather than by load. DL-291 records the replacement this specification guards.
  *
  * <p>The turns here are therefore run at <strong>exactly</strong> the pool size, on a pool that refuses
  * to wait long, so the failure this specification is written against would surface as a connection

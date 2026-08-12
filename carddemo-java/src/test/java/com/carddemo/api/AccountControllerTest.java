@@ -491,7 +491,7 @@ class AccountControllerTest {
 
             assertThat(body).isNotNull();
             assertThat(body.fieldErrors()).hasSize(1);
-            assertThat(body.fieldErrors().get(0).fieldName()).isEqualTo("accountIdFilter");
+            assertThat(body.fieldErrors().get(0).fieldName()).isEqualTo("accountId");
             assertThat(body.fieldErrors().get(0).screenFieldId()).isEqualTo("ACCTSID");
             assertThat(body.fieldErrors().get(0).state())
                     .isEqualTo(ErrorResponse.FieldState.MISSING);
@@ -548,7 +548,7 @@ class AccountControllerTest {
                     .extracting(ErrorResponse.FieldError::fieldName)
                     .as("the account filter is edited before the customer master is ever read, so its "
                             + "finding precedes the customer one")
-                    .containsExactly("accountIdFilter", "customerId");
+                    .containsExactly("accountId", "customerId");
             assertThat(body.fieldErrors().get(1).screenFieldId())
                     .as("this screen has one input item, so the customer state names no map field")
                     .isEmpty();

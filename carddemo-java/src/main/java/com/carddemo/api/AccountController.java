@@ -30,6 +30,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
@@ -219,8 +220,17 @@ public class AccountController {
      */
     private static final int PUBLISHED_ZIP_CODE_WIDTH = 5;
 
-    /** Response property the account-filter finding names, matching the component the screen echoes. */
-    private static final String ACCOUNT_ID_FILTER_PROPERTY = "accountIdFilter";
+    /**
+     * Property the account-filter finding names, matching the component the screen echoes.
+     *
+     * <p><strong>The name the contract publishes, on both sides of the turn.</strong> The view screen's
+     * only input is the {@code accountId} query parameter and {@code AccountViewResponse} echoes it back
+     * under that same name, so {@code accountId} is what a client has to be told to highlight. The value
+     * read {@code accountIdFilter}, which is what the service calls the field internally and what the card
+     * screens publish, and which this operation declares nowhere - so the finding named a property no
+     * caller could resolve. See {@code docs/decision-log.md} DL-354.
+     */
+    private static final String ACCOUNT_ID_FILTER_PROPERTY = "accountId";
 
     /** Response property the customer-filter finding names; the screen has no input item for it. */
     private static final String CUSTOMER_ID_PROPERTY = "customerId";
@@ -370,8 +380,18 @@ public class AccountController {
                     + "DFHPF3 to leave the screen. The vocabulary is the one the attention-key "
                     + "copybook app/cpy/CSSTRPFY.cpy defines - DFHENTER, DFHCLEAR, DFHPA1, DFHPA2 and "
                     + "DFHPF1 through DFHPF24, with the function-key number never zero-padded, so "
-                    + "DFHPF3 and not DFHPF03. An identifier outside it is answered with the invalid-key "
-                    + "message rather than being ignored. Optional; absent reads as the enter key.")
+                    + "DFHPF3 and not DFHPF03. This is the identifier the terminal sends, which is why "
+                    + "it differs from the keyAction enumeration the request bodies of the other screens "
+                    + "declare: that one is the folded action the copybook resolves an identifier to, so "
+                    + "DFHPF15 and DFHPF3 both arrive here and both mean the same action. An identifier "
+                    + "outside the list is answered with the invalid-key message rather than being "
+                    + "ignored. Optional; absent reads as the enter key.",
+                    schema = @Schema(type = "string", allowableValues = {
+                        "DFHENTER", "DFHCLEAR", "DFHPA1", "DFHPA2",
+                        "DFHPF1", "DFHPF2", "DFHPF3", "DFHPF4", "DFHPF5", "DFHPF6",
+                        "DFHPF7", "DFHPF8", "DFHPF9", "DFHPF10", "DFHPF11", "DFHPF12",
+                        "DFHPF13", "DFHPF14", "DFHPF15", "DFHPF16", "DFHPF17", "DFHPF18",
+                        "DFHPF19", "DFHPF20", "DFHPF21", "DFHPF22", "DFHPF23", "DFHPF24"}))
             final String attentionKey,
             @Valid @RequestBody(required = false) final NavigationContext navigationContext,
             final Authentication authentication) {
@@ -469,9 +489,18 @@ public class AccountController {
                     + "DFHPF5 to save. The vocabulary is the one the attention-key copybook "
                     + "app/cpy/CSSTRPFY.cpy defines - DFHENTER, DFHCLEAR, DFHPA1, DFHPA2 and DFHPF1 "
                     + "through DFHPF24, with the function-key number never zero-padded, so DFHPF5 and "
-                    + "not DFHPF05. An identifier outside it is answered with the invalid-key message "
-                    + "rather than being ignored. Optional; absent uses the typed action the body "
-                    + "carries.")
+                    + "not DFHPF05. This is the identifier the terminal sends, which is why it differs "
+                    + "from the keyAction enumeration the request bodies of the other screens declare: "
+                    + "that one is the folded action the copybook resolves an identifier to, so DFHPF17 "
+                    + "and DFHPF5 both arrive here and both mean the same action. An identifier outside "
+                    + "the list is answered with the invalid-key message rather than being ignored. "
+                    + "Optional; absent uses the typed action the body carries.",
+                    schema = @Schema(type = "string", allowableValues = {
+                        "DFHENTER", "DFHCLEAR", "DFHPA1", "DFHPA2",
+                        "DFHPF1", "DFHPF2", "DFHPF3", "DFHPF4", "DFHPF5", "DFHPF6",
+                        "DFHPF7", "DFHPF8", "DFHPF9", "DFHPF10", "DFHPF11", "DFHPF12",
+                        "DFHPF13", "DFHPF14", "DFHPF15", "DFHPF16", "DFHPF17", "DFHPF18",
+                        "DFHPF19", "DFHPF20", "DFHPF21", "DFHPF22", "DFHPF23", "DFHPF24"}))
             final String attentionKey,
             final Authentication authentication) {
 

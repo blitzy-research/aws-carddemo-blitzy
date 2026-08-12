@@ -170,6 +170,46 @@ final class ContainerLifecycleContractTest {
         }
     }
 
+    /**
+     * Requires the operator's JVM-flag channel to be forwarded into the application container.
+     *
+     * <p>The module documents a Gate 3 procedure whose first step exports {@code JAVA_TOOL_OPTIONS} with
+     * heap bounds and {@code -Xlog:gc} and then brings the stack up. Compose <em>interpolates</em> every
+     * variable in the invoking environment but <em>injects</em> only the ones a service names, so without
+     * the key below the exported flags reached the container not at all: the JVM ran on its
+     * container-default heap ceiling and wrote no GC log, while the operator following the guide believed
+     * they had bounded the heap and recorded the transitions. The image was never at fault -
+     * {@code docker run -e JAVA_TOOL_OPTIONS=…} against the same image applies the flags - so the defect
+     * was one absent line in the stack definition.</p>
+     *
+     * <p>Two properties are asserted together, because either alone permits the defect. The key must be
+     * <em>present</em>, so the variable is forwarded; and it must carry <em>no value</em>, which is
+     * Compose's pass-through form - a right-hand side would either pin flags this module deliberately does
+     * not set, or, if empty, hand the JVM an empty option string on every run. The guide's own claim is
+     * asserted beside them, so the documented recipe and the mechanism that makes it work cannot drift
+     * apart. Recorded as {@code DL-365}.</p>
+     *
+     * @throws IOException if a shipped document cannot be read
+     */
+    @Test
+    @DisplayName("the operator's JVM-flag channel is forwarded into the container, so the documented "
+            + "performance-baseline recipe is not a silent no-op")
+    void theJvmFlagChannelReachesTheApplicationContainer() throws IOException {
+        final Map<?, ?> environment = mappingAt(document(COMPOSE), "services", "app", "environment");
+
+        assertThat(keyNamesOf(environment))
+                .as("a variable the service does not name is interpolated by Compose and injected by "
+                        + "nothing, which is how the documented heap and GC recipe once did nothing")
+                .contains("JAVA_TOOL_OPTIONS");
+        assertThat(valueAt(document(COMPOSE), "services", "app", "environment", "JAVA_TOOL_OPTIONS"))
+                .as("pass-through form: no right-hand side, so this stack still sets no JVM flag of its "
+                        + "own and hands the JVM nothing when the operator exports nothing")
+                .isNull();
+        assertThat(read(README).replaceAll("\\s+", " "))
+                .as("and the guide states the forwarding rather than assuming it")
+                .contains("The Compose app service forwards it");
+    }
+
     @Test
     @DisplayName("the operator guide states the ceiling, both overrides and what it is not")
     void readmeDocumentsTheBoundedLogContract() throws IOException {

@@ -637,12 +637,24 @@ public final class CombineTransactionsJobConfig {
      * execution observe another's progress, so this is the one place such state may live and it lives
      * here rather than anywhere else in this file.
      *
-     * <p>The declared type is the stream-reader interface rather than an implementation class, which
-     * matters twice. The framework registers a reader that is also a stream and calls its open and
-     * close methods around the step, so the whole read-and-order pass happens inside the step it is
-     * attributed to and is timed by that step's own meter. And a scoped bean declared by an interface
-     * is proxied through that interface, so no subclass of an implementation type is generated - which
-     * keeps this path clear of the class generation the module's reflection budget rules out.
+     * <p><strong>The declared type is the implementation class, and that is a corrected decision rather
+     * than an incidental one.</strong> This method returned the stream-reader interface until runtime
+     * verification found what that costs: a scoped bean declared by an interface is proxied
+     * <em>through</em> that interface, so the proxy's target class is the interface itself, and the
+     * framework's listener discovery cannot see the class behind it. It says so at every start-up -
+     * "{@code org.springframework.batch.item.ItemStreamReader is an interface. The implementing class
+     * will not be queried for annotation based listener configurations}" - which is one warning per boot
+     * and, more importantly, a silent trap: a listener annotation added to the reader later would never
+     * fire and nothing would fail. Declaring the class closes both. It also spends none of the module's
+     * reflection budget, which the low-level audit measures as a source-level count over
+     * {@code src/main/java} of the platform's reflection package and its by-name class loader - neither
+     * of which a generated subclass appears in. The arrangement being replaced was in fact the more
+     * reflective of the two: an interface-proxied bean is a platform dynamic proxy whose every call is
+     * dispatched reflectively, where a class-based proxy is a subclass making direct calls.
+     * The other half of the original reasoning still holds and is why the type is a <em>stream</em>
+     * reader: the framework opens and closes it around the step, so the whole read-and-order pass
+     * happens inside the step it is attributed to and is timed by that step's own meter. See
+     * {@code docs/decision-log.md} entry DL-359.
      *
      * <p><strong>Both locations come from this deployment's configuration, and neither may be
      * blank.</strong> They are not job parameters and cannot be supplied with a launch: the legacy member
@@ -657,7 +669,7 @@ public final class CombineTransactionsJobConfig {
      */
     @Bean
     @StepScope
-    public ItemStreamReader<Transaction> combineTransactionsOrderedReader() {
+    public ConcatenatedOrderingReader combineTransactionsOrderedReader() {
         return new ConcatenatedOrderingReader(readerFactory,
                 resolveInput(this.backupLocation, BACKUP_RESOURCE_PROPERTY, BACKUP_STREAM),
                 resolveInput(this.synthesizedLocation, SYNTHESIZED_RESOURCE_PROPERTY,
@@ -686,13 +698,20 @@ public final class CombineTransactionsJobConfig {
      * submission that then failed - including a zero-byte one, for a submission that failed before
      * composing anything (DL-212).
      *
+     * <p><strong>Declared by the implementation class rather than by the {@link CombinedGeneration}
+     * role, for the reason set out on the ordering reader above and recorded at DL-359.</strong> This
+     * bean is registered twice - as the writer of the ordering step and as the reader of the load step -
+     * so an interface-declared scoped proxy produced two of the five listener-discovery warnings the
+     * boot emitted. The role interface is unchanged and is still what both steps ask for; only the
+     * producing method names the class.
+     *
      * @param jobExecution the execution the generation belongs to, which names its local file and
      *                     receives its registration
      * @return the per-execution combined generation, never {@code null}
      */
     @Bean
     @JobScope
-    public CombinedGeneration combineTransactionsCombinedGeneration(
+    public StagedCombinedGeneration combineTransactionsCombinedGeneration(
             @Value("#{jobExecution}") final JobExecution jobExecution) {
         Objects.requireNonNull(jobExecution,
                 "the framework must supply the job execution before creating the generation");
@@ -1096,9 +1115,12 @@ public final class CombineTransactionsJobConfig {
      * strictly sequential and single-threaded by the job's own design, so no synchronisation is required
      * and none is added - adding it would suggest a concurrent access this job must never have.
      *
-     * <p>See {@code docs/decision-log.md} entry DL-176.
+     * <p>Visible to its own package and open to subclassing for exactly one reason: the bean method
+     * above declares this type, so the framework generates a job-scoped subclass of it. Nothing else in
+     * the module names it, nothing extends it, and it remains unreachable from outside this package.
+     * See {@code docs/decision-log.md} entries DL-176 and DL-359.
      */
-    private static final class StagedCombinedGeneration implements CombinedGeneration {
+    static class StagedCombinedGeneration implements CombinedGeneration {
 
         /** The execution the generation belongs to, and the registry its publication is recorded on. */
         private final JobExecution jobExecution;
@@ -1377,8 +1399,13 @@ public final class CombineTransactionsJobConfig {
      * execution context, because resuming half way through would order a different set of records than
      * the attempt that failed, and a combined generation assembled from two different orderings is
      * worse than one assembled again from the start.
+     *
+     * <p>Visible to its own package and open to subclassing for exactly one reason: the bean method
+     * that publishes it declares this type, so the framework generates a step-scoped subclass of it.
+     * Nothing else in the module names it and nothing extends it. See {@code docs/decision-log.md}
+     * entry DL-359.
      */
-    private static final class ConcatenatedOrderingReader implements ItemStreamReader<Transaction> {
+    static class ConcatenatedOrderingReader implements ItemStreamReader<Transaction> {
 
         /** Builds a reader over the transaction master layout for each of the two inputs. */
         private final FixedWidthFlatFileReaderFactory readerFactory;

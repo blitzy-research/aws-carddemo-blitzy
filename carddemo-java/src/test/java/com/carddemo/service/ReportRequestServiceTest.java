@@ -367,7 +367,7 @@ class ReportRequestServiceTest {
 
     private static final String FIELD_END_YEAR = "EDTYYYY";
 
-    private static final String PROPERTY_REPORT_TYPE = "reportType";
+    private static final String PROPERTY_MONTHLY_SELECTION = "monthlySelection";
 
     private static final String PROPERTY_START_MONTH = "startMonth";
 
@@ -380,10 +380,6 @@ class ReportRequestServiceTest {
     private static final String PROPERTY_END_DAY = "endDay";
 
     private static final String PROPERTY_END_YEAR = "endYear";
-
-    private static final String PROPERTY_START_DATE = "startDate";
-
-    private static final String PROPERTY_END_DATE = "endDate";
 
     /** The program name of the dangling CICS program definition that has no source member. */
     private static final String DANGLING_PROGRAM_DEFINITION = "COCRDSEC";
@@ -980,10 +976,15 @@ class ReportRequestServiceTest {
                     () -> assertThat(header.programName()).isEqualTo(HEADER_PROGRAM_NAME),
                     () -> assertThat(header.currentDate()).isEqualTo(PINNED_HEADER_DATE),
                     () -> assertThat(header.currentTime()).isEqualTo(PINNED_HEADER_TIME),
+                    // No message was composed on this turn, so the outbound field carries the
+                    // no-message state rather than a run of seventy-eight spaces. A composed value is
+                    // carried as composed and the field's width bounds without padding, which is the one
+                    // rule docs/decision-log.md DL-356 records. The two titles above are unaffected and
+                    // deliberately still asserted at their full width: each is a literal coded at forty
+                    // characters, so forty characters IS the composed value.
+                    () -> assertThat(header.errorMessage()).isEmpty(),
                     () -> assertThat(encodedWidth(header.errorMessage()))
-                            .isEqualTo(OUTBOUND_MESSAGE_WIDTH),
-                    () -> assertThat(header.errorMessage())
-                            .isEqualTo(" ".repeat(OUTBOUND_MESSAGE_WIDTH)));
+                            .isLessThan(OUTBOUND_MESSAGE_WIDTH));
         }
 
         @Test
@@ -1229,7 +1230,7 @@ class ReportRequestServiceTest {
                     () -> assertThat(result.focusField()).isEqualTo(FIELD_MONTHLY),
                     () -> assertThat(result.fieldErrors()).hasSize(1),
                     () -> assertThat(result.fieldErrors().get(0).field())
-                            .isEqualTo(PROPERTY_REPORT_TYPE),
+                            .isEqualTo(PROPERTY_MONTHLY_SELECTION),
                     () -> assertThat(result.fieldErrors().get(0).state())
                             .isEqualTo(ValidationException.FieldState.MISSING),
                     () -> assertThat(result.cardsPublished()).isZero());
@@ -1327,7 +1328,7 @@ class ReportRequestServiceTest {
                     () -> assertThat(result.cardsPublished()).isZero(),
                     () -> assertThat(result.fieldErrors()).hasSize(1),
                     () -> assertThat(result.fieldErrors().get(0).field())
-                            .isEqualTo(PROPERTY_START_DATE),
+                            .isEqualTo(PROPERTY_START_MONTH),
                     () -> assertThat(result.fieldErrors().get(0).state())
                             .isEqualTo(ValidationException.FieldState.INVALID));
             verify(dateValidationService, times(1)).validateDate(any(), any(DateFormat.class));
@@ -1431,7 +1432,7 @@ class ReportRequestServiceTest {
                     () -> assertThat(result.focusField()).isEqualTo(FIELD_END_MONTH),
                     () -> assertThat(result.fieldErrors()).hasSize(1),
                     () -> assertThat(result.fieldErrors().get(0).field())
-                            .isEqualTo(PROPERTY_END_DATE),
+                            .isEqualTo(PROPERTY_END_MONTH),
                     () -> assertThat(result.fieldErrors().get(0).state())
                             .isEqualTo(ValidationException.FieldState.INVALID),
                     () -> assertThat(result.cardsPublished()).isZero());
@@ -1923,19 +1924,24 @@ class ReportRequestServiceTest {
         }
 
         @Test
-        @DisplayName("the outbound message field carries the summary text at its own narrower width, "
-                + "space filled and never trimmed")
-        void theOutboundMessageFieldCarriesTheSummaryAtItsOwnWidth() {
+        @DisplayName("the outbound message field carries the summary text as composed, bounded by its "
+                + "own narrower width but not space filled out to it")
+        void theOutboundMessageFieldCarriesTheSummaryAsComposed() {
             catalogueSuppliesTitles();
 
             final ReportRequestService.ReportRequestResult result =
                     subject.processReportRequest(turn(null, null, null, null, null, null, null, null,
                             null, CONFIRM_YES));
 
+            // This screen publishes the same text twice - once through the bounded outbound field and
+            // once bare - so while this field padded, one response carried two lengths of one literal.
+            // Both now agree, which is the point: the length of a message is a property of the message.
+            // See docs/decision-log.md DL-356.
             assertAll(() -> assertThat(result.header().errorMessage())
-                            .isEqualTo(padded(MSG_SELECT_REPORT_TYPE, OUTBOUND_MESSAGE_WIDTH)),
+                            .isEqualTo(MSG_SELECT_REPORT_TYPE),
+                    () -> assertThat(result.header().errorMessage()).isEqualTo(result.message()),
                     () -> assertThat(encodedWidth(result.header().errorMessage()))
-                            .isEqualTo(OUTBOUND_MESSAGE_WIDTH),
+                            .isLessThanOrEqualTo(OUTBOUND_MESSAGE_WIDTH),
                     () -> assertThat(result.header().errorMessage())
                             .startsWith(MSG_SELECT_REPORT_TYPE));
         }

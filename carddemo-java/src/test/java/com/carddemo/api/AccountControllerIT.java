@@ -219,8 +219,17 @@ class AccountControllerIT extends AbstractPostgresIT {
     /** The screen field the view cursor returns to, its map item being the only input on the screen. */
     private static final String VIEW_ACCOUNT_ID_FIELD = "ACCTSID";
 
-    /** Response property the view's account-filter finding names. */
-    private static final String VIEW_ACCOUNT_FILTER_PROPERTY = "accountIdFilter";
+    /**
+     * Response property the view's account-filter finding names.
+     *
+     * <p><strong>The name this operation publishes, not the one the card screens publish.</strong> The
+     * view's only input is the {@code accountId} query parameter and {@code AccountViewResponse} echoes
+     * it back under that same name, so {@code accountId} is the only name a client of this operation can
+     * resolve. The value read {@code accountIdFilter} - which is what the service calls the field
+     * internally, and what {@code /api/cards/detail} genuinely does declare - and this operation
+     * declares nowhere. See {@code docs/decision-log.md} DL-354.
+     */
+    private static final String VIEW_ACCOUNT_FILTER_PROPERTY = "accountId";
 
     /** Transaction the view screen is registered under in the resource definitions. */
     private static final String VIEW_TRANSACTION = "CAVW";

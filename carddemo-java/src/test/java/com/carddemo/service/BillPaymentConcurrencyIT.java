@@ -134,12 +134,12 @@ import org.springframework.transaction.support.TransactionTemplate;
             // Relaxed exactly as the other repository-slice specifications relax it.
             "management.endpoint.health.validate-group-membership=false",
             "management.tracing.enabled=false",
-            // Small ON PURPOSE. An admitted turn needs two connections at its widest point - the outer
-            // unit holding the account row plus the nested unit the independently durable insert opens -
-            // and a queued turn must need none. A pool this size makes both properties observable: the
-            // exhaustion specification puts a turn on every connection at once, and if a queued turn ever
-            // holds one again the run fails here rather than in production. Kept in step with
-            // DECLARED_POOL_SIZE.
+            // Small ON PURPOSE. An admitted turn needs ONE connection at a time - the store unit holding
+            // the account row, then the settlement unit, sequentially and never nested, per
+            // docs/decision-log.md DL-291 and DL-323 - and a queued turn must need none. A pool this size
+            // makes both properties observable: the exhaustion specification puts a turn on every
+            // connection at once, and if a queued turn ever holds one again the run fails here rather than
+            // in production. Kept in step with DECLARED_POOL_SIZE.
             "spring.datasource.hikari.maximum-pool-size=8",
             // Fail fast rather than wait: a turn that cannot get a connection is the defect this class
             // guards against, and a long wait would report it as a slow test instead of a failing one.
@@ -853,15 +853,17 @@ final class BillPaymentConcurrencyIT extends AbstractPostgresIT {
      * As many concurrent confirmed payments as the pool has connections, over distinct accounts.
      *
      * <p>Distinct accounts on purpose: nothing here contends for a row. What every one of these turns
-     * does contend for is the single global allocation lock, and the turn that holds it needs a SECOND
-     * connection for the nested unit its independently durable insert opens.
+     * does contend for is the single global allocation lock, which the store unit takes as its first
+     * statement - so a turn that is waiting for it is waiting inside a unit of work, holding a connection.
      *
      * <p>The defect this guards against is specific. While the wait for that lock happened inside the
-     * unit of work, a turn that was waiting held a connection - so filling the pool with waiting turns
-     * left the one turn making progress unable to obtain the connection its nested insert required. Every
-     * turn then waited out the pool's acquisition timeout and failed, and so did every other request in
-     * the application on every unrelated feature. The fix admits one turn at a time BEFORE the unit
-     * opens, so a queued turn holds nothing.
+     * unit of work, filling the pool with waiting turns emptied it for the whole span in which the one
+     * admitted turn stored its transaction and settled its account. Every other request in the
+     * application, on every unrelated feature, then waited out the pool's acquisition timeout and failed.
+     * The fix admits one turn at a time BEFORE any unit opens, so a queued turn holds nothing. (The
+     * original exhaustion was sharper still, because the two writes then ran as NESTED units and the
+     * admitted turn needed a second connection it could not get; {@code docs/decision-log.md} DL-291 made
+     * them sequential, which removes that half without removing the reason for the permit.)
      */
     @Nested
     @DisplayName("The pool under load: a queued payment holds no connection")

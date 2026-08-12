@@ -843,15 +843,25 @@ public class BillPaymentControllerIT extends AbstractPostgresIT {
     }
 
     /**
-     * Raises an expected text to the width of the outbound message field it is carried in.
+     * The expected form of a text carried in the outbound message field: the text exactly as composed.
      *
-     * <p>Space fills on the right to {@link #OUTBOUND_MESSAGE_WIDTH}, which is what the move at line 293
-     * does to any shorter text. Padding the <em>expectation</em> is deliberate and is the opposite of
-     * trimming the received value: a received text that had lost or gained a trailing character would
-     * still differ from a padded expectation, whereas trimming both sides would hide exactly that.
+     * <p><strong>Bounded, not padded.</strong> {@link #OUTBOUND_MESSAGE_WIDTH} is a real property of the
+     * field and this method still enforces it - a text wider than the field could not be carried whole and
+     * fails here rather than silently - but the field's right-fill is not part of the value the contract
+     * publishes. A message is composed rather than read from a record: the source moves a literal into a
+     * work field wider than the literal, so the value is the literal.
+     *
+     * <p>This method space-filled until {@code docs/decision-log.md} DL-356, and the expectation it built
+     * was met, which is exactly what made the inconsistency invisible: eleven of this surface's other
+     * message-bearing fields emitted the literal bare, and a client comparing message text by equality had
+     * to special-case this endpoint for trailing whitespace alone.
+     *
+     * <p>Nothing here trims the <em>received</em> value, which is the property the previous form was
+     * written to protect and which is preserved: a received text that had lost or gained a trailing
+     * character still differs from this expectation.
      *
      * @param text the text the source composes
-     * @return the same text at the field's declared width
+     * @return the same text, unchanged
      * @throws IllegalArgumentException if the text is wider than the field, which would mean the width
      *     restated here no longer matches the field
      */
@@ -861,7 +871,7 @@ public class BillPaymentControllerIT extends AbstractPostgresIT {
                     + OUTBOUND_MESSAGE_WIDTH + " characters its outbound field declares, but this one "
                     + "needs " + text.length());
         }
-        return text + " ".repeat(OUTBOUND_MESSAGE_WIDTH - text.length());
+        return text;
     }
 
     // ===============================================================================================

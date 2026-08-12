@@ -280,8 +280,9 @@ docker compose config | grep image:                     # the server images, pin
 Two figures are sometimes quoted for "how many artifacts" and they count different things, so neither
 substitutes for the other. **231** is the resolved-artifact count of a one-off probe taken during analysis
 against a different POM state; it is a dated datum and is not re-measured here.
-The figure the build reports today is the **168 dependencies** the supply-chain scan enumerates across
-the compile, runtime and test graph, recorded under Gate 8 in
+The figure the build reports today is the **167 dependencies** the supply-chain scan enumerates across
+the compile, runtime and test graph — one fewer than the 168 recorded before `commons-logging` was
+excluded from the three AWS starters (DL-357) — recorded under Gate 8 in
 [`../docs/gate-evidence.md`](../docs/gate-evidence.md). Read the current graph from `dependency:list`
 rather than from either number.
 
@@ -305,7 +306,7 @@ rather than from either number.
 | AWS SDK v2 (s3, sqs, sns — BOM-managed) | 2.31.78 |
 | Micrometer core + Prometheus registry | 1.15.12 |
 | Micrometer tracing bridge (OpenTelemetry) | 1.5.12 |
-| OpenTelemetry OTLP exporter | 1.49.0 |
+| OpenTelemetry OTLP exporter | 1.56.0 (above the managed 1.49.0 — see DL-358) |
 | logstash-logback-encoder | 9.0 |
 | Logback classic / SLF4J API | 1.5.34 / 2.0.18 |
 | springdoc-openapi (webmvc-ui) | 2.8.17 |
@@ -531,8 +532,14 @@ docker build --build-arg APP_VERSION --build-arg SOURCE_REVISION \
   not tuning, but correctness: they keep timestamps and text in the fixed-width output files
   independent of the host locale and zone, which is a precondition for byte-for-byte comparison
   against the expected-output fixtures.
-- `JAVA_TOOL_OPTIONS` is intentionally unset, so it remains available as the operator's own channel
-  for JVM flags — including heap bounds while recording the performance baseline.
+- `JAVA_TOOL_OPTIONS` is intentionally unset by both the image and the stack, so it remains available
+  as the operator's own channel for JVM flags — including heap bounds while recording the performance
+  baseline. **The Compose app service forwards it**, as a key with no right-hand side, which is
+  Compose's "pass this through if it is set" form. That line is load-bearing rather than decorative:
+  without it Compose consumed the variable during interpolation and never injected it, so
+  `JAVA_TOOL_OPTIONS=… docker compose up` left the JVM on its container-default heap ceiling and wrote
+  no GC log while appearing to have applied both. `ContainerLifecycleContractTest` asserts the
+  forwarding, so this paragraph cannot become untrue without the build failing.
 - `APP_VERSION` and `SOURCE_REVISION` are required inputs, not defaults copied into the Dockerfile.
   `SOURCE_DATE_EPOCH` is the checked-out commit timestamp (with the estate release date as the
   standalone fallback). The build reads `META-INF/build-info.properties` back before emitting the
@@ -602,6 +609,19 @@ half; read `docker-compose.yml` for the digest that actually resolves.
 | `prometheus` | `prom/prometheus:v3.5.0` | `127.0.0.1`:**9090** (`PROMETHEUS_BIND_ADDRESS`, `PROMETHEUS_PORT`) | — the metric half of the diagnostic channel |
 | `grafana` | `grafana/grafana:11.6.6` | `127.0.0.1`:**3000** (`GRAFANA_BIND_ADDRESS`, `GRAFANA_PORT`) | — the dashboard half |
 | `jaeger` | `jaegertracing/all-in-one:1.71.0` | `127.0.0.1`:**16686** UI (`JAEGER_BIND_ADDRESS`, `JAEGER_UI_PORT`), 4317 OTLP/gRPC, 4318 OTLP/HTTP | — the trace half |
+
+#### One bundled dashboard plugin is switched off on purpose
+
+`grafana` starts with `GF_PLUGINS_DISABLE_PLUGINS` set to `grafana-lokiexplore-app`, overridable through
+`GRAFANA_DISABLED_PLUGINS`. Nothing in this stack explores logs — it ships one metrics data source and one
+dashboard — and that bundled application declares a module dependency the page's own import map cannot
+resolve, so it put four console errors and one `404 /react/jsx-runtime` on **every** Grafana page, including
+the login form. Those entries were proven to have nothing to do with the provisioned data source or
+dashboard, and leaving them in place would have taught anyone reading the console to ignore it. With the
+plugin off, a console entry seen here is attributable to this project's own configuration, which is what
+makes the console usable when a panel looks wrong. Nothing else about the service changes — same image
+digest, same read-only root filesystem, same non-root principal, same provisioning, same panels. See
+[`docs/decision-log.md`](../docs/decision-log.md) entry DL-361.
 
 #### Container log growth is bounded
 
@@ -1556,7 +1576,9 @@ HTTP against the scraped application instead.
 
 **Step 1 — bring the stack up with the application inside it, and set the heap bounds you want to
 measure against.** `JAVA_TOOL_OPTIONS` is deliberately unset in the image precisely so it is free for
-this. Ask the JVM to *report* while you are at it: the runtime image is a **JRE**, so it ships no
+this, and the Compose app service forwards it into the container — a variable Compose interpolates but
+does not forward reaches nothing, which is exactly how this recipe once ran as a silent no-op. Ask the
+JVM to *report* while you are at it: the runtime image is a **JRE**, so it ships no
 `jcmd`, `jstat` or `jmap`, and a measurement it was never told to emit cannot be recovered afterwards.
 `-Xlog:gc` writes every heap transition to the container log, and `-XX:+PrintNMTStatistics` prints the
 native-memory summary when the JVM stops — it is a diagnostic option, so the unlock flag must **precede**
@@ -1881,7 +1903,7 @@ rather than fixed.** The scan is bound to `verify` and actually executed, not me
 the build at a CVSS threshold of 7.0, which catches every critical and high finding **that no analyst
 determination covers**; it emits HTML, JSON and XML reports that CI uploads as artifacts; and
 `dependency-check.skipTestScope` is **`false`**, so the result covers the compile, runtime **and test**
-graph — 168 dependencies. Neither a narrower scope nor an unfixable HIGH finding in an excluded test
+graph — 167 dependencies. Neither a narrower scope nor an unfixable HIGH finding in an excluded test
 graph may be claimed here: the shaded transport
 that carried those findings was **replaced** by the visible Apache HTTP client 5 transport rather than
 excluded, which is what made the full-scope claim enforceable, and the scope was widened to match.

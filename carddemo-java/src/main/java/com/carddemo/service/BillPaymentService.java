@@ -473,22 +473,27 @@ public final class BillPaymentService {
      * time; a second permit could only ever be spent waiting for that lock. What the permit changes is
      * <em>where</em> the waiting happens.
      *
-     * <p><strong>What it happens instead of.</strong> The confirmed write needs two connections at its
-     * widest point, not one: the outer unit holds the account row and the allocation lock, and the insert
-     * nested inside it opens a unit of its own - which is not a convenience but the legacy's durability
-     * split, since a legacy record write over a file defined {@code RECOVERY(NONE)} survives a rewrite
-     * that fails after it. Waiting for the advisory lock therefore used to happen <em>with a connection
-     * already held</em>. At the shipped pool of ten, ten concurrent payments took all ten connections,
-     * nine of them blocked on a lock the tenth held, and the tenth then asked for an eleventh connection
-     * for its nested insert. There was none. Every one of the ten waited out the pool's acquisition
-     * timeout and failed - and so did every other request in the application, on every unrelated feature,
-     * for as long as it lasted. A feature that serialises is expected; a feature that can take the
-     * data source away from the rest of the application is not.
+     * <p><strong>What it happens instead of.</strong> The advisory lock is taken as the first statement
+     * <em>inside</em> a unit of work, so waiting for it means waiting <em>with a connection already
+     * held</em>. At the shipped pool of ten, ten concurrent payments took all ten connections and nine of
+     * them then sat blocked on a lock the tenth held, for as long as the tenth took to store its
+     * transaction and settle its account. The pool was empty for that whole span - so every other request
+     * in the application, on every unrelated feature, waited out the pool's acquisition timeout and
+     * failed. A feature that serialises is expected; a feature that can take the data source away from
+     * the rest of the application is not.
      *
-     * <p>Admitting one turn at a time <em>before</em> the unit opens means a queued turn holds no
-     * connection, so the two the admitted turn needs are always available and no other feature is
+     * <p>Admitting one turn at a time <em>before</em> any unit opens means a queued turn holds no
+     * connection at all, so the one an admitted turn needs is always available and no other feature is
      * affected. It is also what the legacy did: a second CICS task reaching the same
      * {@code READ ... UPDATE} waited, holding nothing of the first task's resources.
+     *
+     * <p><strong>A superseded reason, recorded because it explains the shape.</strong> This permit was
+     * introduced when the two writes ran as <em>nested</em> units - which made one turn need two
+     * connections at its widest point, and made the tenth turn above ask for an eleventh connection that
+     * did not exist. {@code docs/decision-log.md} DL-291 replaced the nesting with two sequential units,
+     * so a turn now needs one connection at a time and that particular exhaustion is gone. The permit is
+     * kept because the remaining reason above is sufficient on its own: nine connections held by turns
+     * that are only waiting is still an empty pool.
      */
     private static final int CONFIRMED_WRITE_PERMITS = 1;
 
@@ -1335,8 +1340,32 @@ public final class BillPaymentService {
 
             // Line 193 carries ACCT-CURR-BAL into WS-CURR-BAL, and line 194 carries that into CURBALI -
             // the pre-payment balance, in the edited form the field declared at line 56 imposes.
-            state.screenBalance = currentBalanceOfRecord(state);
-            state.balanceDisplayField = editedBalance(state.screenBalance);
+            //
+            // ONLY WHEN NOTHING HAS BEEN TRANSMITTED YET THIS TURN, because these two moves come AFTER
+            // the sends of the arms above and a send is what the operator sees. Three of the four arms
+            // reach a SEND-BILLPAY-SCREEN before control arrives here: the affirmative arm whose read
+            // found nothing (lines 373 to 378), the negative arm through CLEAR-CURRENT-SCREEN (lines 178
+            // to 181), and the catch-all invalid-confirmation arm (lines 185 to 190). On all three the
+            // 3270 image the operator is looking at carries CURBALI exactly as INITIALIZE-ALL-FIELDS or
+            // the map default left it - blank - because the moves had not run when the map went out. The
+            // source performs them anyway, into storage the terminal will never see again on that turn.
+            //
+            // A request-response transport carries exactly one image, so reproducing the moves
+            // unconditionally would put a balance on the response where the legacy put spaces. It also
+            // put a MISLEADING one: with no record read, currentBalanceOfRecord answers zero by the
+            // zoned-decimal argument its own contract sets out, so an absent account was answered
+            // "Account ID NOT found..." beside a balance of 0.00, which reads as an account that exists
+            // and owes nothing. The two arms that do NOT send - the affirmative arm whose read succeeded,
+            // and the blank-confirmation inquiry of lines 182 to 184 - still display the pre-payment
+            // balance, because for them these moves are the last thing to happen before the map goes out.
+            //
+            // The send count is the faithful predicate here and not a proxy for one: it is incremented by
+            // SEND-BILLPAY-SCREEN itself, so it answers precisely the question the ordering poses - has
+            // an image already gone out carrying the field as it stood? See docs/decision-log.md DL-353.
+            if (state.screenSends == 0) {
+                state.screenBalance = currentBalanceOfRecord(state);
+                state.balanceDisplayField = editedBalance(state.screenBalance);
+            }
         }
 
         // IF NOT ERR-FLG-ON at line 197.
@@ -2189,9 +2218,13 @@ public final class BillPaymentService {
      * balance display at lines 193 and 194 after a failed read, and the whole payment sequence at lines
      * 212 to 235 after a failed cross-reference read - and would therefore change observable output.
      *
-     * <p>The send count is tracked only so that the source's double send on the confirmed-payment path
-     * can be reported once, at debug level, from the entry point. It has no bearing on the outcome: a
-     * request-response transport carries exactly one response, assembled from the final state.
+     * <p><strong>The send count is what makes the ordering above observable.</strong> A request-response
+     * transport carries exactly one response, assembled from the final state, so a statement the source
+     * performs <em>after</em> a send would otherwise reach the caller as though the send had never
+     * happened. The count is therefore read at lines 193 and 194 - the balance display - to reproduce the
+     * blank field the operator is actually looking at on the three arms that send before those moves. It
+     * is also reported once, at debug level, from the entry point, so that the source's double send on the
+     * confirmed-payment path is visible. See {@code docs/decision-log.md} DL-353.
      *
      * @param state the turn's working storage
      */
@@ -2199,7 +2232,7 @@ public final class BillPaymentService {
         populateHeaderInfo(state);
 
         // Line 293 carries WS-MESSAGE into ERRMSGO OF COBIL0AO.
-        state.errorMessageField = moveToField(state.message, ERROR_MESSAGE_WIDTH);
+        state.errorMessageField = messageField(state.message, ERROR_MESSAGE_WIDTH);
 
         state.screenSends = state.screenSends + 1;
     }
@@ -3087,9 +3120,14 @@ public final class BillPaymentService {
      * does rather than a convenience: the record lives in working storage with no initial value, so an
      * unpopulated balance field holds spaces, and on the platform the source targets a space is a byte
      * whose low-order nibble is zero - which is exactly what a zoned decimal field reads a digit from.
-     * An unpopulated record therefore reads as zero there too, and the two paths that reach these moves
-     * without a record - a read that found nothing, and the negative confirmation arm, which reads
-     * nothing - both display a zero balance as a result.
+     * An unpopulated record therefore reads as zero there too, which is why the test at lines 198 and 199
+     * is reached with a zero balance on a turn that read nothing.
+     *
+     * <p><strong>That zero is not displayed.</strong> The two paths that reach the moves at lines 193 and
+     * 194 without a record - a read that found nothing, and the negative confirmation arm, which reads
+     * nothing - have both already sent the map, so the balance display is left as those arms left it,
+     * which is blank. This method's zero is consumed by the balance test and by the settlement
+     * computation, never rendered as a displayed balance. See {@code docs/decision-log.md} DL-353.
      *
      * <p>The value is brought to the monetary scale by the module's codec on every read, because each of
      * the moves stores into a two-decimal field and the codec is the only place a scale is imposed.
@@ -3226,6 +3264,47 @@ public final class BillPaymentService {
     private static String delimitedBySpace(final String field) {
         final int firstSpace = field.indexOf(SPACE);
         return firstSpace < 0 ? field : field.substring(0, firstSpace);
+    }
+
+    /**
+     * A message moved into the outbound message field, <strong>bounded but never padded</strong>.
+     *
+     * <p>The same move as {@link #moveToField(String, int)} in every respect except the one that is
+     * observable on a REST contract: an over-long value is truncated on the right at the receiving width,
+     * and a short one is carried at its own length rather than space-filled out to that width.
+     *
+     * <h4>Why the message field does not use the padding form</h4>
+     *
+     * <p>This module carries one padding rule across its whole surface, and it is published on the
+     * contract: a value is carried exactly as it was stored or composed, a bound truncates an over-long
+     * value and never pads a short one, and {@code maxLength} therefore states the width of the map field
+     * rather than the length of the value. A message is <em>composed</em>, not stored - the source moves a
+     * literal into a work field wider than the literal - so the value the rule carries is the literal as
+     * coded. Twelve of this surface's fifteen message-bearing fields already emitted exactly that; this
+     * one did not, which left a client comparing message text by equality having to special-case this
+     * endpoint for trailing whitespace alone.
+     *
+     * <p>Nothing else changes form. A screen title is a literal coded at its full field width, and a
+     * record-derived value carries whatever trailing spaces the record holds, so both keep arriving at
+     * their declared widths through {@code moveToField} - the rule is the same rule in all three cases.
+     * See {@code docs/decision-log.md} DL-356.
+     *
+     * @param value the composed message; may be {@code null}, which is the no-message state
+     * @param width the receiving field's width, which bounds but no longer pads
+     * @return the message, truncated to {@code width} when longer and otherwise unchanged
+     */
+    private static String messageField(final String value, final int width) {
+        if (value == null) {
+            return NO_MESSAGE;
+        }
+        if (value.length() <= width) {
+            return value;
+        }
+        final StringBuilder truncated = new StringBuilder(width);
+        for (int index = 0; index < width; index++) {
+            truncated.append(value.charAt(index));
+        }
+        return truncated.toString();
     }
 
     /**
@@ -3377,7 +3456,7 @@ public final class BillPaymentService {
         private String message = NO_MESSAGE;
 
         /** {@code ERRMSGO}, the outbound message field the send paragraph fills at line 293. */
-        private String errorMessageField = blankField(ERROR_MESSAGE_WIDTH);
+        private String errorMessageField = NO_MESSAGE;
 
         /** The screen field the cursor is positioned on, from each move of minus one into a length item. */
         private String focusField = FIELD_ACCOUNT_ID;
@@ -3503,7 +3582,13 @@ public final class BillPaymentService {
          */
         private WriteResponse writeResponse = WriteResponse.OTHER;
 
-        /** The pre-payment balance the moves at lines 193 and 194 read; absent before they run. */
+        /**
+         * The pre-payment balance the moves at lines 193 and 194 read.
+         *
+         * <p>Absent before they run, and absent for the whole turn on the three arms that send the map
+         * before reaching them - so the response carries no balance exactly where the 3270 image carried
+         * spaces. See {@code docs/decision-log.md} DL-353.
+         */
         private BigDecimal screenBalance;
 
         /** The balance the computation at line 234 produced; absent before it runs. */

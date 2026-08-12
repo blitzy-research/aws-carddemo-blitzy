@@ -378,7 +378,7 @@ points at, not of the JDBC driver line in the table.
 | AWS SDK v2 — s3, sqs, sns (managed by the Spring Cloud AWS BOM) | `2.31.78` |
 | Micrometer core and Prometheus registry | `1.15.12` |
 | Micrometer tracing bridge (OpenTelemetry) | `1.5.12` |
-| OpenTelemetry OTLP exporter | `1.49.0` |
+| OpenTelemetry OTLP exporter | `1.56.0` — pinned above the `1.49.0` the Spring Boot 3.5.16 bill of materials manages, because on 1.49.0 the span processor's shaded queue takes field offsets through `sun.misc.Unsafe` and the runtime writes three unstructured warnings to the error stream at every start-up; 1.56.0 is the first release carrying no such reference at all |
 | `logstash-logback-encoder` | `9.0` |
 | Logback classic / SLF4J API | `1.5.34` / `2.0.18` |
 | springdoc-openapi (`webmvc-ui`) | `2.8.17` |

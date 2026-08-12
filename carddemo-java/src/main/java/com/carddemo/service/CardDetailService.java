@@ -401,11 +401,22 @@ public class CardDetailService {
     /** The card-number filter, the cursor target of the two card arms at lines 519 to 521. */
     private static final String FIELD_CARD_NUMBER = "CARDSID";
 
-    /** The account-filter property name a response layer decorates. */
-    private static final String PROPERTY_ACCOUNT_ID = "accountId";
+    /**
+     * The account-filter property name a response layer decorates.
+     *
+     * <p><strong>The name the request actually declares for the filter, which is not the name the
+     * response uses for the fetched card's account.</strong> {@code CardDetailRequest} carries
+     * {@code accountIdFilter} and {@code cardNumberFilter} - the two values the operator types - while
+     * {@code CardDetailResponse} additionally publishes {@code accountId} and {@code cardNumber} for the
+     * account and card the fetch resolved. A field error is about the value the operator supplied, so it
+     * has to name the filter; naming {@code accountId} pointed a client at a response-only component and
+     * left the form field it was supposed to highlight unattributed. Recorded in
+     * {@code docs/decision-log.md} DL-354.
+     */
+    private static final String PROPERTY_ACCOUNT_ID = "accountIdFilter";
 
-    /** The card-number property name a response layer decorates. */
-    private static final String PROPERTY_CARD_NUMBER = "cardNumber";
+    /** The card-number filter property name a response layer decorates; see {@link #PROPERTY_ACCOUNT_ID}. */
+    private static final String PROPERTY_CARD_NUMBER = "cardNumberFilter";
 
     /** Separator of the header date, {@code MM/DD/YY}, assembled at lines 439 to 443. */
     private static final String HEADER_DATE_SEPARATOR = "/";
@@ -1319,7 +1330,7 @@ public class CardDetailService {
 
         // The input-error test at lines 386 to 391.
         if (state.inputState.isError()) {
-            state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
+            state.errorMessageField = messageField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
             sendMap(state);
             commonReturn(state);
         }
@@ -1372,7 +1383,7 @@ public class CardDetailService {
     private void commonReturn(final TurnState state) {
         // Line 395 carries WS-RETURN-MSG into CCARD-ERROR-MSG. The work-area message field is 75
         // characters, the same width as the sending field, so nothing is lost.
-        state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
+        state.errorMessageField = messageField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
 
         // Lines 397 to 400 carry CARDDEMO-COMMAREA into WS-COMMAREA and append WS-THIS-PROGCOMMAREA.
         // The repack carries the selection the two edits stored into CDEMO-ACCT-ID and
@@ -1614,10 +1625,10 @@ public class CardDetailService {
 
         // Line 494 carries WS-RETURN-MSG into ERRMSGO. The receiving field is eighty characters against
         // a seventy-five-character sender, so the move pads and never truncates.
-        state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
+        state.errorMessageField = messageField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
 
         // Line 496 carries WS-INFO-MSG into INFOMSGO.
-        state.infoMessageField = boundedField(state.infoMessage, INFO_MESSAGE_WIDTH);
+        state.infoMessageField = messageField(state.infoMessage, INFO_MESSAGE_WIDTH);
 
         setupScreenVarsExit(state);
     }
@@ -1777,7 +1788,7 @@ public class CardDetailService {
         editMapInputs(state);
 
         // Line 587 carries WS-RETURN-MSG into CCARD-ERROR-MSG, then the three names at lines 588 to 590.
-        state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
+        state.errorMessageField = messageField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
         state.nextProgram = boundedField(LIT_THISPGM, PROGRAM_NAME_WIDTH);
         state.nextMapset = boundedField(LIT_THISMAPSET, MAP_NAME_WIDTH);
         state.nextMap = boundedField(LIT_THISMAP, MAP_NAME_WIDTH);
@@ -2278,7 +2289,7 @@ public class CardDetailService {
      */
     private void sendPlainText(final TurnState state) {
         // Lines 839 to 844 send the summary message as text, erasing the screen and freeing the keyboard.
-        state.errorMessageField = boundedField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
+        state.errorMessageField = messageField(state.returnMessage, ERROR_MESSAGE_FIELD_WIDTH);
         state.screenSent = true;
         // EXEC CICS RETURN at lines 846 to 847.
         state.reArmedTransactionId = NO_MESSAGE;
@@ -2613,6 +2624,47 @@ public class CardDetailService {
             padded.append(SPACE);
         }
         return padded.toString();
+    }
+
+    /**
+     * A message moved into a screen field of the stated width, <strong>bounded but never padded</strong>.
+     *
+     * <p>The same {@code MOVE} as {@link #boundedField(String, int)} in every respect except the one that
+     * is observable on a REST contract: an over-long value is truncated on the right at the receiving
+     * width, and a short one is carried at its own length rather than space-filled out to that width.
+     *
+     * <h4>Why message fields do not use the padding form</h4>
+     *
+     * <p>This module carries one padding rule across its whole surface, and it is published on the
+     * contract: a value is carried exactly as it was stored or composed, a bound truncates an over-long
+     * value and never pads a short one, and {@code maxLength} therefore states the width of the map field
+     * rather than the length of the value. A message is <em>composed</em>, not stored - the source moves a
+     * literal into a work field wider than the literal - so the value the rule carries is the literal as
+     * coded. Twelve of this surface's fifteen message-bearing fields already emitted exactly that; this
+     * screen's two did not, which left a client comparing message text by equality having to special-case
+     * two endpoints for trailing whitespace alone.
+     *
+     * <p>Nothing else changes form. A screen title is a literal coded at its full field width, and a
+     * record-derived value carries whatever trailing spaces the record holds, so both keep arriving at
+     * their declared widths through {@code boundedField} - the rule is the same rule in all three cases.
+     * See {@code docs/decision-log.md} DL-356.
+     *
+     * @param value the composed message; may be {@code null}, which is the no-message state
+     * @param width the receiving field's width, which bounds but no longer pads
+     * @return the message, truncated to {@code width} when longer and otherwise unchanged
+     */
+    private static String messageField(final String value, final int width) {
+        if (value == null) {
+            return NO_MESSAGE;
+        }
+        if (value.length() <= width) {
+            return value;
+        }
+        final StringBuilder truncated = new StringBuilder(width);
+        for (int index = 0; index < width; index++) {
+            truncated.append(value.charAt(index));
+        }
+        return truncated.toString();
     }
 
     /**

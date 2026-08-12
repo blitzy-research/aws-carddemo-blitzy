@@ -44,9 +44,14 @@ import java.util.Objects;
  * attention key, so there is no "unknown" direction to fall back to and the canonical constructor refuses
  * an absent one.
  *
- * <p><strong>Page size is accepted as given.</strong> One carrier serves screens of seven and ten rows
- * alike, and it is neither validated against those figures nor defaulted to either, because a partial page
- * is an ordinary outcome and a single-row page is a page a service legitimately assembles.
+ * <p><strong>Page size is the screen's row window, and it is accepted as given.</strong> One carrier serves
+ * screens of seven and ten rows alike, and it is neither validated against those figures nor defaulted to
+ * either, because a single-row page is a page a service legitimately assembles. What each of the three
+ * browse services supplies is its <em>own</em> screen figure, unchanged on every turn: a partial page is an
+ * ordinary outcome and it does not narrow the window, since the legacy map declares that many row families
+ * and blanks the ones a short page left unfilled. The number of rows a page carries is the length of the
+ * row list the service returns alongside this window and is deliberately not restated here (decision log
+ * DL-363).
  *
  * <p>{@link #toString()} withholds both boundary cursors, because a boundary cursor is a record key and on
  * the card-list browse that key <em>is</em> the sixteen-character card number.
@@ -54,7 +59,8 @@ import java.util.Objects;
  * <p>Deeply immutable: every component is a scalar or a {@code String}, so an instance is safe for
  * unsynchronised concurrent use.
  *
- * @param pageSize the number of screen rows the assembled page carries
+ * @param pageSize the number of screen rows the serving screen presents - its row window, and not the
+ *        number of rows the assembled page happens to carry
  * @param previousCursorKey the key of the first row, from which a backward browse restarts, or
  *        {@code null} when no page precedes this one
  * @param nextCursorKey the key of the last row, from which a forward browse restarts, or {@code null}
@@ -132,7 +138,7 @@ public record BrowseWindow(
      * of - the legacy leaves the backward attention key live and repositions on the retained first key -
      * so recording only the forward key would discard exactly what that path needs.
      *
-     * @param pageSize the number of screen rows the page carries
+     * @param pageSize the screen's own row window, not the number of rows on this page
      * @param previousCursorKey the key of the first row, or {@code null} when no page precedes this one
      * @param nextCursorKey the key of the last row, or {@code null} when no page follows this one
      * @param hasMorePages whether a page follows this one
@@ -164,7 +170,7 @@ public record BrowseWindow(
      * ascending, reproducing the legacy bottom-row-upward fill. Both boundary keys are supplied for the
      * mirror of the reason given on {@link #forward}.
      *
-     * @param pageSize the number of screen rows the page carries
+     * @param pageSize the screen's own row window, not the number of rows on this page
      * @param previousCursorKey the key of the first row, or {@code null} when no page precedes this one
      * @param nextCursorKey the key of the last row, or {@code null} when no page follows this one
      * @param hasMorePages whether a page follows this one

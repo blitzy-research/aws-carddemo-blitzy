@@ -1017,16 +1017,22 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("the send paragraph moves the eighty-character message work field into the "
-                + "seventy-eight character outbound field, at line 293")
+        @DisplayName("the send paragraph moves the message work field into the outbound field at line "
+                + "293, BOUNDED to seventy-eight characters but not padded out to them")
         void sendBillpayScreenMovesTheMessageIntoTheOutboundField() {
             final BillPaymentService.BillPaymentResult result =
                     service.processBillPayment(submitted(null, null));
 
             assertAll(
                     () -> assertThat(result.message()).isEqualTo(MSG_ACCT_ID_EMPTY),
+                    // The literal as coded, not the literal right-filled to the field width. The move's
+                    // receiving width is real and still truncates an over-long message - the bound below
+                    // proves it is not simply ignored - but the fill is not part of the value this
+                    // contract carries, which is the rule the other twelve message-bearing fields on
+                    // this surface already followed. See docs/decision-log.md DL-356.
+                    () -> assertThat(result.header().errorMessage()).isEqualTo(MSG_ACCT_ID_EMPTY),
                     () -> assertThat(encodedByteCount(result.header().errorMessage()))
-                            .isEqualTo(ERROR_MESSAGE_WIDTH),
+                            .isLessThanOrEqualTo(ERROR_MESSAGE_WIDTH),
                     () -> assertThat(result.header().errorMessage()).startsWith(MSG_ACCT_ID_EMPTY));
         }
     }
@@ -1494,9 +1500,15 @@ class BillPaymentServiceTest {
                     () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
                     () -> assertThat(result.account()).isNull(),
                     () -> assertThat(result.transaction()).isNull(),
-                    // No record was adopted, so the balance moves read zero, exactly as an unpopulated
-                    // working-storage record reads on the platform the source targets.
-                    () -> assertThat(result.screenBalance()).isEqualByComparingTo(ZERO_BALANCE));
+                    // No record was adopted, so the balance the record area reads is zero - exactly as an
+                    // unpopulated working-storage record reads on the platform the source targets - but
+                    // that zero is never DISPLAYED: this arm sends the map at lines 365 to 371 before
+                    // control reaches the moves at lines 193 and 194, so the image carries a blank
+                    // CURBALI and the single response carries no balance. See docs/decision-log.md
+                    // DL-353.
+                    () -> assertThat(result.screenBalance()).isNull(),
+                    () -> assertThat(result.screen().currentBalance())
+                            .isEqualTo(" ".repeat(BALANCE_DISPLAY_WIDTH)));
             assertNothingWasWritten();
         }
 
@@ -1668,11 +1680,20 @@ class BillPaymentServiceTest {
                     () -> assertThat(result.screen().accountId()).isEqualTo(" ".repeat(ACCOUNT_ID_WIDTH)),
                     () -> assertThat(result.screen().confirm()).isEqualTo(" "),
                     // The balance moves at lines 193 and 194 sit INSIDE the block the flag test at line
-                    // 169 opened, so they run after this arm has already blanked the screen and they
-                    // re-fill the edited field from a record that was never read - which reads as zero.
-                    // Expecting a blank field here would be expecting behaviour the legacy does not have.
-                    () -> assertThat(result.screen().currentBalance()).isEqualTo("+0000000000.00"),
-                    () -> assertThat(result.screenBalance()).isEqualByComparingTo(ZERO_BALANCE),
+                    // 169 opened, so the source does perform them after this arm has run. But this arm
+                    // has ALREADY SENT the map, through CLEAR-CURRENT-SCREEN, and the image it sent
+                    // carries CURBALI as INITIALIZE-ALL-FIELDS left it at lines 563 to 566 - blank. The
+                    // moves land in storage the terminal will not see again on that turn, so the blank
+                    // field is what the operator sees and therefore what the single response carries.
+                    //
+                    // This assertion previously expected "+0000000000.00" on the reasoning that the
+                    // statement order is the observable. It is not: reproducing a move that happens after
+                    // a send put a balance on the response where the legacy put spaces, and a zero one at
+                    // that - on an arm that reads no record at all, which reads as an account that exists
+                    // and owes nothing. See docs/decision-log.md DL-353.
+                    () -> assertThat(result.screen().currentBalance())
+                            .isEqualTo(" ".repeat(BALANCE_DISPLAY_WIDTH)),
+                    () -> assertThat(result.screenBalance()).isNull(),
                     () -> assertThat(result.transaction()).isNull(),
                     () -> assertThat(result.account()).isNull(),
                     () -> assertThat(result.paymentAccepted()).isFalse());
@@ -2629,19 +2650,27 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("the insert runs in a unit of ITS OWN that follows the settlement unit, which is what "
+        @DisplayName("the settlement runs in a unit of ITS OWN that follows the insert unit, which is what "
                 + "makes the stored record survive a rewrite that rolled back")
-        void theInsertRunsInAUnitOfItsOwnAfterTheSettlementUnit() {
+        void theSettlementRunsInAUnitOfItsOwnAfterTheInsertUnit() {
             arrangeConfirmablePayment(payableAccount(), null);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
             // Two units, not one, and one after the other rather than one inside the other. The first holds
-            // the account row exclusively and settles it, reproducing the legacy hold from line 343 to line
-            // 235. The second is the transaction insert, and it is separate precisely because the legacy
-            // transaction file is defined RECOVERY(NONE) with JOURNAL(NO): a record that was written is
-            // durable at once and no REWRITE failure undoes it. Sharing one unit between the two stores
-            // would make a failed rewrite discard a stored transaction, which no legacy mechanism does.
+            // the account row exclusively, re-checks the balance under that hold, and STORES the
+            // transaction - the source's line 233. The second computes line 234 and rewrites the account at
+            // line 235. The insert is separate precisely because the legacy transaction file is defined
+            // RECOVERY(NONE) with JOURNAL(NO): a record that was written is durable at once and no REWRITE
+            // failure undoes it. Sharing one unit between the two stores would make a failed rewrite
+            // discard a stored transaction, which no legacy mechanism does.
+            //
+            // The name, the display name and this comment previously described the units in the opposite
+            // order - settle first, insert second - which is the arrangement docs/decision-log.md DL-291
+            // recorded and DL-323 corrected to the source's own store-then-settle. The assertion below
+            // counts units without ordering them, so it went on passing while the prose around it named a
+            // sequence the service no longer performs. Corrected to the delivered order; the ordering
+            // itself is asserted by theTransactionIsStoredBeforeTheHeldAccountIsSettled above.
             verify(transactionBoundary, times(2)).execute(any());
             verifyNoMoreInteractions(transactionBoundary);
         }
@@ -2668,10 +2697,12 @@ class BillPaymentServiceTest {
                     () -> assertThat(result.transaction())
                             .as("nothing was inserted")
                             .isNull());
-            // Two units still ran - the settlement and the allocation span - and the refusal was resolved
-            // inside the second one without ever reaching the store. The account is settled behind a message
-            // saying the transaction could not be added, which is precisely what the source does by testing
-            // no flag between lines 233 and 235.
+            // Two units still ran - the allocation span and then the settlement - and the refusal was
+            // resolved inside the FIRST one, without ever reaching the store. The account is settled behind
+            // a message saying the transaction could not be added, which is precisely what the source does
+            // by testing no flag between lines 233 and 235. (This comment named the second unit while the
+            // service resolves the refusal in the first; the ordering was corrected by
+            // docs/decision-log.md DL-323 and the prose had not followed.)
             verify(transactionBoundary, times(2)).execute(any());
             verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
             verify(accountRepository).saveAndFlush(any(Account.class));
@@ -2702,8 +2733,12 @@ class BillPaymentServiceTest {
                             .isEqualTo(FIRST_IDENTIFIER_ON_EMPTY_TABLE),
                     () -> assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_UPDATE_ACCOUNT),
                     () -> assertThat(result.errorFlag()).isTrue());
-            // The nested unit committed the record before the outer unit was asked to rewrite, so the
-            // rollback of the outer unit reaches only the account.
+            // Unit one committed the record before unit two was asked to rewrite, so unit two's rollback
+            // reaches only the account: the stored payment stands against an unsettled balance, and the
+            // identifier the response carries names a row that genuinely exists. That residual is accepted
+            // rather than closed - see docs/decision-log.md DL-323, and DL-166, whose withdrawn shared-unit
+            // decision claimed the opposite. (The two units are SEQUENTIAL; this comment previously called
+            // them nested and outer, which is the DL-277 arrangement DL-291 replaced.)
             verify(transactionBoundary, times(2)).execute(any());
             verify(transactionRepository).insertAndFlush(any(Transaction.class));
         }

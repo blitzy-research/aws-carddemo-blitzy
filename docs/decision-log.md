@@ -7147,7 +7147,31 @@ its decision to leave the two supporting indexes un-widened.
 
 ---
 
-### DL-166 - The bill-payment insert and the account rewrite share one unit of work, because the legacy held the record from its read to its rewrite
+### DL-166 - The bill-payment insert and the account rewrite share one unit of work, because the legacy held the record from its read to its rewrite — **SHARED-UNIT DECISION SUPERSEDED BY DL-277, DL-291 AND DL-323**
+
+> **The shared unit this entry decides on is no longer what is delivered, and the atomicity it promises is
+> not a property the module has.** Three later entries replaced it in sequence. `DL-277` restored the
+> insert's independent durability, on the ground that the legacy's two clusters are `RECOVERY(NONE)` and
+> `JOURNAL(NO)` and back nothing out. `DL-291` made the two units run **sequentially** rather than nested,
+> so a turn holds one connection at a time. `DL-323` corrected the sequence to the source's own
+> **store-then-settle** order — `app/cbl/COBIL00C.cbl` performs `WRITE-TRANSACT-FILE` at line 233 before
+> computing the balance at line 234 and rewriting the account at line 235 — and is the governing entry for
+> this path.
+>
+> Read every sentence below that describes **one** unit of work spanning L212-L235, a `409` that leaves no
+> transaction behind, a rewrite existing "in two forms" over a shared unit, or an allocation lock held
+> until after the account rewrite, as a description of the superseded arrangement. What survives from this
+> entry, and is why it is retained rather than deleted, is the diagnosis it was written for: the
+> concurrency fault it reproduced — four concurrent confirmations answering `200, 409, 409, 409` and
+> leaving four transaction rows against a balance debited once — and the account of what
+> `UPDATEMODEL(LOCKING)` actually did, which is the exclusive row hold every later entry keeps. That hold,
+> not a shared unit, is what excludes the concurrent writer; `DL-277` preserves it and `DL-291` and
+> `DL-323` preserve it still.
+>
+> The consequence a reader most needs is stated where this entry used to deny it: **a residual is accepted
+> rather than closed.** An interruption between the two units leaves a stored transaction against an
+> unsettled account, which is exactly the state the legacy left, and `DL-323` explains why closing it
+> would grant the target a durability property the source does not have.
 
 **Context.** `app/cbl/COBIL00C.cbl` writes the transaction master at L233 and rewrites the account master
 at L235, with the balance computation at L234 between them and **no flag tested between the write and the
@@ -7192,13 +7216,20 @@ by a rewrite that commits. The rewrite therefore exists in two forms - one that 
 arm, one that runs inside the shared unit otherwise - over a single shared store, so the re-read, the
 version comparison and the flushed versioned update are written once.
 
-**A rewrite failure that is not a conflict now discards the insert, and that is stated rather than implied.**
-Inside the shared unit a non-conflict rewrite failure records the source's catch-all arm at L396-L402 and
-leaves the unit through a private marker, so both writes roll back and the turn reports *Unable to Update
-Account...* rather than a success naming an identifier no row carries. The legacy, with unrecoverable files,
-would have kept that transaction row. This is a deliberate divergence in the direction of integrity: the
-operator is told the account could not be updated, and nothing partial is left behind. It is reachable only
-through a genuine store failure during the rewrite, not through any input.
+**A rewrite failure that is not a conflict discards the insert — WITHDRAWN, and corrected here rather than
+left to be inferred from the marker above.** This entry decided that a non-conflict rewrite failure inside
+the shared unit would roll both writes back, so that the turn reported *Unable to Update Account...* and
+"nothing partial is left behind." That is not what the module does, and the claim is withdrawn. Under
+`DL-323` the insert is a durable unit of its own that has already committed by the time the rewrite is
+attempted, so a rewrite failure of any kind — a version conflict or the source's catch-all arm at
+L396-L402 — rolls back **only the settlement**. The transaction row survives; the account is left
+unsettled; the turn reports *Unable to Update Account...*; and the identifier the response carries names a
+row that genuinely exists, which is why it is still returned rather than suppressed. This is the same
+state the legacy left, for the same reason: two `RECOVERY(NONE)` clusters with no syncpoint between the
+writes. The divergence-in-the-direction-of-integrity this paragraph originally claimed was therefore never
+delivered, and `DL-323` records why it should not be — granting the target an atomicity the source does not
+have changes what a restart sees, which `DL-012` shows is not automatically welcome. The arm remains
+reachable only through a genuine store failure during the rewrite, not through any input.
 
 **The identifier rule is unaffected, and the lock is why.** `TransactionRepository.lockIdentifierAllocation`
 is still taken as the shared unit's first statement, before the maximum is read, and is transaction-scoped.
@@ -7224,8 +7255,10 @@ is the source's own not-found arm at L390-L395, a version that no longer matches
 versioned update the flush issues closes the window between the two. The select costs nothing, because the
 merge would have issued the same one.
 
-*Cited by:* `service/BillPaymentService.java`. Proven by the `WriteOrderingAndUnitsOfWork` nest of
-`service/BillPaymentServiceTest.java`.
+*Cited by:* `service/BillPaymentService.java` and `service/BillPaymentServiceTest.java`. The
+`WriteOrderingAndUnitsOfWork` nest of that test class is where this path is specified, but it now proves the
+**superseding** arrangement — two sequential units in store-then-settle order, a refused rewrite leaving the
+stored transaction in place — and it names this entry only to record which decision was withdrawn.
 
 ---
 
@@ -9451,8 +9484,15 @@ its own control flow definite. The job configuration wraps the factory-built rea
 The driving loop's own read-failure arm already belongs to the translated program and is raised from
 there, so decorating the read as well would emit one diagnostic twice. An `AbendException` the delegate
 itself raises is re-thrown unchanged rather than re-wrapped, so a failure that already carries the
-program's verdict never acquires a second one. The decorator is declared as the stream-reader interface,
-which keeps the step-scoped proxy interface-based and the module's reflection budget intact.
+program's verdict never acquires a second one.
+
+*Correction - the decorator is now declared by its class, not by the stream-reader interface.* This entry
+originally recorded that the interface declaration "keeps the step-scoped proxy interface-based and the
+module's reflection budget intact". The first half was true and the second was not, and the arrangement it
+described cost a start-up warning and left a silent trap. DL-355 sets out the measurement and the reasoning;
+what changes here is only the declared type of the bean that publishes the decorator. Everything this entry
+decided about *behaviour* - the acquisition stays delegated, only the open is decorated, an already-diagnosed
+abend is re-thrown unchanged - is unaffected.
 
 *Embodied in:* `service/TransactionPostingService.java` (`dailyTransactionOpenFailure`),
 `batch/PostTransactionJobConfig.java` (`DiagnosingDailyTransactionReader`).
@@ -9562,6 +9602,14 @@ and pretending it was a refusal would hide it.
 `reserveWithDatabaseLock`).
 *Asserted by:* `batch/BatchLaunchCoordinatorTest` drives a transient failure on the first attempt and
 asserts the second succeeds, and a repeated transient failure and asserts the closed refusal reason.
+
+**Superseded in part by DL-354.** The judgement above that a store conflict is a *refusal* rather than an
+internal error stands unchanged and is why this entry is not withdrawn. Two of its particulars do not: the
+budget is no longer two attempts with no spacing between them, and the exhausted budget no longer answers
+`ACTIVE_EXECUTION`. Runtime measurement showed the premise behind both to be false - the conflict is not
+confined to launches of the *same* job, so a second conflict does not imply a run is in flight. Read the
+"one retry is enough" and "another launch of the same job is genuinely in flight" sentences above as what was
+believed of the tree they were written against; DL-354 records what was measured and what replaced them.
 
 ---
 
@@ -17477,6 +17525,771 @@ DL-342 and DL-343.
 *Embodied in:* the absence of any attempt counter in `service/AuthenticationService`, the five-script
 migration inventory under `src/main/resources/db/migration`, and the empty operational-table roster in
 `support/AbstractPostgresIT`.
+
+---
+
+### DL-353 - The bill-payment balance display is reproduced as the operator saw it, so a statement the source performs after a send does not reach the caller as though it had run before one
+
+**Context.** `app/cbl/COBIL00C.cbl` performs the balance display as two moves - `ACCT-CURR-BAL` into
+`WS-CURR-BAL` at line 193, and that into `CURBALI` at line 194 - and it performs them *after* the
+four-arm confirmation selection of lines 173 to 191, inside the single `IF NOT ERR-FLG-ON` at line 169.
+Three of those four arms reach `SEND-BILLPAY-SCREEN` before control arrives at line 193: the
+affirmative arm whose read found nothing (lines 373 to 378 of `READ-ACCTDAT-FILE`), the negative arm
+through `CLEAR-CURRENT-SCREEN` (lines 178 to 181), and the catch-all invalid-confirmation arm (lines
+185 to 190). `CURBALI` is `PIC X(14)` and is blanked by `INITIALIZE-ALL-FIELDS` at lines 563 to 566.
+
+**Why the ordering is observable and not an artefact of pseudo-conversation.** `SEND-BILLPAY-SCREEN`
+does not return - the program's only `EXEC CICS RETURN` is at line 146 - so the source genuinely goes
+on to perform lines 193 and 194 after the map has gone out. On a 3270 that costs nothing: the image the
+operator is looking at was assembled before the moves, so it carries `CURBALI` as the arm left it,
+which is spaces. The moves land in storage the terminal will not see again on that turn.
+
+**The defect this entry records.** The translation performed the two moves unconditionally, which is
+faithful to the *statement* order and wrong about the *observable*. A request-response transport carries
+exactly one image, assembled from the final state, so a move performed after a send arrives at the
+caller indistinguishably from one performed before it. Three arms therefore answered with a balance
+where the legacy answered with spaces - and, worse, with a **misleading** balance: with no record read,
+the balance the record area reads is zero for the zoned-decimal reason recorded on
+`currentBalanceOfRecord`, so an account that does not exist was answered *Account ID NOT found...*
+beside `0.00`, which reads as an account that exists and owes nothing. The negative-confirmation arm,
+whose whole point is a blank screen with no text at all, likewise answered `0.00`.
+
+**The decision.** Lines 193 and 194 are performed only when nothing has been transmitted yet on the
+turn. The predicate is the send count the send paragraph itself maintains, which is not a proxy for the
+ordering but a direct answer to the question the ordering poses: has an image already gone out carrying
+this field as it stood? The arms then resolve exactly as the terminal resolved them - the affirmative
+arm whose read succeeded and the blank-confirmation inquiry of lines 182 to 184 display the pre-payment
+balance, because for them the moves are the last thing to happen before the map goes out; the
+affirmative arm whose read found nothing, the negative arm and the invalid-confirmation arm display
+nothing. A turn that fails the account-identifier edit at lines 160 to 164 never enters the line-169
+block at all and was already blank.
+
+**What is deliberately unchanged.** The re-render inside the confirmed write's held read is untouched:
+it runs only when that read succeeded, no map has gone out, and it is what keeps the displayed balance
+and the settled amount describing the same money read under the same lock. The nothing-to-pay arm keeps
+its balance for the same reason - its read succeeded before any send. The zero this entry stops
+*displaying* is still what the balance test at lines 198 and 199 and the settlement computation at line
+234 consume, because there the source really does read the record area rather than the map.
+
+**The scope of the claim.** This is a display-state decision and nothing else. No message text, no error
+flag, no confirmation flag, no identifier, no stored value and no arm selection changes; the fourteen-
+character edited form is unchanged where it is still produced. It is recorded because the general rule
+it applies is not obvious and will be needed again: **where a paragraph performs a move after a send,
+the response reproduces the send, not the move.**
+
+*Cited by:* `service/BillPaymentService.java` and `service/BillPaymentServiceTest.java`.
+
+*Embodied in:* the send-count guard on the balance display in `BillPaymentService.processEnterKey`.
+
+---
+
+
+### DL-354 - A field finding names one field twice: `fieldName` is a published property of the operation that emitted it, and `screenFieldId` and `focusScreenFieldId` are the legacy map identifier
+
+*Context.* The screen layer of this migration is a REST contract rather than a rendered interface, so the
+3270 field inventory survives as contract detail rather than as layout. Two response items carry it. Every
+per-field finding is a triple of `fieldName`, `screenFieldId` and a state of `MISSING` or `INVALID` - the
+two-state form the field-decoration macro `app/cpy/CSSETATY.cpy` distinguishes by writing a marker only when
+the flag is specifically blank. Separately, thirteen response records publish a `focusScreenFieldId`, which
+is where the legacy program leaves the cursor, expressed by its `MOVE -1 TO <field>L` on the map's length
+field. All thirteen declare `maxLength` 7, because a BMS field name cannot be longer.
+
+*The defect this entry records.* Nothing held the two halves to naming the same field, and nothing held
+either to a vocabulary at all. Eight sites had drifted, in three distinguishable ways.
+
+- *A screen-field slot filled with a response property.* `service/CardUpdateService.resolveFocusField`
+  returned its `FIELD_`-prefixed constants, which are the REST property names, so the card-update screen
+  published `embossedName`, `accountId` and `cardNumber` as cursor positions. The first is twelve characters
+  against a declared bound of seven, so the operation breached its own published contract. The correctly
+  named `BMS_`-prefixed constants - `CRDNAME`, `ACCTSID`, `CARDSID`, `CRDSTCD`, `EXPMON`, `EXPYEAR` - already
+  sat beside them and were already used for the per-field detail on the same screen. Twelve of the thirteen
+  screens were correct; this was the sole outlier, and `service/CardDetailService` declaring its own
+  `FIELD_ACCOUNT_ID` as `ACCTSID` for exactly this purpose is what shows the intended convention.
+- *A `fieldName` naming nothing the operator had submitted.* Nine constants could not be resolved to a form
+  field a client had filled in, in three distinguishable degrees. Six named a value the operation does not
+  publish at all: `typeCd`, `categoryCd`, `origDate` and `procDate` on the transaction-add screen against
+  the published `typeCode`, `categoryCode`, `originationDate` and `processingDate`, and `startDate` and
+  `endDate` on the report screen against the published `startMonth` and `endMonth`. One,
+  `reportType`, named nothing on a screen whose published selections are `monthlySelection`,
+  `yearlySelection` and `customSelection`. One, `source` on the transaction-add screen, is the subtlest of
+  the set and the easiest to defend wrongly: it *is* published by that operation, but on the **response**
+  only - the request declares the field as `transactionSource`, and the response echoes it back as
+  `source`. A finding naming the echo points a client at a field it never sent, so the submitted name is
+  the correct one even though the other is not fictitious. And two named a property of a **different**
+  operation: the card-detail screen emitted `accountId` and `cardNumber` where it publishes
+  `accountIdFilter` and `cardNumberFilter`, and the account-view screen emitted `accountIdFilter` where it
+  publishes `accountId`. The two screens had each other's names.
+- *A pair naming two different fields.* One constant, `tranId` on the transaction-add screen, was published
+  nowhere at all and was paired with the account-identifier map field; and one finding paired the amount
+  property with the account-identifier map field on a defensive arm. In both the pair described two fields
+  rather than one, so neither half could be trusted to identify the other.
+
+*Decision.* State the invariant and make it mechanical. A finding's `fieldName` is a property the emitting
+operation publishes - in its request body, its query parameters or its response - and its `screenFieldId`,
+like `focusScreenFieldId`, is the legacy map identifier of that same field: at most seven characters, upper
+case and digits only. Where the two disagreed, the map identifier was treated as the fixed point and the
+property name was corrected to the one the operation actually publishes, because the map identifier is
+legacy contract detail and the property name is ours to get right.
+
+*Why this is a correction rather than a change of contract.* No accepted input, no message text, no
+validation order, no state and no status code moves. What moves is the label a finding carries, and in every
+one of the eight cases the label was unresolvable - it named a property of another operation, or none. The
+`MISSING`/`INVALID` distinction, the first-match-wins clause ordering of each cascade, and the re-entry gate
+that suppresses decoration on a first turn are all untouched, and the card-update screen's own ordering is
+visible in the result: once details are on the screen the source's earlier clause wins and the cursor sits on
+`CRDNAME` ahead of the per-field clauses.
+
+*Guard.* `api/PublishedFieldIdentityAuditTest` enrols all fourteen declaring classes, reads their property
+and screen-field constants reflectively - including private ones - and holds each set to an independently
+stated oracle, so a newly added constant cannot escape the audit by not being listed. It then requires every
+oracle property name to be a record component of the enrolled published request or response records, every
+screen identifier to match `^[A-Z0-9]+$` at seven characters or fewer, and the focus-hint bound to be
+declared and identical on all thirteen response records. The enrolled identity count is asserted as an exact
+figure rather than a floor, because a floor cannot detect a constant that disappears.
+
+*Cited by:* `service/CardUpdateService.java`, `service/CardDetailService.java`,
+`service/TransactionAddService.java`, `service/ReportRequestService.java`, `api/AccountController.java`,
+`api/PublishedFieldIdentityAuditTest.java`.
+
+*Embodied in:* the `BMS_`-prefixed return values of `CardUpdateService.resolveFocusField`, the
+`PROPERTY_`-prefixed constants of the three services named above, `AccountController`'s
+`ACCOUNT_ID_FILTER_PROPERTY`, and the enrolment table of `PublishedFieldIdentityAuditTest`.
+
+---
+
+### DL-355 - Server error detail is suppressed at the driver boundary, because a CHECK violation's detail is the whole attempted row and one of its sinks is not ours to configure
+
+*Context.* Several columns carry `ck_<table>_single_byte_text`, a constraint asserting that a text value
+occupies one byte per character. The schema is the documented enforcement point for that invariant: a row
+carrying a multi-byte character is refused on arrival, the refusal surfaces as the frozen response literal
+the legacy transaction returns, and `api/CardControllerIT` asserts what remains reachable, which is that the
+value is refused by the schema. That arrangement is correct and is unchanged by this entry.
+
+*The defect this entry records.* What the refusal *discloses* was not bounded. PostgreSQL reports a CHECK
+violation with the entire attempted row in the error's `DETAIL` field, and pgjdbc's default
+`logServerErrorDetail=true` folds `DETAIL`, `HINT`, `WHERE` and the inlined parameter values into
+`PSQLException`'s own message. The row image therefore travelled inside the exception, and from there into
+any sink that prints an exception. One such sink is Hibernate's `SqlExceptionHelper`, which logs that message
+at `ERROR` by default. A single non-ASCII character in ordinary input was consequently enough to write a full
+row into the application log: a real card primary account number on the transaction-add path, reachable by an
+**ordinary** identity with no administrative authority, and a freshly computed credential digest on the
+administrative user-add path.
+
+*Why the obvious remedies were rejected.*
+
+- *Log level.* `SqlExceptionHelper` emits the SQLSTATE line at `WARN` and the driver's message at `ERROR`
+  from the same logger, so no level drops the second while keeping the first, and `OFF` loses both. The
+  shipped configuration pins `org.hibernate.SQL` and `org.hibernate.orm.jdbc.bind`, neither of which is this
+  logger, and the production overlay's `org.hibernate: WARN` does not suppress `ERROR`. Level-based
+  suppression cannot express the requirement.
+- *An application-level single-byte guard.* Refusing the value in a DTO or a service would make the
+  schema-level refusal unreachable, contradicting the entry that makes the schema the enforcement point and
+  the integration test that asserts it; it would change a response arm that is already the correct legacy
+  literal; and it would add a validation the legacy estate has no analogue for, which AAP §0.8.1's
+  no-feature-expansion boundary forbids.
+- *Sanitising at our own sinks.* `util/FailureDiagnostics` already emits type names only and was never the
+  leak. Fixing only the sinks we own would leave the framework's sink, and any sink added later, exposed.
+
+*Decision.* Sanitise the exception itself, at the boundary where the row image enters it. The shared
+`application.yml` sets `spring.datasource.hikari.data-source-properties.logServerErrorDetail: false`, so
+pgjdbc builds the message from the server error's non-sensitive form - severity, SQLSTATE and the primary
+message - and the row image is never present to be logged. Because the exception is sanitised rather than a
+sink silenced, the property holds for every sink, every constraint type and every profile, which is why it is
+set once in the shared baseline and not in an overlay. No overlay declares `hikari` or
+`data-source-properties`, so nothing shadows it.
+
+*It is a driver property, not pool tuning, and the distinction is load-bearing.* The same file states that it
+imposes no pool sizing and no time-out override on the datasource, and that posture is intact: nothing here
+sizes the pool, bounds a wait or alters a time-out. `data-source-properties` is the pool's pass-through
+channel to the driver it wraps, and it is the only place a pgjdbc property can be set for every profile at
+once. The setting is commented as such at its point of use so a later reader does not mistake it for the
+tuning the file disclaims.
+
+*What this costs, stated rather than hidden.* The primary message is retained, and it names the violated
+constraint, so a failure still says which invariant was broken and in which table - the diagnostic a
+developer actually needs. What is no longer available from the log is the offending value itself, so
+reproducing a rejection now means re-submitting the input rather than reading it out of a log line. That is
+the intended trade: the value in question is by definition operator-supplied and, on these paths, regulated.
+Nothing about whether the failure happens, or what the caller is told, changes.
+
+*Cited by:* `src/main/resources/application.yml`, `config/ConfigurationProfileBaselineTest.java`,
+`config/ProductionLogAppenderConfidentialityTest.java`.
+
+*Embodied in:* the `data-source-properties` block under `spring.datasource.hikari` in the shared
+configuration baseline.
+
+
+### DL-356 - One padding rule for composed text: a message is emitted as it was coded and stored free text is stored in its content form, because the surface already followed both rules almost everywhere
+
+**Context.** Two families of text on this surface are *composed* rather than read from a record. A screen
+message is a literal the program moves into a work field wider than the literal - `WS-MESSAGE PIC X(80)`
+in `app/cbl/COBIL00C.cbl` and `app/cbl/COSGN00C.cbl`, `WS-RETURN-MSG PIC X(75)` and `WS-INFO-MSG PIC
+X(40)` in `app/cbl/COCRDSLC.cbl` - and free text typed into a screen field is moved into a record field
+wider than the screen field, as `app/cbl/COTRN02C.cbl` does when it carries a sixty-character
+description into `TRAN-DESC PIC X(100)`.
+
+**The rule this module already publishes.** The padding paragraph on `AccountViewResponse`,
+`AccountUpdateResponse` and `TransactionViewResponse` states it: a value is carried exactly as it was
+stored or composed, this contract never trims a value and never pads one, `maxLength` states the width of
+the map field rather than the length of the value, and *where a value is bounded to a screen width, the
+bound truncates an over-long value and never pads a short one*. A screen title is a literal coded at its
+full field width and therefore arrives at that width; a record-derived value carries whatever trailing
+spaces the record holds. Both are the same rule, because in both the value is carried as composed.
+
+**The defect this entry records, and it is two instances of one thing.** Twelve of the surface's fifteen
+message-bearing fields emitted the literal as coded, at twenty-four, thirty-seven, twenty-seven, forty and
+forty-one characters. Four did not: the card-detail screen's error and information messages, at eighty and
+forty, and the report and bill-payment error messages, at seventy-eight. `MOVE 'Acct ID can NOT be
+empty...' TO WS-MESSAGE` and `MOVE 'Please enter User ID ...' TO WS-MESSAGE` are the identical construct
+through identical fields, yet one endpoint answered seventy-eight characters and the other twenty-four. The
+report screen made the inconsistency internal as well: it publishes the same text twice, bounded and bare,
+so one response carried two lengths of one literal. Separately, the transaction-add screen re-padded four
+free-text columns to the copybook width, while the batch poster, the bill-payment screen and the reference
+seed all store content - so the shared transaction-view contract rendered one hundred, fifty, fifty and ten
+characters for a row one screen wrote and twenty-one, twelve, three and three for a row another wrote.
+
+**The decision.** One rule, applied to both families, chosen as the one the surface already followed
+almost everywhere and already published on its contract.
+
+- A composed message is emitted as coded. Each of the three services gains a `messageField` helper that
+  bounds without padding, and its initial value becomes the empty no-message state rather than a run of
+  spaces. The receiving width is retained and still truncates, because that is a real property of the map
+  field; only the fill is dropped.
+- Stored free text is stored in its content form. `TransactionAddService.storedText` bounds to the column
+  width and removes the screen field's right-hand fill. Only the right-hand fill - a left-justified screen
+  field adds spaces on the right, and any on the left were transmitted by the operator.
+
+**Why the second half cannot affect parity, established by measurement rather than by argument.**
+`TransactionRecordMapper` places every character field left-justified and space-padded on the encode path.
+A record built from content-form values and one built from the same values space-filled were rendered and
+compared: both are three hundred and fifty bytes and the two images are byte-identical, as string and as
+bytes. The Gate 1 comparison is therefore untouched. The columns are `varchar` with a not-null constraint
+and no width-equality check, and all four fields are proved non-blank by the empty-field cascade before the
+record is assembled, so no shorter value is invalid and no all-space value can arrive.
+
+**What is deliberately left padded, and why that is the same rule and not an exception.** Three groups keep
+their full width because their composed value genuinely has it. The transaction source is ten characters
+everywhere, including the bill-payment literal `'POS TERM  '` and the fixture value, so its trailing spaces
+are content. The two timestamps are twenty-six everywhere, and an unstamped processing timestamp is
+legitimately twenty-six spaces - a value the record mapper's contract calls out specifically. The digit
+lexemes carry no trailing space at all. The card-list page indicator likewise already emitted its digit
+bare and needed nothing: the legacy renders `1` into `PAGENOO PIC X(3)`, and under this rule the value is
+the digit.
+
+**The cost, named.** A client that had been comparing a message on the declared width for one of the four
+changed fields must compare on content instead - which is what it already had to do for the other eleven,
+and which is what the published rule told it to expect. A client reading a stored description for a
+transaction-add row gets the content length rather than one hundred characters, which is what it already
+got for every other row in the table.
+
+*Cited by:* `service/CardDetailService.java`, `service/ReportRequestService.java`,
+`service/BillPaymentService.java` and `service/TransactionAddService.java`.
+
+*Embodied in:* the `messageField` helpers of the three screen services and the `storedText` helper of
+`TransactionAddService`.
+
+---
+
+---
+
+
+### DL-357 - The original logging facade is excluded from all three cloud starters, because two of this deployment's diagnostics were bypassing its own logging pipeline
+
+*Context.* Runtime verification of the shipped stack found two lines on the container's error stream at
+every start-up, on every profile:
+
+```text
+Standard Commons Logging discovery in action with spring-jcl: please remove commons-logging.jar from
+classpath in order to avoid potential conflicts
+```
+
+They carry no timestamp, no level, no logger and no JSON envelope, and they arrive before the logging
+configuration has an appender to put them in. In the production profile the same stream is otherwise one
+JSON object per line, so a collector that parses by line reports two failures on every restart. The
+migration replaced the estate's 217 console display statements with structured logging precisely so that
+every diagnostic would be machine-readable (AAP §0.1.2 and §0.4.1), and these two were the only ones in the
+delivered image that were not.
+
+*Where the artefact came from, read out of the resolved graph rather than guessed.* The framework supplies
+the `org.apache.commons.logging` API through `spring-jcl`, which is part of the core artefact and cannot be
+removed. The original implementation of that same API arrives independently:
+`io.awspring.cloud:spring-cloud-aws-starter-s3` reaches `software.amazon.awssdk:apache-client`, which is the
+SDK's synchronous transport, which reaches `org.apache.httpcomponents:httpclient` 4.5, which declares
+`commons-logging` 1.2 at runtime scope. With both the API and the original implementation present, the
+bridge inside `spring-jcl` detects the ambiguity and emits the notice - once per class-loading of its
+factory, which on this image is twice.
+
+*Decision.* Exclude `commons-logging:commons-logging` from all three cloud starters - object storage, queue
+and notification - and leave `spring-jcl` to serve the facade, which is the arrangement the framework
+documents and the notice itself asks for.
+
+*Why the exclusion is written three times rather than once.* A Maven exclusion applies to the path it is
+declared on, not to the coordinate globally. The transport appears beneath all three starters; the
+resolution reports it once and marks the second and third as duplicates, which makes a single exclusion look
+sufficient and is exactly why it is not. Excluding it on the object-storage path alone would have let the
+resolver satisfy the same artefact through the queue starter's path, leaving the notice in place while the
+build file appeared to have addressed it. The three exclusions were verified together:
+`dependency:tree -Dincludes=commons-logging:commons-logging` resolves to no node at all, and the packaged
+artefact carries no such library.
+
+*What is deliberately not done.* The transport is not swapped, downgraded or reconfigured, and no logging
+dependency is added. The transport keeps calling the same facade; `spring-jcl` routes those calls to SLF4J
+and therefore into the same appenders as every other library in this module, so the change moves the
+transport's own diagnostics *into* the configured pipeline rather than removing them. Nor is the notice
+suppressed by raising a logger level: the text is written by a static factory before the logging backend
+exists, so no level would reach it, and silencing a warning whose subject is a real class-path ambiguity
+would leave the ambiguity behind.
+
+*Measured outcome.* Two occurrences before, zero after, counted on the same container log on both the local
+and the production profile, with no other line appearing in their place.
+
+*Cited by:* `pom.xml`, at each of the three cloud starter declarations. The structured-logging obligation
+this restores is DL-311's subject matter; the forward-pin mechanism used for a version rather than an
+exclusion is DL-066.
+
+---
+
+### DL-358 - The tracing family is pinned above the managed release to remove a sun.misc.Unsafe caller rather than to silence its notice
+
+*Context.* The same runtime verification found three further unstructured lines on the container's error
+stream at every start-up, again on every profile:
+
+```text
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by
+         io.opentelemetry.internal.shaded.jctools.util.UnsafeAccess
+         (file:/app/BOOT-INF/lib/opentelemetry-sdk-trace-1.49.0.jar)
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+```
+
+The caller was read from the message rather than inferred. The span processor's queue is a shaded copy of a
+lock-free queue library, and that copy takes field offsets through the terminally deprecated memory-access
+API when its class initialises. The framework parent selects the tracing family at 1.49.0 through the
+family's own bill of materials, so this is the release the deployable image carries.
+
+*Decision.* Override the bill-of-materials property to 1.56.0. The property is the family's own, so one
+value moves the API, SDK, exporter, sender and propagator artefacts together and no direct dependency
+version is introduced anywhere.
+
+*The version was chosen by reading the artefacts, not by taking the newest.* The published jars were fetched
+and inspected: 1.49.0 and 1.52.0 both ship `io/opentelemetry/internal/shaded/jctools/util/UnsafeAccess.class`
+and reference `sun/misc/Unsafe` from five classes; 1.56.0, 1.60.1 and 1.65.0 ship no such class and
+reference that type from none. 1.56.0 is therefore the earliest release on which the caller is absent, and
+it is preferred over the later ones because the smallest move that removes the cause keeps the distance from
+the framework's own selection at a minimum.
+
+*The alternative, and why it was rejected.* The platform offers a memory-access selector that can be set to
+allow on the image entry point, which suppresses the notice while leaving the call in place. That trades a
+visible notice for an invisible dependency on an API whose next platform release turns the call into a hard
+failure, and it would have to be un-done at exactly the moment it stopped working. DL-115 faced the same
+choice for the asynchronous transport, moved the version, and measured the notice gone; this entry follows
+that precedent, and DL-066 is the mechanism both use.
+
+*Why the pin sits outside the security-remediation block.* No advisory motivates it. That block's heading
+states that every property inside it is a supply-chain requirement, and its contents are checked against the
+operator guide's table and against a count published in words, so adding a forward-compatibility pin to it
+would have made the block's own description false. It is declared in its own delimited section above that
+block instead, with the measurement that justifies it beside it.
+
+*What was checked before the version moved, because a version move can break a suppression silently.* Two
+internal logger categories of the exporter are pinned off by name (DL-311) because their text is composed
+from a remote collector's response. Internal names may be renamed between releases without notice, and a
+renamed category would be a silently un-suppressed one. Both
+`io.opentelemetry.exporter.internal.http.HttpExporter` and
+`io.opentelemetry.exporter.internal.grpc.GrpcExporter` were confirmed present under exactly those names in
+the 1.56.0 artefacts before the property was changed, and the two documents that pin them now say which
+release they were measured against.
+
+*Measured outcome.* Three occurrences before, zero after, counted on the same container log; the whole
+tracing family resolves coherently at 1.56.0 with the tracing bridge unchanged at its managed version and
+the semantic-conventions artefact unchanged at its own pin; export still reaches the collector and a fresh
+trace is retrievable after the move.
+
+*Cited by:* `pom.xml` at the tracing version property, `src/main/resources/logback-spring.xml` and
+`src/main/resources/application.yml` at the exporter suppression, the operator guide's dependency table and
+the repository's own. The notice-versus-upgrade precedent is DL-115, the forward-pin mechanism is DL-066,
+and the suppression this protects is DL-311.
+
+---
+
+### DL-359 - Scoped reader and writer beans are declared by their implementation class, because an interface-declared scoped bean hides that class from the framework's listener discovery
+
+*Context.* Runtime verification of the shipped stack found five warnings on every start-up, on every
+profile, all from the framework's own listener factory:
+
+```text
+WARN o.s.b.c.l.AbstractListenerFactoryBean : org.springframework.batch.item.ItemStreamReader is an
+interface. The implementing class will not be queried for annotation based listener configurations. If
+using @StepScope on a @Bean method, be sure to return the implementing class so listener annotations can
+be used.
+```
+
+Two named the stream-reader interface, one the stream-writer interface, and two named the combined
+generation's role interface, which is registered twice - as the writer of the ordering step and as the
+reader of the load step. Nothing failed: no class in this module carries a listener annotation, so no
+listener was actually lost. What existed was a warning per boot and a trap, since a listener annotation
+added to any of those four classes later would never have fired and nothing would have reported it.
+
+*Why the warning is emitted, read out of the framework rather than inferred.* Disassembling
+`AbstractListenerFactoryBean.isListener` shows the exact branch: if the candidate is an AOP proxy, the
+factory takes its target class, and if that class is an *interface* it warns and stops looking for
+annotations. A bean declared by an interface and given a scoped proxy has the interface as its target
+class, so the branch is unavoidable for as long as the declaration is an interface. Only chunk-oriented
+step building reaches this code, which is why the module's step-scoped `Tasklet` and its job-scoped
+transient-work-resource bean - both interface-declared - produce no such warning and are left alone.
+
+*Decision.* The four bean methods declare their implementation class:
+`combineTransactionsOrderedReader` returns `ConcatenatedOrderingReader`,
+`combineTransactionsCombinedGeneration` returns `StagedCombinedGeneration`,
+`postTransactionDailyTransactionReader` returns `DiagnosingDailyTransactionReader`, and
+`postTransactionRejectRecordWriter` returns `StagedGenerationStore.CompletingItemStreamWriter`. Each of
+those four classes drops `final` so the framework can generate its scoped subclass, and each is visible
+exactly as far as the configuration that publishes it - package-private for the three that sit beside
+their configuration, public for the completing writer because the configuration that declares it lives in
+the neighbouring package. The completing writer's factory method narrows its own return type to match, so
+one declaration serves both callers. No role interface is removed: `CombinedGeneration` still exists and
+is still what both steps ask for, and every step builder still receives the reader and writer through the
+framework interfaces.
+
+*The reasoning being withdrawn, stated plainly.* Four Javadoc blocks and DL-215 argued that the interface
+declaration was deliberate because "a scoped bean declared by an interface is proxied through that
+interface, so no subclass of an implementation type is generated - which keeps this path clear of the class
+generation the module's reflection budget rules out". The premise was right and the conclusion did not
+follow. The reflection budget of the low-level audit is a **source-level** count over
+`src/main/java` - `java.lang.reflect`, `Class.forName`, `createNativeQuery`, unchecked casts, suppressed
+warnings - and generating a subclass at run time appears in none of those greps. Worse, the arrangement
+being defended was the *more* reflective of the two: an interface-proxied bean is a
+`java.lang.reflect.Proxy` whose every call goes through reflective dispatch, while a class-based proxy is a
+generated subclass making direct calls. The audit's counts are unchanged by this entry, and were re-run to
+confirm it.
+
+*What was checked before the classes were opened, because a class-based proxy can fail in ways an
+interface-based one cannot.* A generated subclass cannot override a final method and cannot be created at
+all from a superclass with no visible constructor. Every one of the four classes was read for both: none
+declares a final or private instance method, three already had package-private constructors, and the
+completing writer's constructor was widened from private to package-private - the narrowest visibility the
+generated subclass can use - rather than made public. One property is deliberately *not* claimed: the
+reject writer that the completing writer wraps stays final and unexported, because it is a constructor
+argument rather than a declared bean type and nothing about it needed to change.
+
+*What the alternative would have bought, and why it was refused.* The warning can be made to disappear by
+handing the step builder a plain wrapper object instead of the scoped proxy, since the factory only
+inspects proxies. That removes the message and keeps the trap: annotation discovery would then run against
+a wrapper that carries no annotations, and the next listener annotation added to a reader would still never
+fire, with nothing left to warn about it. Silencing the messenger was not available.
+
+*Measured outcome.* Five occurrences before, zero after, counted on the same container log; no warning
+replaced them - in particular none of the "unable to proxy" or "marked as final" advisories a class-based
+proxy emits when a method cannot be overridden. The posting job and the combine job were launched after the
+change and behaved exactly as they did before it, with their step-level metrics still reported per step.
+
+*Cited by:* `batch/CombineTransactionsJobConfig.java` at both bean methods and both implementation classes,
+`batch/PostTransactionJobConfig.java` at both bean methods and the decorator,
+`batch/step/StagedGenerationStore.java` at the factory method and the completing writer, and the correction
+on DL-215. The decorator's behaviour is DL-215, the completing writer's discard-on-close rule is DL-289, and
+the generation's lifetime is DL-176.
+
+---
+
+
+### DL-360 - A refused batch launch records the validator's own explanation server-side, because a reason code alone left the operator with nothing to correct
+
+*Context.* The launch boundary answers a refused launch with one of four frozen texts, and those texts name
+no parameter on purpose: the parameters came from the caller, and a response that repeated them back with a
+verdict would be a probe. The server-side record, however, was the reason code and nothing else -
+`Batch job launch refused: job=fileProbeJob reason=INVALID_PARAMETERS`. Meanwhile the refusal carried, as its
+cause, the sentence `JobParameterValidators` had just composed:
+`Job parameter [fileProbeMode] value [ACCTFILE] is not one of the legal probe modes […]; matching is exact
+and case sensitive`. That sentence reached no sink at all. A search of the whole application log for the
+validator's text returned nothing, so neither the caller nor the operator could say which parameter was
+wrong. In a batch tier whose entire purpose is to replace a condition code an operator used to read, that is
+the first diagnostic that should exist.
+
+*Decision.* The existing warning gains one field, `detail`, carrying the refusal cause's message. The
+response body, the four frozen texts, the field-error list and the reason vocabulary are all unchanged: this
+adds a server-side record and nothing else.
+
+*Why the message is rendered rather than passed through.* The refusals raised for an invalid parameter set
+carry text this module composed and already rendered safe through the validator's own value renderer, so
+those would have been safe verbatim. The same carrier also wraps the framework's refusals for an active
+execution and for an already-complete instance, and that text is not this module's - it can embed the
+parameter set a caller submitted. Every refusal detail therefore goes through `util/FailureDiagnostics`'s
+value renderer, which keeps printable ASCII and names every other code point, so a line terminator cannot
+split one record into two or overwrite a line a terminal has already drawn, and bounds the length, so a
+caller cannot decide how many bytes each refused request writes into centralised logging. A refusal with no
+cause renders as that renderer's absent marker rather than as `null`.
+
+*What was considered and refused.* Returning the explanation to the caller would have made the diagnostic
+easy to see and would have turned the boundary into a parameter oracle; the frozen texts stay. Reading the
+cause's type instead of its message would have been safer still and would have said nothing an operator can
+act on, since every parameter refusal has the same type. Widening the refusal carrier to hold a structured
+detail was rejected as a contract change made for a log line: the carrier's declared purpose is a closed
+reason vocabulary, and it already carries the cause.
+
+*Measured outcome.* The same refusal now writes
+`Batch job launch refused: job=fileProbeJob reason=INVALID_PARAMETERS detail=Job parameter [fileProbeMode]
+value [ACCTFILE] is not one of the legal probe modes […]` on one line, while the response is byte for byte
+what it was: `400` with the frozen text and an empty field-error list. A cause carrying an embedded line
+terminator was verified to arrive as a single record.
+
+*Cited by:* `api/BatchJobController.java` at `refusalDetail`. The renderer is DL-177's; the closed refusal
+vocabulary it reports is the launch gateway's own; the confidentiality rule it observes - that a boundary
+publishes what this module authored and withholds what it did not - is DL-311's subject in the logging
+configuration and is applied here at a single call site.
+
+---
+
+
+### DL-361 - One bundled dashboard plugin is switched off, so the browser console stays usable as evidence
+
+*Context.* Browser verification of the shipped dashboard service found four console errors and one
+`404 GET /react/jsx-runtime` on **every** page it opened - the login form, the home page, the data-source
+list and the CardDemo dashboard alike. The cause is inside the image rather than in anything this project
+provisions: a bundled log-exploration application declares a bare module dependency that the page's own
+import map does not resolve. Independence from this project's configuration was established rather than
+assumed, by observing the same errors on pages that load neither the provisioned data source nor the
+provisioned dashboard.
+
+*Why a third-party console error is worth a decision at all.* The console is one of the few places where
+this stack's front end can be checked at all, and it is the place a reviewer looks when a panel is empty or
+a query fails. A console that carries five entries on every page whatever happens teaches a reader to
+ignore it, and an error that is always present cannot be distinguished from one that has just appeared. The
+cost is not the plugin failing to load - nothing in this stack uses log exploration, which ships one metrics
+data source and one dashboard - it is that the noise consumes the signal.
+
+*Decision.* Switch that one plugin off in the shipped Compose file, through the service's own
+plugin-disable setting, and leave everything else exactly as it is: the data source, the dashboard
+provider, the dashboard JSON, the read-only mounts, the non-root principal and the immutable root
+filesystem are untouched. The value is overridable, so a developer who wants the plugin back sets one
+variable rather than editing the file.
+
+*What is deliberately not done.* The image is not replaced, pinned differently or rebuilt, and no plugin is
+installed - the install list stays empty. The upstream defect is not this project's to fix and not its to
+work around beyond declining to load the component. Nothing about the dashboard's own content changes, so
+the panel count, the panel queries and every figure published about them stay exactly as measured.
+
+*Measured outcome.* Verified in a browser after the change, on three pages - the login form, the dashboard
+and the data-source list. The console errors and the 404 are gone from all three: zero console errors of any
+kind and zero requests answering 400 or worse, confirmed four ways per page - the console listing, the
+network listing, the browser's own resource timings, and the page's plugin preload list, which is empty. The
+dashboard is unaffected: seven rows and thirty-eight leaf panels render, **no panel shows an error
+affordance**, and every one of the data-source queries the load issues answers 200. Exactly one panel reads
+"No data", and that is an empty metric rather than a fault - the reject-write timer has no series in the
+window because that code path has not run - which is the same expected state recorded before the change. The
+provisioned data source still resolves under its own identifier, reports a healthy check against the
+collector and is still marked read-only, and both collector targets stay up. So a console entry observed
+here after this change is attributable to this project's own configuration.
+
+*Cited by:* `docker-compose.yml` at the dashboard service's environment. The dashboard content it leaves
+untouched is DL-340's subject; the loopback-only exposure and least-privilege posture of the same service
+are unchanged.
+
+---
+
+
+### DL-362 - Three observed characteristics are accepted rather than changed, and each is written down so the silence is not read as an oversight
+
+*Context.* The same runtime verification that produced DL-357 through DL-361 recorded three further
+observations. None is a defect, and each is the kind of thing a later reader will either mistake for one or
+"fix" without knowing what it costs. They are recorded here for that reason, and deliberately not acted on.
+
+*One - the aggregate health answer is slow while the database is unreachable, and the answer is still
+correct.* With the database container stopped, `/actuator/health` and its readiness group take about thirty
+seconds to return `503`, and the framework itself reports the contributor's duration. The liveness group is
+unaffected and answers in milliseconds, so container and orchestrator probes are untouched and no restart
+loop is possible; what the delay costs is a request thread per readiness poll for the duration of an outage
+the deployment is already failing. Two changes would shorten it and both were refused. Adding a socket
+timeout to the driver bounds *every* statement the application issues, including the batch reads and writes
+that legitimately run long, so a diagnostic improvement would be paid for by aborting real work. Tuning the
+pool is excluded by the migration plan's own boundary (AAP §0.2.2, connection-pool tuning), and the plan is
+frozen. The delay is therefore accepted, with the important half of the behaviour - a fast liveness answer
+and a correct readiness answer - already in place.
+
+*Two - no service declares a memory or CPU limit.* Capacity engineering is excluded by AAP §0.2.2, and there
+is no legacy figure to size against: the estate published no throughput, latency or capacity number
+anywhere, which is the same absence that makes the performance gate establish a baseline rather than test
+one. What *is* bounded is bounded deliberately: every service caps its log growth, and the application is
+granted a termination grace period longer than its own drain timeout. Adding limits would mean inventing
+numbers and then measuring against them.
+
+*Three - a production collector must present a credential to scrape.* The production profile closes
+anonymous metric reading, so `/actuator/prometheus` answers `401` there, while the shipped collector
+configuration - which exists to scrape the local validation stack - sends none. That is the intended posture
+rather than a mismatch: the local stack is loopback-only and unauthenticated by design, and a production
+deployment configures its own collector with the management bearer token. It is recorded because a reader
+who runs the shipped configuration against a production instance will see a refusal and needs to know it is
+the answer, not a fault.
+
+*Cited by:* nothing in code, by design - this entry exists so that three deliberate absences are
+attributable. The health groups and their contributors are the actuator configuration's; the log ceiling
+and the grace period are the Compose file's; the metrics-scrape switch is the security configuration's.
+
+---
+
+
+### DL-363 - `pageMetadata.pageSize` is the screen's row window on all three list screens, never the number of rows a page carries
+
+*Context.* Runtime measurement of the three paginated screens found the same contract member carrying two
+different meanings. `CardListService` and `TransactionListService` reported their screen constant on every
+turn - seven and ten - while `UserManagementService` reported `rows.size()`, the count of rows that had
+actually arrived. So the eighth and last page of the card list carried one row and reported `pageSize 7`,
+while a user-list search that matched three records reported `pageSize 3`, and a user-list turn that matched
+none reported `pageSize 0`. A client could read the member as neither the window nor the row count without
+first knowing which of the three endpoints had answered it.
+
+*Decision.* One meaning: the number of row positions the serving screen presents. `UserManagementService`
+now reports `USER_LIST_PAGE_SIZE`, the same ten it already asks the store for, counts slots by and computes
+its page indicator from - only the metadata line had departed from it. The two contract carriers,
+`api/dto/PageMetadata` and `service/BrowseWindow`, state the single meaning on the component and on both
+factory methods, and the three producers each cite it.
+
+*Why the window and not the count.* The window is what the estate has. `app/cbl/COUSR00C.cbl` declares a
+ten-occurrence row table at L57 and `INITIALIZE-USER-DATA` at L446 *blanks* the slots a short page did not
+fill, so the operator still faced ten row positions whether ten records or three arrived; the same is true of
+the card list's seven-occurrence table and of the transaction list's ten loop-bounded slots. A page size that
+shrank with the population would therefore describe the records rather than the screen, and it would
+contradict the AAP, which fixes these screens at "sizes 7, 10, and 10" (§0.3.4, §0.4.1) as behaviour rather
+than as a maximum. Two further consequences settle it: the row count is already published, as the length of
+the row list every response carries, so reporting it again in the window's place removes information instead
+of adding it; and `PageMetadata.pageSize` declares a positive bound, which the user list's empty page
+violated by reporting nought.
+
+*What was NOT done.* The alternative - making the card and transaction lists report `rows.size()` and adding
+a second member for the window - was rejected. It changes two screens to fix one, it renames the member the
+delivered interface description already publishes, and it would leave the window, which is the figure a
+client needs in order to tell a short page from a full one, absent from the contract until the new member was
+adopted.
+
+*Consequence for the tests.* Three assertions in `service/UserManagementServiceTest` had encoded the
+populated count as the expectation - a four-row forward page, a four-row backward page and an empty table -
+and were corrected rather than accommodated, because a test that pins one member to two meanings is part of
+the finding. Each now asserts the ten-row window and, where the distinction matters, asserts separately that
+the row list holds the rows that arrived.
+
+*Asserted by:* `service/UserManagementServiceTest` - the full, short-forward, short-backward and empty pages
+all report ten; `api/AdminUserControllerIT` - a full page and a page carrying no row at all both report ten
+over the shipped boundary; `service/CardListServiceTest` - an empty cluster still reports seven, and seven is
+never taken from the other screens' ten; `service/TransactionListServiceTest` - a forward page reports ten;
+`api/UserContractAdapterTest` - the adapter carries whatever window the service assembled, unchanged.
+
+*Cited by:* `service/UserManagementService.java`, `service/CardListService.java`,
+`service/TransactionListService.java`, `api/dto/PageMetadata.java`, `service/BrowseWindow.java`.
+
+---
+
+### DL-364 - A launch reservation cancelled by the metadata store is refused as a retryable conflict, on a wider spaced retry budget - refining DL-218
+
+*Context.* Five launches of five **different** jobs, released together through a barrier, were refused ten
+times out of fifteen with "This job already has an active execution. Wait for it to finish before launching
+another." The metadata contradicted the message: no non-terminal execution row existed for any refused job
+name, and the execution identifiers the refused attempts had allocated were never materialised. The
+PostgreSQL log named the real cause - twenty-two `could not serialize access due to read/write dependencies
+among transactions` errors, correlating one-for-one with the twenty-two conflicts the application logged, and
+failing on `INSERT INTO BATCH_JOB_EXECUTION_PARAMS`, on `INSERT INTO BATCH_JOB_EXECUTION_CONTEXT` and on the
+commit itself.
+
+*The premise that was wrong.* DL-218 reasoned that a conflict surviving one retry meant a competing launch of
+the same job was in flight, which made `ACTIVE_EXECUTION` the honest answer. The advisory lock does serialize
+launches of one job name - but the framework's metadata tables are shared by every job, and it writes them at
+serializable isolation, so five unrelated jobs form read/write cycles over `BATCH_JOB_INSTANCE`,
+`BATCH_JOB_EXECUTION`, `BATCH_JOB_EXECUTION_PARAMS` and `BATCH_JOB_EXECUTION_CONTEXT` and the store cancels
+one participant as a pivot. The refusal was therefore true of nothing the caller could observe, and it sent
+an operator to wait for a run that did not exist. A scheduler firing several jobs at once had two thirds of
+them silently skipped unless it happened to retry.
+
+*Decision, in two parts.*
+
+1. **The budget is wider and its attempts are spaced.** `RESERVATION_ATTEMPTS` is five and each retry waits
+   `20 · 2^(n-1)` milliseconds plus jitter of up to twenty - four waits of 20, 40, 80 and 160 milliseconds,
+   so a caller that will be refused is refused within about four tenths of a second. Both halves were needed:
+   two attempts were too few, and because they were immediate the second re-entered the same contention
+   window the first had lost in, which made a retry a repetition rather than a second chance. The jitter is
+   what stops callers refused at one instant retrying at one instant. Every figure is bounded and published on
+   the constants, so the budget is closed rather than an open loop.
+2. **An exhausted budget is its own refusal.** `RejectionReason.TRANSIENT_STORE_CONFLICT` joins the closed
+   vocabulary, and it is what `reserveWithDatabaseLock` raises when the retries run out. The transport
+   boundary does not translate it into a caller fault: `BatchJobController` carries it out unchanged - having
+   already timed it under the `refused` outcome - and `GlobalExceptionHandler.handleLaunchRejected` answers
+   `409 Conflict` with "The job could not be started just now because another launch was being recorded at
+   the same time. Submit the request again." The three caller-addressable reasons are still translated in the
+   controller and still answer `400`.
+
+*Why 409 and not 400 or 500.* `400` says the submission was wrong; the identical submission normally succeeds
+on the next attempt, and answering `400` is how the false cause reached operators in the first place. `500`
+says the service malfunctioned; it did not - the metadata is intact, nothing partial was written, and the
+losing reservation left no execution behind. The outcome *is* a conflict, and `409` is the status this module
+already uses for one. `503` was considered and not taken: it describes an unavailable service, and the service
+is available - one request lost a race.
+
+*What was deliberately NOT changed.* The framework's isolation level for creating an instance stays
+serializable. Lowering it would remove the store-level guarantee that two callers cannot create the same job
+instance concurrently - the very protection the retry budget is paying for - and it would trade a truthful,
+bounded, retried refusal for a rarer but genuinely corrupting outcome. The per-job advisory lock also stays as
+it is: it is what makes an overlapping run of one job impossible across replicas, and it is not what the
+conflicts came from.
+
+*Consequence for the tests.* `BatchLaunchCoordinatorTest`'s repeated-conflict test asserted
+`ACTIVE_EXECUTION`, which was the defect stated as an expectation, and now asserts
+`TRANSIENT_STORE_CONFLICT`. Its retry test asserted the attempt count *through* `RESERVATION_ATTEMPTS`, so it
+would have passed unchanged against any budget; it now names the two attempts it actually drives, and a new
+test drives four conflicts and a success to prove the wider budget is reachable. A busy advisory lock and a
+running execution are still asserted to answer `ACTIVE_EXECUTION`, which is what keeps the two reasons
+distinguished rather than merely renamed.
+
+*Asserted by:* `batch/BatchLaunchCoordinatorTest` - a first conflict is retried and the retry stands; four
+conflicts then a success completes; a conflict outlasting the budget refuses as
+`TRANSIENT_STORE_CONFLICT`; the budget is bounded in elapsed time and its retries are genuinely spaced; an
+interruption while waiting refuses and restores the interrupt flag; and both genuine overlap conditions still
+answer `ACTIVE_EXECUTION`. `api/BatchJobControllerTest` - the retryable conflict is carried out unchanged
+rather than converted, and is still timed under the refused outcome. `api/GlobalExceptionHandlerTest` - the
+arm answers `409`, names the remedy, never claims a run exists and discloses no table name, statement fragment
+or reason code.
+
+*Cited by:* `batch/BatchLaunchCoordinator.java`, `service/BatchLaunchGateway.java`,
+`api/BatchJobController.java`, `api/GlobalExceptionHandler.java` and the supersession note on DL-218.
+
+---
+
+### DL-365 - The Compose application service forwards `JAVA_TOOL_OPTIONS`, because a variable Compose interpolates is not a variable it injects
+
+*Context.* The module's Gate 3 procedure tells an operator to export `JAVA_TOOL_OPTIONS` with heap bounds
+and `-Xlog:gc` and then bring the stack up, and the image documentation says the variable is left unset
+precisely so it is free for that. Following the procedure did nothing. After
+`JAVA_TOOL_OPTIONS='-Xms256m -Xmx1g -Xlog:gc' docker compose up -d --force-recreate app` the container was
+genuinely recreated, and inside it `printenv JAVA_TOOL_OPTIONS` was empty, the JVM printed no
+`Picked up JAVA_TOOL_OPTIONS` banner, the log held no `[gc]` line, and `/actuator/prometheus` still reported
+the container-default heap ceiling of 32,178,700,288 bytes. The image was not at fault:
+`docker run -e JAVA_TOOL_OPTIONS='-Xms256m -Xmx1g' … java -XX:+PrintFlagsFinal -version` against the same
+image picked the flags up and reported `MaxHeapSize = 1073741824`.
+
+*Cause.* Compose reads the invoking environment for **interpolation** - resolving `${...}` in the file - and
+passes a variable into a container only when a service's `environment:` block names it. The block named
+every application setting and no JVM setting, so the export was consumed by interpolation and reached
+nothing. The failure mode is the worst kind: the operator's command succeeded, the container restarted, and
+the measurement was quietly of a different configuration than the one they thought they had set.
+
+*Decision.* Add `JAVA_TOOL_OPTIONS:` to the app service's environment as a **key with no right-hand side**,
+which is Compose's "forward this if it is set, and set nothing if it is not" form - the same form
+`CARDDEMO_LOCAL_JWT_SECRET` already uses, and adopted there for the same class of defect. A value was
+rejected on both readings: a populated one would pin JVM flags this module deliberately does not set, and an
+empty one would hand the JVM an empty option string on every run.
+
+*Why this is not tuning.* Nothing about the delivered configuration changes. The image sets no JVM flag, the
+stack still sets none, and the recorded performance baseline is still taken against the delivered
+configuration with the channel empty - which is itself asserted by the baseline's own environment metadata.
+What the line restores is the operator's ability to *instrument*: heap bounds to measure against, `-Xlog:gc`
+for the transitions, and a native-memory summary at exit. That ability matters more than usual here because
+the runtime image is a JRE and ships no `jcmd`, `jstat` or `jmap`, so a measurement the JVM was not asked
+for at start-up cannot be recovered afterwards.
+
+*Asserted by:* `config/ContainerLifecycleContractTest` - the app service names the variable, the key carries
+no value, and the operator guide states the forwarding. The three are asserted together because the key
+alone with a value, or the prose alone without the key, each reproduces the defect in a different way.
+
+*Cited by:* `docker-compose.yml`, `README.md`.
+
+---
+
 
 ---
 

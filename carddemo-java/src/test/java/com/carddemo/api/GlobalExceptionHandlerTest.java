@@ -31,6 +31,7 @@ import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.service.BatchLaunchGateway;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.OptimisticLockException;
 import jakarta.persistence.PersistenceException;
@@ -381,10 +382,10 @@ class GlobalExceptionHandlerTest {
         });
     }
 
-    // 1. The six failure carriers
+    // 1. The six failure carriers, and the launch refusal the service port raises
 
     @Nested
-    @DisplayName("the six module failure carriers")
+    @DisplayName("the six module failure carriers, and the batch launch refusal")
     class CarrierHandlers {
 
         @Test
@@ -596,6 +597,45 @@ class GlobalExceptionHandlerTest {
             // The diagnostic codes belong on the log line, exactly where the legacy put them.
             assertThat(body.message()).doesNotContain("QueueDoesNotExistException", "JOBS.fifo");
             assertThat(body.fieldErrors()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a launch the metadata store would not reserve answers 409 inviting the same request "
+                + "again, and never claims a run is in progress")
+        void aRefusedLaunchReservationAnswersFourZeroNineAndInvitesARetry() {
+            // The measured defect: concurrent launches of DIFFERENT jobs pivot on the framework's shared
+            // metadata tables, and the refusal used to be reported as an active execution - a 400 telling
+            // operators to wait for a run that did not exist. Answering it as a conflict that may be
+            // retried is the whole correction, and the text must not reintroduce the false cause (DL-364).
+            BatchLaunchGateway.LaunchRejectedException refusal =
+                    new BatchLaunchGateway.LaunchRejectedException(
+                            BatchLaunchGateway.RejectionReason.TRANSIENT_STORE_CONFLICT,
+                            new CannotAcquireLockException(
+                                    "PreparedStatementCallback; SQL [INSERT INTO "
+                                            + "BATCH_JOB_EXECUTION_PARAMS ...]; ERROR: could not "
+                                            + "serialize access due to read/write dependencies among "
+                                            + "transactions"));
+
+            ResponseEntity<ErrorResponse> response = handler.handleLaunchRejected(refusal);
+
+            assertThat(response.getStatusCode())
+                    .as("400 would say the submission was wrong and 500 that the service broke; neither "
+                            + "is true of a reservation that lost a race")
+                    .isEqualTo(HttpStatus.CONFLICT);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message())
+                    .as("the operator is told the remedy, which is to submit the same request again")
+                    .contains("Submit the request again");
+            assertThat(body.message())
+                    .as("and is never told a run exists, which is the misreport this arm ends")
+                    .doesNotContain("active execution", "already has");
+            assertThat(body.message())
+                    .as("no table name, no isolation hint, no statement fragment and no reason code")
+                    .doesNotContain("BATCH_JOB_EXECUTION_PARAMS", "serialize", "INSERT",
+                            "TRANSIENT_STORE_CONFLICT");
+            assertThat(body.fieldErrors()).isEmpty();
+            assertNothingSensitiveEscaped(body);
         }
     }
 
@@ -1438,17 +1478,18 @@ class GlobalExceptionHandlerTest {
         }
 
         @Test
-        @DisplayName("the advice declares exactly the twenty failure types this contract covers - the six "
-                + "module carriers, the three provider conflict types, the eight framework rejections, the "
-                + "two credential and entitlement refusals and the one terminal catch-all - and nothing else")
-        void theAdviceDeclaresExactlyTheTwentyCoveredTypes() {
+        @DisplayName("the advice declares exactly the twenty-one failure types this contract covers - the "
+                + "six module carriers, the service port's launch refusal, the three provider conflict "
+                + "types, the eight framework rejections, the two credential and entitlement refusals and "
+                + "the one terminal catch-all - and nothing else")
+        void theAdviceDeclaresExactlyTheTwentyOneCoveredTypes() {
             // The inventory is asserted exhaustively rather than by sampling, so a handler cannot be
-            // added or lost without this failing. It is twenty rather than fourteen because the
-            // boundary answers six things beyond the request-shape faults: a credential failure raised
+            // added or lost without this failing. It is twenty-one rather than fourteen because the
+            // boundary answers seven things beyond the request-shape faults: a credential failure raised
             // inside the dispatch, an entitlement refusal raised inside the dispatch, the three shapes a
             // version conflict arrives in when the persistence provider rather than module code detects
-            // it, and anything the advice does not name. Each is grouped below with the reason it
-            // belongs here.
+            // it, a batch launch the metadata store would not reserve, and anything the advice does not
+            // name. Each is grouped below with the reason it belongs here.
             assertThat(declaredHandledTypes()).containsExactlyInAnyOrder(
                     // the six carriers this module raises for itself
                     AbendException.class,
@@ -1457,6 +1498,11 @@ class GlobalExceptionHandlerTest {
                     ValidationException.class,
                     OptimisticLockConflictException.class,
                     JobSubmissionException.class,
+                    // the service port's own refusal, and the only one of its four reasons that reaches
+                    // here: a reservation the store cancelled as a serialization conflict. Declared
+                    // because the alternative is the terminal handler reporting a valid request that lost
+                    // a race with another launch as a server malfunction (DL-364).
+                    BatchLaunchGateway.LaunchRejectedException.class,
                     // the three shapes a provider-detected version conflict arrives in. Three are needed
                     // rather than one because none of them covers another and their nearest common
                     // ancestor is RuntimeException, which the invariant above forbids declaring. Spring's

@@ -632,6 +632,25 @@ services:
       # machine cannot reach this stack. ConfigurationProfileBaselineTest enforces that separation
       # across every shipped non-production document.
       CARDDEMO_LOCAL_JWT_SECRET:
+      # THE OPERATOR'S OWN JVM-FLAG CHANNEL, AND THE SECOND PASS-THROUGH FOR THE SAME REASON AS THE
+      # FIRST. Also written with no right-hand side: this file sets no JVM flag and the image sets none
+      # either, so the runtime configuration is unchanged unless an operator asks for something.
+      #
+      # It is here because the recipe in README.md silently did nothing without it. Compose consumes
+      # `JAVA_TOOL_OPTIONS=... docker compose up` during interpolation, and a variable the service does
+      # not name never enters the container - so the JVM kept the container-default heap ceiling
+      # (measured at 29.97 GiB on a large shared node) and wrote no GC log, while an operator following
+      # the documented Gate 3 procedure believed they had recorded a 1 GiB-bounded run. The image itself
+      # was never at fault: `docker run -e JAVA_TOOL_OPTIONS=...` against the same image picked the
+      # flags up. The missing line was this one. Recorded as DL-365 and pinned by
+      # ContainerLifecycleContractTest, so the guide's claim cannot become untrue again in silence.
+      #
+      # It is a measurement channel and not a tuning knob: nothing in this module sets a heap bound, a
+      # pool size, a thread count or a chunk size, and the performance baseline is deliberately recorded
+      # against the delivered configuration. What this enables is the operator's own instrumentation -
+      # heap bounds they choose to measure against, `-Xlog:gc`, native-memory summaries - none of which
+      # a JRE image can be asked for after the fact.
+      JAVA_TOOL_OPTIONS:
       TZ: UTC
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
@@ -744,6 +763,19 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_INSTALL_PLUGINS: ""
+      # One bundled plugin is switched off, and it is a diagnostics decision rather than a feature one.
+      # Browser verification of the shipped dashboard found four console errors and one 404 for
+      # /react/jsx-runtime on EVERY page of this service - the login form, the home page, the data-source
+      # list and the dashboard alike. The cause is inside the image: this bundled application declares a
+      # bare module dependency its own import map cannot resolve. It was proven independent of anything
+      # this project provisions, because the errors appear on pages that load neither the CardDemo
+      # dashboard nor its data source. Nothing here uses log exploration - this stack ships one metrics
+      # data source and one dashboard - so the plugin is switched off rather than tolerated, which leaves
+      # a console whose remaining contents are attributable to this project's own configuration. That is
+      # what makes the console usable as evidence: an operator who sees an error after this change is
+      # looking at something real. Overridable, so a developer who wants the plugin can have it back
+      # without editing this file. See docs/decision-log.md DL-361.
+      GF_PLUGINS_DISABLE_PLUGINS: "${GRAFANA_DISABLED_PLUGINS:-grafana-lokiexplore-app}"
     ports:
       - "${GRAFANA_BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     volumes:

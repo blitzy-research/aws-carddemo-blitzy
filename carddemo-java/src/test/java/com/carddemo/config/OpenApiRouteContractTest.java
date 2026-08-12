@@ -152,6 +152,21 @@ class OpenApiRouteContractTest {
     private static final Set<String> SECURED_PATH_STATUSES = Set.of("400", "401", "403", "404", "500");
 
     /**
+     * A secured path-addressed route that can also lose a race in the store: the batch launch.
+     *
+     * <p>{@code 409} is reachable here for a different reason than on the two write turns above, and the
+     * distinction is worth keeping rather than folding into one set. Those two lose an <em>optimistic
+     * version</em> race on a record a caller had read. This route loses a <em>serialization</em> race in the
+     * framework's shared batch metadata, which concurrent launches of different jobs provoke; the
+     * reservation retries it on a bounded schedule and, if the conflict outlasts that budget, the launch
+     * boundary carries the refusal out and the advice answers {@code 409} inviting the same request again.
+     * It is a status this route genuinely emits, so a generated client's branch on it is live rather than
+     * dead - which is the whole rule this table enforces. See {@code docs/decision-log.md} DL-364.
+     */
+    private static final Set<String> SECURED_LAUNCH_STATUSES =
+            Set.of("400", "401", "403", "404", "409", "500");
+
+    /**
      * The reachable error statuses of every published operation.
      *
      * <p>This table is the whole point of the finding it pins: a customizer that attached the same six
@@ -484,9 +499,11 @@ class OpenApiRouteContractTest {
         reachable.put("GET " + AuthController.SIGN_ON_PATH, Set.of("500"));
         reachable.put("POST " + AuthController.SIGN_ON_PATH, Set.of("400", "500"));
 
-        // Addressed by a path segment, so an absent resource is reachable.
+        // Addressed by a path segment, so an absent resource is reachable. The launch additionally reaches
+        // 409, because reserving an execution can lose a serialization race in the framework's shared batch
+        // metadata; the status read is deliberately a read of the store rather than of the caller.
         reachable.put("POST " + BatchJobController.BATCH_JOBS_PATH + BatchJobController.LAUNCH_SUBPATH,
-                SECURED_PATH_STATUSES);
+                SECURED_LAUNCH_STATUSES);
         reachable.put("GET " + BatchJobController.BATCH_JOBS_PATH + BatchJobController.EXECUTION_SUBPATH,
                 SECURED_PATH_STATUSES);
 

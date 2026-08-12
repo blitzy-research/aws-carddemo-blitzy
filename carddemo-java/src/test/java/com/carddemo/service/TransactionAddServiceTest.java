@@ -51,6 +51,7 @@ import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.util.TransactionRecordMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -1582,25 +1583,49 @@ final class TransactionAddServiceTest {
         }
 
         @Test
-        @DisplayName("every stored field carries its declared width, so the category code keeps its "
-                + "leading zeros and the description its trailing pad")
-        void everyStoredFieldCarriesItsDeclaredWidth() {
+        @DisplayName("the two families of stored field are stored differently and deliberately: a "
+                + "lexeme keeps its declared width, free text is stored in its content form")
+        void theTwoFamiliesOfStoredFieldAreStoredDifferently() {
             final Transaction stored = insertedBy(confirmedTurn());
 
             assertAll(
+                    // FAMILY ONE - lexemes. Every position is significant, so the declared width IS the
+                    // value: a four-character category would mean something else with a zero removed.
                     () -> assertThat(stored.getTranTypeCd()).isEqualTo("01"),
                     () -> assertThat(stored.getTranCatCd())
                             .as("a four-character category stays four characters")
                             .isEqualTo("0001"),
                     () -> assertThat(encodedWidth(stored.getTranCatCd())).isEqualTo(4),
-                    () -> assertThat(stored.getTranDesc())
-                            .isEqualTo(DESCRIPTION + " ".repeat(100 - DESCRIPTION.length())),
-                    () -> assertThat(encodedWidth(stored.getTranDesc())).isEqualTo(100),
                     () -> assertThat(stored.getMerchantId()).isEqualTo(MERCHANT_ID),
-                    () -> assertThat(encodedWidth(stored.getMerchantName())).isEqualTo(50),
-                    () -> assertThat(encodedWidth(stored.getMerchantCity())).isEqualTo(50),
-                    () -> assertThat(encodedWidth(stored.getMerchantZip())).isEqualTo(10),
-                    () -> assertThat(encodedWidth(stored.getTranCardNum())).isEqualTo(16));
+                    () -> assertThat(encodedWidth(stored.getTranCardNum())).isEqualTo(16),
+
+                    // FAMILY TWO - free text. Stored in its content form, which is the convention every
+                    // other writer of this table already followed: the batch poster copies verbatim, the
+                    // bill-payment screen stores its literals as coded, and the reference seed keeps
+                    // trailing spaces only where the fixture value carries them. While this screen
+                    // re-padded to the copybook width, the shared transaction-view contract rendered the
+                    // same four components at two different widths depending only on which screen wrote
+                    // the row. See docs/decision-log.md DL-356.
+                    () -> assertThat(stored.getTranDesc()).isEqualTo(DESCRIPTION),
+                    () -> assertThat(encodedWidth(stored.getTranDesc()))
+                            .isEqualTo(encodedWidth(DESCRIPTION)),
+                    () -> assertThat(stored.getTranDesc()).doesNotEndWith(" "),
+                    () -> assertThat(encodedWidth(stored.getMerchantName())).isLessThan(50),
+                    () -> assertThat(stored.getMerchantName()).doesNotEndWith(" "),
+                    () -> assertThat(encodedWidth(stored.getMerchantCity())).isLessThan(50),
+                    () -> assertThat(stored.getMerchantCity()).doesNotEndWith(" "),
+                    () -> assertThat(encodedWidth(stored.getMerchantZip())).isLessThan(10),
+                    () -> assertThat(stored.getMerchantZip()).doesNotEndWith(" "),
+
+                    // AND THE RECORD IMAGE IS UNAFFECTED, which is what makes the change safe: the mapper
+                    // space-pads every character field on the encode path, so the parity comparison sees
+                    // the same three-hundred-and-fifty bytes either way.
+                    () -> assertThat(TransactionRecordMapper.toRecord(stored)).hasSize(350),
+                    () -> assertThat(TransactionRecordMapper.toRecord(stored)
+                            .substring(TransactionRecordMapper.TRAN_DESC_OFFSET,
+                                    TransactionRecordMapper.TRAN_DESC_OFFSET + TransactionRecordMapper.TRAN_DESC_LENGTH))
+                            .isEqualTo(DESCRIPTION + " ".repeat(
+                                    TransactionRecordMapper.TRAN_DESC_LENGTH - DESCRIPTION.length())));
         }
 
         @Test
@@ -1680,7 +1705,12 @@ final class TransactionAddServiceTest {
                             .as("the embedded space survives and the case is not folded")
                             .startsWith(merchantName),
                     () -> assertThat(stored.getMerchantName().strip()).isEqualTo(merchantName),
-                    () -> assertThat(encodedWidth(stored.getMerchantName())).isEqualTo(50));
+                    // Stored in content form, so the width is the value's own and the embedded double
+                    // space of "MERCHANT  NAME" is inside it rather than confused with the field's fill.
+                    // Only the right-hand fill is removed. See docs/decision-log.md DL-356.
+                    () -> assertThat(stored.getMerchantName()).isEqualTo(merchantName),
+                    () -> assertThat(encodedWidth(stored.getMerchantName()))
+                            .isEqualTo(encodedWidth(merchantName)));
         }
 
         @ParameterizedTest
@@ -1782,7 +1812,7 @@ final class TransactionAddServiceTest {
             assertAll(
                     () -> assertThat(result.message()).isEqualTo(MSG_TYPE_CD_EMPTY),
                     () -> assertThat(result.focusField()).isEqualTo(FIELD_TYPE_CD),
-                    () -> assertThat(error.field()).isEqualTo("typeCd"),
+                    () -> assertThat(error.field()).isEqualTo("typeCode"),
                     () -> assertThat(error.bmsFieldId()).isEqualTo(FIELD_TYPE_CD),
                     () -> assertThat(error.state())
                             .isEqualTo(ValidationException.FieldState.MISSING),

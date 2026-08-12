@@ -1242,8 +1242,12 @@ public final class CardUpdateService {
      *                     changed, per lines 1512 to 1517
      * @param message the summary message, first error wins; empty when no message was raised
      * @param infoMessage the informational message the header line carries
-     * @param focusField the field the cursor is positioned on, resolved in the clause order of lines
-     *                   1211 to 1235
+     * @param focusField the <em>legacy screen field identifier</em> of the field the cursor is positioned
+     *                   on, resolved in the clause order of lines 1211 to 1235. One of the six
+     *                   {@code BMS_}-prefixed identities this class declares - never a response property
+     *                   name - because the value is published as a cursor-positioning hint that a client
+     *                   matches against rendered screen field ids, and every screen's response record
+     *                   bounds that hint to the seven characters a BMS field name occupies
      * @param errorFlag {@code true} when the turn raised an error: the analogue of
      *                  {@code INPUT-ERROR}, <em>or</em> an attention identifier that did not decode
      * @param attentionKeyUnmapped {@code true} when the raw attention identifier did not decode, which
@@ -1443,8 +1447,14 @@ public final class CardUpdateService {
         /** The per-field detail, in the order the decoration recorded it. */
         private final List<ValidationException.FieldError> fieldErrors = new ArrayList<>();
 
-        /** The field the cursor is positioned on, resolved at lines 1211 to 1235. */
-        private String focusField = FIELD_ACCOUNT_ID;
+        /**
+         * The legacy screen field identifier the cursor is positioned on, resolved at lines 1211 to 1235.
+         *
+         * <p>A {@code BMS_} identity rather than a response property name, for the reason given on
+         * {@code CardUpdateResult}. The initial value is the account filter's, which is the field the
+         * catch-all clause at lines 1233 to 1234 also settles on.
+         */
+        private String focusField = BMS_ACCOUNT_ID;
 
         /** Which field group the terminal left open, resolved at lines 1172 to 1208. */
         private FieldProtection fieldProtection = FieldProtection.SEARCH_KEYS_OPEN;
@@ -3322,33 +3332,45 @@ public final class CardUpdateService {
      * <p>Because every flag begins blank, a turn that ran no edits at all reaches the third clause and
      * positions on the account filter - by way of the blank account flag, not by way of the catch-all.
      *
+     * <p><strong>What this returns is the BMS field identity, not the response property name.</strong>
+     * The legacy positions the cursor by moving minus one into a named map field's length item -
+     * {@code CRDNAMEL}, {@code ACCTSIDL}, {@code CARDSIDL}, {@code CRDSTCDL}, {@code EXPMONL},
+     * {@code EXPYEARL} - so the identity of the field is the map field's own name. The hint travels to a
+     * client that matches it against rendered screen field ids, which is why every screen's response
+     * record bounds it to seven characters, and why returning {@code embossedName} or {@code accountId}
+     * here published a value no screen carries and one that broke that declared bound. The per-field
+     * error detail is the other half of the pair and keeps carrying both names: the response property in
+     * {@code fieldName}, so a client can find its form field, and this same BMS identity in
+     * {@code screenFieldId}. The invariant both halves obey is recorded in
+     * {@code docs/decision-log.md} DL-354.
+     *
      * @param state the turn's working storage
-     * @return the property name of the field the cursor is positioned on
+     * @return the legacy BMS field identifier of the field the cursor is positioned on
      */
     private static String resolveFocusField(final TurnState state) {
         if (state.foundCardsForAccount() || state.noChangesDetected()) {
-            return FIELD_EMBOSSED_NAME;
+            return BMS_EMBOSSED_NAME;
         }
         if (state.accountFilterFlag.decorated()) {
-            return FIELD_ACCOUNT_ID;
+            return BMS_ACCOUNT_ID;
         }
         if (state.cardFilterFlag.decorated()) {
-            return FIELD_CARD_NUMBER;
+            return BMS_CARD_NUMBER;
         }
         if (state.cardNameFlag.decorated()) {
-            return FIELD_EMBOSSED_NAME;
+            return BMS_EMBOSSED_NAME;
         }
         if (state.cardStatusFlag.decorated()) {
-            return FIELD_ACTIVE_STATUS;
+            return BMS_ACTIVE_STATUS;
         }
         if (state.expiryMonthFlag.decorated()) {
-            return FIELD_EXPIRY_MONTH;
+            return BMS_EXPIRY_MONTH;
         }
         if (state.expiryYearFlag.decorated()) {
-            return FIELD_EXPIRY_YEAR;
+            return BMS_EXPIRY_YEAR;
         }
         // WHEN OTHER, lines 1233 to 1234.
-        return FIELD_ACCOUNT_ID;
+        return BMS_ACCOUNT_ID;
     }
 
     /**

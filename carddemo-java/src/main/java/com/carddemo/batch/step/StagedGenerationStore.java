@@ -457,12 +457,20 @@ public final class StagedGenerationStore {
      * @param stepExecution step execution owning the file
      * @param logicalBase logical dataset or generation-group base
      * @param workingPath path the delegate writes
+     * <p>The declared return type is the wrapper's own class rather than the stream-writer interface,
+     * because a caller that publishes the result as a step-scoped bean must be able to name a class:
+     * a scoped bean declared by an interface is proxied through that interface, and the framework then
+     * warns at every start-up that it cannot query the implementing class for listener annotations. A
+     * caller with no such need loses nothing, since the class implements the interface. See
+     * {@code docs/decision-log.md} entry DL-359.
+     *
      * @param completedPath path published after the delegate closes
      * @param retentionLimit measured retained depth
      * @param <T> item type
      * @return the completing writer
      */
-    public static <T> ItemStreamWriter<T> completingWriter(final ItemStreamWriter<T> delegate,
+    public static <T> CompletingItemStreamWriter<T> completingWriter(
+            final ItemStreamWriter<T> delegate,
             final StepExecution stepExecution, final String logicalBase, final Path workingPath,
             final Path completedPath, final int retentionLimit) {
         return new CompletingItemStreamWriter<>(delegate, stepExecution, logicalBase,
@@ -1648,9 +1656,19 @@ public final class StagedGenerationStore {
      * result the legacy allocation produced too. A missing working file consequently means the delegate
      * never opened, and never opening is only reachable from a failure the step is already reporting.
      *
+     * <p><strong>Published as a type, and open to subclassing, for one reason only.</strong> A job
+     * configuration that hands this wrapper to the framework as a step-scoped bean has to declare it by
+     * class: an interface-declared scoped bean is proxied through the interface, and the framework then
+     * reports at every start-up that it cannot query the implementing class for listener annotations -
+     * one warning per boot and a silent trap for any listener annotation added later. The class is
+     * therefore nameable from the configuration package and non-final so the framework can generate its
+     * scoped subclass. It is still constructed only by {@link #completingWriter} - the constructor is
+     * visible no further than this package, which is what the generated subclass needs and no more - and
+     * nothing in the module extends it. See {@code docs/decision-log.md} entries DL-289 and DL-359.
+     *
      * @param <T> item type
      */
-    private static final class CompletingItemStreamWriter<T> implements ItemStreamWriter<T> {
+    public static class CompletingItemStreamWriter<T> implements ItemStreamWriter<T> {
 
         private final ItemStreamWriter<T> delegate;
         private final StepExecution stepExecution;
@@ -1659,7 +1677,7 @@ public final class StagedGenerationStore {
         private final Path completedPath;
         private final int retentionLimit;
 
-        private CompletingItemStreamWriter(final ItemStreamWriter<T> delegate,
+        CompletingItemStreamWriter(final ItemStreamWriter<T> delegate,
                 final StepExecution stepExecution, final String logicalBase,
                 final Path workingPath, final Path completedPath, final int retentionLimit) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");

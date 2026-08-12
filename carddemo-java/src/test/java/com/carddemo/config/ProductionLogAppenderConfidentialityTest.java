@@ -84,6 +84,17 @@ import org.slf4j.MDC;
  * credential in it, a bearer token, a national identifier, a primary account number - so that no
  * assertion can pass by coincidence, and each is a category the review named as reachable through an
  * unbounded rendering.
+ *
+ * <h2>What this file does not cover</h2>
+ *
+ * <p>An appender can bound and filter what it is handed; it cannot edit a message that already carries
+ * confidential text by the time it arrives. A driver that folds a rejected row image into the message of
+ * the exception it raises therefore defeats every control asserted here - the allow list never sees it,
+ * because it is not diagnostic context, and the trace bound never sees it, because it is not a stack
+ * frame. That leak is closed one layer lower, at the driver boundary, and the reasoning is recorded in
+ * {@code docs/decision-log.md} DL-355; the configuration guards that hold it there live in
+ * {@code ConfigurationProfileBaselineTest}. The primary-account-number canary below passing is
+ * consequently evidence about this encoder only, and not about the pipeline as a whole.
  */
 @DisplayName("the production JSON appender, as shipped: an allow-listed context and a bounded trace")
 class ProductionLogAppenderConfidentialityTest {

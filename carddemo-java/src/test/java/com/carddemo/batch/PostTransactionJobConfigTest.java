@@ -43,6 +43,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
@@ -860,9 +861,17 @@ final class PostTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("both step-scoped beans are proxied through their interface, so no class is "
-                + "generated for either and the final writer implementation can be wrapped at all")
-        void bothStepScopedBeansAreProxiedThroughTheirInterface() {
+        @DisplayName("both step-scoped beans present a class rather than an interface behind their "
+                + "proxy, so the framework can query the implementing class for listener annotations")
+        void bothStepScopedBeansPresentTheirImplementingClass() {
+            // This assertion was inverted, and the inversion is the point. It previously required an
+            // interface-based proxy on the reasoning that a generated subclass was class generation the
+            // module ruled out. Runtime verification showed what that cost: the framework's listener
+            // factory takes a proxy's target class, and when that class is an interface it warns and
+            // stops looking for annotations - one warning per boot, and a listener annotation added to
+            // either class later would silently never fire. The reflection budget the old reasoning
+            // appealed to is a source-level count that a generated subclass does not enter, and the
+            // interface arrangement was the more reflective of the two. See docs/decision-log.md DL-359.
             configured().run(context -> {
                 final Object boundReader = context
                         .getBean(PostTransactionJobConfig.DAILY_TRANSACTION_READER_BEAN_NAME);
@@ -871,15 +880,20 @@ final class PostTransactionJobConfigTest {
 
                 assertThat(boundReader).isInstanceOf(ItemStreamReader.class);
                 assertThat(boundWriter).isInstanceOf(ItemStreamWriter.class);
-                assertThat(AopUtils.isJdkDynamicProxy(boundReader))
-                        .as("a subclass-based proxy would be class generation this module rules out")
-                        .isTrue();
-                assertThat(AopUtils.isJdkDynamicProxy(boundWriter))
-                        .as("the writer implementation is final, so only an interface proxy can wrap it")
+                assertThat(AopProxyUtils.ultimateTargetClass(boundReader).isInterface())
+                        .as("an interface behind the proxy is exactly what makes the framework skip "
+                                + "annotation-based listener discovery on the reader")
+                        .isFalse();
+                assertThat(AopProxyUtils.ultimateTargetClass(boundWriter).isInterface())
+                        .as("and the same for the writer, which is why the completing wrapper is the "
+                                + "declared type rather than the stream-writer interface")
+                        .isFalse();
+                assertThat(AopUtils.isCglibProxy(boundReader))
+                        .as("declaring the implementing class is what produces a class-based proxy")
                         .isTrue();
                 assertThat(AopUtils.isCglibProxy(boundWriter))
-                        .as("no class may be generated for either scoped bean")
-                        .isFalse();
+                        .as("declaring the completing wrapper does the same for the writer")
+                        .isTrue();
             });
         }
 

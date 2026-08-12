@@ -23,6 +23,7 @@ import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.service.BatchLaunchGateway.LaunchRejectedException;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.RefusalBodyRenderer;
 import com.fasterxml.jackson.databind.JsonMappingException;
@@ -101,6 +102,14 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  *       write path re-displays the record for review and never abends.</li>
  *   <li>{@link JobSubmissionException} - a <strong>non-failing</strong> {@code 200 OK}.</li>
  * </ul>
+ *
+ * <p>One further carrier is answered here and it is not one of the six, because it is not a failure of a
+ * legacy screen at all: {@link LaunchRejectedException}, the service port's closed refusal of an on-demand
+ * batch launch. The launch boundary translates the three refusals a caller can act on itself, and carries
+ * out only the retryable store conflict, which is answered {@code 409 Conflict} with an invitation to
+ * submit the same request again. It is declared here rather than left to the terminal handler for the same
+ * reason as everything above: otherwise a valid request that lost a race with another launch would be
+ * reported as a server malfunction. See DL-364.
  *
  * <h2>Framework rejections answer in the same shape</h2>
  *
@@ -246,6 +255,24 @@ public final class GlobalExceptionHandler {
      * an internal component.
      */
     private static final String RECORD_NOT_FOUND_MESSAGE = "Record not found";
+
+    /**
+     * The text emitted when a batch launch could not be reserved because the metadata store cancelled the
+     * reservation as a serialization conflict.
+     *
+     * <p>Not a legacy literal, and it could not be: the estate has no on-demand launch surface at all - a
+     * job member was submitted through the job entry subsystem - so there is no screen wording to reproduce.
+     * It therefore says only what the boundary can verify, and it says the one thing the operator needs in
+     * order to act: the request is intact and submitting it again is the remedy. It deliberately does
+     * <em>not</em> claim a run is in progress, which is what the misreported version of this refusal told
+     * operators while no run existed.
+     *
+     * <p>It names no job, no table, no isolation level and no statement: those belong to the log line
+     * beside it.
+     */
+    private static final String LAUNCH_CONFLICT_MESSAGE =
+            "The job could not be started just now because another launch was being recorded at the "
+                    + "same time. Submit the request again.";
 
     /**
      * The neutral summary emitted when the framework or the validation provider rejected the
@@ -681,6 +708,47 @@ public final class GlobalExceptionHandler {
             return specificationType.getEntity().getClass().getName();
         }
         return UNNAMED_CONFLICTING_ENTITY;
+    }
+
+    /**
+     * Handles a batch launch the metadata store refused to reserve, and answers it as a retryable conflict.
+     *
+     * <p>The status is {@code 409 Conflict} and the body says the request may be submitted again. This is
+     * the one refusal in the launch vocabulary that is <em>not</em> a caller fault: the launch boundary
+     * translates an overlapping run, an exhausted run identity and parameters a job's validator refused
+     * into {@link ValidationException} itself, and carries only the retryable store conflict out to this
+     * class. That conflict arises when concurrent launches of <strong>different</strong> jobs contend on the
+     * framework's shared metadata tables, which it writes at serializable isolation, so the store cancels
+     * one participant of a read/write cycle - a condition with the store's own hint that a retry may
+     * succeed, and one the reservation has already retried on a bounded schedule before this is reached.
+     *
+     * <p><strong>Why not the statuses either side of it.</strong> {@code 400} would say the submission was
+     * wrong, which it was not - the identical request usually succeeds on the next attempt, and answering
+     * {@code 400} was how the misreported version of this refusal reached operators. {@code 500} would say
+     * the service malfunctioned, which it did not: the metadata is intact, nothing partial was written, and
+     * the reservation that lost the race left no execution behind. A conflict is what the outcome is, and
+     * {@code 409} is the status this module already uses for one.
+     *
+     * <p>The text is a fixed literal of this class and names neither the job nor the store's message: the
+     * driver's text carries a table name, an isolation hint and a statement fragment. The reason code and
+     * the bounded failure chain go to the log, which is where the operational detail belongs and where the
+     * launch boundary has already recorded the refusal against its own timer.
+     *
+     * <p>Answering a <em>caller-fault</em> reason here would be a defect rather than a courtesy: it would
+     * mean the launch boundary had stopped translating one, so this arm deliberately does not carry a
+     * fallback for the other three reasons and is asserted to be reached by one reason only. See
+     * {@code docs/decision-log.md} entry DL-364.
+     *
+     * @param exception the launch refusal, never {@code null} when invoked by the framework
+     * @return a {@code 409} response whose body invites the same request to be submitted again
+     */
+    @ExceptionHandler(LaunchRejectedException.class)
+    public ResponseEntity<ErrorResponse> handleLaunchRejected(LaunchRejectedException exception) {
+        LOG.warn("Batch launch reservation was refused as a retryable store conflict: reason={} "
+                        + "failureChain={}", exception.rejectionReason().name(),
+                FailureDiagnostics.failureChainOf(exception));
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponse(LAUNCH_CONFLICT_MESSAGE));
     }
 
     /**

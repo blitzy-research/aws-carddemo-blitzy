@@ -1421,6 +1421,18 @@ public final class UserManagementService {
      * this turn actually walked the key sequence, because the paging contract admits no default
      * direction and a transfer or a refused paging key walked nothing.
      *
+     * <p><strong>The reported page size is the screen's row window and never the number of rows this
+     * page happens to carry.</strong> It is {@code USER_LIST_PAGE_SIZE}, the same figure the query
+     * asks for and the slots are counted by. The legacy map declares ten row families and the
+     * clearing paragraph blanks the ones a short page did not fill, so the screen still presents ten
+     * rows whether ten records or three arrived; a page that reported three would be describing the
+     * records rather than the screen. This line previously reported the populated count, which made
+     * one contract member mean the window on the card and transaction lists and the row count here,
+     * so a client could read neither without knowing which endpoint it had called - and an empty page
+     * reported nought, contradicting the positive bound the contract declares. The row count remains
+     * available to a client as the length of the row list, which is where a count belongs. Recorded
+     * as {@code DL-363}.
+     *
      * @param state the assembled turn
      * @return the response for the client to render
      */
@@ -1436,10 +1448,10 @@ public final class UserManagementService {
                     Integer.toString(Math.max(state.pageNumber, 0)),
                     BrowseWindow.DISPLAYED_PAGE_NUMBER_MAX_LENGTH);
             pageMetadata = state.pageDirection == BrowseWindow.PagingDirection.BACKWARD
-                    ? BrowseWindow.backward(rows.size(), state.firstUserIdOnPage,
+                    ? BrowseWindow.backward(USER_LIST_PAGE_SIZE, state.firstUserIdOnPage,
                             state.lastUserIdOnPage, state.nextPageFlag.isYes(),
                             state.pageNumber > 1, displayedPageNumber)
-                    : BrowseWindow.forward(rows.size(), state.firstUserIdOnPage,
+                    : BrowseWindow.forward(USER_LIST_PAGE_SIZE, state.firstUserIdOnPage,
                             state.lastUserIdOnPage, state.nextPageFlag.isYes(),
                             state.pageNumber > 1, displayedPageNumber);
         }

@@ -3132,10 +3132,14 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             assertThat(stored.getTranAmt()).isEqualByComparingTo(new BigDecimal("-100.00"));
             assertThat(SensitiveValues.fingerprint(stored.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUMBER));
             assertThat(stored.getTranDesc())
-                    .as("the description is stored at the record's hundred characters, space filled to "
-                            + "the right of the sixty the screen accepted")
-                    .hasSize(100)
-                    .startsWith("Reserved contract row");
+                    .as("the description is stored in its CONTENT form - bounded to the record's hundred "
+                            + "characters but not filled out to them - which is the convention the batch "
+                            + "poster, the bill-payment screen and the reference seed already followed. "
+                            + "The record IMAGE is unaffected, because the mapper space-pads on encode. "
+                            + "See docs/decision-log.md DL-356")
+                    .startsWith("Reserved contract row")
+                    .doesNotEndWith(" ")
+                    .hasSizeLessThan(100);
             assertThat(stored.getTranOrigTs())
                     .as("a ten-character date is left justified into a twenty-six character timestamp "
                             + "and space filled, and the trailing spaces are not trimmed away")

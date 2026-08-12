@@ -233,14 +233,18 @@ public final class ReportRequestService {
     /** {@code CONFIRM}, the confirmation field and the cursor target at lines 472 and 492. */
     private static final String FIELD_CONFIRM = "CONFIRM";
 
-    /** Property name reported for a whole-date failure at lines 400 and 420. */
-    private static final String PROPERTY_START_DATE = "startDate";
-
-    /** Property name reported for a whole-date failure at line 420. */
-    private static final String PROPERTY_END_DATE = "endDate";
-
-    /** Property name reported when the catch-all arm at line 438 fires. */
-    private static final String PROPERTY_REPORT_TYPE = "reportType";
+    /**
+     * Property name reported when the catch-all arm at line 438 fires.
+     *
+     * <p><strong>The marker the cursor lands on, not an aggregate.</strong> This screen has no single
+     * report-type input: it has three independent one-character markers, and the request declares them as
+     * {@code monthlySelection}, {@code yearlySelection} and {@code customSelection}. The arm that fires
+     * when none of the three was marked positions the cursor on the monthly marker, so the monthly marker
+     * is the field the finding names. The value read {@code reportType}, an aggregate the contract
+     * declares nowhere, which left a client with a message and no field to attach it to. See
+     * {@code docs/decision-log.md} DL-354.
+     */
+    private static final String PROPERTY_MONTHLY_SELECTION = "monthlySelection";
 
     /** Property name of the start-month screen part. */
     private static final String PROPERTY_START_MONTH = "startMonth";
@@ -787,7 +791,7 @@ public final class ReportRequestService {
         } else {
             // The catch-all arm at lines 437 to 442, reached when no report type was marked.
             state.raiseError(MSG_SELECT_REPORT_TYPE, FIELD_MONTHLY);
-            state.recordFieldError(PROPERTY_REPORT_TYPE, FIELD_MONTHLY,
+            state.recordFieldError(PROPERTY_MONTHLY_SELECTION, FIELD_MONTHLY,
                     ValidationException.FieldState.MISSING, MSG_SELECT_REPORT_TYPE);
             sendTrnrptScreen(state);
         }
@@ -1082,9 +1086,13 @@ public final class ReportRequestService {
      */
     private void editSuppliedDates(final TurnState state) {
         // Lines 388 to 406.
+        // The assembled date is what failed, but the field a client can act on is the month part the
+        // source's own cursor move names: the request declares startMonth, startDay and startYear and no
+        // assembled startDate at all, so naming the assembly left the finding unresolvable. The message
+        // still speaks of the whole date, exactly as the source writes it.
         if (!isDateAccepted(dateValidationService.validateDate(state.startDate,
                 DateFormat.YYYY_MM_DD))) {
-            faultField(state, MSG_START_DATE_INVALID, PROPERTY_START_DATE, FIELD_START_MONTH,
+            faultField(state, MSG_START_DATE_INVALID, PROPERTY_START_MONTH, FIELD_START_MONTH,
                     ValidationException.FieldState.INVALID);
             return;
         }
@@ -1092,7 +1100,7 @@ public final class ReportRequestService {
         // Lines 408 to 426.
         if (!isDateAccepted(dateValidationService.validateDate(state.endDate,
                 DateFormat.YYYY_MM_DD))) {
-            faultField(state, MSG_END_DATE_INVALID, PROPERTY_END_DATE, FIELD_END_MONTH,
+            faultField(state, MSG_END_DATE_INVALID, PROPERTY_END_MONTH, FIELD_END_MONTH,
                     ValidationException.FieldState.INVALID);
         }
     }
@@ -1440,7 +1448,7 @@ public final class ReportRequestService {
         populateHeaderInfo(state);
 
         // Line 560 copies the message work field into the outbound message field.
-        state.errorMessageField = moveToField(state.message, ERROR_MESSAGE_WIDTH);
+        state.errorMessageField = messageField(state.message, ERROR_MESSAGE_WIDTH);
 
         // The jump to the return paragraph at line 580: the task ends here, so the turn is over for
         // every paragraph that is still notionally on the stack.
@@ -1779,6 +1787,49 @@ public final class ReportRequestService {
     }
 
     /**
+     * A message moved into the outbound message field, <strong>bounded but never padded</strong>.
+     *
+     * <p>The same move as {@link #moveToField(String, int)} in every respect except the one that is
+     * observable on a REST contract: an over-long value is truncated on the right at the receiving width,
+     * and a short one is carried at its own length rather than space-filled out to that width.
+     *
+     * <h4>Why the message field does not use the padding form</h4>
+     *
+     * <p>This module carries one padding rule across its whole surface, and it is published on the
+     * contract: a value is carried exactly as it was stored or composed, a bound truncates an over-long
+     * value and never pads a short one, and {@code maxLength} therefore states the width of the map field
+     * rather than the length of the value. A message is <em>composed</em>, not stored - the source moves a
+     * literal into a work field wider than the literal - so the value the rule carries is the literal as
+     * coded. Twelve of this surface's fifteen message-bearing fields already emitted exactly that; this
+     * one did not, which left a client comparing message text by equality having to special-case this
+     * endpoint for trailing whitespace alone. This screen made the inconsistency internal as well as cross-endpoint: it publishes the same text
+     * twice, once as the bounded message field and once bare, so one response carried two lengths of one
+     * literal.
+     *
+     * <p>Nothing else changes form. A screen title is a literal coded at its full field width, and a
+     * record-derived value carries whatever trailing spaces the record holds, so both keep arriving at
+     * their declared widths through {@code moveToField} - the rule is the same rule in all three cases.
+     * See {@code docs/decision-log.md} DL-356.
+     *
+     * @param value the composed message; may be {@code null}, which is the no-message state
+     * @param width the receiving field's width, which bounds but no longer pads
+     * @return the message, truncated to {@code width} when longer and otherwise unchanged
+     */
+    private static String messageField(final String value, final int width) {
+        if (value == null) {
+            return NO_MESSAGE;
+        }
+        if (value.length() <= width) {
+            return value;
+        }
+        final StringBuilder truncated = new StringBuilder(width);
+        for (int index = 0; index < width; index++) {
+            truncated.append(value.charAt(index));
+        }
+        return truncated.toString();
+    }
+
+    /**
      * Reproduces a move into an alphanumeric field of the given width: left justified, space filled on
      * the right when the sender is shorter, and truncated on the right when it is longer. An absent
      * sender yields a blank field, because a field the terminal did not transmit holds no characters.
@@ -1928,7 +1979,7 @@ public final class ReportRequestService {
         private String confirm = blankField(CONFIRM_WIDTH);
 
         /** {@code ERRMSGO}, the outbound message field at its own narrower width. */
-        private String errorMessageField = blankField(ERROR_MESSAGE_WIDTH);
+        private String errorMessageField = NO_MESSAGE;
 
         /** {@code CCDA-TITLE01} as moved at line 613. */
         private String title01 = NO_MESSAGE;

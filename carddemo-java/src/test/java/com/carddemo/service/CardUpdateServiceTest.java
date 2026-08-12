@@ -611,7 +611,7 @@ class CardUpdateServiceTest {
                     .isEqualTo("Card name can only contain alphabets and spaces");
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.CHANGES_NOT_OK);
-            assertThat(result.focusField()).isEqualTo("embossedName");
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_EMBOSSED_NAME);
             assertThat(result.fieldErrors()).singleElement()
                     .satisfies(error -> {
                         assertThat(error.field()).isEqualTo("embossedName");
@@ -1150,7 +1150,7 @@ class CardUpdateServiceTest {
                     .isEqualTo(ValidationException.FieldState.MISSING));
             assertThat(result.screen().accountId()).isEqualTo("*");
             assertThat(result.screen().cardNumber()).isEqualTo("*");
-            assertThat(result.focusField()).isEqualTo("accountId");
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_ACCOUNT_ID);
         }
 
         @Test
@@ -1478,7 +1478,7 @@ class CardUpdateServiceTest {
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.message())
                     .isEqualTo(CardUpdateService.MSG_ACCOUNT_FILTER_ELEVEN_DIGITS);
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_ACCOUNT_ID);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_ACCOUNT_ID);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .findById(Mockito.anyString());
         }
@@ -1491,7 +1491,7 @@ class CardUpdateServiceTest {
                     .processCardUpdate(fetchingTurn(ACCOUNT_ID, "41111111111111X"));
 
             assertThat(result.message()).isEqualTo(CardUpdateService.MSG_CARD_FILTER_SIXTEEN_DIGITS);
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_CARD_NUMBER);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_CARD_NUMBER);
             assertThat(result.errorFlag()).isTrue();
         }
 
@@ -1506,7 +1506,7 @@ class CardUpdateServiceTest {
             // message that the account edit raised first.
             assertThat(result.message()).isEqualTo(CardUpdateService.MSG_NO_INPUT_RECEIVED);
             assertThat(result.errorFlag()).isTrue();
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_ACCOUNT_ID);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_ACCOUNT_ID);
         }
 
         @Test
@@ -1557,7 +1557,7 @@ class CardUpdateServiceTest {
                             carriedImage(STORED_NAME_FOLDED)));
 
             assertThat(result.message()).isEqualTo(CardUpdateService.MSG_EXPIRY_MONTH_NOT_VALID);
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_EXPIRY_MONTH);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_EXPIRY_MONTH);
         }
 
         @Test
@@ -1729,7 +1729,7 @@ class CardUpdateServiceTest {
                     .extracting(FieldErrorMarks.MarkedField::flagState)
                     .containsOnly(FieldErrorMarks.FlagState.BLANK);
             // Clause order at lines 1211 to 1235: the status flag is the first decorated one.
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_ACTIVE_STATUS);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_ACTIVE_STATUS);
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.CHANGES_NOT_OK);
             assertThat(result.writeOutcome())
@@ -1803,7 +1803,7 @@ class CardUpdateServiceTest {
             assertThat(result.decoration().markedFields())
                     .extracting(FieldErrorMarks.MarkedField::flagState)
                     .containsOnly(FieldErrorMarks.FlagState.NOT_OK);
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_EXPIRY_MONTH);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_EXPIRY_MONTH);
         }
 
         @Test
@@ -1817,7 +1817,7 @@ class CardUpdateServiceTest {
                     .processCardUpdate(reviewingTurnWithFields("MARY ANN", "N", "07", "1949"));
 
             assertThat(result.message()).isEqualTo(CardUpdateService.MSG_EXPIRY_YEAR_NOT_VALID);
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_EXPIRY_YEAR);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_EXPIRY_YEAR);
             assertThat(result.errorFlag()).isTrue();
         }
 
@@ -1831,7 +1831,7 @@ class CardUpdateServiceTest {
                     .processCardUpdate(reviewingTurnWithFields("   ", "  ", "07", "2028"));
 
             assertThat(result.message()).isEqualTo(CardUpdateService.MSG_NAME_NOT_PROVIDED);
-            assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_EMBOSSED_NAME);
+            assertThat(result.focusField()).isEqualTo(CardUpdateService.BMS_EMBOSSED_NAME);
             assertThat(result.fieldErrors())
                     .extracting(ValidationException.FieldError::field)
                     .containsExactly(CardUpdateService.FIELD_EMBOSSED_NAME,

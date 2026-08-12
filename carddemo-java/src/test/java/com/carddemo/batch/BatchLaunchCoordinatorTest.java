@@ -98,6 +98,17 @@ final class BatchLaunchCoordinatorTest {
     private static final long WORKER_TIMEOUT_MILLIS = 10_000L;
 
     /**
+     * Slack added to the reservation's published retry budget when the elapsed time of a refusal is
+     * asserted.
+     *
+     * <p>The property under test is that the budget is <em>closed</em> - four spaced waits and then a
+     * refusal, rather than a loop that keeps trying - so the ceiling has to hold on a shared machine where a
+     * sleeping thread may be scheduled late. Generous for that reason, and deliberately not a latency
+     * requirement: no figure in this module asserts one.
+     */
+    private static final long SCHEDULING_ALLOWANCE_MILLIS = 2_000L;
+
+    /**
      * How long a deliberately blocked execution holds its worker, in milliseconds.
      *
      * <p>Longer than {@link #WORKER_TIMEOUT_MILLIS} on purpose, and the gap is what makes a concurrency
@@ -233,8 +244,8 @@ final class BatchLaunchCoordinatorTest {
     }
 
     @Test
-    @DisplayName("a transient store conflict on the reservation is retried once and the retry stands")
-    void aTransientConflictIsRetriedOnce() throws Exception {
+    @DisplayName("a transient store conflict on the reservation is retried and the retry stands")
+    void aTransientConflictIsRetried() throws Exception {
         final Job job = launchableJob();
         final JobExecution reserved = reservedExecution();
         when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
@@ -248,7 +259,7 @@ final class BatchLaunchCoordinatorTest {
         final long executionId = this.coordinator.start(job, Map.of());
 
         assertThat(executionId).isEqualTo(EXECUTION_ID);
-        verify(this.jobRepository, times(BatchLaunchCoordinator.RESERVATION_ATTEMPTS))
+        verify(this.jobRepository, times(2))
                 .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
         verify(this.connection).rollback();
         verify(this.connection).commit();
@@ -256,17 +267,109 @@ final class BatchLaunchCoordinatorTest {
     }
 
     @Test
-    @DisplayName("a repeated transient conflict is the active-execution refusal and never a JDBC error")
-    void aRepeatedTransientConflictIsRefused() throws Exception {
+    @DisplayName("the retry budget is spent in full before a conflict is refused, because two attempts "
+            + "fell inside one contention window and refused two launches in three")
+    void theWholeRetryBudgetIsSpentBeforeRefusing() throws Exception {
+        final Job job = launchableJob();
+        final JobExecution reserved = reservedExecution();
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        // Four conflicts and then success: a launch that would have been refused outright under the former
+        // two-attempt budget now completes, which is the whole point of the wider one (DL-364).
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"))
+                .thenReturn(reserved);
+
+        final long executionId = this.coordinator.start(job, Map.of());
+
+        assertThat(executionId).isEqualTo(EXECUTION_ID);
+        assertThat(BatchLaunchCoordinator.RESERVATION_ATTEMPTS)
+                .as("the budget has to leave room for four retries for the case above to be reachable")
+                .isEqualTo(5);
+        verify(this.jobRepository, times(BatchLaunchCoordinator.RESERVATION_ATTEMPTS))
+                .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
+        verify(job, timeout(WORKER_TIMEOUT_MILLIS)).execute(reserved);
+    }
+
+    @Test
+    @DisplayName("a conflict that outlasts the budget is refused as a RETRYABLE STORE CONFLICT and never "
+            + "as an active execution, because no execution of the job is running")
+    void aConflictThatOutlastsTheBudgetIsRefusedAsTransient() throws Exception {
         when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
         when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
                 .thenThrow(new CannotAcquireLockException("could not serialize access"));
 
-        assertRejected(RejectionReason.ACTIVE_EXECUTION,
+        // The measured defect this pins: concurrent launches of DIFFERENT jobs contend on the framework's
+        // shared metadata tables, and answering ACTIVE_EXECUTION told the caller a run existed when the
+        // metadata held no non-terminal row for the job at all (DL-364).
+        assertRejected(RejectionReason.TRANSIENT_STORE_CONFLICT,
                 () -> this.coordinator.start(launchableJob(), Map.of()));
 
         verify(this.jobRepository, times(BatchLaunchCoordinator.RESERVATION_ATTEMPTS))
                 .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
+    }
+
+    @Test
+    @DisplayName("the retry budget is bounded in time as well as in count, so a refused caller waits a "
+            + "published maximum rather than an unbounded one")
+    void theRetryBudgetIsBoundedInTime() throws Exception {
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"));
+        // Doubling from the base for each retry, plus jitter of at most the base on each: both figures are
+        // properties of the two published constants and are computed from them rather than restated.
+        final long base = BatchLaunchCoordinator.RESERVATION_RETRY_BASE_BACKOFF_MILLIS;
+        final int retries = BatchLaunchCoordinator.RESERVATION_ATTEMPTS - 1;
+        long deterministicWait = 0L;
+        for (int retry = 1; retry <= retries; retry++) {
+            deterministicWait = deterministicWait + base * (1L << (retry - 1));
+        }
+        final long jitterCeiling = base * retries;
+
+        final long startedAt = System.nanoTime();
+        assertRejected(RejectionReason.TRANSIENT_STORE_CONFLICT,
+                () -> this.coordinator.start(launchableJob(), Map.of()));
+        final long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000L;
+
+        assertThat(deterministicWait)
+                .as("four waits of 20, 40, 80 and 160 milliseconds")
+                .isEqualTo(300L);
+        assertThat(elapsedMillis)
+                .as("the retries are genuinely spaced, because an immediate retry re-enters the window the "
+                        + "conflict came from - which is how two attempts came to be one attempt in effect")
+                .isGreaterThanOrEqualTo(deterministicWait);
+        assertThat(elapsedMillis)
+                .as("and the budget is closed rather than open: a refusal arrives within the published "
+                        + "waits plus their jitter, allowing for scheduling on a loaded machine. The "
+                        + "property under test is boundedness, not latency, so the allowance is generous "
+                        + "on purpose")
+                .isLessThanOrEqualTo(deterministicWait + jitterCeiling + SCHEDULING_ALLOWANCE_MILLIS);
+    }
+
+    @Test
+    @DisplayName("an interruption while waiting to retry refuses the launch, restores the interrupt and "
+            + "does not go on retrying")
+    void anInterruptionWhileWaitingRefusesAndPreservesTheFlag() throws Exception {
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"));
+        // The flag is set before the call, so the first wait ends at once rather than after the spacing.
+        Thread.currentThread().interrupt();
+        try {
+            assertRejected(RejectionReason.TRANSIENT_STORE_CONFLICT,
+                    () -> this.coordinator.start(launchableJob(), Map.of()));
+
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("the caller's own cancellation must survive the refusal rather than be swallowed")
+                    .isTrue();
+            verify(this.jobRepository, times(1))
+                    .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
+        } finally {
+            // Cleared so the flag does not travel into the next specification on this thread.
+            assertThat(Thread.interrupted()).isTrue();
+        }
     }
 
     @Test

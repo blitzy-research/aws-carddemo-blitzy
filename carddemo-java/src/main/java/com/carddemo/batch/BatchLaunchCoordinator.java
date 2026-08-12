@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -174,11 +175,37 @@ public final class BatchLaunchCoordinator
     /**
      * How many times one reservation is attempted before the launch is refused.
      *
-     * <p>Two: the first attempt, and one retry for a store conflict the store itself reports as worth
-     * retrying. A third attempt would only lengthen the window in which a caller waits for an answer that
-     * a second conflict has already made clear.
+     * <p>Five: the first attempt and four retries for a store conflict the store itself reports as worth
+     * retrying. Two was not enough, and the shortfall was measured rather than suspected: five launches of
+     * five <em>different</em> jobs released together were refused two times out of three, because the
+     * framework writes its instance, execution, parameter and context rows at serializable isolation and
+     * the store cancels one participant of a read/write cycle over those shared tables as a pivot - no
+     * matter that the jobs share no data of their own. Both retries then landed inside the same contention
+     * window, since they were immediate, so the second attempt met exactly what the first had.
+     *
+     * <p>Five attempts with the spacing on {@link #RESERVATION_RETRY_BASE_BACKOFF_MILLIS} is a bounded
+     * budget, not an open-ended loop: the worst case is four waits totalling
+     * {@code 20 + 40 + 80 + 160} milliseconds plus jitter, so a caller that is going to be refused is
+     * refused inside about four tenths of a second, and one that is going to succeed normally does so on
+     * the first or second attempt. The reservation itself is a few milliseconds of work, which is what
+     * makes waiting the right answer rather than a stall.
      */
-    static final int RESERVATION_ATTEMPTS = 2;
+    static final int RESERVATION_ATTEMPTS = 5;
+
+    /**
+     * First retry delay in milliseconds, doubled at each further attempt.
+     *
+     * <p>The delay is what makes a retry a different attempt rather than a repetition of the same one. An
+     * immediate retry re-enters the window the conflict came from, so it meets the same competing
+     * transaction; twenty milliseconds is more than an order of magnitude longer than the reservation it
+     * waits for, and doubling spreads the later attempts of several callers apart instead of stacking them
+     * on one instant.
+     *
+     * <p>Each wait carries jitter of up to this same figure, drawn per attempt. Without it, callers refused
+     * at the same moment retry at the same moment - identical delays reproduce the collision they are
+     * trying to escape - and jitter bounded by the base keeps the total predictable.
+     */
+    static final long RESERVATION_RETRY_BASE_BACKOFF_MILLIS = 20L;
 
     /**
      * How many reserved executions may run at once: one per job in the closed launchable inventory.
@@ -378,11 +405,13 @@ public final class BatchLaunchCoordinator
      * active execution. So the refusal path marks it failed, with an authored exit description, before
      * telling the caller.
      *
-     * <p>The caller is told {@link RejectionReason#ACTIVE_EXECUTION} - the vocabulary's "not now",
-     * already the answer for a busy lock and for a repeated store conflict. A distinct capacity reason
-     * was considered and not added: it would widen a published closed vocabulary, and the transport
-     * contract that renders it, for a state the per-job guard makes unreachable, since the workers are
-     * sized to the inventory the guard admits.
+     * <p>The caller is told {@link RejectionReason#ACTIVE_EXECUTION} - the vocabulary's "not now", and
+     * already the answer for a busy per-job launch guard. A distinct capacity reason was considered and not
+     * added: it would widen a published closed vocabulary, and the transport contract that renders it, for
+     * a state the per-job guard makes unreachable, since the workers are sized to the inventory the guard
+     * admits. This is a different situation from a store-level serialization conflict, which has its own
+     * reason precisely because it is not about a run that exists - see
+     * {@link #reserveWithDatabaseLock(Job, Map)}.
      *
      * @param job         the registered job to run
      * @param reserved    the reserved execution
@@ -676,29 +705,42 @@ public final class BatchLaunchCoordinator
     }
 
     /**
-     * Reserves one execution behind the database lock, retrying once if the store reports a transient
-     * concurrency failure and refusing the launch as an active execution if it reports one again.
+     * Reserves one execution behind the database lock, retrying a store-reported transient conflict within
+     * a bounded budget and refusing the launch as a retryable store conflict if the budget runs out.
      *
      * <p><strong>Why a retry belongs here.</strong> The framework creates its instance and execution rows
-     * in its own transaction at serializable isolation. Two launches that arrive together can therefore
-     * be cancelled by the store as a serialization pivot even though neither did anything wrong, and the
-     * store says so itself - PostgreSQL's own hint on that error is that the transaction might succeed if
-     * retried. One retry is enough: the reservation is short, the advisory lock is released by the
-     * rollback before the retry begins, and the competing reservation has finished by then.
+     * in its own transaction at serializable isolation. Launches that arrive together can therefore be
+     * cancelled by the store as a serialization pivot even though neither did anything wrong, and the store
+     * says so itself - PostgreSQL's own hint on that error is that the transaction might succeed if
+     * retried. The advisory lock is released by the rollback before the retry begins, so a retry starts
+     * from a clean position rather than holding anything across the wait.
      *
-     * <p><strong>Why the second failure is a refusal and not an internal error.</strong> A second
-     * serialization failure on a reservation this short means another launch of the same job is genuinely
-     * in flight, which is precisely {@link RejectionReason#ACTIVE_EXECUTION} - the same outcome the
-     * caller receives when the advisory lock is busy or the framework reports an execution already
-     * running. Surfacing the JDBC exception instead published a driver-level message as if the service
-     * had malfunctioned, when the correct answer to the caller is "not now". A failure that is not
-     * transient is still an internal error and is still reported as one. See
-     * {@code docs/decision-log.md} entry DL-218.
+     * <p><strong>Why the conflict is not confined to the same job, which is what made two attempts
+     * insufficient.</strong> The advisory lock serializes launches of one job name; the framework's
+     * metadata tables are shared by <em>all</em> jobs. Five launches of five different jobs released
+     * together were therefore refused two times out of three, with the store cancelling participants of a
+     * read/write cycle over {@code BATCH_JOB_EXECUTION_PARAMS}, {@code BATCH_JOB_EXECUTION_CONTEXT} and the
+     * commit itself. The retries were immediate, so both attempts fell inside one contention window. The
+     * budget on {@link #RESERVATION_ATTEMPTS} and the spacing on
+     * {@link #RESERVATION_RETRY_BASE_BACKOFF_MILLIS} address both halves of that: more attempts, and
+     * attempts that are actually apart in time.
+     *
+     * <p><strong>Why the exhausted budget is its own refusal and not the active-execution one.</strong> A
+     * serialization conflict says nothing about whether an execution of this job is running - the measured
+     * case is precisely that none was, and the refused job names had no non-terminal row in the metadata at
+     * all. Answering {@link RejectionReason#ACTIVE_EXECUTION} therefore told the caller and the operator
+     * something untrue, and sent them to wait for a run that did not exist instead of submitting again. The
+     * refusal is {@link RejectionReason#TRANSIENT_STORE_CONFLICT}, which the transport boundary answers as a
+     * retryable conflict. Refusing rather than surfacing the JDBC exception remains right for the reason
+     * DL-218 gave: a driver-level message would read as a malfunction when the service is intact. A failure
+     * that is not transient is still an internal error and is still reported as one. See
+     * {@code docs/decision-log.md} entries DL-218 and DL-364.
      *
      * @param  job              the registered job to reserve an execution for
      * @param  callerParameters the allow-listed caller parameters
      * @return the reserved execution, never {@code null}
-     * @throws LaunchRejectedException if the launch is refused, including a repeated transient conflict
+     * @throws LaunchRejectedException if the launch is refused, including a conflict that outlasted the
+     *                                 retry budget
      * @throws IllegalStateException   if the guard fails for a reason retrying cannot resolve
      */
     private JobExecution reserveWithDatabaseLock(
@@ -718,12 +760,55 @@ public final class BatchLaunchCoordinator
                 LOG.info("Launch reservation for job {} met a transient store conflict on attempt {} of"
                                 + " {}; conflict={}", jobName, Integer.valueOf(attempt),
                         Integer.valueOf(RESERVATION_ATTEMPTS), conflict.getClass().getSimpleName());
+                if (attempt < RESERVATION_ATTEMPTS) {
+                    pauseBeforeRetry(jobName, attempt);
+                }
             } catch (final DataAccessException failure) {
                 throw new IllegalStateException(
                         "the database-backed batch launch guard could not be completed", failure);
             }
         }
-        throw new LaunchRejectedException(RejectionReason.ACTIVE_EXECUTION, lastTransientFailure);
+        LOG.warn("Launch reservation for job {} was refused after {} attempts met a transient store"
+                        + " conflict; no execution of this job is running and the same request may"
+                        + " succeed if submitted again. failureChain={}", jobName,
+                Integer.valueOf(RESERVATION_ATTEMPTS),
+                FailureDiagnostics.failureChainOf(lastTransientFailure));
+        throw new LaunchRejectedException(
+                RejectionReason.TRANSIENT_STORE_CONFLICT, lastTransientFailure);
+    }
+
+    /**
+     * Waits out one contention window before the next reservation attempt.
+     *
+     * <p>The delay doubles with the attempt already made and carries jitter of up to the base figure, so
+     * callers refused at the same instant do not retry at the same instant. Both halves are bounded by
+     * {@link #RESERVATION_RETRY_BASE_BACKOFF_MILLIS}, so the whole budget is the fixed sum documented on
+     * {@link #RESERVATION_ATTEMPTS} and no wait can grow with load.
+     *
+     * <p>An interruption while waiting is not swallowed and not slept through. The flag is restored so the
+     * caller's own cancellation is not lost, and the launch is refused with the same retryable reason a
+     * used-up budget produces, because the reservation demonstrably did not happen and the request is still
+     * valid. Continuing to retry after an interruption would ignore the one instruction the thread was
+     * given.
+     *
+     * @param  jobName the job being reserved, for diagnostics
+     * @param  attempt the number of the attempt that has just failed, counting from one
+     * @throws LaunchRejectedException if the waiting thread is interrupted
+     */
+    private static void pauseBeforeRetry(final String jobName, final int attempt) {
+        final long spacing = RESERVATION_RETRY_BASE_BACKOFF_MILLIS * (1L << (attempt - 1));
+        final long jitter =
+                ThreadLocalRandom.current().nextLong(RESERVATION_RETRY_BASE_BACKOFF_MILLIS);
+        try {
+            Thread.sleep(spacing + jitter);
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            LOG.warn("Launch reservation for job {} was interrupted while waiting to retry attempt {};"
+                            + " the launch is refused and nothing was reserved", jobName,
+                    Integer.valueOf(attempt + 1));
+            throw new LaunchRejectedException(
+                    RejectionReason.TRANSIENT_STORE_CONFLICT, interrupted);
+        }
     }
 
     private JobExecution reserveOnConnection(

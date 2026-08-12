@@ -452,7 +452,9 @@
        carddemo.tracing.export, tagged by outcome, which is a bounded signal this module composes and which
        a dashboard can alert on. Both categories log through java.util.logging and reach this configuration
        by way of the JUL bridge the framework installs, which is why naming them here works at all.
-       Measured against OpenTelemetry 1.49.0. See docs/decision-log.md DL-311. -->
+       Measured against OpenTelemetry 1.56.0, and re-confirmed at that release rather than carried
+       forward: the two categories below are internal names, so DL-358 verified both still exist under
+       exactly these names before the version moved. See docs/decision-log.md DL-311 and DL-358. -->
   <logger name="io.opentelemetry.exporter.internal.http.HttpExporter" level="INHERITED"/>
   <logger name="io.opentelemetry.exporter.internal.grpc.GrpcExporter" level="INHERITED"/>
 

@@ -3168,7 +3168,18 @@ class UserManagementServiceTest {
             assertThat(userIdsOf(response)).hasSize(present.size())
                     .containsExactlyElementsOf(present);
             assertThat(response.rows()).doesNotContainNull();
-            assertThat(response.pageMetadata().pageSize()).isEqualTo(present.size());
+            assertThat(response.pageMetadata().pageSize())
+                    .as("the window is the screen's ten rows even on a short page - the map declares ten "
+                            + "row families and the clearing paragraph blanks the six that did not fill, "
+                            + "so reporting four would describe the records rather than the screen and "
+                            + "would give this member a different meaning from the one the card and "
+                            + "transaction lists publish (DL-363)")
+                    .isEqualTo(SCREEN_ROWS)
+                    .isNotEqualTo(present.size());
+            assertThat(response.rows())
+                    .as("and the count of rows that did arrive is the row list's own length, which is "
+                            + "where a client reads it")
+                    .hasSize(present.size());
             assertThat(response.pageMetadata().hasMorePages()).isFalse();
             assertThat(response.pageMetadata().hasPreviousPages()).isFalse();
             assertThat(response.pageMetadata().nextCursorKey())
@@ -3193,7 +3204,12 @@ class UserManagementServiceTest {
             assertThat(response.rows()).isEmpty();
             assertThat(response.hasRows()).isFalse();
             assertThat(response.rowSnapshotToken()).isNull();
-            assertThat(response.pageMetadata().pageSize()).isZero();
+            assertThat(response.pageMetadata().pageSize())
+                    .as("an empty page is still the ten-row screen, and reporting nought would both "
+                            + "contradict the positive bound the paging contract declares and describe a "
+                            + "window no screen has (DL-363)")
+                    .isEqualTo(SCREEN_ROWS)
+                    .isPositive();
             assertThat(response.pageMetadata().hasMorePages()).isFalse();
             assertThat(response.pageMetadata().hasPreviousPages()).isFalse();
             assertThat(response.message()).isEqualTo(MSG_LIST_AT_TOP);
@@ -3270,7 +3286,9 @@ class UserManagementServiceTest {
             assertThat(userIdsOf(response))
                     .containsExactly("USER0001", "USER0002", "USER0003", "USER0004");
             assertThat(response.rows()).hasSize(arriving.size()).doesNotContainNull();
-            assertThat(response.pageMetadata().pageSize()).isEqualTo(arriving.size());
+            assertThat(response.pageMetadata().pageSize())
+                    .as("a short backward page reports the same ten-row window as a full one (DL-363)")
+                    .isEqualTo(SCREEN_ROWS);
             assertThat(response.message()).isEqualTo(MSG_LIST_REACHED_TOP);
             verifyNoMoreInteractions(mockRepository);
         }

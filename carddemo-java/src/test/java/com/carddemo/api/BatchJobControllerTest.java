@@ -16,6 +16,10 @@
  */
 package com.carddemo.api;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.api.dto.BatchJobExecutionResponse;
 import com.carddemo.api.dto.BatchJobLaunchResponse;
 import com.carddemo.batch.BackupTransactionJobConfig;
@@ -32,6 +36,7 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.BatchLaunchGateway;
 import com.carddemo.service.BatchJobLaunchService;
+import com.carddemo.util.FailureDiagnostics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -52,6 +57,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
@@ -74,6 +80,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -711,6 +718,118 @@ class BatchJobControllerTest {
                     Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, "probeValue")))
                     .isInstanceOf(ValidationException.class)
                     .hasMessageNotContaining("probeValue");
+        }
+
+        @Test
+        @DisplayName("records the refusal's own explanation server-side, rendered inert, so an operator "
+                + "learns which parameter was wrong while the caller still learns nothing")
+        void recordsTheRefusalExplanationServerSideAndNowhereElse() throws Exception {
+            // The gap this closes: the reason code was the whole of the server-side record, while the
+            // sentence the job's validator composed - which names the parameter, its value and the legal
+            // set - reached no sink at all. Neither the response nor the log said what was wrong. The
+            // response is deliberately unchanged; only the log gains the explanation, and it is rendered
+            // inert first because the same carrier also wraps framework text. See DL-360.
+            final String jobName = FileProbeJobConfig.FILE_PROBE_JOB_NAME;
+            final Job registered = registerJob(jobName);
+            final String validatorText = "Job parameter [" + JobParameterValidators.FILE_PROBE_MODE_KEY
+                    + "] value [ACCTFILE] is not one of the legal probe modes";
+            when(jobLauncher.run(eq(registered), any(JobParameters.class)))
+                    .thenThrow(new JobParametersInvalidException(validatorText + "\nforged trailer"));
+
+            final Logger logger = (Logger) LoggerFactory.getLogger(BatchJobController.class);
+            final Level previousLevel = logger.getLevel();
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.start();
+            logger.setLevel(Level.WARN);
+            logger.addAppender(recorder);
+            final Throwable refusal;
+            try {
+                refusal = catchThrowable(() -> controller.launchJob(jobName,
+                        Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, "ACCTFILE")));
+            } finally {
+                logger.detachAppender(recorder);
+                logger.setLevel(previousLevel);
+                recorder.stop();
+            }
+
+            assertThat(refusal)
+                    .as("the caller still receives the frozen, unspecific refusal")
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageNotContaining("ACCTFILE")
+                    .hasMessageNotContaining(JobParameterValidators.FILE_PROBE_MODE_KEY);
+            assertThat(recorder.list).singleElement().satisfies(event -> {
+                assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                assertThat(event.getFormattedMessage())
+                        .as("the operator gets the reason code, the job and the explanation")
+                        .contains("job=" + jobName)
+                        .contains("reason=" + BatchLaunchGateway.RejectionReason.INVALID_PARAMETERS.name())
+                        .contains(validatorText)
+                        .as("and the record stays one record: no terminator survives the rendering")
+                        .doesNotContain("\n", "\r");
+            });
+        }
+
+        @Test
+        @DisplayName("records an absent refusal cause as the renderer's absent marker rather than "
+                + "failing or writing a null into the log")
+        void recordsAnAbsentRefusalCauseAsTheAbsentMarker() throws Exception {
+            final String jobName = FileProbeJobConfig.FILE_PROBE_JOB_NAME;
+            final Job registered = registerJob(jobName);
+            when(jobLauncher.run(eq(registered), any(JobParameters.class)))
+                    .thenThrow(new BatchLaunchGateway.LaunchRejectedException(
+                            BatchLaunchGateway.RejectionReason.ACTIVE_EXECUTION, null));
+
+            final Logger logger = (Logger) LoggerFactory.getLogger(BatchJobController.class);
+            final Level previousLevel = logger.getLevel();
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.start();
+            logger.setLevel(Level.WARN);
+            logger.addAppender(recorder);
+            try {
+                assertThatThrownBy(() -> controller.launchJob(jobName,
+                        Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, "account")))
+                        .isInstanceOf(ValidationException.class);
+            } finally {
+                logger.detachAppender(recorder);
+                logger.setLevel(previousLevel);
+                recorder.stop();
+            }
+
+            assertThat(recorder.list).singleElement().satisfies(event -> assertThat(
+                    event.getFormattedMessage())
+                    .contains("detail=" + FailureDiagnostics.ABSENT_VALUE)
+                    .doesNotContain("null"));
+        }
+
+        @Test
+        @DisplayName("carries the retryable store conflict out unchanged instead of converting it into a "
+                + "caller fault, so the boundary answers a conflict rather than a bad request")
+        void carriesTheRetryableStoreConflictOutUnchanged() throws Exception {
+            final String jobName = PostTransactionJobConfig.JOB_NAME;
+            final Job registered = registerJob(jobName);
+            final BatchLaunchGateway refusing = (job, parameters) -> {
+                throw new BatchLaunchGateway.LaunchRejectedException(
+                        BatchLaunchGateway.RejectionReason.TRANSIENT_STORE_CONFLICT,
+                        new IllegalStateException("could not serialize access"));
+            };
+            final BatchJobController overRefusingGateway = new BatchJobController(
+                    new BatchJobLaunchService(jobRegistry, refusing, jobExplorer), meterRegistry);
+
+            // The three caller-addressable refusals above become ValidationException here. This one must
+            // not: nothing is wrong with the request and no execution of the job is running, so converting
+            // it would repeat the misreport this arm exists to end (DL-364). The failure adapter answers it
+            // as a 409 that invites the same request again.
+            assertThatThrownBy(() -> overRefusingGateway.launchJob(jobName, Map.of()))
+                    .isInstanceOfSatisfying(BatchLaunchGateway.LaunchRejectedException.class,
+                            rejected -> assertThat(rejected.rejectionReason())
+                                    .isEqualTo(BatchLaunchGateway.RejectionReason
+                                            .TRANSIENT_STORE_CONFLICT))
+                    .isNotInstanceOf(ValidationException.class);
+            assertThat(registered.getName()).isEqualTo(jobName);
+            assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
+                    .tag("batchJob", jobName).tag("outcome", "refused").timer())
+                    .as("a refusal is timed under the refused outcome however it is answered")
+                    .isNotNull();
         }
 
         @Test

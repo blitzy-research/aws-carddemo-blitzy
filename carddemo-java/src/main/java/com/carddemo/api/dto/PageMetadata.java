@@ -70,11 +70,20 @@ import java.util.Objects;
  * two obligations are separated by scope rather than traded off: the accessors and the JSON wire form
  * carry both cursors byte for byte, and {@link #toString()} withholds both (decision log DL-081).
  *
- * @param pageSize the number of screen rows this page carries, supplied by the caller. The
- *     legacy antecedent is the per-screen row count proven above — the card-list table of seven
+ * @param pageSize the number of screen rows the serving screen presents — its row window, and
+ *     <strong>not</strong> the number of rows this particular page happens to carry. The legacy
+ *     antecedent is the per-screen row count proven above — the card-list table of seven
  *     occurrences, the transaction-list loop bound of ten, and the user-list table of ten
- *     occurrences. It travels as data so a single contract serves all three screens; it is never
- *     defaulted here, and the three named constants exist so a caller or a test can name the
+ *     occurrences — and each of the three screens reports its own figure unchanged on every turn,
+ *     including a short final page and a page with no rows at all, because the map declares that
+ *     many row families and the screen blanks the ones a short page did not fill. A client that
+ *     wants the number of rows it received reads the length of the row list its response carries;
+ *     this member answers how wide the window is, which is what a client needs in order to tell a
+ *     short page from a full one. The two readings were once mixed - two screens reported the window
+ *     and the third the populated count - which left the member unreadable without knowing which
+ *     endpoint had answered, so the single meaning is stated here rather than left to each service
+ *     (decision log DL-363). It travels as data so a single contract serves all three screens; it is
+ *     never defaulted here, and the three named constants exist so a caller or a test can name the
  *     contractual value of the screen it is serving. Bounded above by
  *     {@link #LARGEST_SCREEN_PAGE_SIZE}, the largest of those three figures, because no screen in the
  *     estate presents an eleventh row; requiring the exact figure of seven or ten is the serving
@@ -258,7 +267,7 @@ public record PageMetadata(
      * backward out of - the legacy leaves the backward attention key live and repositions on the
      * retained first key - so recording only the forward key would discard exactly what that path needs.
      *
-     * @param pageSize            the number of screen rows the page carries
+     * @param pageSize            the screen's own row window, not the number of rows on this page
      * @param previousCursorKey   the key of the first row, from which a backward browse restarts, or
      *                            {@code null} when no page precedes this one
      * @param nextCursorKey       the key of the last row, from which a forward browse restarts, or
@@ -292,7 +301,7 @@ public record PageMetadata(
      * for the mirror of the reason given on {@link #forward}: a page reached backward can be walked
      * forward again from the retained last key.
      *
-     * @param pageSize            the number of screen rows the page carries
+     * @param pageSize            the screen's own row window, not the number of rows on this page
      * @param previousCursorKey   the key of the first row, from which a further backward browse
      *                            restarts, or {@code null} when no page precedes this one
      * @param nextCursorKey       the key of the last row, from which a forward browse restarts, or

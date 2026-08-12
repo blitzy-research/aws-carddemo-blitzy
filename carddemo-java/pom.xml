@@ -172,6 +172,39 @@
     <springdoc-openapi.version>2.8.17</springdoc-openapi.version>
 
     <!-- ==============================================================
+         Forward-compatibility override, deliberately kept out of the security-remediation block
+         below because no advisory motivates it and the block's own heading would misdescribe it.
+
+         The tracing family this property governs is imported as a bill of materials by the framework
+         parent, which selects 1.49.0. On that release the span processor's queue is a shaded copy of
+         a lock-free queue library that takes field offsets through sun.misc.Unsafe, so the runtime
+         writes three lines to the process error stream at every start-up: a terminal-deprecation
+         notice, the caller
+         (io.opentelemetry.internal.shaded.jctools.util.UnsafeAccess, inside opentelemetry-sdk-trace),
+         and a removal warning. They arrive before any appender exists, carry no timestamp, level or
+         logger, and in the production profile they land in a stream that is otherwise one JSON object
+         per line - so a collector that parses per line reports three failures on every restart.
+
+         Measured rather than assumed. The published artefacts were fetched and read: 1.49.0 and
+         1.52.0 both ship the shaded UnsafeAccess class and reference sun/misc/Unsafe from five
+         classes; 1.56.0 references it from none and ships no such class. 1.56.0 is therefore the
+         earliest release that removes the caller rather than silencing the notice, and it is chosen
+         over anything later to keep the distance from the framework's own selection at a minimum.
+
+         The alternative was the platform's sun.misc.Unsafe memory-access selector, set to allow on
+         the image entry point, which suppresses the notice while leaving the call in place for the
+         release that turns it into a hard failure. Removing the caller is preferred for the same
+         reason DL-115 preferred moving the transport over tracking its notice.
+
+         Governed through the bill of materials' own property name, so one value moves the API, SDK,
+         exporter and propagator artefacts together and no direct dependency version is introduced.
+         The two logger categories this module silences on the exporter - documented at DL-311 - were
+         confirmed present at the same fully qualified names on this release, so the suppression they
+         belong to still applies. See docs/decision-log.md DL-358.
+         ============================================================== -->
+    <opentelemetry.version>1.56.0</opentelemetry.version>
+
+    <!-- ==============================================================
          Security remediation overrides. Each entry below is a managed version override the
          supply-chain gate requires, never a direct dependency declaration. Each states which
          coordinate it governs, how that coordinate reaches the classpath, and the finding the value
@@ -715,6 +748,24 @@
     <!-- ==============================================================
          CLOUD SERVICE INTEGRATION - version free; governed by the imported cloud bill of
          materials, which also governs every SDK artefact underneath.
+
+         All three starters carry the same single exclusion, and it is a LOGGING exclusion rather
+         than a security one. Each starter reaches the synchronous Apache transport of the SDK, that
+         transport reaches HttpClient 4.5, and HttpClient 4.5 declares the original Commons Logging
+         facade. The framework already supplies that facade's API through spring-jcl, so with both on
+         the class path the bridge writes two lines to the process error stream at every start - "
+         Standard Commons Logging discovery in action with spring-jcl: please remove
+         commons-logging.jar from classpath" - before any appender exists to carry them. Those two
+         lines are the only diagnostics this deployment emits that do not flow through the configured
+         pipeline, and in the production profile they land unstructured in a stream that is otherwise
+         one JSON object per line.
+
+         The exclusion is repeated on each starter rather than declared once, because a Maven
+         exclusion is scoped to the path it is written on: the transport appears beneath all three
+         starters and is merely reported as a duplicate under the second and third, so excluding it
+         on one path leaves the artefact resolvable through its siblings. Nothing loses its log: the
+         transport keeps calling the same facade and spring-jcl routes it to SLF4J, which is where
+         every other library in this module already logs. See docs/decision-log.md DL-357.
          ============================================================== -->
 
     <!-- Object storage replacing sequential dataset staging and the
@@ -722,6 +773,12 @@
     <dependency>
       <groupId>io.awspring.cloud</groupId>
       <artifactId>spring-cloud-aws-starter-s3</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!-- Ordered queue replacing the single transient data queue that
@@ -732,12 +789,24 @@
     <dependency>
       <groupId>io.awspring.cloud</groupId>
       <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!-- Notification fan out for job completion. -->
     <dependency>
       <groupId>io.awspring.cloud</groupId>
       <artifactId>spring-cloud-aws-starter-sns</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!-- ==============================================================
