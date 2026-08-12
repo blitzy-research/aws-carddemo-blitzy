@@ -49,6 +49,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -550,6 +552,39 @@ class StagedGenerationStoreTest {
                     StagedGenerationStore.discardWorkingArtifact(absent, "program CBTRN02C", REASON));
             assertThat(StagedGenerationStore.discardWorkingArtifact(absent, "program CBTRN02C",
                     REASON))
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("reports rather than raises when the removal itself fails, which is the arm that "
+                + "keeps a cleanup problem from displacing the failure that ended the program")
+        void itNeverRaisesWhenTheRemovalItselfFails() throws IOException {
+            // WHY THE FAILING REMOVAL IS STAGED IN A FOREIGN FILE STORE. The case above proves the
+            // absent file; this one proves the arm that catches what the removal RAISES, and on an
+            // ordinary directory there is no unlink that fails for every account this suite might run
+            // as - a mode change stops an unprivileged account and is ignored for a privileged one, so
+            // the assertion would then pass or fail on who ran it rather than on the code. A closed zip
+            // store still answers path questions - the name, the suffix and the parent, which is how the
+            // disposition reaches its guard at all - and refuses every attribute read and every delete
+            // once closed, so the removal fails identically everywhere.
+            final String workingName = StagedGenerationStore.workingPath(
+                            StagedGenerationStore.generationPath(stagingDirectory, BASE, 45))
+                    .getFileName().toString();
+            final Path archive = stagingDirectory.resolve("closed-store.zip");
+            final Path working;
+            try (FileSystem store = FileSystems.newFileSystem(archive, Map.of("create", "true"))) {
+                working = store.getPath("/" + workingName);
+                Files.writeString(working, "partial", StandardCharsets.US_ASCII);
+            }
+
+            assertThatNoException()
+                    .as("a disposition that cannot remove the file must not replace the abend an "
+                            + "operator is reading with a cleanup failure")
+                    .isThrownBy(() -> StagedGenerationStore.discardWorkingArtifact(working,
+                            "program CBSTM03A", REASON));
+            assertThat(StagedGenerationStore.discardWorkingArtifact(working, "program CBSTM03A",
+                    REASON))
+                    .as("and it reports the outcome, so nothing believes the file is gone")
                     .isFalse();
         }
     }

@@ -12035,6 +12035,29 @@ a throwing or `null` declaration leaves the abend as the failure that reaches th
 resolve abends the emit lifecycle mid-composition, driven on the working path as its tasklet adapter drives
 it, and neither the working file nor a completed generation exists afterwards.
 `batch/InterestCalculationJobIT` asserts the same disposition through a real launched job.
+`batch/CategoryBalanceReportJobConfigTest` drives both of that job's staged steps through the framework's own
+step contract, because that job's lifecycles are private to their configuration and a launched step is the
+only way in: a cluster the unload cannot read abends with its output already open, and an unloaded generation
+the sort cannot frame abends after its report was opened. In each case the staging root is left exactly as
+the step found it, and the generation the sort was reading is still there — the disposition removes what its
+own lifecycle was composing and nothing else.
+`batch/CreateStatementJobConfigTest` covers the only lifecycle in the module that composes two outputs at
+once: a generation that abends part way through leaves neither working output behind and seals neither
+completed name.
+`batch/CombineTransactionsJobConfigTest` blocks that stream's seal by occupying the completed name with a
+directory, which the kernel refuses to replace with a file however the move is requested, and asserts the
+working file gone with the seal failure still reported to the framework.
+
+*Not covered by a case, and stated here rather than left to be discovered:* the combined stream's other seal
+arm, where the composer's own `close` fails. From outside that class there is no close failure to produce —
+the only thing ever written is an ASCII-validated fixed-width record image, so the US-ASCII encoder cannot
+report; the channel beneath the composer is not interruptible on this runtime, so a close by an interrupted
+thread completes normally; and a mode or ownership change is ignored by a privileged account, which would
+make any such case pass or fail on who ran it rather than on the code. Reaching it would need a seam in the
+production class that exists only for the test, which this module does not add. What that arm holds is one
+call to the same disposition every other arm makes, and that disposition has its own specification in
+`StagedGenerationStoreTest` covering its removal, its refusal of a non-working path, an untrusted name, an
+absent file and a removal that raises.
 
 *Embodied in:* `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`,
 `src/main/java/com/carddemo/batch/step/AbstractCobolStep.java`,

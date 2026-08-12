@@ -31,6 +31,7 @@ import com.carddemo.batch.CreateStatementJobConfig.LoadWorkResourceProgram;
 import com.carddemo.batch.CreateStatementJobConfig.OrderAndReprojectProgram;
 import com.carddemo.batch.CreateStatementJobConfig.StatementOutput;
 import com.carddemo.batch.CreateStatementJobConfig.TransactionWorkResource;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.StatementProcessor;
 import com.carddemo.config.BatchConfig.ConditionCodeGate;
 import com.carddemo.domain.Transaction;
@@ -962,6 +963,53 @@ class CreateStatementJobConfigTest {
                     CreateStatementJobConfig.STATEMENT_RECORD_LENGTH)).isEmpty();
             assertThat(fixedWidthRecordsOf(config.htmlStatementOutputResource(),
                     CreateStatementJobConfig.HTML_RECORD_LENGTH)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a generation that abends part way through leaves neither of its two working "
+                + "outputs behind, because the seal that would have registered them is in the caller "
+                + "and was never reached")
+        void anAbendMidGenerationLeavesNeitherWorkingOutputBehind(@TempDir final Path staging) {
+            // DRIVEN ON THE WORKING PATHS, WHICH IS HOW THE TASKLET DRIVES IT. The production adapter
+            // resolves an execution-scoped generation for each stream, hands this lifecycle the .part of
+            // each, and seals both only after the lifecycle returns. An abend inside the run therefore
+            // abandons TWO partly written files, and neither appears in any execution's registry, so the
+            // job-boundary cleanup could not identify either. This is the only lifecycle in the module
+            // that composes two outputs at once, which is why both are asserted rather than one.
+            // See docs/decision-log.md entry DL-289.
+            when(generationService.generate(any(), any(), any(), any())).thenAnswer(invocation -> {
+                final StatementOutputSink destination = invocation.getArgument(3);
+                destination.statementRecord(pad("STATEMENT LINE ONE",
+                        CreateStatementJobConfig.STATEMENT_RECORD_LENGTH));
+                destination.htmlRecord(pad("<p>HTML LINE ONE</p>",
+                        CreateStatementJobConfig.HTML_RECORD_LENGTH));
+                throw new AbendException(AbendException.BATCH_ABEND_CODE, "CBSTM03A",
+                        "STATUS 23 READING XREFFILE", "ERROR READING CROSS REFERENCE FILE");
+            });
+            final CreateStatementJobConfig config = config(staging);
+            final Path statementWorking =
+                    StagedGenerationStore.workingPath(config.statementOutputResource());
+            final Path htmlWorking =
+                    StagedGenerationStore.workingPath(config.htmlStatementOutputResource());
+
+            assertThatThrownBy(() -> config.newGenerateStatementsProgram(
+                    config.createStatementProcessor(),
+                    new FileBackedTransactionWorkResource(staging),
+                    statementWorking, htmlWorking).run())
+                    .as("the program's own abend is the failure the step reports, undisplaced by the "
+                            + "disposition that follows it")
+                    .isInstanceOf(AbendException.class);
+
+            assertThat(statementWorking)
+                    .as("the partly written statement output is discarded")
+                    .doesNotExist();
+            assertThat(htmlWorking)
+                    .as("and so is the partly written markup output")
+                    .doesNotExist();
+            assertThat(config.statementOutputResource())
+                    .as("nothing was sealed under either completed name either")
+                    .doesNotExist();
+            assertThat(config.htmlStatementOutputResource()).doesNotExist();
         }
     }
 

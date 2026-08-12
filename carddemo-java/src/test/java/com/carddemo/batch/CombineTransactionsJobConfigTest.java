@@ -1418,6 +1418,49 @@ class CombineTransactionsJobConfigTest {
         }
 
         @Test
+        @DisplayName("a seal that cannot complete discards the working file, because a composition that "
+                + "never sealed was never registered and no later cleanup could name it")
+        void aSealThatCannotCompleteDiscardsTheWorkingFile() throws Exception {
+            final CombineTransactionsJobConfig.CombinedGeneration combined =
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
+            combined.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
+            final Path generation = generationFile(JOB_EXECUTION_ID);
+            final Path working = StagedGenerationStore.workingPath(generation);
+            assertThat(working)
+                    .as("the composition is under way, so there is a working file to abandon")
+                    .exists();
+
+            // HOW THE SEAL IS MADE TO FAIL. The seal is an atomic move onto the completed name, and the
+            // kernel refuses to replace a directory with a file however the move is requested - so a
+            // directory occupying that name fails the move after the composer has already closed, which
+            // is precisely the window this arm exists for. Registration happens after the seal, so
+            // without the disposition the working file would sit in the staging root as a partial
+            // combined generation that no execution's registry names. See docs/decision-log.md DL-289.
+            Files.createDirectory(generation);
+
+            assertThatThrownBy(combined::close)
+                    .as("the seal failure is reported to the framework rather than swallowed")
+                    .isInstanceOf(RuntimeException.class);
+
+            assertThat(working)
+                    .as("and the partial combined generation is discarded rather than left behind")
+                    .doesNotExist();
+        }
+
+        // THE SEAL'S OTHER ARM, AND WHY NO CASE HERE DRIVES IT. A seal can also fail on the composer's
+        // own close, and that arm carries the identical disposition. It is not exercised, because from
+        // outside this class there is no close failure to produce: the only thing ever written is an
+        // ASCII-validated fixed-width record image, so the US-ASCII encoder cannot report; the channel
+        // beneath the composer is not interruptible on this runtime, so an interrupted close completes
+        // normally; and a mode or ownership change is ignored by a privileged account, which would make
+        // any such case pass or fail on who ran it. Reaching it would need a seam in the production
+        // class that exists only for the test, which this module does not add. The disposition itself is
+        // proven by the case above on the sibling arm, and by its own unit specification in
+        // StagedGenerationStoreTest, which covers its success, its refusal of a non-working path, an
+        // untrusted name, an absent file and a removal that raises. Recorded in docs/decision-log.md
+        // DL-289.
+
+        @Test
         @DisplayName("the sealed generation survives being served in full, because the publication that "
                 + "uploads it has not run yet when the load step closes")
         void theSealedGenerationSurvivesBeingServed() throws Exception {

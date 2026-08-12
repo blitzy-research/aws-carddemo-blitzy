@@ -18,10 +18,15 @@ package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.Comparator;
@@ -33,16 +38,25 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobInstance;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.support.transaction.ResourcelessTransactionManager;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.AccountScanRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
@@ -117,6 +131,128 @@ final class CategoryBalanceReportJobConfigTest {
                 "/tmp",
                 "AWS.M2.CARDDEMO.TCATBALF.BKUP",
                 "AWS.M2.CARDDEMO.TCATBALF.REPT");
+    }
+
+    /**
+     * The configuration wired against a temporary staging area and a nominated category-balance
+     * repository, so a case can drive a step that actually writes and can then inspect what it left.
+     *
+     * <p>The transaction manager is a real resourceless one rather than a stub, because a case here
+     * executes a step through the framework's own contract and a stub would return no transaction for
+     * the framework to run the tasklet in.
+     *
+     * @param  staging    the temporary staging directory the datasets resolve against
+     * @param  balances   the category-balance repository the unload pass reads through
+     * @return the configuration
+     */
+    private static CategoryBalanceReportJobConfig configuration(final Path staging,
+            final TransactionCategoryBalanceRepository balances) {
+
+        final FileMaintenanceService fileMaintenanceService = new FileMaintenanceService(
+                mock(AccountRepository.class),
+                mock(AccountScanRepository.class),
+                mock(CardRepository.class),
+                mock(CardScanRepository.class),
+                mock(CardCrossReferenceRepository.class),
+                mock(CardCrossReferenceScanRepository.class),
+                balances,
+                mock(CustomerRepository.class),
+                new AbendService());
+
+        return new CategoryBalanceReportJobConfig(
+                mock(JobRepository.class),
+                new ResourcelessTransactionManager(),
+                mock(JobExecutionListener.class),
+                new RunIdIncrementer(),
+                fileMaintenanceService,
+                new FixedWidthFlatFileReaderFactory(),
+                new SimpleMeterRegistry(),
+                Clock.systemUTC(),
+                staging.toString(),
+                "AWS.M2.CARDDEMO.TCATBALF.BKUP",
+                "AWS.M2.CARDDEMO.TCATBALF.REPT");
+    }
+
+    @Nested
+    @DisplayName("the abnormal end of either staged step, which leaves the staging root as it found it")
+    final class AbnormalEndOfAStagedStep {
+
+        /** The execution both cases below run as, which is what names the generation each step writes. */
+        private static final long JOB_EXECUTION_ID = 1L;
+
+        /** Creates the nest. */
+        AbnormalEndOfAStagedStep() {
+        }
+
+        @Test
+        @DisplayName("a cluster the unload cannot read abends and leaves no working generation behind, "
+                + "because the seal that would have registered one is in the tasklet after the pass")
+        void anUnloadThatAbendsLeavesNoWorkingGenerationBehind(@TempDir final Path staging)
+                throws Exception {
+
+            // WHY THIS MATTERS AT THIS SITE. The tasklet opens the output first and only then runs the
+            // pass, so a cluster failure abends with the working generation already created and empty.
+            // Registration happens after the seal the pass never reached, so the job-boundary cleanup -
+            // which deletes only registered paths - could not identify it. The name it would leave reads
+            // exactly like real batch output. See docs/decision-log.md entry DL-289.
+            final TransactionCategoryBalanceRepository unreadable =
+                    mock(TransactionCategoryBalanceRepository.class);
+            when(unreadable.findAfterKey(any(), any(), any(), any())).thenThrow(
+                    new DataAccessResourceFailureException("the category-balance cluster is unreadable"));
+            final CategoryBalanceReportJobConfig configuration = configuration(staging, unreadable);
+
+            final StepExecution stepExecution = execute(
+                    configuration.categoryBalanceReportUnloadStep());
+
+            assertThat(stepExecution.getStatus())
+                    .as("the step reports the abend rather than completing")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(Files.list(staging).toList())
+                    .as("nothing at all is left in the staging root: neither the working copy nor a "
+                            + "sealed generation")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("an unloaded generation the sort cannot frame abends and leaves no working report "
+                + "behind, and the generation it was reading is untouched")
+        void aSortThatAbendsLeavesNoWorkingReportBehind(@TempDir final Path staging) throws Exception {
+            // The input is framed by width and carries no separator, so a trailing run shorter than one
+            // record is a truncated dataset the reader refuses rather than a short final record it
+            // hands on. The output was opened before that read, so the abend abandons an empty working
+            // report unless the lifecycle's own abnormal end discards it.
+            final CategoryBalanceReportJobConfig configuration =
+                    configuration(staging, mock(TransactionCategoryBalanceRepository.class));
+            final Path unloaded = StagedGenerationStore.generationPath(staging,
+                    "AWS.M2.CARDDEMO.TCATBALF.BKUP", JOB_EXECUTION_ID);
+            Files.writeString(unloaded, " ".repeat(20), StandardCharsets.US_ASCII);
+
+            final StepExecution stepExecution = execute(
+                    configuration.categoryBalanceReportSortAndReprojectStep());
+
+            assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(Files.list(staging).map(Path::getFileName).map(Path::toString).toList())
+                    .as("the unloaded generation it was reading is the only thing still there: no "
+                            + "working report, and nothing sealed under the report's own name")
+                    .containsExactly(unloaded.getFileName().toString());
+        }
+
+        /**
+         * Runs one step of this job through the framework's own contract, as part of a job execution
+         * whose identifier is what the two staged steps name their generation with.
+         *
+         * @param  step the step to run
+         * @return the completed step execution, carrying whatever failure the step recorded
+         * @throws Exception if the framework itself refused to run the step
+         */
+        private StepExecution execute(final Step step) throws Exception {
+            final JobExecution jobExecution = new JobExecution(
+                    new JobInstance(JOB_EXECUTION_ID, CategoryBalanceReportJobConfig.JOB_NAME),
+                    JOB_EXECUTION_ID, new JobParameters());
+            final StepExecution stepExecution = jobExecution.createStepExecution(step.getName());
+            step.execute(stepExecution);
+            return stepExecution;
+        }
     }
 
     @Nested
