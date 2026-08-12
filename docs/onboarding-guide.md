@@ -217,6 +217,20 @@ second run. `docs/decision-log.md` DL-346 records the two rules and what a produ
 the AWS surface this module needs, so there is no licence token to supply and no Pro subscription to buy.
 Nothing in the module reads one.
 
+**Nothing the emulator holds survives a restart, and that is deliberate.** `PERSISTENCE` is `0` and
+`/var/lib/localstack` is a tmpfs, so the emulator keeps its state in memory only: `docker compose restart
+localstack`, or a `down` of any kind, empties the bucket, the queue and the topic. The ready hook re-creates
+all three *resources* — which is why the container reports healthy again — but it re-creates nothing that was
+**put** into them. Two consequences worth knowing before you conclude something is broken. **Re-stage the
+posting job's input.** Its reader is strict about `AWS.M2.CARDDEMO.DALYTRAN.PS` and a launch without it
+fails the step rather than reading zero records, so repeat the upload — it is step 3 of the
+performance-baseline procedure in `carddemo-java/README.md` — after every emulator restart. And **treat
+published generations as gone.** A durable generation number is allocated as one more than the highest
+already beneath its base (`docs/decision-log.md` DL-210), so an emptied bucket restarts that numbering at
+one, while the local staging volume is a *named* Docker volume that survives everything short of
+`down -v` and still holds the sealed generations of earlier runs. Neither is a defect; both are what an
+in-memory emulator means.
+
 **Why the defaults are written the way they are**, since the three exports above are the one piece of
 friction in this section. Both identity arguments carry a default so that Compose can interpolate the
 whole file for *every* subcommand: written as required-but-unset, they made `config`, `ps`, `logs` and

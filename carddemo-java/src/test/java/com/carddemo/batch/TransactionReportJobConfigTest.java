@@ -75,6 +75,7 @@ import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.TransactionReportProcessor;
 import com.carddemo.domain.Transaction;
+import com.carddemo.exception.AbendException;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.service.DateValidationService;
@@ -1152,6 +1153,56 @@ final class TransactionReportJobConfigTest {
         }
 
         @Test
+        @DisplayName("a reference the report cannot resolve abends mid-composition and leaves no "
+                + "working file behind, because the seal it never reached is what would have "
+                + "registered one")
+        void anAbendMidReportLeavesNoWorkingFileBehind() throws IOException {
+            // THE REVIEWED RESIDUE, AT ITS OWN SITE. An online add may create a transaction whose
+            // category has no reference row, and the report's reference lookup abends on the first
+            // record that presents it - faithfully, per docs/decision-log.md DL-175. The emit step is
+            // driven here exactly as its tasklet adapter drives it, on the WORKING path, because the
+            // seal and the registration happen in the adapter after the program returns: an abend
+            // inside the program therefore leaves a partly written report that appears in no
+            // execution's registry, which the job-boundary cleanup could never identify. The template's
+            // abnormal end discards it. See docs/decision-log.md entry DL-289.
+            final List<String> emittedBeforeTheAbend = reportLines();
+            final TransactionReportService reportService = mock(TransactionReportService.class);
+            when(reportService.generateReportFromDateParameterCard(
+                    any(ReportTransactionSource.class), any(), anyString()))
+                    .thenAnswer(invocation -> {
+                        final Consumer<String> sink = invocation.getArgument(1);
+                        for (final String record : emittedBeforeTheAbend) {
+                            sink.accept(record);
+                        }
+                        throw new AbendException(AbendException.BATCH_ABEND_CODE, "CBTRN03C",
+                                "STATUS 23 READING TRANCATG",
+                                "ERROR READING TRANSACTION CATEGORY FILE");
+                    });
+            final TransactionReportJobConfig configuration =
+                    configuration(mock(TransactionRepository.class), reportService);
+            Files.writeString(configuration.filteredGeneration(JOB_EXECUTION_ID), "",
+                    StandardCharsets.US_ASCII);
+            final Path generation = configuration.reportGeneration(JOB_EXECUTION_ID);
+            final Path working = StagedGenerationStore.workingPath(generation);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .as("the program's own abend is the failure an operator reads")
+                    .isThrownBy(() -> configuration.newEmitProgram(
+                            configuration.transactionReportProcessor(),
+                            configuration.dateParameterCard(chunkContext(WINDOW_START, WINDOW_END)),
+                            configuration.filteredGeneration(JOB_EXECUTION_ID),
+                            working).run());
+
+            assertThat(working)
+                    .as("the partly written report is discarded rather than left in the staging root "
+                            + "under a name that reads like real batch output")
+                    .doesNotExist();
+            assertThat(generation)
+                    .as("and nothing was sealed under the completed generation name either")
+                    .doesNotExist();
+        }
+
+        @Test
         @DisplayName("a report generation that cannot be opened abends after its status has been "
                 + "reported, and the handle it never obtained is released without a second failure")
         void aGenerationThatCannotBeOpenedAbends() throws IOException {
@@ -1597,12 +1648,23 @@ final class TransactionReportJobConfigTest {
             // Measured against Collection rather than Iterable on purpose: a generation PATH is an
             // Iterable of its own name elements and is not a set of records, so an Iterable test would
             // reject the two path fields the step must hold and would say nothing about records.
+            //
+            // The one collection a member may hand out is the abnormal-disposition declaration, whose
+            // elements are generation PATHS and not records: naming the file a failed pass never sealed
+            // is what lets the template discard it, and a caller holding two path values holds nothing
+            // of the generation's contents. It is therefore admitted by name and by element type rather
+            // than by widening the rule. See docs/decision-log.md entry DL-289.
             assertThat(TransactionReportJobConfig.FilterAndOrderProgram.class.getDeclaredMethods())
                     .as("the traversal is a callback that presents one record at a time; a member "
-                            + "returning a collection would let a caller pull the whole generation into "
-                            + "memory and would make the step's own boundedness beside the point")
-                    .noneSatisfy(method -> assertThat(Collection.class)
-                            .isAssignableFrom(method.getReturnType()));
+                            + "returning a collection of records would let a caller pull the whole "
+                            + "generation into memory and would make the step's own boundedness beside "
+                            + "the point")
+                    .filteredOn(method -> Collection.class.isAssignableFrom(method.getReturnType()))
+                    .allSatisfy(method -> {
+                        assertThat(method.getName()).isEqualTo("workingArtifactsInFlight");
+                        assertThat(method.getGenericReturnType().getTypeName())
+                                .isEqualTo("java.util.Collection<java.nio.file.Path>");
+                    });
             assertThat(TransactionReportJobConfig.FilterAndOrderProgram.class.getDeclaredFields())
                     .as("and the step retains three paths, three handles and three counters - no field "
                             + "in which a record set could accumulate")

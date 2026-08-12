@@ -57,7 +57,7 @@ vulnerability threshold.
 | Date, in UTC | 2026-08-11, build finished 22:44:42Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
 | Result | `BUILD SUCCESS`, total time 12:03 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 546 source counts, no compiler diagnostic of any kind, the same 27,073 and 1,666 test cases with no failure, the same 23,281 of 24,259 lines and 7,776 of 8,698 branches across the same 494 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 167 dependencies. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and across the runs recorded below a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off-checklist) with its date rather than folded into this row |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 546 source counts, no compiler diagnostic of any kind, the same 27,084 and 1,666 test cases with no failure, the same 23,317 of 24,295 lines and 7,788 of 8,710 branches across the same 494 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 167 dependencies. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and across the runs recorded below a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off-checklist) with its date rather than folded into this row |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -1454,14 +1454,14 @@ The recorded run's figures, read from the merged report:
 
 | Metric | Covered | Total | Percentage | Gated |
 | --- | ---: | ---: | ---: | :---: |
-| **Line** | 23,281 | 24,259 | **95.97%** | **yes, floor 80%** |
-| Branch | 7,776 | 8,698 | 89.40% | no |
-| Instruction | 100,845 | 104,803 | 96.22% | no |
-| Method | 4,420 | 4,475 | 98.77% | no |
+| **Line** | 23,317 | 24,295 | **95.97%** | **yes, floor 80%** |
+| Branch | 7,788 | 8,710 | 89.41% | no |
+| Instruction | 100,989 | 104,956 | 96.22% | no |
+| Method | 4,428 | 4,486 | 98.71% | no |
 
 The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 494 classes` followed by
 `All coverage checks have been met.` **Every repeat run over one tree measured these figures to the line** —
-23,281 covered of 24,259 in each — which is what a coverage figure should do when the code has not changed.
+23,317 covered of 24,295 in each — which is what a coverage figure should do when the code has not changed.
 The figures move when the tree does, which is the ordinary case rather than an exception: they are read from
 the merged report of the run that carries this page, and the workflow's *Reconcile the published coverage
 counters with the merged report* step fails the build whenever this table and that report disagree, so the
@@ -1471,9 +1471,9 @@ Per tier, which is why the merged report and not either component is the gated a
 
 | Report | Line | Branch |
 | --- | ---: | ---: |
-| Unit only — `target/site/jacoco/` | 94.51% | 88.50% |
-| Integration only — `target/site/jacoco-it/` | 74.99% | 59.51% |
-| **Merged — `target/site/jacoco-merged/`** | **95.97%** | **89.40%** |
+| Unit only — `target/site/jacoco/` | 94.51% | 88.52% |
+| Integration only — `target/site/jacoco-it/` | 74.99% | 59.55% |
+| **Merged — `target/site/jacoco-merged/`** | **95.97%** | **89.41%** |
 
 **Every counter above is reconciled against the merged report by CI, and three of them were wrong before it
 was.** The four covered-and-total pairs in the metric table are read out of
@@ -1530,7 +1530,7 @@ point of this subsection: publishing 26,235 unit and 1,601 integration tests by 
 as soon as the tree moves underneath it — such numbers are a transcription of a run nobody can
 still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
 
-The suite behind those figures is the whole estate rather than a sample: the unit tier runs 27,073 test
+The suite behind those figures is the whole estate rather than a sample: the unit tier runs 27,084 test
 executions across 450 classes and the integration and end-to-end tier runs 1,666 across 77 classes,
 under the two inclusion rules stated above. Those class counts are the asserted half of the sentence —
 `config/DocumentedSourceCountsTest` measures both against this tree and fails the build on a
@@ -1548,9 +1548,9 @@ is why this paragraph states the distinction rather than leaving it to be inferr
 
 | Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Unit | `target/surefire-reports/` | 450 | 27,073 | 0 | 0 | 0 |
+| Unit | `target/surefire-reports/` | 450 | 27,084 | 0 | 0 | 0 |
 | Integration and end-to-end | `target/failsafe-reports/` | 74 | 1,666 | 0 | 0 | 0 |
-| **Whole suite** | both directories | **524** | **28,739** | **0** | **0** | **0** |
+| **Whole suite** | both directories | **524** | **28,750** | **0** | **0** | **0** |
 
 Derive them for yourself from any completed unscoped run. One report file per top-level class, with nested
 classes rolled into their outer class's file, so the file count is the count of classes that **ran**:

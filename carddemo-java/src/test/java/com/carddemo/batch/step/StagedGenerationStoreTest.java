@@ -478,6 +478,83 @@ class StagedGenerationStoreTest {
     }
 
     @Nested
+    @DisplayName("the abnormal disposition of a working file, which is one implementation for every "
+            + "composition")
+    class TheWorkingFileDisposition {
+
+        /**
+         * The reason string every case below hands the disposition, so the diagnostic is exercised with a
+         * caller's phrasing rather than a literal repeated four times.
+         */
+        private static final String REASON = "the program ended abnormally before its output was sealed";
+
+        @Test
+        @DisplayName("removes the exact working file it is given and reports that it did")
+        void itRemovesTheWorkingFileItIsGiven() throws Exception {
+            final Path working = StagedGenerationStore.workingPath(
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 41));
+            Files.writeString(working, "partial", StandardCharsets.US_ASCII);
+
+            assertThat(StagedGenerationStore.discardWorkingArtifact(working, "program CBTRN03C",
+                    REASON))
+                    .as("the outcome is reported, so a caller can assert the disposition happened")
+                    .isTrue();
+            assertThat(working).doesNotExist();
+        }
+
+        @Test
+        @DisplayName("refuses a path that is not a working file, so a completed generation cannot be "
+                + "destroyed through the disposition by naming it")
+        void itRefusesAnythingButAWorkingFile() throws Exception {
+            final Path completed =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 42);
+            Files.writeString(completed, "sealed bytes", StandardCharsets.US_ASCII);
+
+            assertThat(StagedGenerationStore.discardWorkingArtifact(completed, "program CBACT04C",
+                    REASON))
+                    .as("a sealed generation is not a working file and is refused rather than deleted")
+                    .isFalse();
+            assertThat(completed)
+                    .as("the registered artifact a publication is about to upload survives")
+                    .hasContent("sealed bytes");
+        }
+
+        @Test
+        @DisplayName("leaves a name that is no longer a trusted staged artifact alone rather than "
+                + "following it")
+        void itLeavesAnUntrustedNameAlone() throws Exception {
+            final Path outside = Files.createDirectory(stagingDirectory.resolve("outside"));
+            final Path target = outside.resolve("target-of-the-link");
+            Files.writeString(target, "another account's bytes", StandardCharsets.US_ASCII);
+            final Path working = StagedGenerationStore.workingPath(
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 43));
+            Files.createSymbolicLink(working, target);
+
+            assertThat(StagedGenerationStore.discardWorkingArtifact(working, "program CBSTM03A",
+                    REASON))
+                    .as("a working name that has become a link is not a trusted staged artifact")
+                    .isFalse();
+            assertThat(target)
+                    .as("and the link's target is emphatically not deleted")
+                    .hasContent("another account's bytes");
+        }
+
+        @Test
+        @DisplayName("reports rather than raises when there is nothing to remove, because the failure "
+                + "being propagated is the one an operator must read")
+        void itNeverRaisesForACleanupProblem() {
+            final Path absent = StagedGenerationStore.workingPath(
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 44));
+
+            assertThatNoException().isThrownBy(() ->
+                    StagedGenerationStore.discardWorkingArtifact(absent, "program CBTRN02C", REASON));
+            assertThat(StagedGenerationStore.discardWorkingArtifact(absent, "program CBTRN02C",
+                    REASON))
+                    .isFalse();
+        }
+    }
+
+    @Nested
     @DisplayName("completed-job publication")
     class CompletedJobPublication {
 

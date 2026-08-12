@@ -18,16 +18,20 @@ package com.carddemo.batch.step;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -47,6 +51,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.InOrder;
@@ -557,6 +562,29 @@ final class AbstractCobolStepTest {
         private int releaseAttempts;
 
         /**
+         * What the step declares it is composing and has not sealed, which the abnormal-end disposition
+         * discards.
+         *
+         * <p>A list rather than a single path, and holding whatever a test puts in it - including
+         * {@code null} - because the two liberties the hook documents are properties under test: an
+         * override is meant to be a single expression over fields that may not be populated at the moment
+         * of failure.</p>
+         */
+        private final List<Path> declaredWorkingArtifacts = new ArrayList<>();
+
+        /** When set, the working-artifact declaration throws this instead of reporting a collection. */
+        private RuntimeException declarationFailure;
+
+        /** When set, the declaration reports {@code null}, which a defective override could. */
+        private boolean declaresNothingAtAll;
+
+        /** How many times the template asked what was still in flight. */
+        private int declarationAttempts;
+
+        /** Which of the declared paths still existed at the moment the handles came back. */
+        private final List<Path> existedAtRelease = new ArrayList<>();
+
+        /**
          * When set, the failure-path handle release throws this after recording its attempt.
          *
          * <p>This is the only way to reach the template's secondary-failure arm, where a release
@@ -617,9 +645,30 @@ final class AbstractCobolStepTest {
         protected void releaseResources() {
             this.lifecycle.add("release");
             this.releaseAttempts++;
+            // Recorded BEFORE the optional failure, so the ordering evidence survives the secondary-failure
+            // arm: a test can then assert that the file was still present when the handles came back and
+            // absent once the run ended, which is the ordering the disposition depends on.
+            for (final Path declared : this.declaredWorkingArtifacts) {
+                if (declared != null && Files.exists(declared)) {
+                    this.existedAtRelease.add(declared);
+                }
+            }
             if (this.releaseFailure != null) {
                 throw this.releaseFailure;
             }
+        }
+
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            // Counted rather than appended to the lifecycle record: the lifecycle record is the legacy
+            // paragraph sequence that other specifications assert exactly, and the declaration is not a
+            // paragraph of it. It is a question the template asks on its failure path only, which is
+            // itself asserted below by the count being zero after a completing run.
+            this.declarationAttempts++;
+            if (this.declarationFailure != null) {
+                throw this.declarationFailure;
+            }
+            return this.declaresNothingAtAll ? null : this.declaredWorkingArtifacts;
         }
     }
 
@@ -1119,6 +1168,199 @@ final class AbstractCobolStepTest {
             assertThat(thrown).isNotNull();
             assertThat(thrown).isNotInstanceOf(FileStatusException.class);
             assertThat(errorDiagnostics().get(0)).contains(ORACLE_GERUND_WRITE);
+        }
+    }
+
+    // The abnormal disposition of what the run had not finished writing. The legacy authority is the
+    // third positional value of every staged output's data definition - DISP=(NEW,CATLG,DELETE) in
+    // app/jcl/INTCALC.jcl L37, app/proc/TRANREPT.prc L27/L49/L74 and app/jcl/CREASTMT.JCL L87/L92 -
+    // which catalogues a newly allocated dataset when the step ends normally and DELETES it when it
+    // does not. In this module the seal and the registration happen in the caller after the lifecycle
+    // returns, so a lifecycle that ends abnormally leaves a working file that no registry names and the
+    // job-boundary cleanup cannot identify. See docs/decision-log.md entries DL-211 and DL-289.
+
+    @Nested
+    @DisplayName("the abnormal end discards the working files the run never sealed")
+    class TheAbnormalEndDiscardsWhatItHadNotSealed {
+
+        /** The staging root the declared working files live in, one per test method. */
+        @TempDir
+        private Path stagingRoot;
+
+        /**
+         * The store's own logger, captured alongside the template's for the duration of this nest.
+         *
+         * <p>The disposition is one implementation living on the store, so its diagnostic is emitted
+         * under the store's category rather than the template's. Capturing both into the one appender is
+         * how a case here can assert that the residue's removal is reported where an operator reading a
+         * failed run's log will actually meet it.</p>
+         */
+        private Logger dispositionLogger;
+
+        /** The level the store's logger carried before this nest lowered it. */
+        private Level restoreDispositionLevel;
+
+        @BeforeEach
+        void captureDispositionDiagnostics() {
+            final LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
+            this.dispositionLogger = context.getLogger(StagedGenerationStore.class);
+            this.restoreDispositionLevel = this.dispositionLogger.getLevel();
+            this.dispositionLogger.setLevel(Level.DEBUG);
+            this.dispositionLogger.addAppender(appender);
+        }
+
+        @AfterEach
+        void detachDispositionDiagnostics() {
+            this.dispositionLogger.detachAppender(appender);
+            this.dispositionLogger.setLevel(this.restoreDispositionLevel);
+        }
+
+        @Test
+        @DisplayName("an abend discards the declared working file, and does so only after the handles "
+                + "have come back")
+        void anAbendDiscardsTheDeclaredWorkingFile() throws IOException {
+            final Path working = composeWorkingFile("AWS.M2.CARDDEMO.TRANREPT.G0000000013V00.part");
+            final ScriptedStep step = stepDelivering(List.of());
+            step.declaredWorkingArtifacts.add(working);
+            step.openStatus = STATUS_END_OF_FILE;
+
+            assertThat(catchThrowableOfType(AbendException.class, step::run)).isNotNull();
+
+            assertThat(working)
+                    .as("the partial file the caller would have sealed is gone, so nothing accumulates "
+                            + "one copy per failed run")
+                    .doesNotExist();
+            assertThat(step.existedAtRelease)
+                    .as("and it was still there when the handles were released, which is the ordering "
+                            + "the disposition depends on: a file is never deleted while its own "
+                            + "lifecycle still holds it open")
+                    .containsExactly(working);
+            assertThat(step.declarationAttempts).isEqualTo(1);
+            assertThat(warningDiagnostics())
+                    .as("the residue's removal is reported where an operator will see it")
+                    .anyMatch(text -> text.contains(working.getFileName().toString())
+                            && text.contains("ended abnormally"));
+        }
+
+        @Test
+        @DisplayName("a stop discards it too, because a stopped run seals nothing either")
+        void aStopDiscardsItAsWell() throws IOException {
+            final Path working = composeWorkingFile("AWS.M2.CARDDEMO.SYSTRAN.G0000000014V00.part");
+            final ScriptedStep step = stepDelivering(List.of("first record"));
+            step.declaredWorkingArtifacts.add(working);
+
+            assertThat(catchThrowableOfType(CancellationException.class, () -> step.run(() -> true)))
+                    .isNotNull();
+
+            assertThat(working)
+                    .as("a stop is an abnormal end as much as an abend is")
+                    .doesNotExist();
+            assertThat(warningDiagnostics())
+                    .as("and the diagnostic says which of the two ended the run")
+                    .anyMatch(text -> text.contains(working.getFileName().toString())
+                            && text.contains("was stopped"));
+        }
+
+        @Test
+        @DisplayName("a completing run is never asked what it was composing, because its caller seals "
+                + "and registers what it wrote")
+        void aCompletingRunKeepsWhatItComposed() throws IOException {
+            final Path working = composeWorkingFile("AWS.M2.CARDDEMO.STATEMNT.PS.G0000000015V00.part");
+            final ScriptedStep step = stepDelivering(List.of("first record"));
+            step.declaredWorkingArtifacts.add(working);
+
+            assertThat(step.run().recordsRead()).isEqualTo(1);
+
+            assertThat(step.declarationAttempts)
+                    .as("the declaration belongs to the failure path alone")
+                    .isZero();
+            assertThat(working)
+                    .as("the file the caller is about to seal must still be there")
+                    .exists();
+        }
+
+        @Test
+        @DisplayName("a declared path that is not a working file is refused, so a mis-wired override "
+                + "cannot destroy a sealed generation")
+        void aDeclaredCompletedGenerationIsRefused() throws IOException {
+            final Path sealed = composeWorkingFile("AWS.M2.CARDDEMO.TRANREPT.G0000000016V00");
+            final ScriptedStep step = stepDelivering(List.of());
+            step.declaredWorkingArtifacts.add(sealed);
+            step.openStatus = STATUS_END_OF_FILE;
+
+            assertThat(catchThrowableOfType(AbendException.class, step::run)).isNotNull();
+
+            assertThat(sealed)
+                    .as("only a file still being composed may be discarded by this disposition")
+                    .exists();
+        }
+
+        @Test
+        @DisplayName("a declaration that is absent, empty or throwing cannot displace the failure the "
+                + "operator has to read")
+        void aDefectiveDeclarationNeverDisplacesThePrimaryFailure() throws IOException {
+            final ScriptedStep reportsNull = stepDelivering(List.of());
+            reportsNull.declaresNothingAtAll = true;
+            reportsNull.openStatus = STATUS_END_OF_FILE;
+            assertThat(catchThrowableOfType(AbendException.class, reportsNull::run))
+                    .as("a null declaration is a defect in a lifecycle, not a reason to lose the abend")
+                    .isNotNull();
+
+            final Path survivor = composeWorkingFile("AWS.M2.CARDDEMO.TRANSACT.BKUP.G0000000017V00.part");
+            final ScriptedStep throwing = stepDelivering(List.of());
+            throwing.declaredWorkingArtifacts.add(survivor);
+            throwing.declarationFailure = new IllegalStateException("the declaration itself failed");
+            throwing.openStatus = STATUS_END_OF_FILE;
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class, throwing::run);
+
+            assertThat(thrown)
+                    .as("the abend still reaches the caller, and not the declaration's own failure")
+                    .isNotNull()
+                    .isNotInstanceOf(IllegalStateException.class);
+            assertThat(thrown.getSuppressed())
+                    .as("a cleanup problem is reported rather than attached: the release arm is the "
+                            + "only one that suppresses")
+                    .isEmpty();
+            assertThat(warningDiagnostics())
+                    .as("both defects are reported at warning level, naming the program")
+                    .anyMatch(text -> text.contains(PROGRAM_NAME)
+                            && text.contains("REPORTED NO WORKING-ARTIFACT COLLECTION"))
+                    .anyMatch(text -> text.contains(PROGRAM_NAME)
+                            && text.contains("COULD NOT BE DISCARDED AFTER FAILURE"));
+            assertThat(survivor)
+                    .as("and nothing was removed, because the declaration never reported anything")
+                    .exists();
+        }
+
+        @Test
+        @DisplayName("a null entry among the declared paths is ignored, so an override may be one "
+                + "expression over fields that are not all populated")
+        void aNullDeclaredPathIsIgnored() throws IOException {
+            final Path working = composeWorkingFile("AWS.M2.CARDDEMO.STATEMNT.HTML.G0000000018V00.part");
+            final ScriptedStep step = stepDelivering(List.of());
+            step.declaredWorkingArtifacts.add(null);
+            step.declaredWorkingArtifacts.add(working);
+            step.openStatus = STATUS_END_OF_FILE;
+
+            assertThat(catchThrowableOfType(AbendException.class, step::run)).isNotNull();
+
+            assertThat(working)
+                    .as("the populated path is still disposed of, and the absent one raised nothing")
+                    .doesNotExist();
+        }
+
+        /**
+         * Writes one file into this test's staging root, owner-only, as a composition would leave it.
+         *
+         * @param  fileName    the exact name to compose, working suffix included or deliberately absent
+         * @return the composed path
+         * @throws IOException if the file cannot be written
+         */
+        private Path composeWorkingFile(final String fileName) throws IOException {
+            final Path composed = this.stagingRoot.resolve(fileName);
+            Files.writeString(composed, "partial", StandardCharsets.US_ASCII);
+            return composed;
         }
     }
 

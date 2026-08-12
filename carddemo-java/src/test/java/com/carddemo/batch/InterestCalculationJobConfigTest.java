@@ -509,9 +509,9 @@ class InterestCalculationJobConfigTest {
         }
 
         @Test
-        @DisplayName("a failure while a group is closing abends and releases the generation handle, "
-                + "leaving what was already written exactly as the legacy left it")
-        void aFailureClosingAGroupReleasesTheHandle() throws IOException {
+        @DisplayName("a failure while a group is closing abends, releases the generation handle and "
+                + "then discards the working file the pass never sealed")
+        void aFailureClosingAGroupReleasesTheHandle() {
             when(categoryBalances.findAll(any(Sort.class)))
                     .thenReturn(List.of(row("0005"), row("0006")));
             when(interestCalculationService.calculateGroupInterest(anyString(), anyString(), any(),
@@ -524,15 +524,18 @@ class InterestCalculationJobConfigTest {
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> config.runAccrualPass(stepExecution(17L, RUN_DATE)));
 
-            final Path generation =
-                    StagedGenerationStore.workingPath(config.transactGeneration(17L));
-            assertThat(generation)
-                    .as("the handle was opened and released, but a failed pass remains a working file"
-                            + " and is never registered as a completed generation")
-                    .exists();
-            assertThat(Files.readAllBytes(generation))
-                    .as("nothing had been written when the group failed")
-                    .isEmpty();
+            // THE ABNORMAL DISPOSITION IS DELETE, NOT KEEP. app/jcl/INTCALC.jcl L37 declares the output
+            // DISP=(NEW,CATLG,DELETE): a newly allocated dataset is catalogued when the step ends
+            // normally and deleted when it does not. The seal and the registration happen in the caller
+            // after the pass returns, so a pass that abends leaves a working file no registry names and
+            // the job-boundary cleanup could never identify - which is the residue the template's
+            // abnormal end now discards. See docs/decision-log.md entry DL-289.
+            assertThat(StagedGenerationStore.workingPath(config.transactGeneration(17L)))
+                    .as("the handle was released and the unsealed working file discarded with it")
+                    .doesNotExist();
+            assertThat(config.transactGeneration(17L))
+                    .as("and a failed pass never advertises a completed generation either")
+                    .doesNotExist();
         }
 
         @Test

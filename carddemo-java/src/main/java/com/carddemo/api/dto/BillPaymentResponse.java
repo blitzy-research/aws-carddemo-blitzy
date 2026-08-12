@@ -322,7 +322,15 @@ public record BillPaymentResponse(
                         "Pre-payment account balance. Derived from ACCT-CURR-BAL PIC S9(10)V99 at"
                                 + " app/cpy/CVACT01Y.cpy line 7: total precision 12, with 10 integer"
                                 + " digits and a scale of exactly 2. Carried at that scale and never"
-                                + " rescaled, rounded or formatted at this boundary.")
+                                + " rescaled, rounded or formatted at this boundary."
+                                + " It is the balance as it was read BEFORE the payment and is never"
+                                + " refreshed afterwards, because the screen it reproduces writes this"
+                                + " field once, ahead of the confirmation. A bill payment always pays"
+                                + " the whole balance, so after a successful payment the account's"
+                                + " balance is zero while this component still reports the figure that"
+                                + " was paid: do not render it as the account's current balance on a"
+                                + " success. Read the account-view operation for the balance that"
+                                + " followed.")
         BigDecimal currentBalance,
         @Size(max = 1) String confirm,
         @Size(max = 16) String newTransactionId,

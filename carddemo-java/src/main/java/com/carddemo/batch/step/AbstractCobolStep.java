@@ -23,8 +23,11 @@ import com.carddemo.util.FailureDiagnostics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -79,6 +82,18 @@ import org.springframework.batch.repeat.RepeatStatus;
  * and a JVM does is give back the handles it holds, because this process outlives the failed step: that
  * is {@link #releaseResources()}, a deliberately non-observable adaptation which normalises no status,
  * emits no legacy diagnostic and never abends. It must not be turned back into a second close sequence.
+ *
+ * <p><strong>An abnormal end also discards the output it had not finished.</strong> A lifecycle that
+ * composes a staged generation writes a working file whose caller seals and registers it only once
+ * {@link #run(BooleanSupplier)} <em>returns</em>, so a lifecycle that abends or is stopped leaves a
+ * partial file belonging to no execution's registry, which the job-boundary cleanup - deleting only
+ * registered paths - cannot identify. {@link #workingArtifactsInFlight()} is how a concrete lifecycle
+ * names those files, and the failure path discards them through
+ * {@link StagedGenerationStore#discardWorkingArtifact(Path, String, String)} <em>after</em>
+ * {@link #releaseResources()} has given the handles back. This is the abnormal disposition of the legacy
+ * allocation and not a second close sequence: it emits no legacy diagnostic, normalises no status,
+ * removes nothing that is not a working file, and cannot raise - the failure an operator has to read
+ * stays the one that propagates. See {@code docs/decision-log.md} entries DL-211 and DL-289.
  *
  * <p><strong>One source defect is deliberately not propagated.</strong> A close paragraph in
  * {@code app/cbl/CBTRN02C.cbl} (L637-L653) correctly detects that the daily-rejects close failed and
@@ -413,6 +428,32 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     }
 
     /**
+     * The staged working files this lifecycle is composing and has not sealed, for the abnormal-end
+     * disposition to discard.
+     *
+     * <p>Consulted on the failure path only, and only after {@link #releaseResources()} has returned the
+     * handles, so an implementation reports what it was writing rather than what it finished. A lifecycle
+     * whose caller seals a working file after {@link #run(BooleanSupplier)} returns must name that file
+     * here: registration happens at the seal, so a run that never reached the seal leaves a partial file
+     * that appears in no execution's registry and that the job-boundary cleanup consequently cannot
+     * identify - the residue this hook exists to prevent. One that composes nothing, or that seals inside
+     * its own close family and clears the field it held, has nothing to name and inherits the empty
+     * default.
+     *
+     * <p>Two liberties are deliberate, because they let an override be a single expression over fields
+     * that may or may not be populated at the moment of failure. {@code null} entries are ignored rather
+     * than refused, and a path that does not carry the store's working suffix is refused by
+     * {@link StagedGenerationStore#discardWorkingArtifact(Path, String, String)} rather than deleted, so
+     * an override that names a completed generation by mistake cannot destroy a sealed artifact.
+     *
+     * @return the working paths this lifecycle has not sealed; empty by default, and never consulted on
+     *         the completing path
+     */
+    protected Collection<Path> workingArtifactsInFlight() {
+        return List.of();
+    }
+
+    /**
      * Performs one guarded open, abending on any status the cascade rejects.
      *
      * @param resource the legacy DD, dataset or file name, as the diagnostic names it
@@ -613,6 +654,48 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
             LOGGER.warn("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM {}; RETAINED AS SUPPRESSED;"
                     + " failureChain={}", this.programName,
                     FailureDiagnostics.failureChainOf(secondary));
+        }
+        discardWorkingArtifactsInFlight(primary);
+    }
+
+    /**
+     * Discards the working files this lifecycle had not sealed, after the handles have been given back.
+     *
+     * <p>The order is the whole of why this is a separate step rather than part of the release above: a
+     * file is deleted after its handle is returned, never while the lifecycle still holds it open. The
+     * failure being propagated decides the wording alone - a stop and an abend leave the same residue and
+     * dispose of it identically - so an operator reading the log sees which of the two ended the run.
+     *
+     * <p>Nothing here can raise. A hook that throws, or reports {@code null}, is a defect in a concrete
+     * lifecycle and is recorded as a warning against the primary failure rather than allowed to replace
+     * it; the individual deletes cannot raise by their own contract. Each path is refused unless it
+     * carries the store's working suffix, so this can only ever remove a file that was still being
+     * composed.
+     *
+     * @param primary the failure being propagated, which chooses the diagnostic wording
+     */
+    private void discardWorkingArtifactsInFlight(final RuntimeException primary) {
+        final String reason = (primary instanceof CancellationException)
+                ? "the program was stopped before its output was sealed"
+                : "the program ended abnormally before its output was sealed";
+        try {
+            final Collection<Path> inFlight = workingArtifactsInFlight();
+            if (inFlight == null) {
+                LOGGER.warn("PROGRAM {} REPORTED NO WORKING-ARTIFACT COLLECTION AFTER FAILURE, SO"
+                        + " NOTHING COULD BE DISCARDED", this.programName);
+                return;
+            }
+            for (final Path working : inFlight) {
+                if (working != null) {
+                    StagedGenerationStore.discardWorkingArtifact(working,
+                            "program " + this.programName, reason);
+                }
+            }
+        } catch (final RuntimeException cleanupFailure) {
+            LOGGER.warn("THE WORKING ARTIFACTS OF PROGRAM {} COULD NOT BE DISCARDED AFTER FAILURE;"
+                            + " THEY REMAIN IN THE STAGING ROOT AND ARE REGISTERED NOWHERE;"
+                            + " failureChain={}", this.programName,
+                    FailureDiagnostics.failureChainOf(cleanupFailure));
         }
     }
 

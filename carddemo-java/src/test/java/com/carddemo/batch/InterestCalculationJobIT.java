@@ -583,8 +583,8 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
 
     @Test
     @Order(4)
-    @DisplayName("a later account failure preserves the earlier account-group commit and its "
-            + "in-progress generation record without publishing a completed generation")
+    @DisplayName("a later account failure preserves the earlier account-group commit, publishes no "
+            + "completed generation and discards the working file it never sealed")
     void aLateGroupFailureDoesNotRollBackAnEarlierGroup() throws Exception {
         this.categoryBalanceRepository.deleteAllInBatch();
         this.categoryBalanceRepository.saveAll(List.of(
@@ -609,19 +609,24 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
                 .as("the failing group never reaches its account rewrite")
                 .isEqualByComparingTo(secondBalanceBefore);
 
+        // THE DURABLE SIDE OF A FAILED RUN IS NOTHING AT ALL, AND THAT INCLUDES THE FILE IT HAD NOT
+        // FINISHED. app/jcl/INTCALC.jcl L37 declares the output DISP=(NEW,CATLG,DELETE): a newly
+        // allocated dataset is catalogued when the step ends normally and DELETED when it does not.
+        // The record the first group had already written was in the working file when the second group
+        // abended - that much is what an unjournaled sequential write leaves - but the seal and the
+        // registration happen in the caller after the pass returns, so a pass that abends leaves a file
+        // no registry names and the job-boundary cleanup could never identify. It is discarded on the
+        // template's abnormal-end path instead. The first group's committed work is still proven, and
+        // proven with the truncated figure, by the account balance asserted above. See
+        // docs/decision-log.md entry DL-289.
         final Path completedGeneration =
                 this.config.transactGeneration(execution.getId().longValue());
-        final Path generation = StagedGenerationStore.workingPath(completedGeneration);
         assertThat(completedGeneration)
-                .as("a failed job must not advertise its partial generation as completed")
+                .as("a failed job must not advertise a partial generation as completed")
                 .doesNotExist();
-        assertThat(generation).exists();
-        final List<Transaction> records = generationTransactions(Files.readAllBytes(generation));
-        assertThat(records).singleElement().satisfies(record -> {
-            assertThat(record.getTranId())
-                    .isEqualTo(InterestCalculationProcessor.interestTranId(FAILURE_RUN_DATE, 1L));
-            assertThat(record.getTranAmt()).isEqualByComparingTo(TRUNCATED_INTEREST);
-        });
+        assertThat(StagedGenerationStore.workingPath(completedGeneration))
+                .as("and must not leave the working file it never sealed behind either")
+                .doesNotExist();
 
         assertThat(this.transactionRepository.count()).isEqualTo(this.transactionCountBefore);
         assertThat(liveMasterTransactionsFor(FAILURE_RUN_DATE)).isEmpty();

@@ -119,6 +119,17 @@ import org.springframework.stereotype.Component;
  * re-establishing that the path is still a trusted staged artifact, without raising and therefore without
  * replacing the failure an operator has to read. See {@code docs/decision-log.md} entry DL-289.
  *
+ * <p><strong>A composition that ends before its seal is the same case, and it is the common one.</strong>
+ * Most of this module's generations are not composed through the writer adapter at all: a program
+ * lifecycle writes the working file and its caller seals and registers it once the lifecycle
+ * <em>returns</em>. A lifecycle that abends - or that is stopped - therefore never reaches the seal, so
+ * its working file is unregistered for exactly the reason above and was left behind for exactly the same
+ * reason. {@link #discardWorkingArtifact(Path, String, String)} is the one implementation of the
+ * disposition, and {@code batch/step/AbstractCobolStep} applies it on its abnormal-end path, after the
+ * handles have been given back, to the working artifacts the lifecycle declares. Only a path carrying
+ * {@value #WORKING_SUFFIX} is ever removed through it, so a caller that names a completed generation by
+ * mistake cannot destroy a sealed artifact.
+ *
  * <h2>A registered path is re-established before its bytes are read</h2>
  *
  * <p>A registration records a <em>name</em>. Validating that name and later opening it are two separate
@@ -391,6 +402,82 @@ public final class StagedGenerationStore {
             throw new UncheckedIOException("completed batch artifact could not be atomically sealed",
                     failure);
         }
+    }
+
+    /**
+     * Discards one working file whose composition never reached its seal, and never raises.
+     *
+     * <p><strong>This is the abnormal disposition of a file that is registered nowhere.</strong>
+     * Registration happens <em>at</em> completion, so a working file abandoned before its seal appears in
+     * no execution's registry and {@link #discardLocalArtifactsOf(JobExecution, Path)} - which deletes
+     * only registered paths - cannot identify it. Left in place it is a truncated copy of whatever was
+     * being written, sitting in the staging root under a name that reads like real batch output, one copy
+     * per failed run, until an operator notices. Three failure paths reach here: the delegate's own close
+     * and the atomic seal of {@link CompletingItemStreamWriter}, and a program lifecycle that ended -
+     * abended or stopped - before its caller could seal what it had composed.
+     *
+     * <p>Four properties make the delete safe, and each is a requirement rather than an implementation
+     * detail.
+     *
+     * <ul>
+     *   <li><strong>The path is known, not guessed.</strong> It is the exact working path the composition
+     *       was handed, which this store itself composed from a completed generation name. No name
+     *       matching is involved: a sweep for files that merely look like working files is what makes a
+     *       cleanup aimable by choosing a filename, and it is precisely what the registry-driven cleanup
+     *       above exists to avoid.</li>
+     *   <li><strong>Only a working file is ever removed.</strong> A path not carrying
+     *       {@value #WORKING_SUFFIX} is refused and reported rather than deleted, so a caller that names
+     *       a completed generation by mistake cannot destroy a sealed artifact - or a registered one that
+     *       a publication is about to upload - through this method.</li>
+     *   <li><strong>Trust is re-established immediately before the delete.</strong>
+     *       {@link SecureStagedFiles#isTrustedStagedArtifact(Path, Path)} is applied to the path again, so
+     *       a name that has since become a link, a directory or another account's file is left alone
+     *       rather than followed. The same rule as DL-288, for the same reason: a cleanup that followed a
+     *       link would delete the link's target.</li>
+     *   <li><strong>It never raises for a cleanup problem.</strong> Every caller is already propagating
+     *       the failure an operator has to act on, and a cleanup problem must not displace it. A delete
+     *       that could not happen is reported at warning level, naming the file so the residue can be
+     *       found by hand. An absent argument is a different matter and is refused, because it is a
+     *       programming error in a caller rather than a condition of the filesystem.</li>
+     * </ul>
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-289.
+     *
+     * @param workingPath the exact working path the composition was given; must not be {@code null}
+     * @param owner what was composing it - a logical generation base or a legacy program name - named in
+     *              the diagnostic so the residue can be attributed; must not be {@code null}
+     * @param reason what happened, phrased for the diagnostic; must not be {@code null}
+     * @return {@code true} when the file existed and was removed, {@code false} in every other case
+     *         including a refusal and a failed delete
+     */
+    public static boolean discardWorkingArtifact(final Path workingPath, final String owner,
+            final String reason) {
+        Objects.requireNonNull(workingPath, "workingPath");
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(reason, "reason");
+        final Path fileName = workingPath.getFileName();
+        if (fileName == null || !fileName.toString().endsWith(WORKING_SUFFIX)) {
+            LOGGER.warn("Refused to discard {} for {} after {}: only a file carrying the {} suffix is a"
+                            + " working file, and this disposition removes nothing else",
+                    fileName, owner, reason, WORKING_SUFFIX);
+            return false;
+        }
+        final Path root = workingPath.getParent();
+        try {
+            if (root != null
+                    && SecureStagedFiles.isTrustedStagedArtifact(root, workingPath)
+                    && Files.deleteIfExists(workingPath)) {
+                LOGGER.warn("Discarded the partial working file {} for {} because {}; it was never"
+                                + " registered, so no later cleanup could have identified it",
+                        fileName, owner, reason);
+                return true;
+            }
+        } catch (final IOException | RuntimeException cleanupFailure) {
+            LOGGER.warn("The partial working file {} for {} could not be removed after {}; it remains in"
+                            + " the staging root and is registered nowhere. cleanupFailure={}",
+                    fileName, owner, reason, cleanupFailure.getClass().getSimpleName());
+        }
+        return false;
     }
 
     /**
@@ -1742,37 +1829,19 @@ public final class StagedGenerationStore {
          * Removes this writer's own working file after a failure, and never raises.
          *
          * <p>The path is not guessed and is not matched by name: it is the exact working path this writer
-         * was constructed with, which the store composed from the completed generation name. It is checked
-         * against {@link SecureStagedFiles#isTrustedStagedArtifact(Path, Path)} immediately before the
-         * delete, so a name that has since become a link, a directory or another account's file is left
-         * alone rather than followed - the same rule the registered-path cleanup applies, and for the same
-         * reason.
-         *
-         * <p>Nothing is raised from here under any circumstance. The caller is already propagating the
-         * failure an operator has to read, and a cleanup problem must not replace it. It is reported at
-         * warning level instead, naming the file so the residue can be found by hand if the delete could
-         * not happen.
+         * was constructed with, which the store composed from the completed generation name. The
+         * disposition itself - the suffix guard, the trust re-check immediately before the delete, the
+         * warning that names the file, and never raising - is
+         * {@link StagedGenerationStore#discardWorkingArtifact(Path, String, String)}, which is one
+         * implementation shared with the program lifecycles that compose a generation without this
+         * adapter. Two failure paths of this class reach it, and a lifecycle that ends before its seal
+         * reaches it for the same reason; keeping one implementation is what keeps the three
+         * indistinguishable to an operator reading the log.
          *
          * @param reason what failed, for the diagnostic
          */
         private void discardWorkingFile(final String reason) {
-            final Path root = this.workingPath.getParent();
-            try {
-                if (root != null
-                        && SecureStagedFiles.isTrustedStagedArtifact(root, this.workingPath)
-                        && Files.deleteIfExists(this.workingPath)) {
-                    LOGGER.warn("Discarded the partial working file {} for logical base {} because {};"
-                                    + " it was never registered, so no later cleanup could have"
-                                    + " identified it",
-                            this.workingPath.getFileName(), this.logicalBase, reason);
-                }
-            } catch (final IOException | RuntimeException cleanupFailure) {
-                LOGGER.warn("The partial working file {} for logical base {} could not be removed after"
-                                + " {}; it remains in the staging root and is registered nowhere."
-                                + " cleanupFailure={}",
-                        this.workingPath.getFileName(), this.logicalBase, reason,
-                        cleanupFailure.getClass().getSimpleName());
-            }
+            discardWorkingArtifact(this.workingPath, "logical base " + this.logicalBase, reason);
         }
     }
 }

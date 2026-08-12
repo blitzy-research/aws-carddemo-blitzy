@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
@@ -941,9 +942,12 @@ public final class InterestCalculationJobConfig {
          * warning level and retained rather than raised, so it cannot displace the failure that actually
          * ended the run.
          *
-         * <p>Whatever records had already reached the generation stay there. That is what the legacy left
-         * behind too: it wrote one record at a time to an unjournaled dataset, so an abend mid-run left
-         * the records written so far.
+         * <p>Records that had already reached the generation are still in the file when the handle comes
+         * back, which is what the legacy wrote too: one record at a time to an unjournaled dataset. What
+         * happens to that file next is not this method's business but the abnormal disposition's, and
+         * {@code app/jcl/INTCALC.jcl} L37 states it - {@code DISP=(NEW,CATLG,DELETE)} catalogues a newly
+         * allocated dataset when the step ends normally and <strong>deletes</strong> it when it does not.
+         * {@link #workingArtifactsInFlight()} names the file so that disposition can be applied to it.
          */
         @Override
         protected void releaseResources() {
@@ -964,6 +968,16 @@ public final class InterestCalculationJobConfig {
                         programName(), this.generation,
                         FailureDiagnostics.failureChainOf(unreleased));
             }
+        }
+
+        /**
+         * The generation this pass is composing, which its caller seals only once the pass returns.
+         *
+         * @return the working file, so a pass that does not reach that seal leaves nothing behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.generation);
         }
     }
 

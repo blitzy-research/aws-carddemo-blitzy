@@ -1295,17 +1295,31 @@ public final class CombineTransactionsJobConfig {
             if (this.composer == null) {
                 beginComposition();
             }
+            final Path working = StagedGenerationStore.workingPath(this.completedGeneration);
             try {
                 this.composer.close();
             } catch (final IOException failure) {
+                // NEITHER FAILURE HERE MAY LEAVE THE WORKING FILE BEHIND. Registration happens after the
+                // seal, so a file abandoned on either of these paths belongs to no execution's registry
+                // and the job-boundary cleanup - which deletes only registered paths - cannot identify
+                // it: it would sit in the staging root as a partial copy of the combined generation at
+                // whatever length the failure left it. Discarded by its own exact path, and by the one
+                // disposition every composition in the module shares, which never raises and so cannot
+                // displace this failure. See docs/decision-log.md entry DL-289.
+                StagedGenerationStore.discardWorkingArtifact(working, this.logicalBase,
+                        "the combined generation could not be closed");
                 throw new ItemStreamException(
                         "the combine-transactions combined generation could not be closed", failure);
             } finally {
                 this.composer = null;
             }
-            StagedGenerationStore.completeWorkingFile(
-                    StagedGenerationStore.workingPath(this.completedGeneration),
-                    this.completedGeneration);
+            try {
+                StagedGenerationStore.completeWorkingFile(working, this.completedGeneration);
+            } catch (final RuntimeException sealFailure) {
+                StagedGenerationStore.discardWorkingArtifact(working, this.logicalBase,
+                        "the combined generation could not be atomically sealed");
+                throw sealFailure;
+            }
             this.sealed = true;
         }
 

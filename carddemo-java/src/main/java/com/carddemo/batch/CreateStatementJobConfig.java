@@ -25,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
@@ -2023,6 +2024,17 @@ public final class CreateStatementJobConfig {
             releaseQuietly(this.sorter, "SORTWK");
         }
 
+        /**
+         * The projected sequential resource this pass is composing, which its caller seals only once the
+         * pass returns.
+         *
+         * @return the working file, so a pass that does not reach that seal leaves nothing behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.projectedResource);
+        }
+
         private void writeProjectedRecord(final String ordered) {
             writeRecord(DD_SORT_OUTPUT, () -> {
                 final String projected = reproject(ordered);
@@ -2559,6 +2571,21 @@ public final class CreateStatementJobConfig {
         protected void releaseResources() {
             releaseQuietly(this.statementWriter, StatementProcessor.OUTPUT_DD_STMTFILE);
             releaseQuietly(this.htmlWriter, StatementProcessor.OUTPUT_DD_HTMLFILE);
+        }
+
+        /**
+         * Both statement outputs this pass is composing, which its caller seals only once the pass
+         * returns.
+         *
+         * <p>Both, and not the plain-text one alone: the two are sealed as a pair after the pass, so a
+         * pass that abends between them would otherwise leave the markup sibling behind - which is the
+         * exact residue observed after a gate-failed statement run.
+         *
+         * @return the two working files, so a pass that does not reach that seal leaves neither behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.statementResource, this.htmlResource);
         }
 
         /**

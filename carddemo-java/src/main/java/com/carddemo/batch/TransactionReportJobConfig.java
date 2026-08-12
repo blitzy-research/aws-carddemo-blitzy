@@ -24,8 +24,10 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -1347,6 +1349,16 @@ public final class TransactionReportJobConfig {
         }
 
         /**
+         * The generation this pass is composing, which its caller seals only once the pass returns.
+         *
+         * @return the working file, so a pass that does not reach that seal leaves nothing behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.generation);
+        }
+
+        /**
          * Records this pass wrote, for a caller that drives the lifecycle directly.
          *
          * @return the count, never negative
@@ -1537,6 +1549,17 @@ public final class TransactionReportJobConfig {
             releaseQuietly(this.writer, DD_SORT_OUTPUT);
             releaseQuietly(this.sorter, "SORTWK");
             this.sortInput = null;
+        }
+
+        /**
+         * The filtered generation this pass is composing, which its caller seals only once the pass
+         * returns.
+         *
+         * @return the working file, so a pass that does not reach that seal leaves nothing behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.filteredGeneration);
         }
 
         private void writeOrderedRecord(final String ordered) {
@@ -1801,6 +1824,20 @@ public final class TransactionReportJobConfig {
         protected void releaseResources() {
             releaseQuietly(this.writer, TransactionReportProcessor.LEGACY_DD_TRANREPT);
             releaseQuietly(this.transactionReader::close, DD_REPORT_INPUT);
+        }
+
+        /**
+         * The report generation this pass is composing, which its caller seals only once the pass
+         * returns.
+         *
+         * <p>This is the path the reviewed residue was observed at: a reference the report cannot resolve
+         * abends the pass mid-composition, and the partly written report is registered nowhere.
+         *
+         * @return the working file, so a pass that does not reach that seal leaves nothing behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.reportGeneration);
         }
 
         /**

@@ -23,7 +23,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -1260,6 +1262,16 @@ public final class CategoryBalanceReportJobConfig {
         protected void releaseResources() {
             releaseQuietly(this.writer, DD_COPY_OUTPUT);
         }
+
+        /**
+         * The generation this pass is composing, which its caller seals only once the pass returns.
+         *
+         * @return the working file, so a pass that does not reach that seal leaves nothing behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.generation);
+        }
     }
 
     /**
@@ -1368,6 +1380,16 @@ public final class CategoryBalanceReportJobConfig {
             // The item stream contract declares its own close rather than the standard one, so the
             // release is handed the close itself.
             releaseQuietly(this.reader::close, DD_SORT_INPUT);
+        }
+
+        /**
+         * The report this pass is composing, which its caller seals only once the pass returns.
+         *
+         * @return the working file, so a pass that does not reach that seal leaves nothing behind
+         */
+        @Override
+        protected Collection<Path> workingArtifactsInFlight() {
+            return List.of(this.reportResource);
         }
 
         private void writeOrderedRecord(final String recordImage) {

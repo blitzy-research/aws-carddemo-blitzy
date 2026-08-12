@@ -2329,7 +2329,7 @@ module cites resolves to exactly one entry — and it is the mechanical guarante
 | `api/dto/PageMetadata.java` | DL-081 |
 | `api/dto/ScreenWorkArea.java` | DL-011, DL-030, DL-082 |
 | `api/dto/SignOnRequest.java` | DL-001, DL-004 |
-| `batch/step/AbstractCobolStep.java` | DL-084 |
+| `batch/step/AbstractCobolStep.java` | DL-084, DL-289 |
 | `config/FlywayConfig.java` | DL-041, DL-102, DL-110, DL-119 |
 | `config/JpaAuditConfig.java` | DL-089 |
 | `config/OpenApiConfig.java` | DL-088 |
@@ -2362,14 +2362,14 @@ module cites resolves to exactly one entry — and it is the mechanical guarante
 | `util/FixedWidthFieldReader.java` | DL-041 |
 | `util/StatementTextTemplates.java` | DL-041 |
 | `util/StatementHtmlTemplates.java` | DL-041, DL-209 (superseding DL-037, DL-039; partly DL-038) |
-| `batch/CreateStatementJobConfig.java` | DL-208, DL-213 |
+| `batch/CreateStatementJobConfig.java` | DL-208, DL-213, DL-289 |
 | `batch/BatchStagingArea.java` | DL-212 |
-| `batch/step/StagedGenerationStore.java` | DL-210, DL-211, DL-212, DL-214 |
+| `batch/step/StagedGenerationStore.java` | DL-210, DL-211, DL-212, DL-214, DL-289 |
 | `batch/step/FixedWidthFlatFileReaderFactory.java` | DL-213 |
-| `batch/CombineTransactionsJobConfig.java` | DL-212, DL-213, DL-214 |
-| `batch/CategoryBalanceReportJobConfig.java` | DL-212, DL-213 |
-| `batch/TransactionReportJobConfig.java` | DL-212, DL-213, DL-294 (superseding DL-276 in part) |
-| `batch/InterestCalculationJobConfig.java` | DL-207, DL-212, DL-214 |
+| `batch/CombineTransactionsJobConfig.java` | DL-212, DL-213, DL-214, DL-289 |
+| `batch/CategoryBalanceReportJobConfig.java` | DL-212, DL-213, DL-289 |
+| `batch/TransactionReportJobConfig.java` | DL-212, DL-213, DL-289, DL-294 (superseding DL-276 in part) |
+| `batch/InterestCalculationJobConfig.java` | DL-207, DL-212, DL-214, DL-289 |
 | `batch/PostTransactionJobConfig.java` | DL-215 |
 | `service/TransactionPostingService.java` | DL-215 |
 | `batch/DailyTransactionReadJobConfig.java` | DL-216 |
@@ -11931,23 +11931,26 @@ back as exact bytes.
 
 ---
 
-### DL-289 — A working file is discarded by the writer that failed, because nothing else can identify it
+### DL-289 — A working file is discarded by whatever failed to seal it, because nothing else can identify it
 
-**Context.** `StagedGenerationStore.completingWriter` wraps a step's writer. The step writes into a
-`.working` file; on a clean close the working file is atomically sealed onto the completed generation name and
-**then** registered for publication. Registration at completion is deliberate — an unsealed file is not a
-generation and must not be publishable — and it has a consequence.
+**Context.** A batch generation is composed into a `.part` working file, atomically sealed onto the completed
+generation name, and **then** registered for publication. Registration at completion is deliberate — an
+unsealed file is not a generation and must not be publishable — and it has a consequence. Two shapes of
+composition exist. `StagedGenerationStore.completingWriter` wraps a step's writer and seals on its close;
+every other generation in the module is composed by a program lifecycle whose **caller** seals and registers
+once `AbstractCobolStep.run` has returned.
 
-**The problem.** Two failures leave a working file behind, and after either one the file is owned by nobody.
-Because registration had not happened, it appears in no execution's registry, and
+**The problem.** Three failures leave a working file behind, and after any of them the file is owned by
+nobody. Because registration had not happened, it appears in no execution's registry, and
 `discardLocalArtifactsOf` — the abnormal-disposition cleanup the boundary listener runs — deletes only
 registered paths and so cannot identify it. The residue is a truncated copy of whatever the step was writing,
 at whatever length the failure left it, sitting in the staging root under a name that reads like real batch
 output. One copy per failed run, accumulating until an operator noticed. The failures are the delegate's
-`close` throwing, and the atomic seal itself failing.
+`close` throwing, the atomic seal itself failing, and — added by this revision — **a program lifecycle that
+ends before its caller can seal at all**, which is either an abend inside the step body or a cooperative stop.
 
-**Decision.** The writer discards its own working file on both paths, and then rethrows the original failure.
-Three properties make that safe.
+**Decision.** Whatever failed to seal discards the working file, and then the original failure propagates
+unchanged. Three properties make that safe.
 
 - **The path is known, not guessed.** It is the exact working path this writer was constructed with, which the
   store composed from the completed generation name. No name matching is involved — a sweep for files that
@@ -11964,21 +11967,90 @@ Three properties make that safe.
 missing input, for instance — still closes quietly and still leaves the reader's own diagnostic as the only
 one raised. That behaviour predates this entry and is unaffected: there is nothing to discard.
 
-*Verified by:* `batch/step/StagedGenerationStoreTest`. Its close-failure case previously asserted the partial
-file **exists** and now asserts it is gone, with the delegate's own exception still the one that propagates,
-and its message pinned; a second case blocks the seal by occupying the completed name's container with a
-regular file and asserts the same disposition for the sealing failure; and the produced-nothing case still
-asserts a quiet close.
+#### The third failure path, added after a cross-system review found the residue at runtime
 
-*Embodied in:* `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`.
+**What was observed.** A transaction whose category has no reference row was added online, and the
+transaction-report job was launched over it. The emit step abended on the reference lookup — faithfully, per
+`DL-175` — the job reported `FAILED`, the boundary listener discarded the two artifacts the earlier steps had
+**registered**, and `AWS.M2.CARDDEMO.TRANREPT.G0000000013V00.part` was still in the staging volume
+afterwards: 36,043 bytes, an exact multiple of the 133-byte report record, a well-formed truncated report
+under a name an operator reads as real output. Nothing machine-readable was affected — a `.part` cannot
+resolve as a current local generation, `publishFile` refuses one, and no `.part` key had ever reached the
+bucket — so the whole of the cost was durable disk residue, one copy per mid-step abend.
+
+**Why the two paths above did not cover it.** They are properties of the writer adapter, and the adapter is
+used by one job. Everywhere else the seal is in the caller: `working = workingPath(generation)`, run the
+lifecycle, `completeWorkingFile`, `register`. An abend inside the lifecycle therefore returns through
+`releaseAfterFailure`, which closed handles and nothing else, and the caller's seal was never reached. The
+same shape existed at every explicit-seal site — report unload, filter and emit; category-balance unload and
+sort; both statement outputs; the interest accrual.
+
+**Decision.** `AbstractCobolStep` asks the concrete lifecycle what it was composing and discards it on the
+abnormal-end path. Four properties are deliberate, beyond the three above which it shares by using the same
+implementation.
+
+- **The lifecycle declares its own files.** `workingArtifactsInFlight()` reports the exact paths the
+  lifecycle was handed, so nothing is derived from a name pattern and a lifecycle that composes nothing
+  inherits an empty default. `null` entries are ignored, because an override must be able to be one
+  expression over fields that may not be populated at the moment of failure.
+- **Only a working file is ever removed.** `discardWorkingArtifact` refuses a path that does not carry the
+  store's working suffix and reports the refusal. A mis-wired override naming a completed generation cannot
+  destroy a sealed artifact, or one a publication is about to upload.
+- **The discard runs after the handles come back.** `releaseResources()` first, the disposition second: a
+  file is never deleted while the lifecycle that was writing it still holds it open.
+- **A defective declaration cannot displace the failure being propagated.** A hook that throws, or reports
+  `null`, is reported at warning level against the primary failure and changes nothing else. Only the handle
+  release attaches a suppressed exception; a cleanup problem does not.
+
+**Why this is the faithful disposition rather than a tidiness measure.** Every staged output in the estate is
+declared `DISP=(NEW,CATLG,DELETE)` — `app/jcl/INTCALC.jcl` L37, `app/proc/TRANREPT.prc` L27, L49 and L74,
+`app/jcl/CREASTMT.JCL` L87 and L92, `app/jcl/PRTCATBL.jcl` L35 and L59, `app/jcl/TRANBKP.jcl` L29,
+`app/jcl/COMBTRAN.jcl` L33 — and the third positional value is the abnormal disposition: a newly allocated
+dataset is catalogued when the step ends normally and **deleted** when it does not. `DL-211` records the same
+reading for the sealed generations of a job that did not complete. Two specifications that asserted the
+opposite — that a failed interest pass leaves its working file in place, "exactly as the legacy left it" —
+were asserting the residue rather than the disposition, and are corrected: what the legacy left inside the
+step is not what it left after it. The truncated interest figure those specifications read out of the partial
+file is still proven, by the account balance the earlier control break committed.
+
+**What is deliberately not changed.** The transaction-archive step keeps its own inline removal of both
+working files on its failure path: it already discards them where it releases their handles, and its
+manifest's removal carries a reason of its own — a partly captured manifest names some of the archived rows
+and the reset step would delete exactly those. The combined-transactions stream, which seals inside an item
+stream the framework always closes, now routes its two seal-failure paths through the shared disposition for
+the same reason the adapter does.
+
+*Verified by:* `batch/step/StagedGenerationStoreTest` — its close-failure case previously asserted the
+partial file **exists** and now asserts it is gone, with the delegate's own exception still the one that
+propagates and its message pinned; a second case blocks the seal by occupying the completed name's container
+with a regular file and asserts the same disposition for the sealing failure; the produced-nothing case still
+asserts a quiet close; and a nest over the shared disposition asserts the removal, the suffix refusal against
+a sealed generation, that a working name which has become a symbolic link is left alone and its target
+untouched, and that an absent file is reported rather than raised.
+`batch/step/AbstractCobolStepTest` asserts that an abend discards the declared file and that it was still
+present when the handles came back, that a stop does the same with its own wording, that a completing run is
+never asked at all, that a declared completed generation is refused, that a `null` entry is ignored, and that
+a throwing or `null` declaration leaves the abend as the failure that reaches the caller.
+`batch/TransactionReportJobConfigTest` reproduces the reviewed site itself: a reference the report cannot
+resolve abends the emit lifecycle mid-composition, driven on the working path as its tasklet adapter drives
+it, and neither the working file nor a completed generation exists afterwards.
+`batch/InterestCalculationJobIT` asserts the same disposition through a real launched job.
+
+*Embodied in:* `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`,
+`src/main/java/com/carddemo/batch/step/AbstractCobolStep.java`,
+`src/main/java/com/carddemo/batch/TransactionReportJobConfig.java`,
+`src/main/java/com/carddemo/batch/CategoryBalanceReportJobConfig.java`,
+`src/main/java/com/carddemo/batch/CreateStatementJobConfig.java`,
+`src/main/java/com/carddemo/batch/InterestCalculationJobConfig.java`,
+`src/main/java/com/carddemo/batch/CombineTransactionsJobConfig.java`.
 
 ### DL-290 — Every route to a FAILED verdict discards the local generations that verdict orphans, not just the one that arrives already failed
 
 **Context.** `DL-211` records why the job-boundary listener sweeps its staging root at all: a job that did
 not complete publishes nothing, so its completed local generations name nothing durable, and leaving them
 accumulates one dead artifact per failed run. `DL-289` records the same reasoning one level down, for the
-working file a failed writer leaves. This entry records the arm of the listener that was missing from the
-first of those.
+working file a failed composition leaves. This entry records the arm of the listener that was missing from
+the first of those.
 
 **The gap.** `JobBoundaryListener.publishDurableArtifacts` reaches a FAILED outcome three different ways,
 and only one of them discarded.
