@@ -73,14 +73,14 @@ final class ContainerHardeningContractTest {
             "localstack/localstack:4.14.0@sha256:"
                     + "3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a",
             "jaeger",
-            "jaegertracing/all-in-one:1.71.0@sha256:"
-                    + "beb31282a9c5d0d10cb78dd168945dab9887acebb42fcc0bd738b08c36b68bc0",
+            "jaegertracing/jaeger:2.20.0@sha256:"
+                    + "46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8",
             "prometheus",
-            "prom/prometheus:v3.5.0@sha256:"
-                    + "63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996",
+            "prom/prometheus:v3.13.2@sha256:"
+                    + "508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69",
             "grafana",
-            "grafana/grafana:11.6.6@sha256:"
-                    + "f3b7b0bf02f79eca049a9463424f19fc600f70cabbc0d0e4946f810c5d165830");
+            "grafana/grafana:13.1.3@sha256:"
+                    + "ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43");
 
     private static final Map<String, String> EXPLICIT_USERS = Map.of(
             "localstack", "1000:1000",

@@ -1318,19 +1318,102 @@ final class BuildAndCiContractTest {
     }
 
     @Test
-    @DisplayName("the container determination file ships carrying no determination at all")
-    void theContainerDeterminationFileShipsEmpty() throws IOException {
+    @DisplayName("every container determination is well formed, scoped to a pin this stack actually "
+            + "resolves, unexpired, and never scoped to the application image or a Dockerfile base")
+    void everyContainerDeterminationIsWellFormedAndScopedToACurrentPin() throws IOException {
+        // WHY THIS TEST NO LONGER ASSERTS AN EMPTY FILE. It did, and that assertion was correct for
+        // exactly as long as nobody had scanned the images: the first measurement found 531 HIGH or
+        // CRITICAL findings across the five third-party Compose images, so an empty file meant a
+        // container gate that could not pass rather than a stack with nothing to accept. Four pins
+        // moved, which closed 431 of them, and the residual 63 are closed the other way DL-350
+        // allows - a scoped, attributed, expiring determination each. What must be held now is not
+        // emptiness but the four properties that make a determination a decision instead of a
+        // silence, and the gate itself can only check three of them at run time with Docker
+        // available. See docs/decision-log.md DL-350 and DL-370.
         final String file = read(CONTAINER_DETERMINATIONS_PATH);
         final List<String> determinations = file.lines()
-                .map(String::strip)
-                .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                .filter(line -> !line.isBlank() && !line.stripLeading().startsWith("#"))
                 .toList();
 
         assertThat(determinations)
-                .as("nothing is accepted in the delivered state. A determination here is a reviewed "
-                        + "edit, and a file that shipped with one would be accepting a finding nobody "
-                        + "reading this repository had reviewed. Actual: %s", determinations)
-                .isEmpty();
+                .as("the file must carry the acceptances the measurement requires. An empty file here "
+                        + "with findings present in the pinned images is not a stricter posture - it is "
+                        + "a gate that cannot pass, which is how a determination mechanism ends up "
+                        + "quietly disabled instead of used")
+                .isNotEmpty();
+
+        // The shape the workflow validates before it scans anything, restated exactly: five fields, a
+        // single vertical bar between each, no whitespace around a separator, an identifier the
+        // scanner would actually report, and an ISO date. Held here as well as there so a malformed
+        // line fails the fast unit tier rather than only the container job.
+        final Pattern shape = Pattern.compile(
+                "^[^|\\s]+\\|[A-Z][A-Z0-9]*-[A-Za-z0-9._-]+\\|\\d{4}-\\d{2}-\\d{2}\\|[^|]+\\|[^|]+$");
+        assertThat(determinations)
+                .allSatisfy(line -> assertThat(shape.matcher(line).matches())
+                        .as("determination must read image|IDENTIFIER|YYYY-MM-DD|reviewer|reason with no "
+                                + "whitespace around a separator. Actual: %s", line)
+                        .isTrue());
+
+        // Every key must be a pin this stack actually resolves. This is the unit-tier mirror of the
+        // gate's UNUSED check: a determination whose key no longer appears in the Compose file is
+        // protecting nothing, and the pin move that orphaned it is exactly the edit that must not pass
+        // silently.
+        final String compose = read(COMPOSE_PATH);
+        final String dockerfile = read(DOCKERFILE_PATH);
+        assertThat(determinations)
+                .allSatisfy(line -> {
+                    final String key = line.substring(0, line.indexOf('|'));
+                    assertThat(compose.contains(key))
+                            .as("determination key %s names no image this Compose stack resolves, so the "
+                                    + "pin moved and took the key with it. Move the determination or "
+                                    + "delete it", key)
+                            .isTrue();
+                    assertThat(key)
+                            .as("no acceptance may be scoped to the artefact this module ships or to "
+                                    + "either immutable base: all three scan clean, and a determination "
+                                    + "against one would be accepting a finding in the product")
+                            .isNotEqualTo("application")
+                            .doesNotContain("eclipse-temurin");
+                });
+        assertThat(dockerfile)
+                .as("the bases are still digest pinned, which is what makes 'no determination against a "
+                        + "base' a meaningful statement rather than an untested one")
+                .contains("eclipse-temurin:25.0.3_9-jdk-noble@sha256:")
+                .contains("eclipse-temurin:25.0.3_9-jre-noble@sha256:");
+
+        // An expiry already in the past fails the container gate before it scans anything, so a lapsed
+        // line must fail here too - otherwise the fast tier reports green on a file that has already
+        // stopped the build.
+        final java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneOffset.UTC);
+        assertThat(determinations)
+                .allSatisfy(line -> {
+                    final String[] fields = line.split("\\|", 5);
+                    assertThat(java.time.LocalDate.parse(fields[2]))
+                            .as("determination %s / %s has lapsed. Re-scan the pin first - a pin rebuilt "
+                                    + "upstream since needs no determination at all - then either close "
+                                    + "the finding or re-review and re-date the line", fields[0],
+                                    fields[1])
+                            .isAfterOrEqualTo(today);
+                    assertThat(fields[3].strip())
+                            .as("a reviewer is a name or a team, not a tool and not a placeholder")
+                            .isNotEmpty();
+                    assertThat(fields[4].strip().length())
+                            .as("the reason must say why this repository cannot close the finding and "
+                                    + "what would. Actual reason for %s / %s: %s", fields[0], fields[1],
+                                    fields[4])
+                            .isGreaterThan(40);
+                });
+
+        // One image, one identifier, once. A duplicate pair is two people accepting the same finding
+        // with two different expiries, and the gate would apply whichever it read first.
+        final List<String> pairs = determinations.stream()
+                .map(line -> {
+                    final String[] fields = line.split("\\|", 5);
+                    return fields[0] + "|" + fields[1];
+                })
+                .toList();
+        assertThat(pairs).as("no image and identifier pair may be accepted twice").doesNotHaveDuplicates();
+
         assertThat(file)
                 .as("and the protocol a reviewer must follow is documented in the file itself, because "
                         + "that is the document the person adding a line is already looking at")

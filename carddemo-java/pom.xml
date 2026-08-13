@@ -172,24 +172,41 @@
     <springdoc-openapi.version>2.8.17</springdoc-openapi.version>
 
     <!-- ==============================================================
-         Forward-compatibility override, deliberately kept out of the security-remediation block
-         below because no advisory motivates it and the block's own heading would misdescribe it.
+         The tracing family, and this property now answers TWO reasons rather than one. It began as a
+         forward-compatibility override with no advisory behind it - the heading said so - and an
+         advisory has since arrived against the release it selected, so the security reason is stated
+         first and the original floor is kept underneath it.
 
-         The tracing family this property governs is imported as a bill of materials by the framework
-         parent, which selects 1.49.0. On that release the span processor's queue is a shaded copy of
-         a lock-free queue library that takes field offsets through sun.misc.Unsafe, so the runtime
-         writes three lines to the process error stream at every start-up: a terminal-deprecation
-         notice, the caller
+         THE SECURITY REASON. GHSA-rcgg-9c38-7xpx / CVE-2026-45292 is unbounded memory and processor
+         allocation (CWE-770) in W3C baggage propagation, affecting io.opentelemetry:opentelemetry-api
+         and io.opentelemetry:opentelemetry-extension-trace-propagators at every release below 1.62.0
+         and fixed in 1.62.0, which bounds a baggage header at 8,192 bytes and 64 entries. Both
+         artefacts are DEPLOYED - they sit in the repackaged jar's BOOT-INF/lib - and the parser is
+         REACHABLE BEFORE AUTHENTICATION, because tracing is enabled with the framework's default W3C
+         trace-context and baggage propagators, so a request carrying a baggage header traverses the
+         parser on its way to a refusal.
+
+         WHY THE SUPPLY-CHAIN GATE DID NOT CATCH IT, WHICH IS THE PART WORTH REMEMBERING. The NVD
+         record is advisory-first and carries NO CPE configuration at all, so dependency-check has
+         nothing to match the jar against and reports nothing, whatever its threshold; the record also
+         carries two secondary scores, 5.3 from the advisory database and 7.5 from a second source. A
+         green scan is therefore necessary and not sufficient, and this value is what closes the
+         finding rather than a suppression - nothing is accepted here.
+
+         THE ORIGINAL FLOOR, RETAINED. The framework parent's bill of materials selects 1.49.0. On
+         that release the span processor's queue is a shaded copy of a lock-free queue library that
+         takes field offsets through sun.misc.Unsafe, so the runtime writes three lines to the process
+         error stream at every start-up: a terminal-deprecation notice, the caller
          (io.opentelemetry.internal.shaded.jctools.util.UnsafeAccess, inside opentelemetry-sdk-trace),
          and a removal warning. They arrive before any appender exists, carry no timestamp, level or
          logger, and in the production profile they land in a stream that is otherwise one JSON object
          per line - so a collector that parses per line reports three failures on every restart.
 
-         Measured rather than assumed. The published artefacts were fetched and read: 1.49.0 and
-         1.52.0 both ship the shaded UnsafeAccess class and reference sun/misc/Unsafe from five
-         classes; 1.56.0 references it from none and ships no such class. 1.56.0 is therefore the
-         earliest release that removes the caller rather than silencing the notice, and it is chosen
-         over anything later to keep the distance from the framework's own selection at a minimum.
+         Measured rather than assumed, at both releases. 1.49.0 and 1.52.0 ship the shaded
+         UnsafeAccess class and reference sun/misc/Unsafe from five classes. The published 1.62.0
+         artefacts were fetched and read the same way: opentelemetry-sdk-trace-1.62.0.jar ships no
+         UnsafeAccess class and no class in it references sun/misc/Unsafe, so raising the value to
+         close the advisory does not reopen the notice this property was written for.
 
          The alternative was the platform's sun.misc.Unsafe memory-access selector, set to allow on
          the image entry point, which suppresses the notice while leaving the call in place for the
@@ -199,10 +216,13 @@
          Governed through the bill of materials' own property name, so one value moves the API, SDK,
          exporter and propagator artefacts together and no direct dependency version is introduced.
          The two logger categories this module silences on the exporter - documented at DL-311 - were
-         confirmed present at the same fully qualified names on this release, so the suppression they
-         belong to still applies. See docs/decision-log.md DL-358.
+         re-read on 1.62.0 rather than carried forward: io.opentelemetry.exporter.internal.http
+         .HttpExporter and io.opentelemetry.exporter.internal.grpc.GrpcExporter are both present at
+         exactly those names in opentelemetry-exporter-common-1.62.0.jar, so the suppression they
+         belong to still applies. See docs/decision-log.md DL-366, which supersedes the release
+         selection in DL-358 and leaves its reasoning intact.
          ============================================================== -->
-    <opentelemetry.version>1.56.0</opentelemetry.version>
+    <opentelemetry.version>1.62.0</opentelemetry.version>
 
     <!-- ==============================================================
          Security remediation overrides. Each entry below is a managed version override the
@@ -295,6 +315,44 @@
     <!-- Semantic conventions artifact used by the tracing bridge.
          Clears two findings at 7.3 and 7.0. -->
     <opentelemetry-semconv.version>1.43.0</opentelemetry-semconv.version>
+
+    <!-- Logging backend, reached through the default logging starter and
+         through the structured encoder that writes this module's
+         machine-facing output. Raised above the release this framework
+         line manages to clear CVE-2026-13006, arbitrary code execution
+         in the Janino-backed conditional processing of a configuration
+         file, which the vendor reports as affecting every release up to
+         and including 1.5.36.
+
+         THIS IS A FINDING NEITHER THE SCAN NOR THE ADVISORY DATABASE
+         REPORTS, and the reason is worth carrying next to the value: the
+         record has no CPE configuration published, so the CPE-matching
+         scan has nothing to match the jar against even though it
+         assigns that jar a logback CPE, and the advisory database
+         carries no entry for it at all. It was found by sweeping the
+         vulnerability registry by product name. A green scan is
+         therefore necessary and not sufficient, which is the same
+         lesson DL-366 records for the tracing family.
+
+         This deployment was not exposed, and the value moves anyway.
+         Three independent conditions each break the attack: the Janino
+         library is absent from the whole dependency graph, this
+         module's logback-spring.xml contains no conditional element,
+         and the runtime filesystem is read-only so no configuration
+         file can be written. A fix outranks a determination when both
+         are available, so the fix is taken rather than the three
+         disproofs written down as an acceptance.
+
+         1.5.37 is the release that removes Janino conditional
+         processing outright; 1.5.38 is the newest on the line and
+         additionally repairs a hardened-deserialisation filter that had
+         been letting one class type through. The newer of the two is
+         selected because the second repair is also security work.
+         Governed through the framework bill of materials' own property
+         name, so one value moves the core and classic artifacts
+         together and no direct dependency declaration is introduced.
+         Recorded in docs/decision-log.md DL-367. -->
+    <logback.version>1.5.38</logback.version>
 
     <!-- General purpose text utility library. Reaches the classpath only
          through the API documentation starter and the document model it
@@ -396,6 +454,31 @@
          and selecting the ordinary HttpClient 5 transport makes this
          fixed 5.4.3 release govern both core and HTTP/2 modules. -->
     <httpcomponents-core5.version>5.4.3</httpcomponents-core5.version>
+
+    <!-- The HTTP client the same non-shaded Docker transport uses, and
+         therefore test scope only - it is not in the repackaged
+         artifact. Raised to the fixed release for CVE-2026-64607, a
+         connection leak on an invalid Content-Encoding header in the
+         classic i/o path, whose record ends the affected range
+         immediately below 5.6.3.
+
+         WHY THIS MOVED NOW RATHER THAN STAYING A DISCLOSED FINDING.
+         The scan reports this one - it is a 5.3 medium, below the 7.0
+         gate, and it was recorded in docs/gate-evidence.md as accepted
+         and disclosed, "to be re-evaluated when a fixed release of the
+         artefact is published". That release now exists, so the
+         module's own re-evaluation trigger has fired and the standing
+         rule that a fix outranks a determination applies.
+
+         The upgrade is drop-in and was checked rather than assumed:
+         5.6.3's parent pins HTTP Core at 5.4.3, which is exactly the
+         release httpcomponents-core5.version above already selects, so
+         the client moves without dragging the core family with it. The
+         container-backed integration tier drives this transport on
+         every run, which is where a transport regression would surface
+         first. Governed through the framework bill of materials' own
+         property name. Recorded in docs/decision-log.md DL-368. -->
+    <httpclient5.version>5.6.3</httpclient5.version>
 
     <!-- Annotation-only companion required to read the Docker transport's
          published signatures under -Xlint:all. The processor-bearing

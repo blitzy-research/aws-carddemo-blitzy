@@ -512,8 +512,9 @@ logging:
     # counts every failed export batch on carddemo.tracing.export, tagged by outcome, which is a bounded
     # signal this module composes. Both categories reach logback through the JUL bridge the framework
     # installs, so they are named here in the same list as every other level. Measured against
-    # OpenTelemetry 1.56.0; both are internal names, so DL-358 confirmed each one still exists under
-    # exactly this name before the version moved. See docs/decision-log.md DL-311 and DL-358.
+    # OpenTelemetry 1.62.0; both are internal names, so each was re-read in
+    # opentelemetry-exporter-common-1.62.0.jar and confirmed to exist under exactly this name before
+    # the version moved. See docs/decision-log.md DL-311, DL-358 and DL-366.
     io.opentelemetry.exporter.internal.http.HttpExporter: "OFF"
     io.opentelemetry.exporter.internal.grpc.GrpcExporter: "OFF"
 

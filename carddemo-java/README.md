@@ -306,9 +306,9 @@ rather than from either number.
 | AWS SDK v2 (s3, sqs, sns — BOM-managed) | 2.31.78 |
 | Micrometer core + Prometheus registry | 1.15.12 |
 | Micrometer tracing bridge (OpenTelemetry) | 1.5.12 |
-| OpenTelemetry OTLP exporter | 1.56.0 (above the managed 1.49.0 — see DL-358) |
+| OpenTelemetry OTLP exporter | **1.62.0** (above the managed 1.49.0 — DL-358 for the floor, DL-366 for the security move off 1.56.0) |
 | logstash-logback-encoder | 9.0 |
-| Logback classic / SLF4J API | 1.5.34 / 2.0.18 |
+| Logback classic / SLF4J API | **1.5.38** / 2.0.18 (logback pinned above the managed 1.5.34 — see DL-367) |
 | springdoc-openapi (webmvc-ui) | 2.8.17 |
 | JUnit Jupiter | 5.12.2 |
 | Mockito | 5.17.0 |
@@ -323,10 +323,10 @@ Five further plugins resolve from the Spring Boot parent's default lifecycle bin
 deliberately not declared: `maven-resources-plugin`, `maven-jar-plugin`, `maven-install-plugin`,
 `maven-deploy-plugin` and `maven-clean-plugin`.
 
-### Twelve versions sit deliberately above the managed floor as security remediation
+### Fourteen versions sit deliberately above the managed floor as security remediation
 
 [`pom.xml`](pom.xml) carries a delimited **Security remediation overrides** block, and every managed-version
-property inside it is an override the supply-chain gate requires. There are **twelve**. Each one states, in
+property inside it is an override the supply-chain gate requires. There are **fourteen**. Each one states, in
 the comment above it, which coordinate it governs, how that coordinate reaches the classpath, and the
 finding the value clears. Do **not** revert any of them to the managed value:
 
@@ -336,6 +336,7 @@ finding the value clears. Do **not** revert any of them to the managed value:
 | `netty.version` | 4.2.16.Final | the asynchronous transport of the object-storage client |
 | `postgresql.version` | 42.7.13 | the database driver |
 | `log4j2.version` | 2.26.1 | the logging bridge pulled in transitively |
+| `logback.version` | 1.5.38 | the logging backend, and the encoder that writes the machine-facing output |
 | `opentelemetry-semconv.version` | 1.43.0 | the semantic-conventions artifact used by the tracing bridge |
 | `commons-lang3.version` | 3.20.0 | a transitive utility library |
 | `commons-compress.version` | 1.28.0 | the archive library, reached only in test scope |
@@ -343,13 +344,24 @@ finding the value clears. Do **not** revert any of them to the managed value:
 | `tools-jackson.version` | 3.2.1 | the third-line Jackson the logging encoder is built against |
 | `docker-java.version` | 3.7.1 | the container-engine client of the container testing library |
 | `httpcomponents-core5.version` | 5.4.3 | the HTTP core of the non-shaded container transport |
+| `httpclient5.version` | 5.6.3 | the HTTP client of that same transport, test scope only |
 | `immutables.version` | 2.10.1 | the annotation-only companion that transport requires |
 
 Naming only the most visible of them, or writing the count down here by hand, is what does not survive the
 block growing as the scan finds more: a hand-maintained count in a second
 document is exactly the thing that does not grow with it. The count and the property list are asserted
-against that block by `config/DocumentedSourceCountsTest`, so a thirteenth override either updates this
+against that block by `config/DocumentedSourceCountsTest`, so a fifteenth override either updates this
 table or fails the build. Recorded in [`../docs/decision-log.md`](../docs/decision-log.md) DL-316.
+
+**One security-motivated pin sits outside that block, and the distinction is not cosmetic.** The tracing
+family's own property is declared above the block because it answers two reasons at once: it began as a
+forward-compatibility floor that removes a `sun.misc.Unsafe` caller, and it now also carries the fixed release
+for a baggage-propagation advisory. The block's heading says every entry in it is an override *the
+supply-chain gate requires*, and that gate never reported this one — the advisory record publishes no CPE
+configuration, so a CPE-matching scanner has nothing to compare a version against. Keeping it out of the block
+keeps that heading true; the pin itself is documented at its declaration and in
+[`../docs/decision-log.md`](../docs/decision-log.md) DL-366, and the finding is disclosed on the evidence
+page. A reader auditing security pins should read this table **and** that property.
 
 Each override is a `<properties>` entry rather than a `<dependency>` version, so it applies uniformly
 to every transitive path and disappears automatically when a future Spring Boot 3.x release raises its
@@ -606,22 +618,34 @@ half; read `docker-compose.yml` for the digest that actually resolves.
 | `app` | built from [`Dockerfile`](Dockerfile) | `127.0.0.1`:**8080** (`APP_BIND_ADDRESS`, `APP_PORT`) | the 17 online transactions and the 10 batch programs |
 | `postgres` | `postgres:16.14-bookworm` | `127.0.0.1`:**5432** (`POSTGRES_BIND_ADDRESS`, `POSTGRES_PORT`) | the ten VSAM base clusters plus the transient work cluster |
 | `localstack` | `localstack/localstack:4.14.0` — S3, SQS, SNS | `127.0.0.1`:**4566** (`LOCALSTACK_BIND_ADDRESS`, `LOCALSTACK_PORT`) | sequential-dataset and generation-data-group staging, and the transient data queue |
-| `prometheus` | `prom/prometheus:v3.5.0` | `127.0.0.1`:**9090** (`PROMETHEUS_BIND_ADDRESS`, `PROMETHEUS_PORT`) | — the metric half of the diagnostic channel |
-| `grafana` | `grafana/grafana:11.6.6` | `127.0.0.1`:**3000** (`GRAFANA_BIND_ADDRESS`, `GRAFANA_PORT`) | — the dashboard half |
-| `jaeger` | `jaegertracing/all-in-one:1.71.0` | `127.0.0.1`:**16686** UI (`JAEGER_BIND_ADDRESS`, `JAEGER_UI_PORT`), 4317 OTLP/gRPC, 4318 OTLP/HTTP | — the trace half |
+| `prometheus` | `prom/prometheus:v3.13.2` | `127.0.0.1`:**9090** (`PROMETHEUS_BIND_ADDRESS`, `PROMETHEUS_PORT`) | — the metric half of the diagnostic channel |
+| `grafana` | `grafana/grafana:13.1.3` | `127.0.0.1`:**3000** (`GRAFANA_BIND_ADDRESS`, `GRAFANA_PORT`) | — the dashboard half |
+| `jaeger` | `jaegertracing/jaeger:2.20.0` | `127.0.0.1`:**16686** UI (`JAEGER_BIND_ADDRESS`, `JAEGER_UI_PORT`), 4317 OTLP/gRPC, 4318 OTLP/HTTP | — the trace half |
 
-#### One bundled dashboard plugin is switched off on purpose
+#### One bundled dashboard plugin is named as disabled, and on the current image that setting is inert
 
 `grafana` starts with `GF_PLUGINS_DISABLE_PLUGINS` set to `grafana-lokiexplore-app`, overridable through
-`GRAFANA_DISABLED_PLUGINS`. Nothing in this stack explores logs — it ships one metrics data source and one
-dashboard — and that bundled application declares a module dependency the page's own import map cannot
-resolve, so it put four console errors and one `404 /react/jsx-runtime` on **every** Grafana page, including
-the login form. Those entries were proven to have nothing to do with the provisioned data source or
-dashboard, and leaving them in place would have taught anyone reading the console to ignore it. With the
-plugin off, a console entry seen here is attributable to this project's own configuration, which is what
-makes the console usable when a panel looks wrong. Nothing else about the service changes — same image
-digest, same read-only root filesystem, same non-root principal, same provisioning, same panels. See
+`GRAFANA_DISABLED_PLUGINS`. The reason it is there: on `grafana/grafana:11.6.6` that bundled log-exploration
+application declared a module dependency the page's own import map could not resolve, so it put four console
+errors and one `404 /react/jsx-runtime` on **every** Grafana page, including the login form. Nothing in this
+stack explores logs — it ships one metrics data source and one dashboard — and leaving those entries in place
+would have taught anyone reading the console to ignore it. See
 [`docs/decision-log.md`](../docs/decision-log.md) entry DL-361.
+
+**The pin has since moved to `13.1.3`, which no longer bundles that plugin, so the default now names
+something the image does not carry.** Re-verified in a real browser on 13.1.3: the dashboard, data-source and
+plugins pages are clean — **zero console errors, zero console warnings and zero requests at or above 400
+across 458 requests** — the `/react/jsx-runtime` request never occurs at all, Grafana's own
+`/api/plugins/errors` returns an empty list, and the three application plugins 13.1.3 *does* bundle each load
+with a 200. All 38 dashboard panels mount, about 32 of them plotting live data; the six reading `No data` are
+the ones the dashboard's own text panel says are empty until their code path runs. The variable is **kept
+rather than deleted**, because what it configures is *which* plugins to disable rather than a fix for one of
+them: the mechanism and its override still work, and the default is a guard that costs nothing if an upstream
+bundle reintroduces the problem. Two cosmetic console entries do remain, on the **home page only**, and
+neither is a plugin — a 404 from core Grafana 13's own user-storage read of a help-flag record that was never
+created, and a `moment.js` date-format deprecation warning raised by the bundled news panel parsing an RSS
+date. They are written down here so a later verifier does not read them as the old defect returning. See
+[`docs/decision-log.md`](../docs/decision-log.md) entry DL-370.
 
 #### Container log growth is bounded
 
@@ -2355,9 +2379,19 @@ permissions, and it:
    all of them on the same terms. A HIGH or CRITICAL in any of them fails the gate unless a **scoped,
    reviewed, expiring determination** in [`container-scan-determinations.txt`](container-scan-determinations.txt)
    covers that one identifier on that one image; an **expired** determination fails the build, and so does
-   an **unused** one. The file ships carrying none, so nothing is accepted today. Nothing is filtered out
+   an **unused** one. Nothing is filtered out
    of any scan or report: the scanner runs with `--exit-code 0` and no ignore list, and the archived JSON
-   carries every finding whether a determination covers it or not. DL-185 and DL-350;
+   carries every finding whether a determination covers it or not. **The measured posture**: the
+   application image and both Temurin bases carry **0 findings**, and three supporting pins were moved on
+   measurement — Grafana to `13.1.3`, Prometheus to `v3.13.2` and Jaeger to the v2 distribution
+   `jaeger:2.20.0` — taking the local validation stack from 531 HIGH/CRITICAL findings with 61 critical down
+   to 315 with 44. Two pins refused to move, for different reasons: PostgreSQL keeps `16.14-bookworm` because
+   `trixie` measured *worse* and `alpine3.24` changes collation ordering underneath the parity fixtures; and
+   the emulator keeps `4.14.0` because the newer, far cleaner `2026.07.3` is **not the Community edition** —
+   it exits with a licence-activation failure demanding an auth token, which the plan excludes and which a
+   clean checkout cannot satisfy. A scanner never runs the entrypoint, so *cleaner* and *usable* are separate
+   questions. The 177 residual findings are carried as dated, attributed, per-identifier determinations in
+   that file. DL-185, DL-350 and DL-370;
 13. uploads the container-scan reports and the executable jar, and writes the linear gate summary.
 
 ## Troubleshooting

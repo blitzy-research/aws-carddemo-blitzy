@@ -115,7 +115,7 @@ class SourceCensusTest {
      */
     private static final Pattern IMAGE_REFERENCE = Pattern.compile(
             "\"(?:postgres|localstack/localstack|prom/prometheus|grafana/grafana|eclipse-temurin|"
-                    + "jaegertracing/all-in-one|testcontainers/ryuk):[0-9v][\\w.+-]*");
+                    + "jaegertracing/jaeger|testcontainers/ryuk):[0-9v][\\w.+-]*");
 
     /** How a content digest is introduced in an image reference. */
     private static final String DIGEST_MARKER = "@sha256:";

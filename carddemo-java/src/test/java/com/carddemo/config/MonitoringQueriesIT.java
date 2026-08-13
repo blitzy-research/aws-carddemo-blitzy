@@ -70,8 +70,8 @@ class MonitoringQueriesIT {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private static final String PROMETHEUS_IMAGE =
-            "prom/prometheus:v3.5.0@sha256:"
-                    + "63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996";
+            "prom/prometheus:v3.13.2@sha256:"
+                    + "508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69";
     private static final int PROMETHEUS_PORT = 9090;
     private static final String SCRAPE_JOB = "carddemo-app";
     private static final String BATCH_JOB = "postTransactionJob";

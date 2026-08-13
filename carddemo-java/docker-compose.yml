@@ -199,6 +199,17 @@
 # stack, so its digest does not exist until the build that produces it has run. Its inputs are pinned
 # instead - both Dockerfile bases by digest, and every dependency by exact version in pom.xml.
 #
+# A PIN IS ALSO A VULNERABILITY DECISION, AND IT IS MEASURED RATHER THAN ASSUMED. The
+# continuous-integration container gate scans the app image, both Dockerfile bases and every
+# third-party image named in this file at HIGH and CRITICAL with no severity, package-type or
+# fixed-state filter, and fails on any identifier not covered by a dated determination in
+# container-scan-determinations.txt. Two closures are therefore available for a finding in a
+# third-party image and no third: move the pin to a rebuilt upstream image, or record a reviewed
+# determination. Each pin below carries the measurement that chose it - the count the current pin
+# reports, the count each candidate reports, and, where a pin did not move, the reason the newer tag
+# was rejected on evidence rather than on preference. The counts were taken with the same scanner
+# and the same flags the gate uses, so a figure quoted here is reproducible by running the gate.
+#
 # -------------------------------------------------------------------------------------------------
 # PROVENANCE
 #
@@ -231,6 +242,24 @@ services:
   # Deliberately NO script is mounted into /docker-entrypoint-initdb.d - a
   # second path that creates a table would make the schema depend on which mechanism ran first, and
   # forward-only versioned migration is the whole guarantee being bought.
+  #
+  # THIS PIN DID NOT MOVE, AND BOTH ALTERNATIVES WERE MEASURED BEFORE IT WAS KEPT. At HIGH and
+  # CRITICAL this tag reports 65 findings over 31 distinct identifiers, 50 of them carrying no fix in
+  # the Debian stream. The two candidates were rejected on evidence:
+  #   * postgres:16.14-trixie is WORSE, not better - 70 findings over 29 identifiers with 55 unfixed.
+  #     A newer base is not automatically a smaller one.
+  #   * postgres:16.14-alpine3.24 is genuinely smaller - 15 findings, 1 critical, none unfixed - and
+  #     is still rejected, because it changes two things this stack's evidence depends on. Collation:
+  #     both images report datcollate en_US.utf8, but the orderings differ, glibc yielding
+  #     _a, a b, ab, mary, Mary Ann, MaryAnn where musl yields Mary Ann, MaryAnn, _a, a b, ab, mary.
+  #     AbstractPostgresIT sets no POSTGRES_INITDB_ARGS, so the container-backed tier runs the image
+  #     default and every ordering-sensitive parity fixture would move underneath it. Identity: the
+  #     server account is uid 999 here and uid 70 there, which is the uid this file's volume
+  #     ownership and the hardening contract both name.
+  # A major-version bump is not available either: the plan pins PostgreSQL 16. The residual findings
+  # are therefore closed the other way, by dated per-identifier determinations, and the trust
+  # boundary that makes that honest is stated in container-scan-determinations.txt - this database
+  # serves loopback only, holds none but generated sample data, and is not the deployed artefact.
   postgres:
     image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-postgres
@@ -365,6 +394,27 @@ services:
   # VERSIONING IS ENABLED IN EXACTLY ONE PLACE. localstack/init/01-create-aws-resources.sh enables
   # it and reads it back, so this file passes the bucket name and does not also configure the
   # bucket: two writers of one setting is how a stack ends up disagreeing with itself.
+  #
+  # THIS PIN IS THE LAST COMMUNITY RELEASE OF THE EMULATOR, AND THAT IS WHY IT DID NOT MOVE. At HIGH
+  # and CRITICAL it reports 233 findings over 132 distinct identifiers, 24 of them critical - by far
+  # the worst position in this stack - and the newer tag that would fix almost all of it was measured,
+  # adopted, and then REVERTED on evidence:
+  #   * localstack/localstack:2026.07.3 scans dramatically cleaner - 18 findings, 0 critical - and is
+  #     NOT the Community edition. It exits immediately with code 55 and "License activation failed!
+  #     No credentials were found in the environment", demanding LOCALSTACK_AUTH_TOKEN. ACTIVATE_PRO=0
+  #     does not change it, and 2026.07.0 and 2026.07.1 behave identically, so the whole
+  #     calendar-versioned line is licensed. 4.14.0 is the newest semantically versioned tag in the
+  #     repository and every tag published after it is calendar-versioned, so there is no rebuilt
+  #     Community image to move to.
+  #   * Adopting it would also breach a stated boundary rather than merely cost money: the plan
+  #     excludes LocalStack Pro as the one non-open component that could enter this stack, and a
+  #     token-gated emulator would break `docker compose up` and the whole container-backed test tier
+  #     for anyone without a paid licence.
+  # A SCAN THAT SAYS AN IMAGE IS CLEANER DOES NOT SAY IT IS USABLE, because scanning never runs the
+  # entrypoint. This pin is the reason that sentence is in this file. The residual findings are closed
+  # the other way, by dated per-identifier determinations in container-scan-determinations.txt, and the
+  # trust boundary that makes that honest is that this emulator is reachable on loopback only, holds
+  # nothing but generated sample data, and is not part of the deployed artefact.
   localstack:
     image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-localstack
@@ -456,13 +506,38 @@ services:
     restart: unless-stopped
 
   # -----------------------------------------------------------------------------------------------
-  # Jaeger, all-in-one - the trace sink for the OpenTelemetry bridge, and one third of the
-  # replacement for the legacy estate's 217 DISPLAY statements.
+  # Jaeger - the trace sink for the OpenTelemetry bridge, and one third of the replacement for the
+  # legacy estate's 217 DISPLAY statements.
   #
   # In-memory storage, because a local validation stack has nothing to retain: `down -v` is meant to
   # leave nothing behind, and a durable trace store would outlive the run that produced it.
+  #
+  # THE PIN MOVED OFF THE v1 all-in-one IMAGE BECAUSE STAYING ON v1 BOUGHT NOTHING. At HIGH and
+  # CRITICAL all-in-one:1.71.0 reported 56 findings over 46 identifiers with 4 critical, and the
+  # newest v1 rebuild, all-in-one:1.76.0, still reported 55 over 45 with the same 4 critical - the
+  # line is no longer being repaired. The v2 distribution jaegertracing/jaeger:2.20.0 reports 2
+  # findings over 2 identifiers, neither critical and both fixable-upstream-only. v2 is the same
+  # collector and the same query API, repackaged: /api/services answers with the identical JSON shape
+  # the continuous-integration gate asserts, the OTLP receivers stay on 4317 and 4318 so the
+  # exporter endpoint in the app service below is unchanged, the UI stays on 16686, /bin/sh and wget
+  # are both present so the probe below still runs, and the runtime account is still uid 10001.
+  #
+  # TWO THINGS DID CHANGE, AND BOTH ARE HANDLED HERE RATHER THAN LEFT TO DEFAULTS.
+  #   * CONFIGURATION IS NO LONGER BY ENVIRONMENT VARIABLE. v2 reads a configuration document, so
+  #     COLLECTOR_OTLP_ENABLED, SPAN_STORAGE_TYPE and MEMORY_MAX_TRACES have no effect on it and are
+  #     removed rather than left behind to read as though they still governed something. OTLP is
+  #     enabled and memory storage is selected by the shipped default configuration; the only
+  #     departure from that default this stack needs is the trace ceiling, which the built-in
+  #     configuration sets to 100000 and which is restored to the measured 20000 by the one --set
+  #     override below. The backend key `some_storage` is the shipped default's own name for the
+  #     memory backend, read out of this exact image rather than assumed, and the running container
+  #     reports healthy with the override applied.
+  #   * THE HEALTH ENDPOINT MOVED. v1 answered on the admin port 14269; v2 publishes a health
+  #     extension on 13133 whose /status returns {"healthy":true,...}. The probe below follows it.
+  #     Neither port is published to the host - only the UI and the two OTLP receivers are - so this
+  #     is a change to the in-container probe and not to the stack's exposure surface.
   jaeger:
-    image: jaegertracing/all-in-one:1.71.0@sha256:beb31282a9c5d0d10cb78dd168945dab9887acebb42fcc0bd738b08c36b68bc0
+    image: jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-jaeger
     user: "10001:10001"
     read_only: true
@@ -472,10 +547,12 @@ services:
       - ALL
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
-      SPAN_STORAGE_TYPE: memory
-      MEMORY_MAX_TRACES: "20000"
+    # The trace ceiling, and the only departure from the image's shipped configuration. The legacy
+    # estate has no retention contract for diagnostics, so this is a memory bound rather than a
+    # policy: 20000 spans is what this stack measured as sufficient to hold a full batch pipeline
+    # run plus an online session, and it keeps an unattended stack from growing without limit.
+    command:
+      - --set=extensions.jaeger_storage.backends.some_storage.memory.max_traces=20000
     ports:
       - "${JAEGER_BIND_ADDRESS:-127.0.0.1}:${JAEGER_UI_PORT:-16686}:16686"       # Jaeger UI
       - "${JAEGER_BIND_ADDRESS:-127.0.0.1}:${JAEGER_OTLP_GRPC_PORT:-4317}:4317" # OTLP over gRPC
@@ -483,7 +560,7 @@ services:
                                                                                 # the exporter this
                                                                                 # module uses
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:14269/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:13133/status >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -690,8 +767,14 @@ services:
   #
   # The scrape configuration is bind-mounted from config/, which is this module's only configuration
   # tree; there is no docker/ directory here and nothing references one.
+  #
+  # THE PIN MOVED FROM v3.5.0 TO v3.13.2, AND THIS IS THE CLEANEST OF THE FIVE MEASUREMENTS. At HIGH
+  # and CRITICAL v3.5.0 reported 78 findings over 38 identifiers with 4 critical; v3.13.2 reports
+  # NOTHING at either severity. The image is otherwise the same shape: the runtime account is still
+  # nobody, uid 65534, the entrypoint is still /bin/prometheus reading --config.file, and the scrape
+  # configuration bind-mounted below is unchanged.
   prometheus:
-    image: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-prometheus
     user: "65534:65534"
     read_only: true
@@ -740,8 +823,16 @@ services:
   # working until someone opens a panel. Naming each file exactly makes every source verifiable, by
   # inspection of `docker compose config` and by a file test before the stack is even started.
   # /var/lib/grafana/dashboards is the path the dashboard provider itself declares.
+  #
+  # THE PIN MOVED FROM 11.6.6 TO 13.1.3, AND THE CHOICE BETWEEN TWO CANDIDATES WAS MADE ON CRITICALS
+  # RATHER THAN ON THE TOTAL. At HIGH and CRITICAL 11.6.6 reported 99 findings over 58 identifiers
+  # with 9 critical. 13.0.6 reports 7 over 7 - the smaller total - but one of them is critical.
+  # 13.1.3 reports 15 over 12 with ZERO critical, and a residual set of fifteen fixable highs on a
+  # loopback-bound dashboard is a better position than a live critical, so 13.1.3 is the pin. The
+  # declared identity is still uid 472, which is what the explicit `user` below and the tmpfs
+  # ownership restate, and the three provisioning bind mounts are unchanged.
   grafana:
-    image: grafana/grafana:11.6.6@sha256:f3b7b0bf02f79eca049a9463424f19fc600f70cabbc0d0e4946f810c5d165830
+    image: grafana/grafana:13.1.3@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-grafana
     # The image's declared identity is uid 472 with primary group 0; restating it prevents a future
     # image default from changing the runtime principal while retaining access to root-group-readable
@@ -763,18 +854,28 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_INSTALL_PLUGINS: ""
-      # One bundled plugin is switched off, and it is a diagnostics decision rather than a feature one.
-      # Browser verification of the shipped dashboard found four console errors and one 404 for
-      # /react/jsx-runtime on EVERY page of this service - the login form, the home page, the data-source
-      # list and the dashboard alike. The cause is inside the image: this bundled application declares a
-      # bare module dependency its own import map cannot resolve. It was proven independent of anything
-      # this project provisions, because the errors appear on pages that load neither the CardDemo
-      # dashboard nor its data source. Nothing here uses log exploration - this stack ships one metrics
-      # data source and one dashboard - so the plugin is switched off rather than tolerated, which leaves
-      # a console whose remaining contents are attributable to this project's own configuration. That is
-      # what makes the console usable as evidence: an operator who sees an error after this change is
-      # looking at something real. Overridable, so a developer who wants the plugin can have it back
-      # without editing this file. See docs/decision-log.md DL-361.
+      # One bundled plugin is named here, and on THIS image the setting is INERT. Read that before
+      # trusting it either way. The original decision was a diagnostics one: on grafana/grafana:11.6.6,
+      # browser verification found four console errors and one 404 for /react/jsx-runtime on EVERY page
+      # of this service - the login form, the home page, the data-source list and the dashboard alike -
+      # because a bundled log-exploration application declared a bare module dependency its own import
+      # map could not resolve. Nothing here explores logs, so it was switched off rather than tolerated,
+      # which left a console whose remaining contents are attributable to this project's own
+      # configuration. See docs/decision-log.md DL-361.
+      #
+      # THE PIN MOVED TO 13.1.3 AND THAT PLUGIN IS NO LONGER BUNDLED, so this default now names a plugin
+      # the image does not carry. Re-verified in a real browser on 13.1.3: the dashboard, data-source and
+      # plugins pages are clean - zero console errors, zero warnings and zero requests at or above 400
+      # across 458 requests - the /react/jsx-runtime request never occurs at all, Grafana's own
+      # /api/plugins/errors returns an empty list, and the three application plugins 13.1.3 does bundle
+      # each load with a 200. The variable is kept, not deleted, because what it configures is WHICH
+      # plugins to disable rather than a fix for one of them: the mechanism and its override still work,
+      # and the default is a guard that costs nothing if an upstream bundle ever reintroduces the
+      # problem. Two cosmetic console entries do remain, on the HOME page only, and neither is a plugin:
+      # a 404 from core Grafana 13's own user-storage read of a help-flag record that was never created,
+      # and a moment.js date-format deprecation warning raised by the bundled news panel parsing an RSS
+      # date. They are recorded so a later verifier does not read them as the old defect returning.
+      # See docs/decision-log.md DL-370.
       GF_PLUGINS_DISABLE_PLUGINS: "${GRAFANA_DISABLED_PLUGINS:-grafana-lokiexplore-app}"
     ports:
       - "${GRAFANA_BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"

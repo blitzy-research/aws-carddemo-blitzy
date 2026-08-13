@@ -1739,30 +1739,56 @@ The executed result, from the recorded run:
 | Scanner | `dependency-check-maven` 12.1.3, bound to `verify` |
 | Report | `target/dependency-check-report.html`, with `.json` and `.xml` beside it |
 | Tree scanned | the module as it stands in the revision that carries this page; the scan reads `target/` artefacts of that build rather than a named commit |
-| Scan completed | **2026-08-11T22:44:42Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the dated figures below were read from |
-| Vulnerability data state | NVD API last checked 2026-08-11T08:17:35Z, last modified 2026-08-11T07:17:30Z |
-| Dependencies scanned | 167 — a standing property of the graph rather than of the run, and the one figure in this table that has moved since the run above: it read 168 there and reads 167 now because `commons-logging` was excluded from the three AWS starters ([DL-357](decision-log.md)), which removed one artefact from the scanned graph. The scan that measured it reports `245 (167 unique)`; every other figure in this table was re-measured unchanged on the later run |
+| Scan completed | **2026-08-13T00:28:46Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the dated figures below were read from |
+| Vulnerability data state | NVD API last checked 2026-08-12T09:16:09Z, last modified 2026-08-12T08:17:19Z |
+| Dependencies scanned | 166 report entries, covering 244 files once the scanner's own grouping is counted — and this is the one figure in the table that is a property of the **scanner** rather than of the module. It read 168 before `commons-logging` was excluded from the three AWS starters ([DL-357](decision-log.md)), 167 after, and 166 on this run: the version moves recorded below changed **no coordinate in the graph**, which `dependency:list` confirms at 239 artefacts before and after with an identical membership set, but on the new logback release the scanner groups `logback-classic` underneath `logback-core` as a related dependency instead of listing it separately. Two entries became one entry plus one related file. Every other figure in this table was re-measured on the same run |
 | **Unsuppressed critical** | **0** |
 | **Unsuppressed high** | **0** |
-| Unsuppressed medium | 2 |
+| Unsuppressed medium | 1 — down from 2, because the second was closed by a version move rather than by the feed changing its mind; see the paragraphs below |
 | Unsuppressed low | 0 |
 | Suppressed by written determination | 1 |
 | Build outcome | `BUILD SUCCESS` — nothing at or above the 7.0 failure threshold went unaddressed |
 
-**The two below-threshold findings, recorded rather than omitted.** Both are CVSS v3 **5.3** (medium), both
-are **reported and not suppressed**, and both sit below the 7.0 threshold so neither fails the build:
+**The one below-threshold finding, recorded rather than omitted.** It is CVSS v3 **5.3** (medium), it is
+**reported and not suppressed**, and it sits below the 7.0 threshold so it does not fail the build:
 `CVE-2026-41178` against `opentelemetry-semconv-1.43.0.jar`, which arrives transitively with the tracing
-bridge, and `CVE-2026-64607` against `httpclient5-5.5.2.jar`, which arrives transitively with the container
-testing transport. Recording them here is the point — a page that listed only the zeroes would be hiding
-the numbers a reader would want to check next release. Each disposition is *accepted and disclosed*, to be
-re-evaluated when a fixed release of the artefact is published.
+bridge. Recording it here is the point — a page that listed only the zeroes would be hiding the number a
+reader would want to check next release. Its disposition is *accepted and disclosed*, to be re-evaluated when
+a fixed release of the artefact is published.
 
-**The second of the two is the clearest illustration of why this section carries a date and the rest of the
-page does not.** An earlier recorded run of this module reported one below-threshold finding and every run
-since has reported two, with **no dependency version changing between them** — `CVE-2026-64607` was
-published against a version this module already pinned. Nothing about the module moved; the advisory feed did. That is exactly the class of
+**There were two, and the second is now closed rather than accepted — which is the whole reason a
+re-evaluation trigger is worth writing down.** `CVE-2026-64607`, also 5.3, was reported against
+`httpclient5-5.5.2.jar`, which arrives transitively with the container testing transport and is **not in the
+repackaged artefact** at all. This page recorded it as accepted "to be re-evaluated when a fixed release of
+the artefact is published", and that release — 5.6.3, the version immediately above the record's affected
+range — has since been published. So the trigger fired and the pin moved: `httpclient5.version` is 5.6.3,
+whose own parent pins HTTP Core at the 5.4.3 release this module already selects, so the client moved without
+disturbing the core family. The identifier is still named here on purpose. A finding that was disclosed and
+then closed is a different statement from a finding that was never there, and only the first of those two
+lets a reader check the claim. Recorded in [decision-log.md](decision-log.md) at DL-368.
+
+**That finding is also the clearest illustration of why this section carries a date and the rest of the page
+does not.** An earlier recorded run reported one below-threshold finding and later runs reported two, with
+**no dependency version changing between them** — `CVE-2026-64607` was published against a version this
+module already pinned. Nothing about the module moved; the advisory feed did. That is exactly the class of
 figure that must never be presented as a standing property, and it is why the instruction below is to re-run
 the scan rather than to quote this table.
+
+**A third record is disclosed here that no gate in this build reported, because two independent gates can
+both read clean and still leave a high-severity record standing.** `CVE-2026-13006`, scored **7.0**, is
+arbitrary code execution through the Janino-backed conditional processing of a logging configuration file, and
+its affected range covers every logback release up to and including 1.5.36 — which included the 1.5.34 this
+framework line manages. The dependency scan reported nothing: the record carries **no CPE configuration**, so
+the CPE it assigns the jar has no range to be compared against. The advisory database carries no entry either.
+It was found by sweeping the vulnerability registry by product name, which is now part of how this module's
+supply chain is reviewed rather than an incident.
+
+Three conditions each independently broke the attack here and every one was checked: the Janino library is
+absent from the whole dependency graph, `logback-spring.xml` contains no conditional element, and the runtime
+filesystem is read-only so the configuration file the attack must write cannot be written. Any of them would
+have justified a determination. The fix was taken instead — `logback.version` is **1.5.38**, past the 1.5.37
+release that removed Janino conditional processing outright — because a fix outranks a determination whenever
+both are available. Recorded in [decision-log.md](decision-log.md) at DL-367.
 
 **The one suppression, and why it is not a hole.** The gate is zero **unsuppressed critical or high**, and
 the qualifier is load-bearing rather than defensive. Above 7.0 the build fails unless the finding is covered
@@ -1776,6 +1802,50 @@ asserts that scope and reads both halves of the report, so a suppressed high-sev
 determination fails a test rather than passing quietly. The determination is disclosed under Gate 8 of the
 module README and recorded in [decision-log.md](decision-log.md) at DL-159.
 
+**A green scan is necessary and not sufficient, and one finding proves it.** `CVE-2026-45292`
+(`GHSA-rcgg-9c38-7xpx`) is unbounded memory and processor allocation while parsing a W3C baggage header. It
+affects `opentelemetry-api` and `opentelemetry-extension-trace-propagators` at every release below 1.62.0,
+both of which this module deploys inside `BOOT-INF/lib`, and the parser sits on the request path ahead of the
+authentication refusal because tracing runs with the framework's default trace-context and baggage
+propagators. **This scan reported nothing against it, and no threshold value would have.** The NVD record
+carries **no CPE configuration at all**, so a CPE-matching scanner has nothing to match the jar against; the
+record also carries two secondary scores, 5.3 from the advisory database and 7.5 from a second source. It was
+found by querying the advisory database by coordinate rather than by reading this report.
+
+It is **closed rather than accepted**: `opentelemetry.version` is 1.62.0, the fixed release the advisory
+names, which bounds a baggage header at 8,192 bytes and 64 entries. A suppression would have had nothing to
+suppress. The mitigation that had been bounding the exposure is recorded too, so the severity is neither
+overstated nor quietly relied upon: `server.max-http-request-header-size` is 8KB, so a larger header was
+already refused by the servlet container with a static 400 before the application saw it — which is the
+workaround the advisory itself names — while a header *under* that limit still reached the unbounded parser.
+Recorded in [decision-log.md](decision-log.md) at DL-366, which supersedes only the release selection in
+DL-358.
+
+**One coordinate is version-affected and is neither fixed nor suppressed, and this is where that is stated.**
+`CVE-2026-44308` (`GHSA-r4w4-wv68-qv85`, CVSS v4 **6.3**, CWE-345) is a missing SNS message-signature
+verification that lets a caller spoof the notifications an application *receives*. Its affected range ends at
+`spring-cloud-aws-sns` **3.4.2** — the version the three cloud starters resolve — and the advisory states the
+3.x line will not be fixed. This scan reports nothing against it: the jar receives no CPE, so its
+vulnerability set in the report is empty.
+
+Two facts make it a determination rather than a version move, and both were measured. **No fix exists inside
+this project's framework line**: nothing above 3.4.2 is published on Central (3.4.3, 3.4.4 and 3.5.0 all
+answer 404), and the 4.0.2 release that carries the fix is parented on `spring-cloud-build` 5.0.1, whose own
+`spring-boot.version` is 4.0.2 — the next major framework line, which the migration plan's Spring Boot 3.x
+stack states as a ceiling. **And this module never receives a notification**: the whole inbound surface is
+absent from `src/main` — `@NotificationMessageMapping`, `@NotificationSubscriptionMapping`,
+`@NotificationUnsubscribeConfirmationMapping`, `NotificationStatus`, `SnsMessageManager`,
+`SnsMessageHandlerMethodArgumentResolver` and `SnsWebConfiguration` all count zero — while the outbound API is
+what is used: one `sendNotification`, one `topicExists`, the publish envelope and the topic-ARN resolvers. The
+published interface description carries no operation that receives a notice, and every unmapped address
+beneath the API prefix is refused rather than served, so there is no route for a spoofed notice to arrive on.
+
+It is deliberately **not** written into `owasp-suppressions.xml`: a rule there would match nothing, and
+`failBuildOnUnusedSuppressionRule` would then fail the build on the rule. What would close it, in preference
+order: a 3.x release carrying the fix; a future move of the framework line, which makes 4.0.2 reachable; or, if
+an inbound notification endpoint is ever added here, an immediate re-argument rather than a re-dating. Recorded
+in [decision-log.md](decision-log.md) at DL-369.
+
 **A CVE result ages, and this one carries its date for that reason.** The same dependency set can scan clean
 one week and not the next because the database changed rather than the code. The figures above are true as of
 the scan timestamp in the table and are not a standing property of the module; re-run the scan before any
@@ -1783,6 +1853,110 @@ sign-off and read the report rather than this table:
 
 ```bash
 cd carddemo-java && ./mvnw -B dependency-check:check
+```
+
+### Container image scan — a second supply chain, gated on the same terms
+
+The dependency scan above reads the module's **Java graph**. It cannot see the other half of what this
+repository ships: the seven container images. Those are gated separately by the container gate of
+`.github/workflows/carddemo-java-ci.yml`, which scans the application image, both digest-pinned `Dockerfile`
+bases and every digest-pinned third-party Compose service image at HIGH and CRITICAL with **no severity,
+package-type or fixed-state filter**, and fails on any identifier not covered by a dated determination in
+`carddemo-java/container-scan-determinations.txt`. The
+gate's design is [DL-350](decision-log.md); the measurement and the pin moves recorded below are
+[DL-370](decision-log.md).
+
+| Property | Value |
+| --- | --- |
+| Scanner | `trivy` 0.62.1, the digest-pinned image the workflow itself runs |
+| Flags | `--scanners vuln --severity HIGH,CRITICAL --format json --exit-code 0` — no ignore list, no `--ignore-unfixed`, so every finding stays in the archived report whether or not a determination covers it |
+| Images gated | 8 keys: the application image, 2 `Dockerfile` bases, 5 third-party Compose images |
+| Report | one JSON per key under `target/container-scan-reports/`, uploaded as `container-vulnerability-scan-reports` |
+| Verdict | taken in the workflow from the retained report, never from the scanner's exit code |
+
+**The artefact this module ships is clean, and that is the figure to read first.** The application image
+scans **0 HIGH/CRITICAL**, and so do both immutable bases — `eclipse-temurin:25.0.3_9-jdk-noble` and
+`…-jre-noble`. No determination is scoped to any of the three. Every acceptance recorded below is against a
+**supporting service of the local validation stack**, not against the deployed artefact.
+
+**The measured before and after, per image.** The "before" column is the delivered pin set; the "after" is
+what `docker-compose.yml` now names. Three pins moved and two refused to move, for two different reasons.
+ Both columns were measured with the scanner and flags in the table above,
+and repeated on a second scanner build with identical results, so these are properties of the images rather
+than of the tool.
+
+| Image | Findings before | CRITICAL before | Findings after | CRITICAL after | Pin |
+| --- | --- | --- | --- | --- | --- |
+| `grafana/grafana` | 99 | 9 | **15** | **0** | moved 11.6.6 → 13.1.3 |
+| `prom/prometheus` | 78 | 4 | **0** | **0** | moved v3.5.0 → v3.13.2 |
+| Jaeger | 56 | 4 | **2** | **0** | moved `all-in-one:1.71.0` → `jaeger:2.20.0` |
+| `postgres` | 65 | 20 | 65 | 20 | **refused** — both alternatives measured worse or behaviour-changing |
+| `localstack/localstack` | 233 | 24 | 233 | 24 | **refused** — the cleaner image is not Community |
+| Application image | 0 | 0 | 0 | 0 | built here |
+| Both Temurin bases | 0 | 0 | 0 | 0 | unchanged |
+| **Total** | **531** | **61** | **315** | **44** | |
+
+**One pin did not move, and the refusal is measured rather than cautious.** Both candidates were scanned.
+`postgres:16.14-trixie` is **worse** — 70 findings against 65 — which is the useful half of the result,
+because it disproves the assumption that a newer base is automatically a smaller one.
+`postgres:16.14-alpine3.24` is genuinely smaller at 15 findings and is still rejected on two behavioural
+changes: both images report `datcollate en_US.utf8` but order it differently, glibc yielding
+`_a, a b, ab, mary, Mary Ann, MaryAnn` where musl yields `Mary Ann, MaryAnn, _a, a b, ab, mary`, and
+`support/AbstractPostgresIT` sets no `POSTGRES_INITDB_ARGS`, so the container-backed tier runs the image
+default and every ordering-sensitive parity fixture would move underneath it; and the server account moves
+from uid 999 to uid 70, which is the uid this stack's volume ownership names. A major-version bump is
+excluded by the plan, which pins PostgreSQL 16. So this is one of two images where a rebuilt upstream tag is
+not available, and it carries 31 of the 177 determinations — 16 Debian 12 packages with **no fix published in
+the stream at all**, and 15 Go standard-library findings inside the image's own `gosu` helper.
+
+**The other refusal is the one worth reading, because a scan cannot tell you about it.**
+`localstack/localstack:2026.07.3` scans dramatically cleaner than the pinned 4.14.0 — 18 findings against 233,
+none critical against 24 — and it was **adopted on that measurement and then reverted**, because it is not the
+Community edition. It exits immediately with code 55 and `License activation failed! … No credentials were
+found in the environment`, demanding `LOCALSTACK_AUTH_TOKEN`; `ACTIVATE_PRO=0` does not change it, and
+2026.07.0 and 2026.07.1 behave identically, so the whole calendar-versioned line is licensed. 4.14.0 is the
+newest semantically versioned tag in the repository, so there is no rebuilt Community image to move to, and
+adopting a token-gated emulator would breach the plan's exclusion of LocalStack Pro as well as break
+`docker compose up` and the container-backed test tier for anyone without a paid licence. **A scanner never
+runs the entrypoint.** The move passed the image scan, the unit tier and every contract test, and was caught
+by the full `verify`, where every LocalStack-backed test failed at `support/AbstractLocalStackIT` with
+`Wait strategy failed. Container exited with code 55`. The emulator therefore keeps 4.14.0 and carries 132 of
+the 177 determinations — the largest single block, and the honest cost of that exclusion. Recorded in
+[decision-log.md](decision-log.md) at DL-370.
+
+**What the 177 determinations are, and where the identifiers live.** 132 on the emulator, 31 on the database
+image, 12 on Grafana, 2 on Jaeger. Every one is an upstream binary this repository does not build. The
+identifiers are **not reproduced on this page on purpose**: each lives on its own line in
+`container-scan-determinations.txt` beside the reviewer who accepted it, the date it expires and what would
+close it, and that file is the artefact the gate actually reads. A second copy here would be a list that goes
+stale the first time a pin is rebuilt upstream, and a reader would then hold two answers. Read the file.
+
+**The trust boundary these acceptances rest on, stated so a reader can disagree with it.** The four images
+carrying determinations are part of `docker-compose.yml`'s local validation stack. Every port they publish is bound to `127.0.0.1`, none is
+reachable from another host, none holds anything but generated sample data and seeded sample credentials, and
+not one is part of the deployed artefact. What is accepted is a vulnerability in a developer-machine
+dependency, not in a production surface — a smaller claim than "these findings do not matter", and the only
+one the evidence supports. If any of these images were exposed beyond loopback or given real data, every
+determination would have to be re-argued rather than re-dated.
+
+**How the gate's own verdict was verified rather than assumed.** The gate's decision logic — the shape
+validation, the expiry sweep, the per-image-per-identifier match and the unused-determination check — was
+driven against the real scan reports for all eight keys: 177 covered, **0 uncovered**, so the container gate
+passes. A negative control was run in the same harness, one determination whose key carried a fabricated
+digest, and the unused check failed the build on it, which is what shows the pass is a result rather than an
+agreement with itself.
+
+**These figures age exactly as the dependency figures do.** A new advisory against a pinned image arrives
+without a commit here. Re-scan before any sign-off rather than quoting this table, and re-scan **before**
+re-dating any determination, because a pin rebuilt upstream in the meantime needs no determination at all:
+
+```bash
+cd carddemo-java && docker compose config --images | sort -u | while read -r image; do
+  case "${image}" in *@sha256:*) ;; *) continue ;; esac
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+    ghcr.io/aquasecurity/trivy:0.62.1 image --scanners vuln --severity HIGH,CRITICAL \
+    --exit-code 0 "${image}"
+done
 ```
 
 ### Traceability, and what "covering test" is worth on a row

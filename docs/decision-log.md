@@ -17355,8 +17355,11 @@ nobody's build failure forced anybody to open.
 digest-pinned Dockerfile bases, and every digest-pinned third-party Compose service image. A HIGH or CRITICAL
 finding in any of them fails the container gate **unless it is covered by a determination in
 `carddemo-java/container-scan-determinations.txt`** that is scoped to that one image and that one identifier,
-carries a reviewer, and carries an expiry date. The file ships **empty of determinations**, so nothing is
-accepted in the delivered state.
+carries a reviewer, and carries an expiry date. The file shipped **empty of determinations**, so nothing was
+accepted in the delivered state - **superseded on that one point by DL-370**, which measured the pinned images,
+moved three of the five pins, and carries the 177 residual findings as dated determinations. Everything else in
+this entry stands: the scanner still receives no ignore list, the verdict is still taken here from the retained
+report, and every image is still gated alike.
 
 *Why a determination file exists at all, when DL-185 refused one.* DL-185 refused an *ignore file* - a
 mechanism handed to the scanner. That refusal was right and is kept: handing this file to Trivy as an ignore
@@ -17400,8 +17403,9 @@ gate is for. The alternative on offer was a gate that could not fail on five of 
 unused-determination check were extracted verbatim from the workflow and driven against synthetic scanner
 reports outside CI. Eight cases, each behaving as designed: no determinations fails; both findings covered
 passes; one covered and one not fails; an expired line fails before any scan; an unused extra line fails; a
-line scoped to a different image key fails; a malformed line fails on the shape check; and the delivered
-empty file against an image with no findings passes.
+line scoped to a different image key fails; a malformed line fails on the shape check; and an empty file
+against an image with no findings passes. DL-370 re-ran that harness against the real scan reports for all
+eight keys once the file carried determinations, and against a deliberately orphaned line.
 
 *Alternatives considered and rejected.* Trivy's own `.trivyignore.yaml` with `expiredAt` - rejected on the
 DL-185 grounds above, and additionally because it neither fails on an expired entry nor fails on an unused
@@ -17417,8 +17421,9 @@ considers important is a gate whose scope is an opinion.
 *Asserted by:* `config/BuildAndCiContractTest` - the verdict parameter and the word `inventory` are absent
 from every executable line; both loops call the scan the same way; the determination file is read, its shape
 validated before any scan, its match scoped to both fields, and an expired or unused entry fails; the scanner
-is handed no `--ignorefile`, no `--ignore-policy` and no `.trivyignore`; and the delivered file carries no
-determination while documenting the review protocol.
+is handed no `--ignorefile`, no `--ignore-policy` and no `.trivyignore`; and the file documents the review
+protocol. The assertion that the file carries no determination at all held until DL-370 and is replaced there
+by the four properties that make a determination a decision rather than a silence.
 
 *Cited by:* `.github/workflows/carddemo-java-ci.yml`,
 `carddemo-java/container-scan-determinations.txt`, `config/BuildAndCiContractTest.java` and
@@ -18137,6 +18142,15 @@ configuration and is applied here at a single call site.
 
 ### DL-361 - One bundled dashboard plugin is switched off, so the browser console stays usable as evidence
 
+*Correction - read this before the reasoning below.* Everything here was measured against
+`grafana/grafana:11.6.6`, which is no longer the pin. **DL-370 moved it to 13.1.3, which does not bundle the
+plugin named in this entry at all**, so the setting this entry justifies is now inert on the delivered image:
+re-verification in a real browser found zero console errors, zero warnings and zero requests at or above 400
+on the dashboard, data-source and plugins pages, and the `/react/jsx-runtime` request never occurs. The
+variable is retained as a guard rather than deleted, because it configures *which* plugins to disable rather
+than fixing one of them. The reasoning below stands as the record of why it was set; DL-370 carries what the
+current image actually does.
+
 *Context.* Browser verification of the shipped dashboard service found four console errors and one
 `404 GET /react/jsx-runtime` on **every** page it opened - the login form, the home page, the data-source
 list and the CardDemo dashboard alike. The cause is inside the image rather than in anything this project
@@ -18384,6 +18398,419 @@ alone with a value, or the prose alone without the key, each reproduces the defe
 *Cited by:* `docker-compose.yml`, `README.md`.
 
 ---
+
+
+### DL-366 - The tracing family moves to 1.62.0 because an advisory arrived against the release DL-358 chose, and the scan that is supposed to find such things could not see it
+
+*Context.* DL-358 raised `opentelemetry.version` from the framework's managed 1.49.0 to 1.56.0 to remove a
+`sun.misc.Unsafe` caller rather than silence its start-up notice, and recorded that 1.56.0 was chosen over
+anything later "to keep the distance from the framework's own selection at a minimum". That reasoning stands.
+What has changed is that a security advisory now names 1.56.0, so the minimum-distance rule selects a
+different release.
+
+*The finding.* `GHSA-rcgg-9c38-7xpx`, aliased `CVE-2026-45292`: unbounded memory and processor allocation
+(CWE-770) while parsing a W3C baggage header. The advisory's affected set is
+`io.opentelemetry:opentelemetry-api` and `io.opentelemetry:opentelemetry-extension-trace-propagators` at
+every release below **1.62.0**, and 1.62.0 is the fixed release - it bounds a header at 8,192 bytes and 64
+entries. Both artefacts are in this module's `BOOT-INF/lib`, and the parser runs on the request path because
+tracing is enabled with the framework's default W3C trace-context and baggage propagators, which puts it
+ahead of the authentication refusal rather than behind it. The NVD record was published 2026-05-28, last
+modified 2026-08-10, and stands as *Awaiting Analysis* with two secondary scores: **5.3** from the advisory
+database and **7.5** from a second source.
+
+*The part that matters more than the bump: the gate could not see it.* This module fails the build at CVSS
+7.0 over compile, runtime and test scope, and it reported nothing here - not because the threshold was set
+too high, but because the record carries **no CPE configuration at all**. A CPE-matching scanner has nothing
+to match a jar against in that state, so no threshold value would have surfaced it. The finding was found by
+querying the advisory database by coordinate instead. Two conclusions are recorded rather than assumed: a
+green dependency scan is necessary and not sufficient, and the honest closure for a record the scanner cannot
+see is to move the version, never to write a suppression - a suppression would have had nothing to suppress.
+
+*Decision.* `opentelemetry.version` becomes **1.62.0**. One property still moves the API, SDK, exporter and
+propagator artefacts together, and no direct dependency version is introduced.
+
+*Why the floor DL-358 bought is not given back, measured rather than assumed.* The published 1.62.0
+artefacts were fetched and read the same way DL-358 read 1.49.0 and 1.52.0:
+`opentelemetry-sdk-trace-1.62.0.jar` ships no `UnsafeAccess` class, and no class inside it references
+`sun/misc/Unsafe`. The two exporter logger categories DL-311 silences were re-read at the new release rather
+than carried forward, because both are internal names:
+`io.opentelemetry.exporter.internal.http.HttpExporter` and
+`io.opentelemetry.exporter.internal.grpc.GrpcExporter` are present at exactly those names in
+`opentelemetry-exporter-common-1.62.0.jar`, so that suppression still applies to something.
+
+*Why 1.62.0 and not the newest release.* 1.65.0 was published. DL-358's minimum-distance rule is kept: the
+release chosen is the earliest one that closes the finding while keeping the `sun.misc.Unsafe` floor, which
+is the fixed release named by the advisory itself.
+
+*What was already bounding the exposure, stated so the severity is not overstated.*
+`server.max-http-request-header-size` is 8KB, so a baggage header larger than that is refused by the servlet
+container with a static 400 before the application sees it - which is the mitigation the advisory itself
+names as its workaround. That bounded the amplification; it did not close the finding, because a header
+*under* the limit still reached the unbounded parser.
+
+*One consequence of the move is a new start-up line, and it is disclosed rather than silenced.* On 1.62.0 the
+parent-based sampler builder emits a WARN when a ratio sampler is supplied as one of its child arms:
+*"TraceIdRatioBasedSampler is being used as a child sampler (remoteParentSampled). This configuration is
+discouraged per the OpenTelemetry specification and may lead to unexpected sampling behavior."* It appears
+once per start-up - measured, zero occurrences on 1.56.0 and seven across a full suite run on 1.62.0 - and it
+is describing exactly the configuration `config/ObservabilityConfig#traceSampler` sets **on purpose**: a
+remote parent's sampled flag is re-decided through this deployment's own ratio, because the one-argument
+`parentBased` form leaves that arm at `alwaysOn()` and an unauthenticated caller presenting a `traceparent`
+with the sampled flag set could otherwise drive exporter volume and collector storage at will.
+
+Three courses were available and the choice is recorded because it is not the obvious one. Following the
+advice would reopen that caller-controlled cost channel, so the policy stands. Pinning the category to `OFF`,
+as DL-311 does for four library categories, was rejected here: those four are silenced because a **remote
+party chooses their content**, whereas this text is fixed, attributable and is advice about a decision this
+repository made - a repository that silences the one advisory aimed at its own configuration is not one whose
+remaining log content can be trusted. Wrapping the ratio sampler in a delegating sampler so the library's
+type check no longer matches was rejected outright: it would defeat a diagnostic rather than answer it. So the
+line stays, and this paragraph is the answer to it. `ObservabilityConfig#traceSampler` carries the full
+reasoning at its declaration, and the module logs its own statement of the policy at every start.
+
+*Asserted by:* the resolved dependency tree carries 1.62.0 for the API, SDK, exporter and propagator
+artefacts, and `e2e/GateVerificationTest` reads both halves of the vulnerability report so a suppressed
+qualifying finding cannot hide behind a green row. Recorded in `docs/gate-evidence.md` under Gate 8, and in
+`README.md`'s dependency inventory, because a version pinned for a reason nobody can read is a version the
+next reader reverts.
+
+*Cited by:* `pom.xml`, `src/main/resources/application.yml`, `src/main/resources/logback-spring.xml`,
+`README.md`.
+
+*Supersedes:* the release selection in DL-358. Its reasoning about the shaded queue, the three unstructured
+start-up lines and the rejected platform-flag alternative is unchanged and still the reason this property
+exists at all.
+
+---
+
+
+### DL-367 - The logging backend is raised for a finding no scanner in this build can see, and the fix is taken even though three separate conditions already broke the attack
+
+*Context.* `logback-core` and `logback-classic` arrived at 1.5.34, the release the framework line manages.
+Nothing in this build reported a finding against them: the dependency scan reports nothing, and the advisory
+database carries no entry for the identifier at all.
+
+*The finding.* `CVE-2026-13006`, published 2026-06-24 and scored **7.0** by the registry, is arbitrary code
+execution through the Janino-backed conditional processing of a logging configuration file. The vendor's own
+release notes describe the exposure and state that support for those conditionals was **removed** in 1.5.37,
+after they "had led to numerous security vulnerabilities". The affected range is every release up to and
+including 1.5.36, so 1.5.34 is inside it.
+
+*Why nothing in the build saw it, and why that is the durable lesson.* The registry record has **no CPE
+configuration published**. The scan assigns the jar a logback CPE and still reports nothing, because there is
+no range on the record to compare that CPE against - so no threshold value would have surfaced this, exactly
+as DL-366 records for the tracing family. The advisory database has no entry either, so a coordinate query
+would have missed it too. It was found by sweeping the registry by product name. Two gates that both report
+clean can still leave a 7.0 record standing against a deployed jar, and the only defence is to look somewhere
+neither of them looks.
+
+*This deployment was not exposed, and the value moves anyway.* Three conditions each independently break the
+attack, and all three were checked rather than argued: the Janino library and its compiler API are **absent
+from the entire dependency graph**, so the conditional evaluator has nothing to evaluate with;
+`src/main/resources/logback-spring.xml` contains **no conditional element** of any kind; and the runtime
+container filesystem is **read-only**, so the configuration file the attack must write cannot be written by
+the running account. Any one of them would have justified a written determination.
+
+*Decision.* Take the fix. `logback.version` becomes **1.5.38**. The standing rule in this log is that a fix
+outranks a determination when both are available - a determination is a statement that has to be re-read at
+every review, while a version that no longer carries the finding needs no reader. 1.5.37 is the release that
+removes the Janino path; 1.5.38 is the newest on the line and additionally repairs a hardened
+object-input-stream filter that had been admitting one class type it was meant to reject, which is also
+security work, so the newer of the two is selected.
+
+*Blast radius, stated.* The property is the framework bill of materials' own, so one value moves the core and
+classic artifacts together and no direct dependency declaration is introduced. The structured encoder that
+writes this module's machine-facing output is built against the 1.5 line and is unchanged. Nothing in this
+module's configuration used the removed conditional syntax, which is why the removal is a non-event here
+rather than a migration.
+
+*Asserted by:* the full suite, which includes the logging-configuration contract tests, runs green on the new
+release; the resolved tree carries 1.5.38 for both artifacts; and the local stack's own log output was read
+after the change rather than assumed.
+
+*Cited by:* `pom.xml`, `README.md`.
+
+---
+
+### DL-368 - The container transport's HTTP client moves to the fixed release, because the re-evaluation trigger this module wrote down has fired
+
+*Context.* `httpclient5` reaches this module in **test scope only**, as the client of the non-shaded Docker
+transport the container testing library uses; DL-115's decision to exclude the shaded `zerodep` transport is
+what makes it visible to dependency management and to the scan at all. It is not in the repackaged artifact:
+the deployed jar's `BOOT-INF/lib` carries no `httpclient5`, no `httpcore5`, no `docker-java` and no
+Testcontainers artifact.
+
+*The finding.* `CVE-2026-64607`, a **5.3** medium: a connection leak when a response carries an invalid
+`Content-Encoding` header, on the classic i/o path. The registry record is fully analysed and ends the
+affected range immediately below **5.6.3**, so the managed 5.5.2 is inside it.
+
+*Why this entry exists at all, given the score is below the gate.* Because the module had already written down
+what would change its mind. `docs/gate-evidence.md` recorded this finding as *accepted and disclosed*, "to be
+re-evaluated when a fixed release of the artefact is published". That release is now published. A
+re-evaluation trigger that fires and is not acted on is worse than no trigger: the page keeps telling a
+reader no fix exists while one does, and every later disclosure on that page reads a little less reliably.
+
+*Decision.* `httpclient5.version` becomes **5.6.3**, the release the record names as fixed.
+
+*Checked rather than assumed, on the one axis that could have made this expensive.* 5.6.3's parent pins HTTP
+Core at **5.4.3** - exactly the release `httpcomponents-core5.version` already selects for `httpcore5` and
+`httpcore5-h2` - so the client moves without dragging the core family off the release DL-115 pinned it to.
+5.6.4 exists and was not taken: the affected range ends below 5.6.3, and the module's practice is to move the
+minimum distance that closes the finding.
+
+*Why the test tier is the right place to prove it.* The container-backed integration tier drives every
+container this suite starts through this transport, so a transport regression fails that tier rather than
+appearing later as a flake. That tier runs green on the new release.
+
+*What this changes on the evidence page.* The two below-threshold findings become one. The page keeps naming
+this identifier, because a finding that was disclosed and then closed is a different statement from a finding
+that was never there, and the second statement is the one a reader would be misled by.
+
+*Cited by:* `pom.xml`.
+
+---
+
+### DL-369 - The notification starter is version-affected by an advisory whose only fix leaves the framework line this project is bound to, so it is carried as a dated determination with the non-applicability measured
+
+*Context.* The three cloud starters resolve from `spring-cloud-aws-dependencies` 3.4.2, which brings
+`io.awspring.cloud:spring-cloud-aws-sns` at the same version. Nothing in this build reported a finding against
+it: the scan assigns that jar no CPE and lists it with an empty vulnerability set, so the coordinate passes the
+supply-chain gate whatever its threshold. This entry exists because *version-affected and unnoticed* and
+*version-affected and examined* look identical in a report, and only one of them is a decision.
+
+*The finding.* `GHSA-r4w4-wv68-qv85`, aliased `CVE-2026-44308`: **CWE-345, missing verification of the SNS
+message signature**, which lets a caller spoof the HTTP and HTTPS endpoint notifications an application
+receives. CVSS v4 **6.3**. The registry record was published 2026-05-14, last modified 2026-06-17, and stands
+as *Deferred*. The advisory's affected ranges are `3.0.0` through `3.4.2` with `3.4.2` recorded as
+*last affected*, and `4.0.0` through below `4.0.2`.
+
+*The preferred remediation was attempted first and does not exist on this line.* The advisory itself states
+that the 3.x line will not receive a fix. Maven Central agrees - nothing above 3.4.2 is published on it:
+
+```console
+$ for v in 3.4.3 3.4.4 3.5.0 4.0.2; do curl -s -o /dev/null -w "$v -> %{http_code}\n" \
+    https://repo1.maven.org/maven2/io/awspring/cloud/spring-cloud-aws-sns/$v/spring-cloud-aws-sns-$v.pom; done
+3.4.3 -> 404
+3.4.4 -> 404
+3.5.0 -> 404
+4.0.2 -> 200
+```
+
+*And the release that does carry the fix cannot be taken here.* `spring-cloud-aws-sns` 4.0.2 is parented on
+`spring-cloud-aws` 4.0.2, which is parented on `spring-cloud-build` **5.0.1**, whose own `spring-boot.version`
+is **4.0.2**. The migration plan's stack is Spring Boot **3.x**, stated as a ceiling rather than a floor and
+recorded as such in the plan's own ambiguity resolution, so importing a bill of materials built against the
+next major framework line is not available as a remediation. That is a constraint this repository is bound by,
+not a preference it holds.
+
+*Why this deployment is not exposed, and it is measured rather than argued.* The vulnerability is in the
+**inbound** path: an application that publishes an HTTP endpoint for SNS to deliver notices to, and does not
+verify the signature on what arrives. This module never receives a notification. The entire inbound API
+surface is absent from `src/main`, counted rather than asserted - `@NotificationMessageMapping` 0,
+`@NotificationSubscriptionMapping` 0, `@NotificationUnsubscribeConfirmationMapping` 0, `NotificationStatus` 0,
+`SnsMessageManager` 0, `SnsMessageHandlerMethodArgumentResolver` 0, `SnsWebConfiguration` 0. What the module
+uses is the **outbound** API and nothing else: `SnsOperations.sendNotification` at one site,
+`SnsOperations.topicExists` at one site, `SnsNotification` as the publish envelope, and the topic-ARN
+resolvers. Three configuration classes touch the client - `AwsConfig`, `AwsResourceHealthConfig` and
+`AwsResourceTrustVerifier` - and each of them publishes, resolves or reads attributes. There is consequently
+no route for a spoofed notice to arrive on, which the published interface description corroborates: none of
+its operations receives one, and every unmapped address beneath the API prefix is refused rather than served.
+
+*Decision.* Carry it as a **dated determination** rather than a version move, and record it in both places a
+reader looks: this entry, and the evidence page's dependency section. The determination is scoped to this one
+coordinate and this one identifier, and it rests on two facts either of which could change - that no 3.x fix
+exists, and that this module receives no notification. **What would close it**, in preference order: a 3.x
+release carrying the fix, which is the remediation to take the moment one is published; a future move of this
+project's framework line, at which point the 4.0.2 fix becomes reachable; or, if an inbound notification
+endpoint is ever added to this module, an immediate re-argument, because the second fact would no longer hold
+and the determination would have to be withdrawn rather than re-dated.
+
+*Why it is not written into the dependency-scan suppression file.* That file exists to stop the build failing
+on a finding at or above the threshold. This finding is not reported by the scan at all - the jar receives no
+CPE - so a suppression rule for it would match nothing, and `failBuildOnUnusedSuppressionRule` would fail the
+build on the rule itself. A determination that the mechanism cannot express belongs in prose, in the two
+documents that are read, and not in a file that would reject it.
+
+*Cited by:* `docs/gate-evidence.md`. Disclosed in `README.md` alongside the other identifiers the evidence
+page names.
+
+---
+
+### DL-370 - Three supporting image pins move on measurement, two refuse to move - one because both alternatives are measurably worse and one because the cleaner image is not Community - and the residual is carried as 177 dated determinations, completing DL-350
+
+*What DL-350 built, and the part of it this entry finishes.* DL-350 replaced the inventory-only verdict with a
+gate that fails on a HIGH or CRITICAL finding in **any** image this stack ships, and gave a finding exactly two
+honest closures: move the digest pin to a rebuilt upstream image, or record a scoped, attributed, expiring
+determination. It then recorded that the determination file **ships empty**, so that nothing was accepted in
+the delivered state. That was the right delivered posture for a mechanism nobody had yet measured against, and
+it is superseded here for a reason DL-350 could not have known: **when the images were actually scanned, the
+five third-party Compose images carried 531 HIGH or CRITICAL findings between them, 61 of them CRITICAL.** An
+empty determination file against that measurement is not a stricter position. It is a gate that cannot pass,
+and a gate that cannot pass is a gate somebody eventually removes. Everything else in DL-350 stands unchanged:
+the scanner still receives no ignore list, the verdict is still taken in the workflow from the retained
+report, and the scope is still every image alike.
+
+*The measurement, taken with the scanner and the flags the gate itself uses.* `trivy 0.62.1`, `--scanners
+vuln --severity HIGH,CRITICAL`, no severity, package-type or fixed-state filter. Repeated on a second scanner
+build with identical results, so the figures are a property of the images rather than of the tool.
+
+| Image | Findings before | CRITICAL before | Findings after | CRITICAL after | Outcome |
+|---|---|---|---|---|---|
+| `grafana/grafana` 11.6.6 -> 13.1.3 | 99 | 9 | 15 | **0** | moved |
+| `prom/prometheus` v3.5.0 -> v3.13.2 | 78 | 4 | **0** | **0** | moved |
+| `jaegertracing/all-in-one` 1.71.0 -> `jaegertracing/jaeger` 2.20.0 | 56 | 4 | 2 | **0** | moved |
+| `postgres` 16.14-bookworm | 65 | 20 | 65 | 20 | **refused** - both alternatives measured worse or behaviour-changing |
+| `localstack/localstack` 4.14.0 | 233 | 24 | 233 | 24 | **refused** - the cleaner image is not Community |
+| **Total** | **531** | **61** | **315** | **44** |  |
+
+The application image and both digest-pinned Dockerfile bases scan clean at 0 findings each, before and after,
+so nothing here touches the artefact this module actually ships.
+
+*Decision, in the order DL-350 requires it to be taken.* Move every pin that a measurement shows is smaller
+**and that still runs**; then, and only then, write a determination for what is left. The emphasis is there
+because one pin satisfied the first half of that sentence and failed the second, which is the finding this
+entry is most worth reading for.
+
+*The pin that did not move, and why refusing it is evidence-based rather than conservative.* Two candidates
+were measured and both rejected. `postgres:16.14-trixie` is **worse** - 70 findings against 65, and 55 unfixed
+against 50 - which is the useful half of this measurement, because it disproves the assumption that a newer
+base is automatically a smaller one. `postgres:16.14-alpine3.24` is genuinely smaller at 15 findings with one
+critical and nothing unfixed, and is rejected on two behavioural changes rather than on taste. **Collation:**
+both images report `datcollate en_US.utf8`, but the orderings differ - glibc yields
+`_a, a b, ab, mary, Mary Ann, MaryAnn` where musl yields `Mary Ann, MaryAnn, _a, a b, ab, mary` - and
+`AbstractPostgresIT` sets no `POSTGRES_INITDB_ARGS`, so the container-backed tier runs the image default and
+every ordering-sensitive parity fixture would move underneath it. A migration whose whole claim is byte parity
+cannot adopt a change that silently reorders results. **Identity:** the server account moves from uid 999 to
+uid 70, and 999 is the uid this stack's volume ownership and its hardening contract both name. A
+major-version bump is not on the table either, because the plan pins PostgreSQL 16. So the database image is
+one of the two places where the first closure is genuinely unavailable, and it is where 31 of the 177 determinations
+sit - 16 Debian 12 packages with no fix published in the stream at all, and 15 Go standard-library findings
+inside the image's own `gosu` helper, a binary this repository neither builds nor invokes.
+
+*The emulator refusal is the finding in this entry, because it is the one a scan cannot tell you.*
+`localstack/localstack:2026.07.3` scans dramatically cleaner than the pinned 4.14.0 - 18 findings against 233,
+none critical against 24 - and it was **adopted on that measurement and then reverted**, because it is not the
+Community edition. It exits immediately with code 55 and `License activation failed! … No credentials were
+found in the environment`, demanding `LOCALSTACK_AUTH_TOKEN`. `ACTIVATE_PRO=0` does not change it, and
+2026.07.0 and 2026.07.1 behave identically, so the whole calendar-versioned line is licensed; 4.14.0 is the
+newest semantically versioned tag in the repository and every tag published after it is calendar-versioned, so
+there is no rebuilt Community image to move to. Adopting it would also breach a stated boundary rather than
+merely cost money: the plan excludes LocalStack Pro as the one non-open component that could enter this stack,
+and a token-gated emulator breaks `docker compose up` and the entire container-backed test tier for anyone
+without a paid licence. **A scanner never runs the entrypoint**, so "measurably cleaner" and "usable" are
+different questions - and the way this was discovered is worth recording as much as the fact: the pin move
+passed the image scan, passed the unit tier and passed every contract test, and was caught by the full
+`verify`, where every LocalStack-backed test failed at `AbstractLocalStackIT.<clinit>` with
+`Wait strategy failed. Container exited with code 55`. A gate that only scanned would have shipped it. The
+emulator therefore keeps 4.14.0 and carries 132 of the 177 determinations, which is the largest single block
+here and the honest cost of the exclusion.
+
+*The Jaeger move is a distribution change, not a version bump, and that is deliberate.* Staying on the v1 line
+bought nothing: the newest v1 rebuild, `all-in-one:1.76.0`, still reported 55 findings with the same 4
+criticals, so the line is no longer being repaired. The v2 distribution reports 2. v2 is the same collector
+and the same query API repackaged, and every property this stack depends on was verified against the image
+rather than assumed - `/api/services` answers with the JSON shape the CI gate asserts, the OTLP receivers stay
+on 4317 and 4318 so the application's exporter endpoint is unchanged, the UI stays on 16686, `/bin/sh` and
+`wget` are both present so the health probe still runs, and the runtime account is still uid 10001 under the
+same read-only, no-new-privileges, all-capabilities-dropped hardening. **Two things did change and both are
+handled rather than defaulted.** Configuration is no longer by environment variable, so `COLLECTOR_OTLP_ENABLED`,
+`SPAN_STORAGE_TYPE` and `MEMORY_MAX_TRACES` are **removed** instead of left behind reading as though they still
+governed something; OTLP and memory storage come from the shipped default configuration, and the single
+departure this stack needs - the 20,000-span ceiling, against a shipped default of 100,000 - is applied by one
+`--set` override whose backend key was read out of the image's own embedded configuration rather than guessed.
+The health endpoint moved from the v1 admin port 14269 to a health extension on 13133, and the probe follows
+it; neither port is published to the host, so the stack's exposure surface is unchanged.
+
+*Grafana is chosen on criticals rather than on the total, which is a judgement worth stating.* 13.0.6 reports
+the smaller total - 7 findings against 13.1.3's 15 - but one of its seven is CRITICAL and none of 13.1.3's
+fifteen is. Fifteen fixable highs in a loopback-bound dashboard is a better position than one live critical,
+so 13.1.3 is the pin. Ranking by count alone would have picked the other one.
+
+*What the 177 determinations actually claim, and the boundary that makes the claim honest.* Every one is an
+upstream binary this repository does not build: 132 on the emulator, 31 on the database image, 12 inside the
+Grafana server and its bundled data-source plugins, 2 inside the Jaeger collector.
+Each line is scoped to one image and one identifier, names a reviewer, carries an expiry, and says what would
+close it. The trust boundary is written into the file itself so a reader can disagree with it: these five
+images are `docker-compose.yml`'s **local validation stack**, every published port is bound to 127.0.0.1, none
+holds anything but generated sample data and seeded sample credentials, and not one of them is part of the
+deployed artefact. What is accepted is therefore a vulnerability in a developer-machine dependency, not in a
+production surface - a smaller claim than "these findings do not matter", and the only one the evidence
+supports. If any of these images were ever exposed beyond loopback or given real data, the determinations
+would have to be re-argued from scratch, which is what the expiry is for.
+
+*One expiry date across all 177, stated rather than disguised.* They were reviewed in one sitting against one
+measurement, so they share one review point. The file says so, and it says what to do when the date arrives:
+**re-scan the pins first**, because a pin rebuilt upstream in the meantime needs no determination at all, and
+re-dating a line that a rebuild has already closed is precisely the unreviewed acceptance the expiry exists to
+prevent. For the emulator the question to re-ask at that date is narrower and it is not about severity: has a
+Community image been published since?
+
+*How this was verified rather than asserted.* The gate's own decision logic - the shape validation, the
+expiry sweep, the per-image-per-identifier match and the unused-determination check - was extracted from the
+workflow and driven against the real scan reports for all eight keys. Result: `application` 0/0,
+both bases 0/0, Prometheus 0/0, Jaeger 2 covered, Grafana 12 covered, PostgreSQL 31 covered, LocalStack 132
+covered, **177 covered and 0 uncovered, so the container gate passes.** A negative control was run in the same
+harness - one determination whose key carried a fabricated digest - and the unused check failed the build on
+it, which is what proves the simulation has teeth rather than merely agreeing with itself.
+
+*The moved pins were then run rather than merely resolved, because a scan says nothing about behaviour.* The
+whole stack was brought up on the new pin set and every service reported healthy, the full `verify` passed with
+27,089 unit and 1,666 integration tests, and each moved image was exercised on the property this stack actually
+depends on. **Prometheus v3.13.2**: the `carddemo-app` scrape target is up and `up{job="carddemo-app"}` returns
+exactly one series valued `1`, which is the continuous-integration gate's own clause. **Jaeger 2.20.0**: the
+health extension answers on 13133 with `{"healthy":true,…}`, `/api/services` returns
+`["carddemo","jaeger"]`, the operation list carries this module's own span names - `http post /api/auth/signon`,
+`carddemo.job.submission.publish`, `carddemo.job.completion.publish` - and a trace query returns whole traces,
+so the v2 collector is ingesting over the unchanged OTLP port and serving the unchanged query API.
+**Grafana 13.1.3**: the provisioned `carddemo-prometheus` data source resolves with the right type, the
+`carddemo-jaeger` uid still 404s as designed, the served dashboard mounts all 38 panels with about 32 plotting
+live data and none showing an error or a plugin-not-found banner, and panels 11, 12, 31, 32 and 17 carry the
+exact target counts the gate asserts. The business surface was driven end to end on top of them - sign-on, the
+menu, account view, the seven-row card page, the ten-row transaction page, the two-turn report submission
+publishing exactly 17 eighty-byte cards to the real queue, and a batch launch completing and publishing its
+terminal notification.
+
+*One documentation consequence of the Grafana move, found by re-verifying rather than by assuming.* DL-361
+switched off a bundled log-exploration plugin because on 11.6.6 it put four console errors and a
+`404 /react/jsx-runtime` on every page. **13.1.3 does not bundle that plugin at all**, so that default now
+names something the image does not carry, and the browser re-verification confirms the defect is gone rather
+than relocated: the dashboard, data-source and plugins pages produce zero console errors, zero warnings and
+zero requests at or above 400 across 458 requests, `/api/plugins/errors` returns an empty list, and the three
+application plugins 13.1.3 does bundle each load with a 200. The variable is **kept rather than deleted**,
+because it configures which plugins to disable rather than fixing one of them, and the guard costs nothing if
+an upstream bundle reintroduces the problem. Two cosmetic entries do remain and both are recorded so a later
+verifier does not read them as the old defect returning, on the home page only and neither of them a plugin: a
+404 from core Grafana 13's own user-storage read of a help-flag record that was never created, and a
+`moment.js` date-format deprecation warning from the bundled news panel parsing an RSS date without a
+timezone. DL-361 now carries a correction banner pointing here.
+
+*Alternatives considered and rejected.* Leaving the pins where they were and writing 531 determinations -
+rejected outright: DL-350 orders the closures, and a determination for a finding an available rebuild already
+fixes is an acceptance nobody needed to make. Keeping the licensed emulator image and documenting the token as
+a prerequisite - rejected twice over, by the plan's exclusion of LocalStack Pro and by what it would do to a
+clean checkout, which must build and validate with a JDK and Docker and nothing bought. Narrowing the gate to the application image and its bases -
+rejected as the exact regression DL-350 corrected. One image-wide or severity-wide determination per image -
+rejected because the format refuses to express it, deliberately: 177 identifiers read individually is the cost
+of the mechanism being a decision rather than a switch. Setting a far-future expiry to avoid revisiting this -
+rejected in the file's own words, as an unreviewed acceptance wearing a date.
+
+*Asserted by:* `config/BuildAndCiContractTest` - every determination is well formed against the workflow's own
+shape, scoped to a key the Compose file still resolves, unexpired, non-duplicated, and never scoped to the
+application image or either base; `config/ContainerHardeningContractTest` - all five pins carry tag and digest
+and the runtime accounts are unchanged; `config/MonitoringQueriesIT`, `config/LocalStackBootstrapIT`,
+`config/LocalStackBootstrapContractTest` and `support/AbstractLocalStackIT` - the container-backed tier runs
+against the moved pins.
+
+*Cited by:* `carddemo-java/docker-compose.yml` - beside all five pins and beside the plugin-disable variable -
+`carddemo-java/container-scan-determinations.txt`, `docs/gate-evidence.md`, `carddemo-java/README.md` and
+`README.md`. Corrects DL-361 on the image it was measured against, and supersedes DL-350's delivered-empty
+clause.
+
+*Embodied in:* the five image pins in `carddemo-java/docker-compose.yml` and the 177 determinations in
+`carddemo-java/container-scan-determinations.txt`.
+
+---
+
 
 
 ---
