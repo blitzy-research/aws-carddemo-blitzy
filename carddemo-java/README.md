@@ -280,9 +280,13 @@ docker compose config | grep image:                     # the server images, pin
 Two figures are sometimes quoted for "how many artifacts" and they count different things, so neither
 substitutes for the other. **231** is the resolved-artifact count of a one-off probe taken during analysis
 against a different POM state; it is a dated datum and is not re-measured here.
-The figure the build reports today is the **167 dependencies** the supply-chain scan enumerates across
-the compile, runtime and test graph — one fewer than the 168 recorded before `commons-logging` was
-excluded from the three AWS starters (DL-357) — recorded under Gate 8 in
+The figure the build reports today is **166 report entries, covering 244 files** once the scanner's own
+grouping is counted, which is what the supply-chain scan enumerates across the compile, runtime and
+test graph. It read 168 before `commons-logging` was excluded from the three AWS starters (DL-357),
+167 after, and 166 now — the last of those three moves changed **no coordinate in the graph** and is
+purely the scanner grouping `logback-classic` underneath `logback-core` as a related dependency on the
+newer logback release, which is why this figure is the scanner's property rather than the module's.
+Recorded under Gate 8 in
 [`../docs/gate-evidence.md`](../docs/gate-evidence.md). Read the current graph from `dependency:list`
 rather than from either number.
 
@@ -1927,7 +1931,7 @@ rather than fixed.** The scan is bound to `verify` and actually executed, not me
 the build at a CVSS threshold of 7.0, which catches every critical and high finding **that no analyst
 determination covers**; it emits HTML, JSON and XML reports that CI uploads as artifacts; and
 `dependency-check.skipTestScope` is **`false`**, so the result covers the compile, runtime **and test**
-graph — 167 dependencies. Neither a narrower scope nor an unfixable HIGH finding in an excluded test
+graph — 166 report entries covering 244 files. Neither a narrower scope nor an unfixable HIGH finding in an excluded test
 graph may be claimed here: the shaded transport
 that carried those findings was **replaced** by the visible Apache HTTP client 5 transport rather than
 excluded, which is what made the full-scope claim enforceable, and the scope was widened to match.

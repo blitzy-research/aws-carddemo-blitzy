@@ -18,6 +18,7 @@ package com.carddemo.batch.step;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.fail;
 
 import com.carddemo.domain.Account;
@@ -32,6 +33,7 @@ import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.TransactionType;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.TransactionSourceType;
+import com.carddemo.exception.RecordParseException;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.AccountRecordMapper;
 import com.carddemo.util.CardRecordMapper;
@@ -47,6 +49,8 @@ import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.util.UserSecurityRecordMapper;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -330,6 +334,46 @@ class FixedWidthFlatFileReaderFactoryTest {
 
     /** Sixteen-character transaction identifier this suite places in the images it builds by hand. */
     private static final String SENTINEL_TRANSACTION_ID = "TRN0000000000042";
+
+    /**
+     * The cleartext credential every seed user-security record carries, asserted absent from a
+     * diagnosis.
+     *
+     * <p>Not a secret of this system: it is the literal the estate's own provisioning job stream
+     * carries in the clear for all ten seed users, which is precisely why a record of that layout must
+     * never be reproduced into a log or an execution row.
+     */
+    private static final String SEED_CREDENTIAL = "PASSWORD";
+
+    /**
+     * Number of leading record characters asserted absent from a rendered failure.
+     *
+     * <p>Sixteen because that is the width of the leading field of the layouts whose leading field is
+     * the sensitive one - the card number of the card, cross-reference, transaction and
+     * daily-transaction images - so this is the single prefix length that catches a disclosure of the
+     * one field most worth catching, on every layout at once.
+     */
+    private static final int LEADING_FIELD_WIDTH = 16;
+
+    /**
+     * Longest run of record characters a rendered failure may share with the record.
+     *
+     * <p>Eight is chosen to sit below every field width that could identify a person or an instrument -
+     * the shortest of them is the eight-character credential - while staying above the incidental runs
+     * a bounded diagnosis legitimately shares with a record, which are the resource name and the digits
+     * of a line number. A limit rather than zero because a diagnosis naming {@code custdata.txt} shares
+     * that name with nothing in the record but would share short substrings with almost any text.
+     */
+    private static final int DISCLOSURE_RUN_LIMIT = 8;
+
+    /**
+     * Longest run the shared-run scan examines.
+     *
+     * <p>The scan is quadratic in the run length it starts from, and every record image in the estate
+     * is at most 500 characters, so a start length of 32 bounds the work while staying four times above
+     * the limit being asserted: any disclosure long enough to matter is found well below it.
+     */
+    private static final int MAX_SHARED_RUN_SCAN = 32;
 
     /** The class under test. It is stateless and holds no collaborator, so one instance serves all. */
     private final FixedWidthFlatFileReaderFactory factory = new FixedWidthFlatFileReaderFactory();
@@ -651,14 +695,17 @@ class FixedWidthFlatFileReaderFactoryTest {
                     List.of(lines("cardxref.txt").getFirst() + " "));
 
             assertThatThrownBy(() -> readAll(factory.cardCrossReferenceReader(oversized)))
-                    .isInstanceOf(FlatFileParseException.class)
-                    .cause()
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(String.valueOf(CROSS_REFERENCE_DATA_WIDTH))
-                    .hasMessageContaining(String.valueOf(CROSS_REFERENCE_WIDTH))
-                    .as("the diagnosis names both accepted widths and the width supplied, and says "
-                            + "the record is neither padded nor truncated to fit")
-                    .hasMessageContaining("never padded or truncated");
+                    .as("a width neither the copybook nor the shipped dataset declares is refused, "
+                            + "and the refusal identifies the layout and the line rather than "
+                            + "reproducing the image - the mapper's own two-width diagnosis is "
+                            + "asserted by that mapper's tests, where no record is in play")
+                    .isInstanceOf(RecordParseException.class)
+                    .hasNoCause()
+                    .hasMessageContaining(
+                            FixedWidthFlatFileReaderFactory.CARD_CROSS_REFERENCE_READER_NAME)
+                    .hasMessageContaining("cardxref-37.txt")
+                    .hasMessageContaining("line=1")
+                    .hasMessageContaining(IllegalArgumentException.class.getSimpleName());
         }
     }
 
@@ -1164,20 +1211,29 @@ class FixedWidthFlatFileReaderFactoryTest {
     class Failures {
 
         @Test
-        @DisplayName("a line one byte short of the declared width fails, naming both widths")
+        @DisplayName("a line one byte short of the declared width fails, naming the layout, the "
+                + "resource, the line and the failure type - and nothing out of the record")
         void shortLineFails() throws Exception {
             final String image = lines("trantype.txt").getFirst();
             final Resource truncated = writeLines(temporary("trantype-short.txt"),
                     List.of(image.substring(0, image.length() - 1)));
 
             assertThatThrownBy(() -> readAll(factory.transactionTypeReader(truncated)))
-                    .as("the width check belongs to the mapper and is not duplicated by the reader")
-                    .isInstanceOf(FlatFileParseException.class)
-                    .cause()
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(String.valueOf(TRANSACTION_TYPE_WIDTH))
-                    .hasMessageContaining(String.valueOf(TRANSACTION_TYPE_WIDTH - 1))
-                    .hasMessageContaining("never padded or truncated");
+                    .as("the width check belongs to the mapper and is not duplicated by the reader, "
+                            + "but its diagnosis is delivered bounded: the framework's own parse "
+                            + "exception carries the whole record and must never escape the factory")
+                    .isInstanceOf(RecordParseException.class)
+                    .isNotInstanceOf(FlatFileParseException.class)
+                    .hasNoCause()
+                    .hasMessageContaining(
+                            FixedWidthFlatFileReaderFactory.TRANSACTION_TYPE_READER_NAME)
+                    .hasMessageContaining("trantype-short.txt")
+                    .hasMessageContaining("line=1")
+                    .as("the type that rejected the image is named, so an operator still knows what "
+                            + "kind of failure this was")
+                    .hasMessageContaining(IllegalArgumentException.class.getSimpleName())
+                    .as("and the record itself is not reproduced")
+                    .hasMessageNotContaining(image.substring(0, image.length() - 1).strip());
         }
 
         @Test
@@ -1189,14 +1245,16 @@ class FixedWidthFlatFileReaderFactoryTest {
                     writeLines(temporary("trantype-long.txt"), List.of(image + " "));
 
             assertThatThrownBy(() -> readAll(factory.transactionTypeReader(oversized)))
-                    .isInstanceOf(FlatFileParseException.class)
-                    .cause()
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(String.valueOf(TRANSACTION_TYPE_WIDTH))
-                    .hasMessageContaining(String.valueOf(TRANSACTION_TYPE_WIDTH + 1))
-                    .as("neither padded up nor truncated down: an overshoot is reported, and the "
-                            + "message names the usual cause")
-                    .hasMessageContaining("never padded or truncated");
+                    .as("neither padded up nor truncated down: an overshoot is reported, bounded, at "
+                            + "the record that overshot")
+                    .isInstanceOf(RecordParseException.class)
+                    .hasNoCause()
+                    .hasMessageContaining(
+                            FixedWidthFlatFileReaderFactory.TRANSACTION_TYPE_READER_NAME)
+                    .hasMessageContaining("trantype-long.txt")
+                    .hasMessageContaining("line=1")
+                    .hasMessageContaining(IllegalArgumentException.class.getSimpleName())
+                    .hasMessageNotContaining(image.strip());
         }
 
         @Test
@@ -1207,8 +1265,10 @@ class FixedWidthFlatFileReaderFactoryTest {
                     List.of(image, image.substring(0, image.length() - 2)));
 
             assertThatThrownBy(() -> readAll(factory.transactionTypeReader(dataset)))
-                    .isInstanceOf(FlatFileParseException.class)
-                    .hasMessageContaining("trantype-second-bad.txt");
+                    .isInstanceOf(RecordParseException.class)
+                    .hasMessageContaining("trantype-second-bad.txt")
+                    .as("the second record is the one that failed, and the line number says so")
+                    .hasMessageContaining("line=2");
         }
 
         @Test
@@ -1219,11 +1279,29 @@ class FixedWidthFlatFileReaderFactoryTest {
                     factory.userSecurityReader(fixture("usrsec.txt"), digestFunction());
 
             assertThatThrownBy(() -> readAll(reader))
-                    .isInstanceOf(FlatFileParseException.class)
-                    .cause()
                     .as("the whole file arrives as one line and the mapper measures it, so the "
                             + "boundary is reported instead of being guessed at")
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(RecordParseException.class)
+                    .hasNoCause()
+                    .hasMessageContaining(
+                            FixedWidthFlatFileReaderFactory.USER_SECURITY_READER_NAME)
+                    .hasMessageContaining(IllegalArgumentException.class.getSimpleName())
+                    .as("AND THE LINE IS THE WHOLE FILE, WHICH FOR THIS LAYOUT IS TEN CLEARTEXT "
+                            + "CREDENTIALS. None of it may appear in the diagnosis")
+                    .hasMessageNotContaining(SEED_CREDENTIAL);
+        }
+
+        @Test
+        @DisplayName("the translated diagnosis states that the omission of the record is deliberate, "
+                + "so a bounded message does not read as a truncated one")
+        void theDiagnosisSaysWhyTheRecordIsAbsent() throws Exception {
+            final String image = lines("trantype.txt").getFirst();
+            final Resource oversized = writeLines(temporary("trantype-notice.txt"),
+                    List.of(image + " "));
+
+            assertThatThrownBy(() -> readAll(factory.transactionTypeReader(oversized)))
+                    .isInstanceOf(RecordParseException.class)
+                    .hasMessageContaining(RecordParseException.REDACTION_NOTICE);
         }
 
         @Test
@@ -1299,6 +1377,188 @@ class FixedWidthFlatFileReaderFactoryTest {
                     .hasMessageContaining("fixed-unblocked")
                     .hasMessageContaining("ended after")
                     .hasMessageContaining(String.valueOf(TRANSACTION_WIDTH));
+        }
+    }
+
+    @Nested
+    @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+    @DisplayName("a malformed record is diagnosed without republishing the record, on all eleven "
+            + "layouts")
+    class ParseFailureConfidentiality {
+
+        /**
+         * Describes every layout as a confidentiality case: its name, the reader's stable name, the
+         * shipped dataset, and the factory call under test.
+         *
+         * <p>Deliberately every layout rather than only the four whose fields are regulated. The
+         * control being asserted is a property of the reading path and not of any one layout, and a
+         * sweep that skipped the eight "harmless" layouts would pass while the control had been removed
+         * from ten of the eleven readers.
+         *
+         * @return one case per layout, eleven in total
+         */
+        Stream<Arguments> elevenLayoutsToMalform() {
+            return Stream.of(
+                    Arguments.of("account", FixedWidthFlatFileReaderFactory.ACCOUNT_READER_NAME,
+                            "acctdata.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) -> subject.accountReader(resource)),
+                    Arguments.of("card", FixedWidthFlatFileReaderFactory.CARD_READER_NAME,
+                            "carddata.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) -> subject.cardReader(resource)),
+                    Arguments.of("card cross-reference",
+                            FixedWidthFlatFileReaderFactory.CARD_CROSS_REFERENCE_READER_NAME,
+                            "cardxref.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.cardCrossReferenceReader(resource)),
+                    Arguments.of("customer", FixedWidthFlatFileReaderFactory.CUSTOMER_READER_NAME,
+                            "custdata.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.customerReader(resource, sealer())),
+                    Arguments.of("transaction",
+                            FixedWidthFlatFileReaderFactory.TRANSACTION_READER_NAME, "dailytran.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) -> subject.transactionReader(resource)),
+                    Arguments.of("daily transaction",
+                            FixedWidthFlatFileReaderFactory.DAILY_TRANSACTION_READER_NAME,
+                            "dailytran.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.dailyTransactionReader(resource)),
+                    Arguments.of("transaction category balance",
+                            FixedWidthFlatFileReaderFactory
+                                    .TRANSACTION_CATEGORY_BALANCE_READER_NAME,
+                            "tcatbal.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.transactionCategoryBalanceReader(resource)),
+                    Arguments.of("disclosure group",
+                            FixedWidthFlatFileReaderFactory.DISCLOSURE_GROUP_READER_NAME,
+                            "discgrp.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.disclosureGroupReader(resource)),
+                    Arguments.of("transaction type",
+                            FixedWidthFlatFileReaderFactory.TRANSACTION_TYPE_READER_NAME,
+                            "trantype.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.transactionTypeReader(resource)),
+                    Arguments.of("transaction category",
+                            FixedWidthFlatFileReaderFactory.TRANSACTION_CATEGORY_READER_NAME,
+                            "trancatg.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.transactionCategoryReader(resource)),
+                    Arguments.of("user security",
+                            FixedWidthFlatFileReaderFactory.USER_SECURITY_READER_NAME,
+                            "usrsec.txt",
+                            (BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                                    FlatFileItemReader<?>>)
+                                    (subject, resource) ->
+                                            subject.userSecurityReader(resource,
+                                                    digestFunction())));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("elevenLayoutsToMalform")
+        @DisplayName("the whole rendered failure carries the layout, the resource and the line, and no "
+                + "byte of the record")
+        void aMalformedRecordIsDiagnosedWithoutItsContent(final String layoutName,
+                final String readerName, final String fixtureName,
+                final BiFunction<FixedWidthFlatFileReaderFactory, Resource,
+                        FlatFileItemReader<?>> readerCall) throws Exception {
+            // ONE BYTE IS ENOUGH TO MALFORM ANY OF THE ELEVEN, AND IT KEEPS THE RECORD OTHERWISE REAL.
+            // Every mapper measures the encoded width before it looks at a field, so appending a single
+            // space is rejected by all eleven - while the image on either side of the appended byte is
+            // still the production-representative record the shipped dataset carries, which is what
+            // makes the confidentiality assertion below meaningful rather than a test of a synthetic
+            // string.
+            final String image = contentOf(fixtureName).lines().findFirst().orElseThrow();
+            final String malformed = image + " ";
+            final Resource dataset = writeLines(
+                    temporary(fixtureName.replace(".txt", "") + "-malformed.txt"),
+                    List.of(malformed));
+
+            final Throwable raised = catchThrowable(
+                    () -> readAll(readerCall.apply(factory, dataset)));
+
+            assertThat(raised)
+                    .as("%s: the framework's record-bearing parse exception must not escape", layoutName)
+                    .isInstanceOf(RecordParseException.class)
+                    .isNotInstanceOf(FlatFileParseException.class)
+                    .hasNoCause();
+
+            final String rendered = renderedAsAnAppenderWould(raised);
+            assertThat(rendered)
+                    .as("%s: the diagnosis names the layout, the resource and the failing line",
+                            layoutName)
+                    .contains(readerName)
+                    .contains("line=1")
+                    .contains(IllegalArgumentException.class.getSimpleName());
+
+            // THE ASSERTION THE FINDING EXISTS FOR, AND IT IS MADE ON THE FULLY RENDERED FORM. A log
+            // appender and the job repository both render the throwable and its whole cause chain, so
+            // asserting only on getMessage() would pass while a retained cause republished the record.
+            assertThat(rendered)
+                    .as("%s: no part of the record image may appear anywhere in the rendered failure",
+                            layoutName)
+                    .doesNotContain(malformed)
+                    .doesNotContain(image)
+                    .doesNotContain(image.substring(0, LEADING_FIELD_WIDTH));
+            assertThat(longestSharedRunWith(rendered, image))
+                    .as("%s: not even a fragment of the record survives; the longest run the rendered "
+                            + "failure shares with the image must stay under %d characters",
+                            layoutName, DISCLOSURE_RUN_LIMIT)
+                    .isLessThan(DISCLOSURE_RUN_LIMIT);
+        }
+
+        @Test
+        @DisplayName("the credential-bearing layout is asserted by name, because it is the one whose "
+                + "record content is a secret rather than a regulated identifier")
+        void theCredentialNeverAppears() throws Exception {
+            final String image = contentOf("usrsec.txt");
+            assertThat(image)
+                    .as("the fixture really does carry the cleartext seed credential, or this test "
+                            + "would assert the absence of something that was never present")
+                    .contains(SEED_CREDENTIAL);
+
+            final Throwable raised = catchThrowable(() -> readAll(
+                    factory.userSecurityReader(fixture("usrsec.txt"), digestFunction())));
+
+            assertThat(renderedAsAnAppenderWould(raised))
+                    .as("a credential must not reach a log collector or an execution's exit message")
+                    .doesNotContain(SEED_CREDENTIAL);
+        }
+
+        @Test
+        @DisplayName("the diagnosis is bounded in length as well as in content, so a record cannot be "
+                + "leaked by volume either")
+        void theDiagnosisIsBounded() throws Exception {
+            final String image = contentOf("custdata.txt").lines().findFirst().orElseThrow();
+            final Resource dataset = writeLines(temporary("custdata-bounded.txt"),
+                    List.of(image + " "));
+
+            final Throwable raised =
+                    catchThrowable(() -> readAll(factory.customerReader(dataset, sealer())));
+
+            assertThat(raised.getMessage())
+                    .as("the 500-byte customer image is the widest of the eleven; a message shorter "
+                            + "than it cannot be carrying it")
+                    .hasSizeLessThan(image.length());
         }
     }
 
@@ -1573,6 +1833,56 @@ class FixedWidthFlatFileReaderFactoryTest {
      */
     private static Class<?> asEntityType(final Object element) {
         return (Class<?>) element;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Failure rendering, for the confidentiality sweep
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Renders a throwable the way a logging appender and the job repository both render one.
+     *
+     * <p>This is the whole point of the confidentiality assertions: a logging appender given a
+     * throwable prints its message, its stack and <em>every cause's</em> message and stack, and Spring
+     * Batch's exit description is that same rendering stored in a database column. Asserting on
+     * {@code getMessage()} alone would therefore pass while a retained cause republished the record
+     * through both channels, so the assertions are made on this form instead.
+     *
+     * @param  failure the throwable to render; must not be {@code null}
+     * @return the message and the complete stack trace of the throwable and all of its causes
+     */
+    private static String renderedAsAnAppenderWould(final Throwable failure) {
+        assertThat(failure).as("a failure was expected and none was raised").isNotNull();
+        final StringWriter rendered = new StringWriter();
+        try (PrintWriter into = new PrintWriter(rendered)) {
+            failure.printStackTrace(into);
+        }
+        return failure.getMessage() + System.lineSeparator() + rendered;
+    }
+
+    /**
+     * Measures the longest run of characters a rendered failure shares with a record image.
+     *
+     * <p>A substring search rather than an equality check, because a partial disclosure is still a
+     * disclosure: a diagnosis that reproduced only the sixteen digits of a card number, or only the
+     * eight characters of a credential, would satisfy an assertion that it does not contain the whole
+     * record. The scan is over the image's own substrings, longest first, and stops at the first one the
+     * rendered failure contains, so the value returned is the length of the longest shared run.
+     *
+     * @param  rendered the fully rendered failure
+     * @param  image    the record image that must not have survived into it
+     * @return the length of the longest substring of {@code image} present in {@code rendered}
+     */
+    private static int longestSharedRunWith(final String rendered, final String image) {
+        for (int length = Math.min(image.length(), MAX_SHARED_RUN_SCAN); length > 0; length--) {
+            for (int start = 0; start + length <= image.length(); start++) {
+                final String candidate = image.substring(start, start + length);
+                if (!candidate.isBlank() && rendered.contains(candidate)) {
+                    return length;
+                }
+            }
+        }
+        return 0;
     }
 
     // ---------------------------------------------------------------------------------------------

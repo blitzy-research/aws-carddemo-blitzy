@@ -41,33 +41,14 @@ This refactoring translates to the following technical transformation strategy:
 
 **Current Architecture → Target Architecture:**
 
-```mermaid
-graph LR
-    subgraph COBOL_Source["Source: z/OS Mainframe"]
-        A1["3270 Terminal<br/>BMS Maps"]
-        A2["COBOL Programs<br/>CICS Online (18)"]
-        A3["COBOL Programs<br/>Batch (10)"]
-        A4["VSAM KSDS<br/>10 Datasets + AIX"]
-        A5["JCL Jobs (29)<br/>JES Scheduling"]
-        A6["Copybooks (28)<br/>Record Layouts"]
-    end
-
-    subgraph Java_Target["Target: Java 25 + Spring Boot 3.x"]
-        B1["REST API<br/>Spring MVC Controllers"]
-        B2["Service Layer<br/>Spring Components"]
-        B3["Spring Batch<br/>Job Definitions"]
-        B4["PostgreSQL 16+<br/>Spring Data JPA"]
-        B5["Spring Profiles<br/>+ CI/CD Pipeline"]
-        B6["Java POJOs/DTOs<br/>BigDecimal Precision"]
-    end
-
-    A1 -->|"Field contracts preserved"| B1
-    A2 -->|"Business logic migrated"| B2
-    A3 -->|"Batch semantics mapped"| B3
-    A4 -->|"Schema migration"| B4
-    A5 -->|"Step sequencing mapped"| B5
-    A6 -->|"Record layouts → POJOs"| B6
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-current-to-target-architecture-caption" markdown="1">
+![Two grouped columns with six labelled arrows between them. The source group, z/OS Mainframe, holds the 3270 terminal with its BMS maps, the eighteen CICS online COBOL programs, the ten batch COBOL programs, ten VSAM KSDS datasets with their alternate indexes, twenty-nine JCL jobs under JES scheduling, and twenty-eight copybooks carrying the record layouts. The target group, Java 25 with Spring Boot 3.x, holds the Spring MVC REST API, the Spring component service layer, Spring Batch job definitions, PostgreSQL 16 behind Spring Data JPA, Spring profiles with the CI pipeline, and Java POJOs and DTOs using BigDecimal precision. The arrows read: field contracts preserved, business logic migrated, batch semantics mapped, schema migration, step sequencing mapped, and record layouts to POJOs.](diagrams/current-to-target-architecture.svg){ .diagram__image width="771" height="724" }
+</div>
+<figcaption class="diagram__caption" id="diagram-current-to-target-architecture-caption" markdown="1">
+**Figure — Source estate mapped to target stack.** Each source artefact and the target it becomes, with the arrow stating what is preserved across the boundary rather than merely that a boundary was crossed. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
 
 **Transformation Rules and Patterns:**
 

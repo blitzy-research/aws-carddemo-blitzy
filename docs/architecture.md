@@ -129,38 +129,14 @@ online inventory and the injection graph.
 The module is layered by package, and the dependency direction is a **hard rule rather than a
 convention**: dependencies run downward only, and **nothing depends upward**.
 
-```mermaid
-graph TD
-    API["api<br/>REST controllers, contract adapters"]
-    DTO["api.dto<br/>request and response contracts"]
-    BATCH["batch / batch.step<br/>job and step configuration"]
-    SVC["service<br/>business logic — one method per COBOL paragraph"]
-    REPO["repository<br/>Spring Data interfaces"]
-    DOM["domain / domain.id / domain.enums<br/>entities, composite keys, enums"]
-    UTIL["util<br/>fixed-width mappers, codec, formatters"]
-    EXC["exception"]
-    CFG["config<br/>security, batch, AWS, observability, JPA, Flyway"]
-    DB[("PostgreSQL 16<br/>Flyway: schema then seed")]
-
-    API --> DTO
-    API --> SVC
-    API --> UTIL
-    API --> EXC
-    BATCH --> SVC
-    BATCH --> REPO
-    BATCH --> UTIL
-    BATCH --> EXC
-    SVC --> REPO
-    SVC --> DOM
-    SVC --> UTIL
-    SVC --> EXC
-    DTO --> DOM
-    REPO --> DOM
-    UTIL --> DOM
-    CFG -.-> SVC
-    CFG -.-> REPO
-    REPO --> DB
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-layer-dependency-direction-caption" markdown="1">
+![Directed graph of the ten package groups of the module, drawn top to bottom with every arrow running downward and none upward. api depends on api.dto, service, util and exception. batch and batch.step depend on service, repository, util and exception. service depends on repository, domain, util and exception. api.dto, repository and util each depend on domain. config reaches service and repository by dashed edges. repository reaches PostgreSQL 16, whose schema is migrated by Flyway schema scripts and then seed scripts.](diagrams/layer-dependency-direction.svg){ .diagram__image width="1267" height="530" }
+</div>
+<figcaption class="diagram__caption" id="diagram-layer-dependency-direction-caption" markdown="1">
+**Figure — Package layers and the direction of dependency.** The ten package groups and every dependency between them. Reading it top to bottom is the point: each arrow runs downward, so no package depends on one above it, and the four edges into domain, util and exception are the only ones the lower layers receive. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
 
 The permitted edges, stated as a rule:
 
@@ -270,7 +246,7 @@ are of the source files actually present in the module.
 | `batch` | 13 | 9 job configurations, the shared parameter contract, the launch coordinator, staging and completion notification | the 9 application job steps |
 | `batch.step` | 11 | The step template, the item processors, the reject writer, the reader factory and the publication locks | the batch programs' read-process-write skeletons |
 | `util` | 38 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters, and the three diagnostic primitives — failure-chain rendering, observation propagation and the sanitised observation every outbound boundary is observed through | the record layouts, the string verbs, the function-key copybook |
-| `exception` | 6 | Abend, file status, record-not-found, validation, optimistic-lock conflict, job submission | the abend paths and the file-status error branches |
+| `exception` | 7 | Abend, file status, record-not-found, validation, optimistic-lock conflict, job submission, record parse | the abend paths, the file-status error branches and the sanitised fixed-width parse refusal |
 
 The `service` row is the one whose two figures are easiest to confuse, so both are stated and both are
 countable. The **26** translation-bearing services are the ones a paragraph maps to, and every row of
@@ -478,14 +454,14 @@ composes the sequence, exactly as the mainframe operator did.
 
 ### The pipeline order
 
-```mermaid
-flowchart LR
-    POST["POSTTRAN<br/>post daily transactions"] --> INT["INTCALC<br/>calculate interest"]
-    INT --> BKP["TRANBKP<br/>back up transaction master"]
-    BKP --> COMB["COMBTRAN<br/>combine system and daily"]
-    COMB --> STMT["CREASTMT<br/>produce statements"]
-    ONLINE["online report request<br/>via the job-submission bridge"] --> RPT["TRANREPT<br/>transaction report"]
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-batch-pipeline-order-caption" markdown="1">
+![Left to right flow of six batch jobs. POSTTRAN, which posts daily transactions, leads to INTCALC, which calculates interest, then to TRANBKP, which backs up the transaction master, then to COMBTRAN, which combines system and daily transactions, then to CREASTMT, which produces statements. On a separate path, an online report request arriving over the job-submission bridge leads to TRANREPT, the transaction report.](diagrams/batch-pipeline-order.svg){ .diagram__image width="1317" height="213" }
+</div>
+<figcaption class="diagram__caption" id="diagram-batch-pipeline-order-caption" markdown="1">
+**Figure — The order the batch jobs are composed in.** The five-job sequence an operator composes, and the one job an online request triggers on its own path. No class chains these: the estate has no master orchestrator to translate, so the order is an operational convention rather than code. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
 
 The core application sequence the specification frames is **POSTTRAN, then INTCALC, then COMBTRAN, then
 statement creation and reporting**. The root README's run list — the only in-repository authority — agrees
@@ -727,22 +703,14 @@ constraint, and the migration records each of those refusals explicitly rather t
 unexplained. Drawing a run-time lookup as a constraint would misstate the schema in the direction that
 matters most — it would imply the database rejects a row the delivered schema accepts.
 
-```mermaid
-erDiagram
-    CUSTOMER ||--o{ CARD_CROSS_REFERENCE : "FK identified by"
-    ACCOUNT ||--o{ CARD_CROSS_REFERENCE : "FK resolved through"
-    CARD ||--o{ CARD_CROSS_REFERENCE : "FK describes"
-    ACCOUNT ||--o{ CARD : "FK carries"
-    CARD ||--o{ TRANSACTION : "FK originates"
-    ACCOUNT ||--o{ TRANSACTION_CATEGORY_BALANCE : "FK accrues"
-    CARD ||..o{ DAILY_TRANSACTION : "runtime only, no FK"
-    DISCLOSURE_GROUP ||..o{ TRANSACTION_CATEGORY_BALANCE : "runtime rate lookup, no FK"
-    TRANSACTION_TYPE ||..o{ TRANSACTION : "runtime description lookup, no FK"
-    TRANSACTION_CATEGORY ||..o{ TRANSACTION : "runtime description lookup, no FK"
-    USER_SECURITY {
-        string user_id PK
-    }
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-schema-foreign-keys-caption" markdown="1">
+![Entity relationship diagram. Six solid lines are enforced foreign keys: CUSTOMER, ACCOUNT and CARD each to CARD_CROSS_REFERENCE, ACCOUNT to CARD, CARD to TRANSACTION, and ACCOUNT to TRANSACTION_CATEGORY_BALANCE. Four dashed lines are run-time lookups under no constraint at all: CARD to DAILY_TRANSACTION, DISCLOSURE_GROUP to TRANSACTION_CATEGORY_BALANCE, and TRANSACTION_TYPE and TRANSACTION_CATEGORY each to TRANSACTION. USER_SECURITY stands alone with user_id as its primary key.](diagrams/schema-foreign-keys.svg){ .diagram__image width="2257" height="504" }
+</div>
+<figcaption class="diagram__caption" id="diagram-schema-foreign-keys-caption" markdown="1">
+**Figure — The six enforced foreign keys, and the four lookups that are not.** Solid lines are the six constraints the schema migration actually creates. Dashed lines are lookups the code performs at run time under no constraint, drawn differently on purpose: showing one as a constraint would imply the database rejects a row the delivered schema accepts. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
 
 Why each dashed edge is dashed, taken from the migration's own recorded decisions:
 

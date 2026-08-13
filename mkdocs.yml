@@ -53,42 +53,48 @@ plugins:
   - techdocs-core:
       use_material_search: true
   - material/search
-  - mermaid2
-# WHY THE MERMAID FENCE IS DECLARED HERE RATHER THAN LEFT TO THE PLUGIN. techdocs-core configures
-# pymdownx.highlight with linenums and pygments_lang_class, and Pygments has no `mermaid` lexer, so a
-# ```mermaid fence is highlighted as plain text and its wrapper class becomes `language-text`. Neither
-# selector mermaid2 looks for (`pre code.mermaid`, `pre code.language-mermaid`) can then match, and
-# every diagram publishes as a line-numbered code table instead of a figure. Claiming the fence for
-# mermaid2 before the highlighter sees it is what makes the plugin effective.
+# WHY NO DIAGRAM RENDERER IS CONFIGURED HERE, AND WHY THAT IS THE FIX RATHER THAN A LOSS.
+# The official TechDocs publication path builds this file inside the spotify/techdocs image, which ships
+# mkdocs, mkdocs-material, mkdocs-techdocs-core and pymdown-extensions and NO mermaid plugin. A `- mermaid2`
+# plugin entry and a `!!python/name:mermaid2.fence_mermaid` fence format therefore both abort that build
+# outright with "cannot find module 'mermaid2'" - the format line as surely as the plugin line, because YAML
+# resolves the Python name while parsing the configuration. Neither is present now.
 #
-# The format function is fence_mermaid, which emits <div class="mermaid">, and not the _custom variant:
-# techdocs-core relocates a user pymdownx.superfences config into the pymdownx.extra namespace, so
-# mermaid2's custom-loader detection can never find it, and the custom variant would render markup whose
-# loader is never wired. Fences in any other language keep their Pygments highlighting and line numbers.
-markdown_extensions:
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:mermaid2.fence_mermaid
-# The publication stylesheet. It carries reading corrections that belong to the theme's layout rather than
-# to any page's content - marking the references that intentionally leave the site, and making horizontally
-# scrollable content say so - so one rule serves every page instead of every page carrying a workaround.
-# It overrides no colour, type or spacing token: the palette is the theme's contract with every other site
-# in the Backstage catalogue. The file itself explains each rule and the defect it answers.
+# Two further defects went with it, and neither could have been fixed while the renderer stayed. The
+# renderer fetched mermaid 10.4.0 from unpkg.com at page load, so every diagram vanished offline and on any
+# network that does not reach a CDN. And it derived a pie chart's coordinate system from the width of the
+# element it drew into while placing the legend at an offset taken from the label text, so below roughly
+# 790px the legend was laid out beyond the edge of that coordinate system and the SVG root clipped it away -
+# at a phone width the ten-slice chart on the project guide lost its entire key. The compensating script
+# that grew the viewBox back could never run in the official path either: `extra_javascript` is one of the
+# keys the TechDocs CLI strips, which it reports as "Removed the following unsupported configuration keys".
+#
+# Every diagram is now pre-rendered to a static SVG under docs/diagrams/ beside its .mmd source, with its
+# geometry fixed at authoring time and its labels emitted as SVG <text> rather than HTML in a foreignObject
+# - the latter matters because a foreignObject does not render at all when an SVG is loaded through <img>.
+# Each figure carries alt text, a caption that states what the diagram conveys, and a labelled scroll
+# region, so the content survives with no renderer, no CDN and no script. The `extra_javascript` key is
+# gone with the script it named, and this configuration now publishes identically in both modes.
+#
+# THE THEME IS DECLARED EXPLICITLY, AND font: false IS THE OFFLINE FIX. techdocs-core keeps a theme object
+# whose name is already material and only appends to it, and the TechDocs CLI injects a theme of its own
+# only when this file declares none or declares one with no `font` key. Declaring it here therefore takes
+# precedence in both modes, and `font: false` is what stops the theme emitting its Google Fonts link - the
+# last external request either mode made. `navigation.top` restores the back-to-top control on the very
+# long pages and `toc.follow` keeps the table of contents tracking the reading position; both are theme
+# features that survive publication, unlike anything a script could do.
+theme:
+  name: material
+  # A supported theme override, carrying only the accessibility ATTRIBUTES a stylesheet cannot
+  # express: an accessible name, aria-modal, aria-current, a column scope, a per-heading permalink
+  # label, and the removal of a tabindex on a zero-by-zero element. overrides/main.html renders each
+  # upstream block through super() and rewrites named substrings in the result, so no upstream markup
+  # is copied and every upstream change still flows through. It sits at the repository root because
+  # MkDocs resolves custom_dir relative to this file and rejects a directory inside docs_dir.
+  custom_dir: overrides
+  font: false
+  features:
+    - navigation.top
+    - toc.follow
 extra_css:
   - stylesheets/extra.css
-# The publication script. Mermaid 10.4.0 derives a pie chart's coordinate system from the width of the
-# element it draws into, but places the legend at a fixed offset whose own width comes from the label text,
-# so below roughly 790px the legend is laid out beyond the edge of that coordinate system and the SVG root
-# clips it away - at a phone width the ten-slice chart on the project guide loses its entire key. No
-# mermaid2 argument reaches this and no stylesheet can, because a viewBox is not a CSS property; the file
-# grows the viewBox to the geometry Mermaid actually drew, and only ever grows it, so a diagram that
-# already fits is left exactly as it was. The file itself carries the full reasoning.
-#
-# THE FILENAME MUST NOT CONTAIN "MERMAID". mermaid2 claims the first extra_javascript entry whose basename
-# contains that word as the Mermaid library, publishes it in place of the CDN import and then calls
-# mermaid.initialize({}) against nothing - which silently unrenders every diagram on the site while the
-# build still exits 0. This file was called mermaid-viewbox-fit.js until that happened.
-extra_javascript:
-  - javascripts/diagram-viewbox-fit.js

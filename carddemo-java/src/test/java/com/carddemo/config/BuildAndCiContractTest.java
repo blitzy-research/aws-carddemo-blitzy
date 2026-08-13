@@ -29,7 +29,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -60,6 +63,103 @@ final class BuildAndCiContractTest {
             Path.of("src", "main", "java", "com", "carddemo");
     private static final Path WORKFLOW_PATH =
             Path.of("../.github/workflows/carddemo-java-ci.yml");
+    private static final Path GATE_EVIDENCE_PATH = Path.of("../docs/gate-evidence.md");
+    private static final Path PROJECT_GUIDE_PATH = Path.of("../docs/project-guide.md");
+    private static final Path SCAN_REPORT_PATH =
+            Path.of("target", "dependency-check-report.json");
+
+    /**
+     * The published supply-chain figure, as a pair rather than as a single number.
+     *
+     * <p>The scan reports a count of entries and a count of files, and the two differ because the
+     * scanner groups a related artefact underneath the entry that carries it. Publishing either half
+     * alone is what let a stale figure survive: a reader who found {@code 167} in one place and
+     * {@code 166} in another had no way to tell which had been measured.</p>
+     */
+    private static final Pattern PUBLISHED_SCAN_FIGURE =
+            Pattern.compile("(\\d+) report entries,? covering (\\d+) files");
+
+    /** The lead-in of the published figure, counted so no half-stated form can hide beside a pair. */
+    private static final String SCAN_FIGURE_LEAD_IN = " report entries";
+
+    /** A row of a hours table: a name, an hours figure, and whatever the row says about it. */
+    private static final Pattern HOURS_TABLE_ROW =
+            Pattern.compile("^\\|\\s*(\\S[^|]*?)\\s*\\|\\s*\\**(\\d+)\\**\\s*\\|(.*)$",
+                    Pattern.MULTILINE);
+
+    /** A slice of a Mermaid pie: its label and its value. */
+    private static final Pattern PIE_SLICE =
+            Pattern.compile("^\\s*\"([^\"]+)\"\\s*:\\s*(\\d+)\\s*$", Pattern.MULTILINE);
+
+    /** One term of a roll-up expression: a detail-row name followed by that row's hours. */
+    private static final Pattern ROLL_UP_TERM = Pattern.compile("^(.*?)\\s+(\\d+)$");
+
+    /** The documentation site configuration, which both publication modes read. */
+    private static final Path MKDOCS_PATH = Path.of("../mkdocs.yml");
+
+    /** Where a diagram's authoring source and its pre-rendered publication both live. */
+    private static final Path DIAGRAM_DIR = Path.of("../docs/diagrams");
+
+    /** The opening element of a pre-rendered diagram, carrying its explicit intrinsic size. */
+    private static final Pattern SVG_ROOT =
+            Pattern.compile("^<svg width=\"(\\d+)\" height=\"(\\d+)\"");
+
+    /** A diagram's coordinate system, which its intrinsic size has to agree with. */
+    private static final Pattern SVG_VIEW_BOX =
+            Pattern.compile("viewBox=\"[-\\d.]+ [-\\d.]+ ([\\d.]+) ([\\d.]+)\"");
+
+    /** A rule that backs an edge label, whose declarations must be opaque. */
+    private static final Pattern EDGE_LABEL_RECT_RULE =
+            Pattern.compile("#my-svg [^{}]*\\.edgeLabel[^{}]*rect\\{([^}]*)\\}");
+
+    /** A CSS reference inside a render; only a same-document fragment keeps it self-contained. */
+    private static final Pattern CSS_URL_REFERENCE = Pattern.compile("url\\(([^)]*)\\)");
+
+    /** One published diagram figure, from its opening element to its close. */
+    private static final Pattern DIAGRAM_FIGURE =
+            Pattern.compile("<figure class=\"diagram\".*?</figure>", Pattern.DOTALL);
+
+    /** The image inside a figure: its alt text, then the render it points at. */
+    private static final Pattern DIAGRAM_IMAGE =
+            Pattern.compile("!\\[([^\\]]+)\\]\\(diagrams/([A-Za-z0-9-]+)\\.svg\\)");
+
+    /** The publication root. Everything the site can serve lives beneath it; nothing above it does. */
+    private static final Path DOCS_ROOT = Path.of("../docs");
+
+    /**
+     * The theme override that carries every accessibility patch. It sits at the repository root rather than
+     * inside the documentation directory because MkDocs resolves {@code theme.custom_dir} relative to the
+     * configuration file and rejects a directory inside {@code docs_dir}.
+     */
+    private static final Path THEME_OVERRIDE_PATH = Path.of("../overrides/main.html");
+
+    /** The published stylesheet, which is the only place a style fix may live once script is unavailable. */
+    private static final Path EXTRA_CSS_PATH = Path.of("../docs/stylesheets/extra.css");
+
+    /** The migration summary deck, published as a static asset rather than as a nav entry. */
+    private static final Path DECK_PATH = Path.of("../docs/presentation/index.html");
+
+    /** An image in the deck: the path it points at, then the intrinsic size it declares for it. */
+    private static final Pattern DECK_IMAGE =
+            Pattern.compile("<img src=\"([^\"]+)\" width=\"(\\d+)\" height=\"(\\d+)\"");
+
+    /** The scroll frame around a deck table, with the four attributes that make it operable. */
+    private static final Pattern DECK_SCROLL_REGION = Pattern.compile(
+            "<div class=\"scroller\" role=\"region\" tabindex=\"0\" aria-labelledby=\"([^\"]+)\" "
+                    + "aria-describedby=\"([^\"]+)\">");
+
+    /**
+     * The screen captures the deck publishes, each of which also exists at the repository root.
+     *
+     * <p>The root copies are the estate's own assets and are read-only reference: the plan forbids
+     * modifying, moving or deleting anything under {@code diagrams/}, so the deck cannot be fixed by
+     * relocating them and is fixed by publishing a copy beneath {@code docs/} instead. A copy can
+     * drift from its original silently, which is the one hazard the duplication introduces, so the
+     * pair is compared byte for byte below rather than assumed to be in step.</p>
+     */
+    private static final List<String> DECK_CAPTURES = List.of(
+            "Application-Flow-User.png", "Application-Flow-Admin.png",
+            "Signon-Screen.png", "Main-Menu.png", "Admin-Menu.png");
 
     /** Creates the test class. */
     BuildAndCiContractTest() {
@@ -1000,6 +1100,195 @@ final class BuildAndCiContractTest {
     }
 
     @Test
+    @DisplayName("every deck image resolves inside the published site, at the size the deck declares for it")
+    void everyDeckImageResolvesInsideThePublishedSite() throws IOException {
+        // THE DEFECT THIS PINS: the deck pointed at ../../diagrams/*.png, which resolves to the estate's
+        // asset directory at the REPOSITORY ROOT. That path is correct when the file is opened straight out
+        // of a checkout, which is why it survived review - and wrong everywhere the deck is actually
+        // published, because the site is generated from docs/ alone and nothing above docs/ is ever copied
+        // into it. All five images answered 404 in both publication modes, and an <img> that 404s is not a
+        // missing decoration: the deck's own captions describe screens the reader cannot see.
+        //
+        // The fix publishes copies of the five captures beneath docs/ and points the deck one level up
+        // instead of two, which resolves inside the site AND still resolves from a checkout. This test
+        // holds all three properties that makes true, because each has its own way of silently regressing.
+        final String deck = read(DECK_PATH);
+        final Path deckDirectory = DECK_PATH.getParent();
+        final Path publicationRoot = DOCS_ROOT.toRealPath();
+
+        assertThat(deck)
+                .as("no image may climb above the publication root again; ../../ from the deck's own "
+                        + "directory leaves docs/ altogether, and every such reference answered 404")
+                .doesNotContain("<img src=\"../../")
+                .as("and none may be fetched from a network the deck is meant not to need")
+                .doesNotContain("<img src=\"http");
+
+        final Matcher images = DECK_IMAGE.matcher(deck);
+        final List<String> resolved = new ArrayList<>();
+        while (images.find()) {
+            final String source = images.group(1);
+            final Path target = deckDirectory.resolve(source).normalize();
+
+            assertThat(target)
+                    .as("the deck publishes %s, so the site must carry it; this is the assertion that "
+                            + "fails if an image is referenced but never published", source)
+                    .isRegularFile();
+            assertThat(target.toRealPath())
+                    .as("%s must resolve INSIDE the publication root. Existing is not enough: the "
+                            + "original reference existed on disk and still 404'd, because it existed "
+                            + "somewhere the generated site does not reach", source)
+                    .startsWith(publicationRoot);
+
+            // The declared size is what reserves the figure's box before the image arrives, so a wrong
+            // number is a layout shift on every load - and a copy of the wrong capture would be caught
+            // here rather than by someone noticing the screenshot looks unfamiliar.
+            final int[] intrinsic = pngDimensions(target);
+            assertThat(intrinsic[0])
+                    .as("%s declares width %s and is %s pixels wide", source, images.group(2),
+                            intrinsic[0])
+                    .isEqualTo(Integer.parseInt(images.group(2)));
+            assertThat(intrinsic[1])
+                    .as("%s declares height %s and is %s pixels tall", source, images.group(3),
+                            intrinsic[1])
+                    .isEqualTo(Integer.parseInt(images.group(3)));
+
+            resolved.add(target.getFileName().toString());
+        }
+
+        assertThat(resolved)
+                .as("all five captures the deck describes must be reachable, not merely some of them")
+                .containsExactlyInAnyOrderElementsOf(DECK_CAPTURES);
+
+        // The published copy and the estate's own asset must stay the same bytes. This is the price of
+        // fixing the path by copying rather than by moving, and the plan requires the copy: everything
+        // under diagrams/ is read-only reference that must remain byte-identical, so the original cannot
+        // be relocated to where the site can see it. Comparing them here is what stops the deck from
+        // quietly publishing a stale screenshot after someone updates the original.
+        for (final String capture : DECK_CAPTURES) {
+            assertThat(DOCS_ROOT.resolve("diagrams").resolve(capture))
+                    .as("the published copy of %s must be byte-identical to the estate asset it was taken "
+                            + "from, or the site shows one screen while the repository holds another",
+                            capture)
+                    .hasSameBinaryContentAs(Path.of("..", "diagrams", capture));
+        }
+    }
+
+    @Test
+    @DisplayName("every deck table scrolls inside a named, focusable frame that says so, and every deck "
+            + "control clears a 44px target")
+    void theDeckDeclaresItsOverflowAndItsTouchTargets() throws IOException {
+        final String deck = read(DECK_PATH);
+
+        // OVERFLOW. Every table here is wider than a phone and several are wider than the slide, and the
+        // column that falls off the right edge first is the one carrying the decision - "What it is",
+        // "What had to survive", "What it verifies". The frame scrolled, but silently: the browser draws
+        // OVERLAY scrollbars, which reserve no width and paint nothing until the reader is already
+        // scrolling, so there was no cue at rest and no way to reach the frame from a keyboard at all.
+        final Matcher regions = DECK_SCROLL_REGION.matcher(deck);
+        final List<String> names = new ArrayList<>();
+        final List<String> descriptions = new ArrayList<>();
+        while (regions.find()) {
+            names.add(regions.group(1));
+            descriptions.add(regions.group(2));
+        }
+
+        assertThat(names).as("the deck's tables must each sit in an operable frame").isNotEmpty();
+        assertThat(countOccurrences(deck, "<div class=\"scroller\""))
+                .as("every frame must carry the region attributes; a bare frame is the defect")
+                .isEqualTo(names.size());
+        assertThat(countOccurrences(deck, "<table>"))
+                .as("and every table must be inside one, so no table is left to clip")
+                .isEqualTo(names.size());
+
+        for (final String name : names) {
+            assertThat(deck)
+                    .as("a region named by %s must have that element to be named by, or it publishes as "
+                            + "an unnamed landmark that a screen reader announces without saying which "
+                            + "table it belongs to", name)
+                    .contains("id=\"" + name + "\"");
+        }
+
+        assertThat(countOccurrences(deck, "class=\"capname\""))
+                .as("the name comes from the caption's descriptive half, wrapped so the panning "
+                        + "instruction is not read out as part of the name every time")
+                .isEqualTo(names.size());
+        assertThat(countOccurrences(deck, "class=\"scrollnote\""))
+                .as("and each frame carries the textual cue, which survives with CSS off, in a screen "
+                        + "reader and in print - none of which is true of a shadow")
+                .isEqualTo(names.size());
+        assertThat(deck)
+                .as("the cue must say both that the frame scrolls and how to pan it without a mouse")
+                .contains("scrolls sideways")
+                .contains("panned with the arrow keys");
+
+        // THE CUE MUST SIT OUTSIDE THE THING IT DESCRIBES. It first shipped inside the <caption>, which is
+        // inside the <table>, which is inside the scroll container - so at a phone width the sentence
+        // telling the reader that the frame pans was itself panned off the right edge, and the reader saw
+        // about four fifths of an instruction about how to reach the rest. It is a sibling paragraph now,
+        // tied to the region by aria-describedby so the association survives for a reader who cannot see
+        // that the two are adjacent.
+        assertThat(deck)
+                .as("no cue may live inside a caption again: inside the caption is inside the frame, and "
+                        + "a cue that scrolls out of view is not a cue")
+                .doesNotContain("<span class=\"scrollnote\">");
+        assertThat(descriptions)
+                .as("every frame must point at its own cue, so no two regions share one description and "
+                        + "none is left describing nothing")
+                .doesNotHaveDuplicates()
+                .hasSameSizeAs(names);
+        for (final String description : descriptions) {
+            assertThat(deck)
+                    .as("a region described by %s must have that paragraph to be described by", description)
+                    .contains("<p class=\"scrollnote\" id=\"" + description + "\">");
+        }
+
+        // The caption is the one thing that cannot leave the frame, because the region borrows it as its
+        // name. It can stop being as wide as the table, though, and it has to: its containing block is the
+        // 460px-floored table, so its text wrapped at 460px and its longest line ran past the frame's
+        // visible edge, leaving the table's own name readable only by panning.
+        assertThat(deck)
+                .as("the caption must wrap at the frame's width rather than the table's on a narrow "
+                        + "viewport, or the name of the table is itself clipped by the frame it names. "
+                        + "The subtrahend is deliberately larger than the frame's 34px inset: 100vw "
+                        + "counts space reserved for a classic scrollbar and the frame does not, so a "
+                        + "34px cap is correct only on an engine that reserves none")
+                .contains("caption { max-width: calc(100vw - 60px); }")
+                .doesNotContain("caption { max-width: calc(100vw - 34px); }");
+
+        assertThat(deck)
+                .as("the visible cue is the four-layer scroll shadow, and the attachment list is the "
+                        + "whole mechanism: local for the two covers so they travel with the content, "
+                        + "scroll for the two shadows so they stay pinned to the frame. Without it the "
+                        + "shadow paints at both ends for ever and stops meaning anything")
+                .contains("background-attachment: local, local, scroll, scroll")
+                .as("and a focusable frame has to show where focus is")
+                .contains(".scroller:focus-visible { outline: 3px solid #123a86; outline-offset: 2px; }")
+                .contains(".scroller:focus { outline: 3px solid #123a86; outline-offset: 2px; }");
+
+        // TOUCH TARGETS. The three bar buttons rendered about 33px tall and the six slide pills about
+        // 32px, against a 44x44 minimum. The correction enlarges the target rather than the control, so
+        // the painted box is unchanged - which is also why it needs asserting: nothing about the deck
+        // looks different, so a regression here would be invisible.
+        assertThat(deck)
+                .as("both control families must be positioned so a generated target can be centred on "
+                        + "them; without the containing block the pseudo-element escapes to the page")
+                .contains(".deckbar button,\nnav.toc a { position: relative; }")
+                .as("and the target itself must clear 44px in both dimensions")
+                .contains("min-width: 44px")
+                .contains("height: 44px");
+
+        // The enlarged target is taller than the control, so the overhang has to land in the gap rather
+        // than in the next control. 44 minus roughly 32 leaves about 6px reaching out of each side, and
+        // two adjacent rows reach toward each other: a 6px row gap would have left the two targets
+        // overlapping, with points belonging to whichever control won the hit test.
+        assertThat(deck)
+                .as("the row gap must exceed the overhang of two adjacent enlarged targets")
+                .contains("gap: 14px 8px")
+                .contains("gap: 14px 10px")
+                .doesNotContain("gap: 6px 8px");
+    }
+
+    @Test
     @DisplayName("the documentation index reaches every migration document, so no page is published and "
             + "unreachable")
     void theDocumentationIndexReachesEveryMigrationDocument() throws IOException {
@@ -1487,6 +1776,892 @@ final class BuildAndCiContractTest {
         }
     }
 
+    @Test
+    @DisplayName("every published supply-chain figure names the same entry-and-file pair")
+    void everyPublishedDependencyFigureNamesTheSamePair() throws IOException {
+        // The module manual and the gate-evidence page each state this figure twice, and three of the
+        // four statements had gone stale at 167 while the fourth carried the measured 166. A reader who
+        // finds two numbers cannot tell which was measured, so the four are held to one pair here.
+        //
+        // The pair is asserted rather than the entry count alone because the two halves answer different
+        // questions - how many entries the report holds, and how many files those entries cover once the
+        // scanner's own grouping is counted - and a statement carrying only the first invites the reader
+        // to compare it against a file count.
+        final Map<Path, String> sites = new LinkedHashMap<>();
+        sites.put(README_PATH, flattened(read(README_PATH)));
+        sites.put(GATE_EVIDENCE_PATH, flattened(read(GATE_EVIDENCE_PATH)));
+
+        final List<String> pairs = new ArrayList<>();
+        for (final Map.Entry<Path, String> site : sites.entrySet()) {
+            final Matcher figures = PUBLISHED_SCAN_FIGURE.matcher(site.getValue());
+            int stated = 0;
+            while (figures.find()) {
+                stated++;
+                pairs.add(figures.group(1) + "/" + figures.group(2));
+            }
+            assertThat(stated)
+                    .as("%s publishes the supply-chain figure, so it must state it as the measured "
+                            + "entry-and-file pair rather than as a bare count", site.getKey())
+                    .isPositive()
+                    .as("%s states \"%s\" %d times but only %d of those are a complete pair, and a "
+                            + "half-stated figure is the form that goes stale unnoticed",
+                            site.getKey(), SCAN_FIGURE_LEAD_IN,
+                            countOccurrences(site.getValue(), SCAN_FIGURE_LEAD_IN), stated)
+                    .isEqualTo(countOccurrences(site.getValue(), SCAN_FIGURE_LEAD_IN));
+
+            assertThat(site.getValue())
+                    .as("%s must not carry a superseded count as though it were the current one; the "
+                            + "history belongs in the sentence that explains the moves, which names the "
+                            + "figures without calling them dependencies", site.getKey())
+                    .doesNotContain("167 dependencies")
+                    .doesNotContain("168 dependencies");
+        }
+
+        assertThat(pairs)
+                .as("all four statements are about one scan of one graph, so they cannot disagree")
+                .hasSizeGreaterThanOrEqualTo(4)
+                .containsOnly(pairs.get(0));
+    }
+
+    @Test
+    @DisplayName("the published supply-chain figure is the scan report's own, measured against the report "
+            + "when this build has written one and reported as PENDING when it has not")
+    void thePublishedDependencyFigureMatchesTheScanReport() throws IOException {
+        // WHY THIS STATES AN EVIDENCE STATE INSTEAD OF CALLING Assumptions. This layer needs
+        // target/dependency-check-report.json, and the scan that writes it is bound to the verify phase -
+        // after surefire has finished. In the canonical `./mvnw -B clean verify` the report therefore cannot
+        // exist while this test runs, so an assumption here does not express "absent in a clean checkout":
+        // it skips on EVERY canonical build, permanently. A skipped test and a passing test are
+        // indistinguishable in a build summary, and an undisclosed skip is a test a reader believes ran -
+        // which is the failure mode this module's sibling audit in GateVerificationTest refuses by policy
+        // rather than by preference. So the absent case is ASSERTED rather than assumed: the assertion below
+        // always executes, states the state it found, and names the resolved absolute path where the report
+        // was expected. The pair's internal consistency across all four publication sites is checked
+        // unconditionally by the test above; what this layer adds is the tie from that agreed pair to the
+        // tool that produced it, which is available to `./mvnw -B verify` over a warm target and to the CI
+        // job that runs the scan before reading it.
+        if (!Files.isRegularFile(SCAN_REPORT_PATH)) {
+            assertThat(SCAN_REPORT_PATH.toAbsolutePath())
+                    .as("PENDING: this build has not written a dependency-check report yet, so the "
+                            + "published pair is not tied to the scan here. The scan is bound to verify, "
+                            + "which runs after this tier, so an unscoped clean verify always reaches this "
+                            + "branch. Run ./mvnw -B dependency-check:check and re-run this class to "
+                            + "compare locally; in CI the reconciliation runs after the scan")
+                    .doesNotExist();
+            return;
+        }
+
+        final JsonNode report = new ObjectMapper().readTree(SCAN_REPORT_PATH.toFile());
+        final JsonNode entries = report.path("dependencies");
+        assertThat(entries.isArray())
+                .as("the report must carry a dependencies array, or there is no figure to compare")
+                .isTrue();
+
+        int related = 0;
+        for (final JsonNode entry : entries) {
+            related += entry.path("relatedDependencies").size();
+        }
+
+        final Matcher published = PUBLISHED_SCAN_FIGURE.matcher(flattened(read(GATE_EVIDENCE_PATH)));
+        assertThat(published.find())
+                .as("the gate-evidence page must publish the pair for this layer to compare")
+                .isTrue();
+
+        assertThat(Integer.parseInt(published.group(1)))
+                .as("the published entry count must be the number of entries the report holds")
+                .isEqualTo(entries.size());
+        assertThat(Integer.parseInt(published.group(2)))
+                .as("and the published file count must be those entries plus the %d related files "
+                        + "the scanner groups underneath them", related)
+                .isEqualTo(entries.size() + related);
+    }
+
+    @Test
+    @DisplayName("the completed-work pie rolls up the detail rows and sums to their total")
+    void theCompletedWorkPieRollsUpTheDetailRows() throws IOException {
+        // The pie's ten slices summed to 409 against a stated 391, because one slice read 38 where its
+        // roll-up was 20. A pie is the one figure on a status page that nobody adds up by hand, so the
+        // roll-up is now published beside it and every part of the arithmetic is checked here: the detail
+        // rows against their own total, the slices against that total, each slice against the rows it
+        // claims, and each row against being used more than once or not at all.
+        final String page = read(PROJECT_GUIDE_PATH);
+        final Map<String, Integer> detail = hoursRows(section(page, "### 2.1 Completed Work Detail",
+                "### 2.2 Remaining Work Detail"));
+        final int detailTotal = requireRow(detail, "**Total**", "the detail table must state its total");
+        detail.remove("**Total**");
+
+        assertThat(detail.values().stream().mapToInt(Integer::intValue).sum())
+                .as("the detail rows must sum to the total that table publishes, or the total is the "
+                        + "stale part and every roll-up drawn from it inherits the error")
+                .isEqualTo(detailTotal);
+
+        final String visual = section(page, "## 7. Visual Project Status", "## 8. Summary");
+        // The slices are read from the diagram's own authoring source rather than from the page, because
+        // the page no longer carries the diagram's data at all - it carries a figure around a pre-rendered
+        // SVG. The .mmd is what the render is produced from, so it is the only place a wrong slice can
+        // still be introduced, and checking the page text instead would check nothing.
+        final Map<String, Integer> slices = pieSlices(
+                read(DIAGRAM_DIR.resolve("completed-work-distribution.mmd")),
+                "pie title Completed Work Distribution (" + detailTotal + "h)");
+        assertThat(visual)
+                .as("the page must publish that diagram as a figure pointing at its render, or the "
+                        + "corrected slice is checked here and never seen by a reader")
+                .contains("![")
+                .contains("diagrams/completed-work-distribution.svg");
+        assertThat(slices.values().stream().mapToInt(Integer::intValue).sum())
+                .as("the slices of a pie titled %dh must sum to %d; %s", detailTotal, detailTotal,
+                        slices)
+                .isEqualTo(detailTotal);
+
+        assertThat(visual)
+                .as("the roll-up must name the number of detail rows it accounts for, so a row added "
+                        + "to the detail table cannot be left out of the mapping silently")
+                .contains("roll-up of the " + detail.size() + " rows of")
+                .contains("all " + detail.size() + " rows, each counted once");
+
+        final Map<String, Integer> rollUp = hoursRows(section(visual,
+                "| Slice | Hours |", "\nEvery "));
+        final int rollUpTotal = requireRow(rollUp, "**Total**",
+                "the roll-up table must state its own total");
+        rollUp.remove("**Total**");
+        assertThat(rollUpTotal)
+                .as("the roll-up total must be the detail total, since it accounts for every row")
+                .isEqualTo(detailTotal);
+        assertThat(rollUp.keySet())
+                .as("the roll-up must carry one row per slice and no other")
+                .containsExactlyInAnyOrderElementsOf(slices.keySet());
+
+        final List<String> claimed = new ArrayList<>();
+        for (final Map.Entry<String, String> mapping
+                : rollUpExpressions(section(visual, "| Slice | Hours |", "\nEvery ")).entrySet()) {
+            int summed = 0;
+            for (final String term : mapping.getValue().split("\\+")) {
+                final Matcher parsed = ROLL_UP_TERM.matcher(term.trim().replace("&amp;", "&"));
+                assertThat(parsed.matches())
+                        .as("each term of the %s roll-up must name a detail row and that row's hours; "
+                                + "\"%s\" names neither", mapping.getKey(), term.trim())
+                        .isTrue();
+                final String row = parsed.group(1);
+                final int hours = Integer.parseInt(parsed.group(2));
+                assertThat(detail)
+                        .as("the %s roll-up cites detail row \"%s\" at %d hours", mapping.getKey(),
+                                row, hours)
+                        .containsEntry(row, hours);
+                claimed.add(row);
+                summed += hours;
+            }
+            assertThat(summed)
+                    .as("the %s slice must equal the rows it rolls up", mapping.getKey())
+                    .isEqualTo(slices.get(mapping.getKey()));
+        }
+
+        assertThat(claimed)
+                .as("every detail row must be rolled up exactly once, so the mapping neither "
+                        + "double-counts a row nor drops one")
+                .containsExactlyInAnyOrderElementsOf(detail.keySet());
+    }
+
+    @Test
+    @DisplayName("no diagram renderer is configured, so the official publication path can build this site")
+    void noDiagramRendererIsConfiguredAnywhere() throws IOException {
+        // THIS IS THE ROOT CAUSE OF A BUILD THAT DID NOT BUILD. The official TechDocs image ships mkdocs,
+        // mkdocs-material, mkdocs-techdocs-core and pymdown-extensions and NO mermaid plugin, so the
+        // `- mermaid2` plugin entry and the `!!python/name:mermaid2.fence_mermaid` fence format each abort
+        // that build outright with "cannot find module 'mermaid2'". Both had to go, and the format line is
+        // the one an author is most likely to leave behind, because it does not read like a plugin.
+        //
+        // `extra_javascript` had to go for a related but distinct reason: the TechDocs CLI STRIPS that key,
+        // reporting "Removed the following unsupported configuration keys", so a script named there can
+        // never run in the published site however correct it is. A fix that depends on one is not a fix.
+        final String config = read(MKDOCS_PATH);
+        final String executableConfig = config.lines()
+                .filter(line -> !line.stripLeading().startsWith("#"))
+                .reduce("", (a, b) -> a + "\n" + b);
+
+        assertThat(executableConfig)
+                .as("a mermaid plugin entry, a mermaid fence format or an extra_javascript key each break "
+                        + "or silently disable the official publication path; prose about them may stay, "
+                        + "configuration may not")
+                .doesNotContain("mermaid2")
+                .doesNotContain("fence_mermaid")
+                .doesNotContain("extra_javascript");
+        assertThat(config)
+                .as("the theme is declared explicitly so both publication modes agree, and font: false is "
+                        + "what stops the theme emitting its Google Fonts link - the last external request "
+                        + "either mode made")
+                .contains("theme:")
+                .contains("name: material")
+                .contains("font: false")
+                .as("and the two features that answer the very long pages survive publication, unlike "
+                        + "anything a script could do")
+                .contains("navigation.top")
+                .contains("toc.follow");
+
+        assertThat(Path.of("../docs/javascripts"))
+                .as("the compensating viewbox script is gone with the key that named it; a directory left "
+                        + "behind publishes an asset no page can load")
+                .doesNotExist();
+
+        try (Stream<Path> pages = Files.list(Path.of("../docs"))) {
+            for (final Path page : pages.filter(p -> p.getFileName().toString().endsWith(".md")).toList()) {
+                assertThat(read(page))
+                        .as("%s must carry no client-rendered diagram fence: there is no renderer in the "
+                                + "published site, so a fence publishes as a code block or as nothing",
+                                page.getFileName())
+                        .doesNotContain("```mermaid");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("every diagram source has a published render that needs no network and no script")
+    void everyDiagramSourceHasASelfContainedRender() throws IOException {
+        // Pre-rendering is what makes the diagrams survive with no renderer, but only if each render is
+        // genuinely self-contained. Three properties are checked because each has its own failure mode, and
+        // one of them was found the hard way: mermaid emits flowchart and entity labels as HTML inside a
+        // <foreignObject> by default, and a foreignObject DOES NOT RENDER AT ALL when the SVG is loaded
+        // through <img> - every box would have published empty while the build still exited 0. The labels
+        // are therefore SVG <text>, and the absence of foreignObject is asserted rather than remembered.
+        final List<String> sources = new ArrayList<>();
+        final List<String> renders = new ArrayList<>();
+        try (Stream<Path> entries = Files.list(DIAGRAM_DIR)) {
+            for (final Path entry : entries.sorted().toList()) {
+                final String name = entry.getFileName().toString();
+                if (name.endsWith(".mmd")) {
+                    sources.add(name.substring(0, name.length() - ".mmd".length()));
+                } else if (name.endsWith(".svg")) {
+                    renders.add(name.substring(0, name.length() - ".svg".length()));
+                }
+            }
+        }
+
+        assertThat(sources).as("the diagram directory must carry the authoring sources").isNotEmpty();
+        assertThat(renders)
+                .as("every source must have a render and every render a source, or the site publishes a "
+                        + "diagram nobody can regenerate, or a source nobody can see")
+                .containsExactlyInAnyOrderElementsOf(sources);
+
+        for (final String slug : sources) {
+            final String svg = read(DIAGRAM_DIR.resolve(slug + ".svg"));
+            final Matcher root = SVG_ROOT.matcher(svg);
+            assertThat(root.find())
+                    .as("%s must open with an svg element carrying an explicit intrinsic size, because an "
+                            + "image with no intrinsic size cannot be laid out before it loads", slug)
+                    .isTrue();
+            final Matcher box = SVG_VIEW_BOX.matcher(svg);
+            assertThat(box.find()).as("%s must declare a viewBox", slug).isTrue();
+
+            assertThat(Integer.parseInt(root.group(1)))
+                    .as("%s declares width %s against a viewBox width of %s, so the render would be "
+                            + "scaled rather than shown at the size its labels were drawn for",
+                            slug, root.group(1), box.group(1))
+                    .isEqualTo((int) Math.ceil(Double.parseDouble(box.group(1))));
+            assertThat(Integer.parseInt(root.group(2)))
+                    .as("%s declares height %s against a viewBox height of %s", slug, root.group(2),
+                            box.group(2))
+                    .isEqualTo((int) Math.ceil(Double.parseDouble(box.group(2))));
+
+            assertThat(svg)
+                    .as("%s must carry no max-width, which would let the theme shrink it below the size "
+                            + "its labels are legible at", slug)
+                    .doesNotContain("max-width")
+                    .as("%s must carry no foreignObject: HTML inside one does not render through <img>, "
+                            + "so every label would publish blank", slug)
+                    .doesNotContain("<foreignObject")
+                    .as("%s must carry no script", slug)
+                    .doesNotContain("<script");
+            assertThat(svg)
+                    .as("%s must carry its labels as SVG text, which is the form that renders through "
+                            + "<img> and is readable by a screen reader and by grep", slug)
+                    .contains("<text");
+            // An edge label sits ON its connector. Mermaid backs it with a rect at opacity 0.5 over a
+            // 0.8-alpha fill, so at an effective 0.4 the line runs straight through the glyphs and every
+            // such label reads as struck through - which is a legibility defect of exactly the kind this
+            // work exists to remove, introduced by the switch away from HTML labels rather than inherited.
+            //
+            // The check is scoped to the rules that back an edge label rather than run over the whole
+            // file, because the same translucent declaration appears in rules for icon and image shapes
+            // that no diagram here uses, and failing on those would be a false alarm.
+            for (final Matcher rule = EDGE_LABEL_RECT_RULE.matcher(svg); rule.find();) {
+                assertThat(rule.group(1))
+                        .as("%s backs its edge labels with %s; the connector line shows through anything "
+                                + "translucent, so the label reads as struck through", slug, rule.group())
+                        .doesNotContain("opacity:0.5")
+                        .doesNotContain("rgba(232,232,232, 0.8)");
+            }
+
+            final String probe = svg
+                    .replace("xmlns=\"http://www.w3.org/2000/svg\"", "")
+                    .replace("xmlns:xlink=\"http://www.w3.org/1999/xlink\"", "");
+            assertThat(probe)
+                    .as("%s must reference nothing over the network - a diagram that needs a CDN is a "
+                            + "diagram that vanishes offline, which is the defect this replaces", slug)
+                    .doesNotContain("http://")
+                    .doesNotContain("https://");
+            for (final Matcher reference = CSS_URL_REFERENCE.matcher(probe); reference.find();) {
+                assertThat(reference.group(1))
+                        .as("%s resolves %s, which leaves the document; only a same-document fragment "
+                                + "keeps the render self-contained", slug, reference.group(0))
+                        .startsWith("#");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("every published diagram figure carries alt text, a caption and a named scroll region")
+    void everyDiagramFigureIsAccessible() throws IOException {
+        // A pre-rendered diagram is an image, and an image is the one element on a page that carries no
+        // text of its own. So each figure has to supply three separate things, and none substitutes for
+        // another: alt text, which is what a screen reader reads instead of the picture; a caption, which
+        // is the text alternative a sighted reader gets when the labels are too small or the image is off;
+        // and a named, focusable scroll region, which is the only way a keyboard reader reaches the part of
+        // a 2257px-wide diagram that does not fit the page.
+        int figures = 0;
+        try (Stream<Path> pages = Files.list(Path.of("../docs"))) {
+            for (final Path page : pages.filter(p -> p.getFileName().toString().endsWith(".md"))
+                    .sorted().toList()) {
+                final String text = read(page);
+                final Matcher figure = DIAGRAM_FIGURE.matcher(text);
+                while (figure.find()) {
+                    figures++;
+                    final String block = figure.group();
+                    final Matcher image = DIAGRAM_IMAGE.matcher(block);
+                    assertThat(image.find())
+                            .as("the figure in %s must reference a rendered diagram", page.getFileName())
+                            .isTrue();
+                    final String alt = image.group(1);
+                    final String slug = image.group(2);
+
+                    assertThat(DIAGRAM_DIR.resolve(slug + ".svg"))
+                            .as("%s references diagrams/%s.svg, which must exist or the figure publishes "
+                                    + "as a broken image", page.getFileName(), slug)
+                            .isRegularFile();
+                    assertThat(alt)
+                            .as("the alt text for %s is what a screen reader gets instead of the diagram, "
+                                    + "so it has to describe the diagram rather than name it", slug)
+                            .hasSizeGreaterThan(120);
+                    assertThat(block)
+                            .as("the figure for %s must expose its scroll frame as a named region a "
+                                    + "keyboard can reach", slug)
+                            .contains("role=\"region\"")
+                            .contains("tabindex=\"0\"")
+                            .contains("aria-labelledby=\"diagram-" + slug + "-caption\"")
+                            .as("and the caption that names it must exist, carry the text alternative, and "
+                                    + "say the frame scrolls - a cue a shadow alone cannot give")
+                            .contains("id=\"diagram-" + slug + "-caption\"")
+                            .contains("<figcaption")
+                            .contains("**Figure — ")
+                            .contains("scrolls sideways");
+                }
+            }
+        }
+
+        try (Stream<Path> entries = Files.list(DIAGRAM_DIR)) {
+            final long sources = entries.filter(p -> p.getFileName().toString().endsWith(".mmd")).count();
+            assertThat((long) figures)
+                    .as("every rendered diagram must be published in a figure; %d figures against %d "
+                            + "sources means one is rendered and never shown, or shown twice",
+                            figures, sources)
+                    .isEqualTo(sources);
+        }
+
+        assertThat(withoutCssComments(read(EXTRA_CSS_PATH)))
+                .as("the stylesheet must defeat the theme's image constraint, or the diagram is scaled "
+                        + "down again and its labels return to being unreadable")
+                .contains(".md-typeset .diagram__image")
+                .contains("max-width: none")
+                .as("and the scroll region must have a visible focus indicator, since it is a tab stop")
+                .contains(".md-typeset .diagram__viewport:focus-visible");
+    }
+
+    @Test
+    @DisplayName("the theme override is wired through a key the official publication path keeps, and "
+            + "every substring it patches is guarded")
+    void theThemeOverrideIsWiredAndGuarded() throws IOException {
+        // The accessibility work in this site is done by a template that extends the theme's own base and
+        // rewrites named substrings of three blocks. That is only safe because of two things, and this test
+        // holds both of them.
+        //
+        // The first is the publication key. The official path filters mkdocs.yml down to a fixed allow-list
+        // and silently drops anything else - it is what drops `extra_javascript`, which is why none of this
+        // work may depend on script. `theme.custom_dir` survives that filter, so the override has to be
+        // declared there and nowhere else; declared under a stripped key it would work locally and vanish
+        // in the published site, which is the worst failure mode available.
+        //
+        // The second is the drift guard. Every substring the template rewrites is a piece of the theme's
+        // markup, and a theme upgrade may reword any of them. A missed needle does not fail - the replace
+        // silently does nothing and the accessibility fix quietly disappears - so each needle is checked
+        // for presence first and reads an attribute off an undefined name if it is absent, which stops the
+        // build. This test asserts every needle has such a guard, by counting them.
+        final String mkdocs = read(MKDOCS_PATH);
+        assertThat(mkdocs)
+                .as("the override must be declared under theme.custom_dir, the only override key the "
+                        + "official publication path preserves")
+                .contains("custom_dir: overrides");
+
+        final String template = read(THEME_OVERRIDE_PATH);
+        assertThat(template)
+                .as("the override must extend the theme's own base template rather than replace it, or "
+                        + "every unrelated feature of the theme is lost")
+                .contains("{% extends \"base.html\" %}");
+
+        final int needles = countOccurrences(template, "{%- set ") - countOccurrences(template, "ns.html")
+                - countOccurrences(template, "{%- set ns ") - countOccurrences(template, "{%- set nearest")
+                - countOccurrences(template, "{%- set wrapped") - countOccurrences(template, "{%- set _ ");
+        assertThat(countOccurrences(template, "theme_contract_broken"))
+                .as("each substring this template rewrites needs a guard that fails the build when the "
+                        + "theme stops emitting it; %d guards against roughly %d needles means one "
+                        + "rewrite can silently do nothing", countOccurrences(template,
+                        "theme_contract_broken"), needles)
+                .isGreaterThanOrEqualTo(6);
+
+        assertThat(template)
+                .as("the not-found page extends this same template and has no source document behind it, "
+                        + "so the blocks that read the page must be guarded or the build fails on it")
+                .contains("{%- if not page -%}")
+                .as("the table frame must close on the body-and-table pair, never on the table tag alone: "
+                        + "a highlighted code block is also a table, and closing on the tag alone emitted "
+                        + "an unbalanced div per code block that collapsed the content column to zero width")
+                .contains("'</tbody>\\n</table>'")
+                .as("and the open and close counts must be asserted rather than trusted, because a "
+                        + "mismatch here corrupts the page silently instead of failing")
+                .contains("table_wrapper_balance");
+    }
+
+    @Test
+    @DisplayName("every generated table scrolls inside a frame named for its own section, and a wide one "
+            + "is marked so it can be tightened")
+    void everyGeneratedTableIsNamedAndFocusable() throws IOException {
+        // A scroll frame that is not announced is invisible to a screen reader, and one that is announced
+        // with the same sentence forty-four times tells the reader nothing about which table they are in.
+        // So the frame is named by a caption - the element HTML provides for naming a table - carrying the
+        // title of the section it sits in, and the shared panning instruction moves to a description so it
+        // is still read without being repeated in every name.
+        final String template = read(THEME_OVERRIDE_PATH);
+        assertThat(template)
+                .as("the frame must be a region a keyboard can reach and a screen reader can announce")
+                .contains("class=\"cd-tablewrap")
+                .contains("role=\"region\"")
+                .contains("tabindex=\"0\"")
+                .as("named by its own caption rather than by one shared literal")
+                .contains("aria-labelledby=\"'")
+                .contains("<caption class=\"cd-sr-only\" id=\"'")
+                .as("described once by the shared panning instruction")
+                .contains("aria-describedby=\"cd-table-panning-note\"")
+                .contains("id=\"cd-table-panning-note\"")
+                .as("with the column count recorded so the stylesheet can tighten only what needs it")
+                .contains("data-cd-cols=\"'")
+                .contains("cd-tablewrap--wide")
+                .as("and a header cell with no text of its own must still be named, or the reader hears "
+                        + "\"blank\" twice before any content")
+                .contains("<span class=\"cd-sr-only\">Field</span>")
+                .contains("<span class=\"cd-sr-only\">Value</span>")
+                .as("every generated header cell must declare the axis it heads")
+                .contains("<th scope=\"col\">");
+
+        final String css = withoutCssComments(read(EXTRA_CSS_PATH));
+        assertThat(css)
+                .as("the frame has to scroll, and it has to show a focus indicator because it is a tab stop")
+                .contains(".md-typeset .cd-tablewrap")
+                .contains("overflow-x: auto")
+                .contains(".md-typeset .cd-tablewrap:focus-visible")
+                .as("the inner table's background must be transparent or the theme's opaque table fill "
+                        + "covers the frame's whole box and paints over the scroll cue - measured as a "
+                        + "flat white edge on a table with forty-six pixels still hidden to its right")
+                .contains("background-color: transparent")
+                .as("and a wide table needs the theme's five-rem column floor lowered, since nine columns "
+                        + "at that floor cannot fit the content column at any desktop width")
+                .contains(".md-typeset .cd-tablewrap--wide")
+                .contains("min-width: 3.6rem");
+    }
+
+    @Test
+    @DisplayName("every pictographic marker in the documentation has a text alternative")
+    void everyPictographicMarkerHasATextAlternative() throws IOException {
+        // This is the drift guard for a defect that shipped twice. A status marker is a picture, and a
+        // picture with no text alternative is silence: the row reads "Pending" with no hint that the glyph
+        // beside it means anything. The template wraps each marker in a named image role, but it can only
+        // wrap the ones somebody listed - and the list was first written against the emoji-presentation
+        // warning sign while the pages carry the bare code point, so sixteen glyphs published unwrapped
+        // next to sixty-six that were fine. Three severity discs were then found the same way.
+        //
+        // So the check is inverted: rather than assert the template mentions a glyph somebody thought of,
+        // it reads every pictographic character actually present in the published Markdown and requires
+        // each one to have an entry. A new marker cannot be introduced without a name.
+        final String template = read(THEME_OVERRIDE_PATH);
+        final Map<Integer, List<String>> markers = new LinkedHashMap<>();
+        try (Stream<Path> pages = Files.list(DOCS_ROOT)) {
+            for (final Path page : pages.filter(p -> p.getFileName().toString().endsWith(".md"))
+                    .sorted().toList()) {
+                read(page).codePoints().filter(BuildAndCiContractTest::isPictographic).distinct()
+                        .forEach(cp -> markers.computeIfAbsent(cp, k -> new ArrayList<>())
+                                .add(page.getFileName().toString()));
+            }
+        }
+
+        assertThat(markers)
+                .as("if the documentation carries no marker glyph at all then this guard is measuring "
+                        + "nothing and the wrapping it protects has become dead code")
+                .isNotEmpty();
+
+        for (final Map.Entry<Integer, List<String>> marker : markers.entrySet()) {
+            final String glyph = new String(Character.toChars(marker.getKey()));
+            final String wrapper = "aria-label=\"";
+            final int at = template.indexOf("| replace('" + glyph + "'");
+            assertThat(at)
+                    .as("U+%04X (%s) is published in %s with no text alternative: the template must wrap "
+                            + "it in a named image role, or a screen reader announces nothing where a "
+                            + "sighted reader sees a status marker", marker.getKey(), glyph,
+                            String.join(", ", marker.getValue()))
+                    .isNotNegative();
+            final String replacement = template.substring(at, Math.min(template.length(), at + 220));
+            assertThat(replacement)
+                    .as("the replacement for U+%04X must give the glyph a role and a non-empty name; "
+                            + "wrapping it without naming it is no better than leaving it bare",
+                            marker.getKey())
+                    .contains("role=\"img\"")
+                    .contains(wrapper);
+            final int nameAt = replacement.indexOf(wrapper) + wrapper.length();
+            assertThat(replacement.substring(nameAt, replacement.indexOf('"', nameAt)))
+                    .as("the name for U+%04X must say what the marker means", marker.getKey())
+                    .isNotBlank();
+        }
+
+        assertThat(template)
+                .as("the warning sign exists as a bare code point and as a two-code-point emoji sequence, "
+                        + "and both must be handled - matching only the sequence is the defect that "
+                        + "published sixteen unnamed glyphs")
+                .contains("| replace('\u26a0\ufe0f'")
+                .contains("| replace('\u26a0'")
+                .as("and the sequence must be parked on a sentinel before the bare form is wrapped, or "
+                        + "wrapping the bare form first cuts the sequence in half and strands its "
+                        + "variation selector outside the span")
+                .contains("warn_vs16_sentinel");
+        assertThat(template.indexOf("| replace('\u26a0\ufe0f'"))
+                .as("the two-code-point form has to be parked before the bare form is wrapped")
+                .isLessThan(template.indexOf("| replace('\u26a0'"));
+    }
+
+    @Test
+    @DisplayName("every syntax colour clears the contrast minimum on the background it is painted on")
+    void everySyntaxColourClearsTheContrastMinimum() throws IOException {
+        // Contrast is arithmetic, so this is checked by doing the arithmetic rather than by trusting that
+        // the colours look dark enough. The theme's stock palette sat between 4.48:1 and 4.71:1 on the
+        // background a code block actually paints: four tokens failed outright and the rest passed by a
+        // hundredth, which is close enough that two independent measurements of the same value disagreed
+        // about whether the page conformed. Each replacement was computed to clear 5.5:1, so this asserts
+        // the whole set against the minimum with the margin visible in the failure message.
+        final String css = withoutCssComments(read(EXTRA_CSS_PATH));
+        final Matcher background = Pattern.compile("var\\(--md-code-bg-color,\\s*(#[0-9a-fA-F]{6})\\)")
+                .matcher(css);
+        assertThat(background.find())
+                .as("the code background has to be declared in this stylesheet, or the contrast of every "
+                        + "token below is being computed against a guess")
+                .isTrue();
+        final int[] paper = rgb(background.group(1));
+
+        final Map<String, String> inks = new LinkedHashMap<>();
+        final Matcher token = Pattern.compile("(--md-code-hl-[a-z]+-color):\\s*(#[0-9a-fA-F]{6})\\s*;")
+                .matcher(css);
+        while (token.find()) {
+            inks.put(token.group(1), token.group(2));
+        }
+        assertThat(inks)
+                .as("the syntax palette must be overridden here; an empty set means the theme's own "
+                        + "failing colours are being published")
+                .hasSizeGreaterThanOrEqualTo(11);
+
+        final Matcher gutter = Pattern.compile("\\.highlighttable \\.linenos span,\\s*"
+                + "\\.md-typeset \\.highlight \\[data-linenos\\]::before \\{\\s*color:\\s*(#[0-9a-fA-F]{6})")
+                .matcher(css.replace("    .md-typeset ", "    ").replace("\n  ", "\n"));
+        if (gutter.find()) {
+            inks.put("line-number gutter", gutter.group(1));
+        } else {
+            final Matcher fallback = Pattern.compile("\\[data-linenos\\]::before \\{\\s*"
+                    + "color:\\s*(#[0-9a-fA-F]{6})").matcher(css);
+            assertThat(fallback.find())
+                    .as("the line-number gutter must carry an explicit colour: the theme paints it with a "
+                            + "translucent grey that composites to about 4.5:1, and which side of the "
+                            + "minimum that lands on depends on how the alpha is read")
+                    .isTrue();
+            inks.put("line-number gutter", fallback.group(1));
+        }
+
+        for (final Map.Entry<String, String> ink : inks.entrySet()) {
+            final double ratio = contrast(rgb(ink.getValue()), paper);
+            assertThat(ratio)
+                    .as("%s is %s on %s, which is %.4f:1 - normal-size text needs at least 4.5:1, and a "
+                            + "value that only just clears it is a value two tools will disagree about",
+                            ink.getKey(), ink.getValue(), background.group(1), ratio)
+                    .isGreaterThanOrEqualTo(4.5d);
+        }
+    }
+
+    @Test
+    @DisplayName("a control that is off screen or invisible is inert, and one that is reachable is full size")
+    void hiddenControlsAreInertAndReachableOnesAreFullSize() throws IOException {
+        // Three separate defects share one cause: the theme hides things in ways that hide them from sight
+        // without removing them from the page. The drawer is moved off screen by position, the collapsed
+        // search keeps its subtree, and the back-to-top control is faded to nothing - and all three stayed
+        // focusable, so a keyboard reader tabbed through sixty-eight destinations they could not see. The
+        // remedy in each case is visibility, which is the one property that removes an element from the
+        // accessibility tree as well as from the page.
+        final String css = withoutCssComments(read(EXTRA_CSS_PATH));
+        assertThat(css)
+                .as("the closed drawer must be inert, not merely off screen")
+                .contains("[data-md-toggle=\"drawer\"]:not(:checked) ~ .md-container .md-sidebar--primary")
+                .as("the collapsed search must be inert too, or its subtree stays tabbable at zero height")
+                .contains(".md-search__inner")
+                .as("and the faded back-to-top control must leave the accessibility tree, because the "
+                        + "theme's own display rule overrides the hidden attribute that would have done it")
+                .contains(".md-top[hidden]")
+                .contains("visibility: hidden");
+
+        assertThat(css)
+                .as("both toggles must be pointer-transparent. They are fixed boxes at the header corners "
+                        + "above everything else, and the search overlay paints its back arrow and its "
+                        + "clear button in exactly those corners - a real click on the clear button's "
+                        + "centre dismissed the whole overlay and left the query in place")
+                .contains("pointer-events: none")
+                .as("and each must sit at the same inset as the label whose hit area it shadows, or a hit "
+                        + "test taken from one box's centre lands outside the other's")
+                .contains("#__drawer.md-toggle { left: 0.3rem; }")
+                .contains("#__search.md-toggle { right: 0.3rem; }");
+
+        assertThat(countOccurrences(css, "pointer-events: none"))
+                .as("both toggles need it, not one")
+                .isGreaterThanOrEqualTo(2);
+
+        assertThat(css)
+                .as("every control a finger has to hit must be at least 44 by 44, and at the twenty-pixel "
+                        + "root this page renders at that is 2.2rem")
+                .contains("width: 2.2rem")
+                .contains("height: 2.2rem")
+                .as("the header buttons, the permalinks and BOTH search-overlay icons need the "
+                        + "enlargement - scoping it to the options container left the back arrow at the "
+                        + "bare 24 by 24 the theme paints, with no pseudo-element at all")
+                .contains(".md-header__button::after")
+                .contains(".md-typeset .headerlink::after")
+                .contains(".md-search__icon::after")
+                .as("and a control that shows a ring must not be hidden by opacity, which would hide the "
+                        + "ring with it")
+                .contains("appearance: none");
+
+        assertThat(css.indexOf(".md-search__icon::after"))
+                .as("the overlay-icon enlargement must sit inside the search breakpoint: at wider widths "
+                        + "the header holds a real search field, and a 44-pixel box over its magnifier "
+                        + "would cover the place the reader clicks to type")
+                .isGreaterThan(css.indexOf("@media screen and (max-width: 59.984375em)"));
+    }
+
+    @Test
+    @DisplayName("the current page is announced, and every permalink says which heading it points at")
+    void theCurrentPageAndEveryPermalinkAreAnnounced() throws IOException {
+        // A navigation list that marks the current page only with a colour tells a screen reader nothing,
+        // and a page carrying four hundred and fifty permalinks all named with the same pilcrow gives a
+        // reader four hundred and fifty identical destinations. Both are fixed in the template, and both
+        // are asserted here because both are single substrings that a theme reword would silently drop.
+        final String template = read(THEME_OVERRIDE_PATH);
+        assertThat(template)
+                .as("the active navigation entry must be announced as the current page, not just coloured")
+                .contains("aria-current=\"page\"")
+                .as("and the needle must include the closing bracket of the anchor, or it also matches the "
+                        + "table-of-contents label and marks two elements as current")
+                .contains("md-nav__link--active\">")
+                .as("each permalink must be named for the heading it points at, walked recursively so a "
+                        + "nested heading is named too")
+                .contains("aria-label=\"Permanent link to the section ")
+                .contains("page.toc recursive")
+                .as("and a heading title containing a double quote must not be able to close the "
+                        + "attribute early")
+                .contains("replace('\"'");
+
+        assertThat(withoutCssComments(read(EXTRA_CSS_PATH)))
+                .as("the theme fades a permalink in on hover only, so on a device with no hover it is "
+                        + "permanently invisible and on a keyboard it can be focused while invisible")
+                .contains("@media (hover: none)")
+                .contains(".md-typeset .headerlink:focus");
+    }
+
+    /**
+     * Strips comments from a stylesheet so an assertion cannot be satisfied by prose about the CSS instead
+     * of by the CSS.
+     *
+     * <p>This is not a theoretical hazard. Three quarters of the published stylesheet is explanatory
+     * comment, and those comments quote the declarations they explain: a negative control that deleted both
+     * {@code pointer-events: none} declarations still passed a substring assertion, because the phrase
+     * survived twice inside the prose describing why those declarations exist. Every assertion about a
+     * declaration therefore runs against the stripped text. CSS comments do not nest, so a non-greedy span
+     * between the delimiters is exact.</p>
+     *
+     * @param css the whole stylesheet
+     * @return the stylesheet with every comment removed
+     */
+    private static String withoutCssComments(final String css) {
+        return Pattern.compile("/\\*.*?\\*/", Pattern.DOTALL).matcher(css).replaceAll("");
+    }
+
+    /**
+     * Reports whether a code point is a pictographic marker rather than prose punctuation.
+     *
+     * <p>The ranges are the symbol and emoji blocks a browser renders as a picture. Deliberately excluded
+     * is everything below the symbol blocks, which is where the dash, arrow and comparison characters this
+     * documentation uses in ordinary sentences live; those are text and need no alternative.</p>
+     *
+     * @param codePoint the code point to classify
+     * @return true when the code point is a marker glyph
+     */
+    private static boolean isPictographic(final int codePoint) {
+        return (codePoint >= 0x2600 && codePoint <= 0x27BF)
+                || (codePoint >= 0x2B00 && codePoint <= 0x2BFF)
+                || (codePoint >= 0x1F300 && codePoint <= 0x1FAFF);
+    }
+
+    /**
+     * Parses a six-digit hexadecimal colour into its three channels.
+     *
+     * @param hex the colour, including its leading hash
+     * @return the red, green and blue channels, each 0 to 255
+     */
+    private static int[] rgb(final String hex) {
+        return new int[] {
+            Integer.parseInt(hex.substring(1, 3), 16),
+            Integer.parseInt(hex.substring(3, 5), 16),
+            Integer.parseInt(hex.substring(5, 7), 16),
+        };
+    }
+
+    /**
+     * Computes the WCAG 2.1 contrast ratio between two opaque colours.
+     *
+     * <p>Both colours must be opaque. A translucent foreground has to be composited over its background
+     * before it reaches here, because the ratio of a colour with an alpha channel is not defined - and
+     * reading an authored alpha back from a browser re-serializes it, which is what made one value in this
+     * palette measure 4.4963:1 by one route and 4.5153:1 by another.</p>
+     *
+     * @param ink   the foreground colour channels
+     * @param paper the background colour channels
+     * @return the ratio, at least 1.0 and at most 21.0
+     */
+    private static double contrast(final int[] ink, final int[] paper) {
+        final double first = relativeLuminance(ink);
+        final double second = relativeLuminance(paper);
+        return (Math.max(first, second) + 0.05d) / (Math.min(first, second) + 0.05d);
+    }
+
+    /**
+     * Computes the WCAG relative luminance of an opaque colour.
+     *
+     * @param channels the red, green and blue channels, each 0 to 255
+     * @return the luminance, 0.0 for black and 1.0 for white
+     */
+    private static double relativeLuminance(final int[] channels) {
+        final double[] linear = new double[3];
+        for (int index = 0; index < 3; index++) {
+            final double value = channels[index] / 255.0d;
+            linear[index] = value <= 0.04045d ? value / 12.92d : Math.pow((value + 0.055d) / 1.055d, 2.4d);
+        }
+        return 0.2126d * linear[0] + 0.7152d * linear[1] + 0.0722d * linear[2];
+    }
+
+    /**
+     * Returns the span of a document between two literal markers.
+     *
+     * @param text  the whole document
+     * @param from  the marker the span starts at, included
+     * @param until the marker the span stops before
+     * @return the span, never empty
+     */
+    private static String section(final String text, final String from, final String until) {
+        final int start = text.indexOf(from);
+        assertThat(start)
+                .as("the document must carry the section beginning \"%s\"", from)
+                .isNotNegative();
+        final int end = text.indexOf(until, start + from.length());
+        return end < 0 ? text.substring(start) : text.substring(start, end);
+    }
+
+    /**
+     * Reads a two-column hours table into row name and hours, preserving the published order.
+     *
+     * @param table the span holding the table
+     * @return each row name mapped to its hours figure
+     */
+    private static Map<String, Integer> hoursRows(final String table) {
+        final Map<String, Integer> rows = new LinkedHashMap<>();
+        final Matcher matcher = HOURS_TABLE_ROW.matcher(table);
+        while (matcher.find()) {
+            rows.put(matcher.group(1), Integer.parseInt(matcher.group(2)));
+        }
+        return rows;
+    }
+
+    /**
+     * Reads the third column of a roll-up table, keyed by the slice each row names.
+     *
+     * @param table the span holding the table
+     * @return each slice mapped to the expression that claims to compose it, total row excluded
+     */
+    private static Map<String, String> rollUpExpressions(final String table) {
+        final Map<String, String> expressions = new LinkedHashMap<>();
+        final Matcher matcher = HOURS_TABLE_ROW.matcher(table);
+        while (matcher.find()) {
+            final String slice = matcher.group(1);
+            final String claim = matcher.group(3).replace("|", "").trim();
+            if (!slice.startsWith("**") && !claim.isEmpty()) {
+                expressions.put(slice, claim);
+            }
+        }
+        return expressions;
+    }
+
+    /**
+     * Reads the slices of one named Mermaid pie.
+     *
+     * @param text  the span holding the pie
+     * @param title the pie's declaration line, matched literally so a second pie is not read instead
+     * @return each slice label mapped to its value
+     */
+    private static Map<String, Integer> pieSlices(final String text, final String title) {
+        final int start = text.indexOf(title);
+        assertThat(start)
+                .as("the page must declare the pie \"%s\"", title)
+                .isNotNegative();
+        final int end = text.indexOf("```", start);
+        final Matcher matcher = PIE_SLICE.matcher(
+                end < 0 ? text.substring(start) : text.substring(start, end));
+        final Map<String, Integer> slices = new LinkedHashMap<>();
+        while (matcher.find()) {
+            slices.put(matcher.group(1), Integer.parseInt(matcher.group(2)));
+        }
+        return slices;
+    }
+
+    /**
+     * Reads one required row out of a parsed hours table.
+     *
+     * @param rows    the parsed table
+     * @param name    the row that must be present
+     * @param because what the row is needed for, reported when it is absent
+     * @return that row's hours figure
+     */
+    private static int requireRow(final Map<String, Integer> rows, final String name,
+            final String because) {
+        assertThat(rows).as(because).containsKey(name);
+        return rows.get(name);
+    }
+
+    /**
+     * Collapses runs of whitespace to a single space, so a published figure separated from its noun
+     * by a line break is still one phrase.
+     *
+     * @param text the document text
+     * @return the same text with its wrapping removed
+     */
+    private static String flattened(final String text) {
+        return text.replaceAll("\\s+", " ");
+    }
+
     /**
      * Returns the workflow with every comment-only line removed, so a rule about a command is not
      * satisfied or broken by prose describing that command.
@@ -1571,6 +2746,57 @@ final class BuildAndCiContractTest {
     private static String read(final Path path) throws IOException {
         assertThat(path).isRegularFile();
         return Files.readString(path, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Reads a PNG's intrinsic pixel size out of its own header.
+     *
+     * <p>Read from the file rather than trusted from the markup, because the markup is the thing under
+     * test: the deck declares a width and a height on every image so the figure's box is reserved
+     * before the image arrives and nothing on the slide shifts when it does. A declared size that
+     * disagrees with the file is therefore a layout shift on every load, and it is also how a copy of
+     * the <em>wrong</em> capture would announce itself - the path would resolve, the image would render,
+     * and only the dimensions would say it is not the screen the caption describes.</p>
+     *
+     * <p>The layout is fixed by the format: an 8-byte signature, a 4-byte chunk length, the 4-byte
+     * chunk type {@code IHDR}, then width and height as big-endian 32-bit integers. That puts width at
+     * offset 16 and height at offset 20.</p>
+     *
+     * @param png the image to measure
+     * @return a two-element array holding width then height, in pixels
+     * @throws IOException if the file cannot be read
+     */
+    private static int[] pngDimensions(final Path png) throws IOException {
+        final byte[] header = new byte[24];
+        try (java.io.InputStream stream = Files.newInputStream(png)) {
+            assertThat(stream.readNBytes(header, 0, header.length))
+                    .as("%s must be long enough to carry a PNG header", png)
+                    .isEqualTo(header.length);
+        }
+
+        assertThat(new String(header, 12, 4, StandardCharsets.US_ASCII))
+                .as("%s must be a PNG whose first chunk is the header chunk", png)
+                .isEqualTo("IHDR");
+
+        return new int[] {bigEndianInt(header, 16), bigEndianInt(header, 20)};
+    }
+
+    /**
+     * Assembles a big-endian 32-bit integer from four bytes.
+     *
+     * <p>Each byte is masked to its unsigned value first. Without the mask, Java's signed byte would
+     * sign-extend any value above 127 and corrupt the whole integer - which for these images would go
+     * unnoticed, since none of them is 128 pixels or more in a dimension whose high bytes are zero.</p>
+     *
+     * @param bytes  the buffer to read from
+     * @param offset the position of the most significant byte
+     * @return the assembled value
+     */
+    private static int bigEndianInt(final byte[] bytes, final int offset) {
+        return ((bytes[offset] & 0xFF) << 24)
+                | ((bytes[offset + 1] & 0xFF) << 16)
+                | ((bytes[offset + 2] & 0xFF) << 8)
+                | (bytes[offset + 3] & 0xFF);
     }
 
     /**

@@ -18755,7 +18755,7 @@ it, which is what proves the simulation has teeth rather than merely agreeing wi
 
 *The moved pins were then run rather than merely resolved, because a scan says nothing about behaviour.* The
 whole stack was brought up on the new pin set and every service reported healthy, the full `verify` passed with
-27,089 unit and 1,666 integration tests, and each moved image was exercised on the property this stack actually
+27,123 unit and 1,666 integration tests, and each moved image was exercised on the property this stack actually
 depends on. **Prometheus v3.13.2**: the `carddemo-app` scrape target is up and `up{job="carddemo-app"}` returns
 exactly one series valued `1`, which is the continuous-integration gate's own clause. **Jaeger 2.20.0**: the
 health extension answers on 13133 with `{"healthy":true,…}`, `/api/services` returns

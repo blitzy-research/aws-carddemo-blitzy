@@ -54,10 +54,10 @@ vulnerability threshold.
 
 | Property | Value |
 | --- | --- |
-| Date, in UTC | 2026-08-11, build finished 22:44:42Z |
+| Date, in UTC | 2026-08-13, build finished 23:01:54Z |
 | Command | `./mvnw -B clean verify`, run from the module directory |
-| Result | `BUILD SUCCESS`, total time 12:03 min |
-| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 245 and 546 source counts, no compiler diagnostic of any kind, the same 27,089 and 1,666 test cases with no failure, the same 23,339 of 24,295 lines and 7,789 of 8,710 branches across the same 494 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 167 dependencies. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and across the runs recorded below a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off-checklist) with its date rather than folded into this row |
+| Result | `BUILD SUCCESS`, total time 12:21 min |
+| Reproduced by | repeated full `./mvnw -B clean verify` runs on the same machine, each `BUILD SUCCESS`; every run over this tree produced identical standing results — the same 246 and 547 source counts, no compiler diagnostic of any kind, the same 27,123 and 1,666 test cases with no failure, the same 23,368 of 24,326 lines and 7,800 of 8,724 branches across the same 496 analysed classes, the same five byte-equal Gate 1 comparisons — its four contractual widths and the supplemental one — and the same 166 report entries covering 244 files from the supply-chain scan — the one figure in that set that is the **scanner's** own property rather than the module's, and which moved from 168 to 167 to 166 without any coordinate in the graph changing, as [Gate 8](#gate-8-integration-sign-off-checklist) records. Only the timings differed, which is the distinction this table exists to draw. **The vulnerability result is the exception and is dated for that reason**: the advisory feed moves independently of this tree, and across the runs recorded below a second below-threshold finding appeared in a dependency whose version did not change. It is published under [Gate 8](#gate-8-integration-sign-off-checklist) with its date rather than folded into this row |
 | JDK | Eclipse Temurin 25.0.3+9 — `OpenJDK Runtime Environment Temurin-25.0.3+9 (build 25.0.3+9-LTS)` |
 | Build tool | Apache Maven 3.9.16, resolved by the committed wrapper rather than from the host |
 | Operating system, kernel | Ubuntu 25.10 container, Linux 6.12.85+ x86_64 |
@@ -66,17 +66,17 @@ vulnerability threshold.
 | Database under test | PostgreSQL 16 through Testcontainers for the integration tier |
 | AWS emulation | LocalStack Community, no authentication token of any kind |
 | Module coordinate | `com.carddemo:carddemo-java:1.0.0` |
-| Sources compiled | **245** production and **546** test, each as `javac [debug parameters release 25]` under `-Xlint:all -Werror`, with no warning and no error |
+| Sources compiled | **246** production and **547** test, each as `javac [debug parameters release 25]` under `-Xlint:all -Werror`, with no warning and no error |
 
 **Why the two class counts differ from the two source counts, stated rather than smoothed over.** The
-compiler compiled **546** test sources; the runners wrote **450** unit and **74** integration report files.
-Three populations, not one, and each is correct for its own question. Nineteen of the 546 declare no test at
+compiler compiled **547** test sources; the runners wrote **451** unit and **74** integration report files.
+Three populations, not one, and each is correct for its own question. Nineteen of the 547 declare no test at
 all — the `support` helpers, the fixture builders and the census utilities — so no runner claims them. Three
 more are the abstract container base classes `AbstractPostgresIT`, `AbstractLocalStackIT` and
 `AbstractPostgresAndLocalStackIT`, which hold lifecycle for their subclasses, declare no test of their own
 and therefore produce no report file: the integration tier's **77** sources become 74 report files for that
 reason and no other. The unit tier has no such base class, which is why its source count and its report
-count are both 450 — and why that equality is what tells `e2e/GateVerificationTest` a run was unscoped
+count are both 451 — and why that equality is what tells `e2e/GateVerificationTest` a run was unscoped
 rather than narrowed.
 
 **Where any other figure in this repository comes from.** A narrative elsewhere may quote a different
@@ -188,12 +188,12 @@ position above is history; the column below is the result.
 | Gate | Recorded status | Evidence quoted on this page | Command |
 | --- | :---: | --- | --- |
 | 1 — End-to-end boundary verification | **PASS (measured)** | the four contractual widths compared byte for byte, expected equal to actual on every record and byte count; the supplemental 40-byte width compared by its own job test | `./mvnw -B clean verify` |
-| 2 — Zero-warning build | **PASS (measured)** | `BUILD SUCCESS`; zero compiler warnings across **245** production and **546** test sources under `-Werror`; zero warning suppressions across both trees | `./mvnw -B clean verify` |
+| 2 — Zero-warning build | **PASS (measured)** | `BUILD SUCCESS`; zero compiler warnings across **246** production and **547** test sources under `-Werror`; zero warning suppressions across both trees | `./mvnw -B clean verify` |
 | 3 — Performance baseline | **PASS (measured)** | thirty dated rows, three of them from the recorded run and the rest from earlier runs of earlier revisions, each beside its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
 | 4 — Named validation artefacts | **PASS (measured)** | nine ASCII fixtures at their measured byte counts, twelve encoded datasets by name, ten seeded identities, five lookup cardinalities | `./mvnw -B clean verify` |
 | 5 — Interface contract verification | **PASS (measured)** | seven message texts over real HTTP, routing for both delivered types, seventeen cards drained from a real queue | `./mvnw -B clean verify` |
 | 6 — Unsafe and low-level code audit | **PASS (measured)** | every count the requirement names is zero, with the raw output of the scoped audit published; the one wider measure this page adds — casts to a parameterised type, checked or not — stands at five, each enumerated and each checked | the grep list below |
-| 7 — Scope matching | **PASS (measured)** | merged line coverage 96.07% against a build-failing floor of 80% | `./mvnw -B clean verify` |
+| 7 — Scope matching | **PASS (measured)** | merged line coverage 96.06% against a build-failing floor of 80% | `./mvnw -B clean verify` |
 | 8 — Integration sign-off | **PASS (measured)** | zero unsuppressed critical or high findings, dated; 544 traceability rows asserted; ten final-boundary criteria each held by an executed suite | `./mvnw -B clean verify` |
 
 No gate is PENDING and none is FAIL. Where a figure below is a property of one run rather than of the
@@ -210,37 +210,14 @@ row, and re-run the command rather than quoting the column.
 
 ### Gate traceability
 
-```mermaid
-graph LR
-    F["Nine ASCII fixtures<br/>app/data/ASCII"] --> S3["Flyway V3<br/>reference and transaction seed"]
-    U["app/jcl/DUSRSECJ.jcl lines 35-44<br/>ten in-stream card images"] --> S4["Flyway V4<br/>identity seed, BCrypt hashed"]
-    F --> I["Carried input fixtures<br/>module test resources"]
-    S3 --> B["e2e/BatchPipelineE2ETest"]
-    S4 --> B
-    I --> B
-    B --> G1["Gate 1<br/>byte equivalence,<br/>4 contractual widths"]
-    C["batch/CategoryBalanceReportJobConfigIT<br/>the supplemental 40-byte width"] --> G1
-    B --> G4["Gate 4<br/>named artefacts"]
-    V["e2e/GateVerificationTest<br/>fixture names, seed cardinalities,<br/>544 rows, audit budgets"] --> G4
-    V --> G6["Gate 6<br/>unsafe code"]
-    V --> G8["Gate 8<br/>sign-off"]
-    B --> T["support/RunScopedPerformanceRecorder<br/>gate3-*.md"]
-    T --> G3["Gate 3<br/>baseline established"]
-    O["e2e/OnlineTransactionE2ETest<br/>real HTTP, real SQS FIFO"] --> G5["Gate 5<br/>interface contracts"]
-    P["pom.xml<br/>Xlint all, Werror"] --> G2["Gate 2<br/>zero warnings"]
-    A["Scoped grep audit<br/>production tree only"] --> G6
-    J["JaCoCo 0.8.15<br/>merged line floor"] --> G7["Gate 7<br/>scope tier"]
-    M["traceability-matrix.md<br/>544 rows"] --> G8
-    D["dependency-check 12.1.3"] --> G8
-    G1 --> G8
-    G2 --> G8
-    G3 --> G8
-    G4 --> G8
-    G5 --> G8
-    G6 --> G8
-    G7 --> G8
-    G8 --> E["This page"]
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-gate-traceability-caption" markdown="1">
+![Left to right graph tracing each of the eight gates back to what evidences it. The nine ASCII fixtures feed the Flyway V3 reference and transaction seed and the carried input fixtures, and the ten in-stream card images of the user-provisioning job feed the Flyway V4 identity seed. Those three feed the batch pipeline end-to-end test, which produces Gate 1 byte equivalence across four contractual widths, Gate 4 named artefacts, and the run-scoped performance recorder behind the Gate 3 baseline. The category-balance job integration test supplies the supplemental forty-byte width to Gate 1. The gate verification test supplies Gate 4, Gate 6 and Gate 8. The online transaction end-to-end test supplies Gate 5. The build file supplies Gate 2. The scoped grep audit supplies Gate 6. JaCoCo supplies Gate 7. The traceability matrix and the dependency check supply Gate 8, and Gates 1 through 7 all converge on Gate 8, which converges on this page.](diagrams/gate-traceability.svg){ .diagram__image width="1806" height="1229" }
+</div>
+<figcaption class="diagram__caption" id="diagram-gate-traceability-caption" markdown="1">
+**Figure — Which artefact evidences which gate.** Every gate traced back to the artefact that evidences it. Gate 8 is the convergence point by construction, because its checklist is composed of the other seven, which is why a failure anywhere above surfaces there as well. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
 
 Gate 8 is the convergence point by construction: it is the only gate whose checklist is composed of the
 other seven, which is why a failure anywhere above surfaces there as well.
@@ -446,21 +423,21 @@ The lines that matter, quoted from the recorded run rather than paraphrased. Eve
 
 ```text
 [INFO] --- compiler:3.14.1:compile (default-compile) @ carddemo-java ---
-[INFO] Compiling 245 source files with javac [debug parameters release 25] to target/classes
+[INFO] Compiling 246 source files with javac [debug parameters release 25] to target/classes
 [INFO] --- compiler:3.14.1:testCompile (default-testCompile) @ carddemo-java ---
-[INFO] Compiling 546 source files with javac [debug parameters release 25] to target/test-classes
+[INFO] Compiling 547 source files with javac [debug parameters release 25] to target/test-classes
 ...
 [INFO] --- jacoco:0.8.15:check (jacoco-check-line-coverage) @ carddemo-java ---
-[INFO] Analyzed bundle 'carddemo-java' with 494 classes
+[INFO] Analyzed bundle 'carddemo-java' with 496 classes
 [INFO] All coverage checks have been met.
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  12:03 min
-[INFO] Finished at: 2026-08-11T22:44:42Z
+[INFO] Total time:  12:21 min
+[INFO] Finished at: 2026-08-13T23:01:54Z
 ```
 
-**Warning accounting, stated precisely rather than rounded off.** 245 production sources and 546 test
+**Warning accounting, stated precisely rather than rounded off.** 246 production sources and 547 test
 sources compiled and emitted **no compiler diagnostic of any kind** — no warning, no note, no error, and
 that part is a standing property because `-Werror` would have failed the build otherwise. Every
 `[WARNING]` line the log carries comes from the vulnerability scanner rather than the compiler. The run
@@ -473,7 +450,7 @@ is why the standing claim made here is about compiler diagnostics and the scanne
 rather than counted. They are named rather than netted out, because "zero warnings" is the sort of claim
 that is worth only as much as the care taken over its exceptions.
 
-**Every repeat full `verify` reproduced this exactly**: the same 245 and 546 source counts, no compiler
+**Every repeat full `verify` reproduced this exactly**: the same 246 and 547 source counts, no compiler
 diagnostic of any kind, the same finding report from the scanner, and `BUILD SUCCESS`. A warning count that
 is a property of the code should not move between runs of the same code, and across repeated runs it did
 not. **The scanner's own line count did move, by one, and that is the distinction rather than an
@@ -515,9 +492,9 @@ character literal first, preserving line numbers, and reports the file and line 
 
 | Scope | Sources | Suppressions in code | Mentions in comments or literals |
 | --- | ---: | ---: | ---: |
-| `src/main/java` | 245 | **0** | 0 |
-| `src/test/java` | 546 | **0** | 12 |
-| Whole source | 791 | **0** (budget 3) | 12 |
+| `src/main/java` | 246 | **0** | 0 |
+| `src/test/java` | 547 | **0** | 12 |
+| Whole source | 793 | **0** (budget 3) | 12 |
 
 The two columns are published to different standards, and the difference is worth stating. **The
 suppressions-in-code column is gated**: `GateVerificationTest` reads this table, measures both trees, and
@@ -533,8 +510,8 @@ a pass. Non-empty mentions prove the scan reached text carrying the name, which 
 column mean something.
 
 **Nothing is excluded, and the requirement's own carve-out is empty.** This gate excepts framework-generated
-code, and the audit honours that exception by covering every Java source the module actually contains: 245
-under `src/main/java` and 546 under `src/test/java`, which is every `.java` file in the module outside
+code, and the audit honours that exception by covering every Java source the module actually contains: 246
+under `src/main/java` and 547 under `src/test/java`, which is every `.java` file in the module outside
 `target/`. The exception turns out to have nothing to apply to. Maven creates
 `target/generated-sources/` and `target/generated-test-sources/` on every build, and in this module both are
 **empty** — no annotation processor is on the compiler path at all, which is the same decision that keeps
@@ -686,8 +663,16 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 **Thirty rows, and the machine column is what tells them apart rather than the date.** The count is not
 transcribed here: `config/DocumentedSourceCountsTest` derives it from this table and holds the module
 manual's published figure to it, so the next measured run updates the prose or breaks the build (DL-340).
-Rows 1 to 3 are the recorded run this page carries, taken on 2026-08-11 and finishing 22:44:42Z, and their
-five figures are the ones the generated baselines of that run carry; rows 4 to 6, rows 7 to 9 and rows 10 to
+Rows 1 to 3 are the most recently measured run, taken on 2026-08-11 and finishing 22:44:42Z, and their five
+figures are the ones that run's generated baselines carried. **They are deliberately not the run whose
+transcript this page quotes under Gate 2**, and the distinction is the one drawn at the top of this page: a
+standing figure — a source count, a test total, a coverage counter — is this tree's and is reconciled against
+the build you just took, while a timing is a measurement of one run and belongs to that run permanently. This
+table is held at thirty rows for that reason, so a later build cannot displace a measured row that a reader
+can still attribute to the host and label beside it. Every build writes its own figures to
+`target/gate-evidence/gate3-pipeline-baseline.md` and `target/gate-evidence/gate3-interest-calculation.md`,
+which is where a timing for the build in front of you is read from rather than from this table; rows 4 to 6,
+rows 7 to 9 and rows 10 to
 12 are the three runs this page carried previously — the same date, earlier revisions, finishing 13:50:31Z,
 10:57:47Z and 08:17:50Z —
 relabelled here rather than dropped, so a row that was once "the recorded run" still says which run it was;
@@ -1148,7 +1133,7 @@ so a reader can reproduce the raw population; the lines it returns are counted a
 ### The raw output
 
 Published rather than summarised, because a count without its output is an assertion. Taken over the
-**245** production sources of the tree this page ships with, so a reader can re-run each line and compare:
+**246** production sources of the tree this page ships with, so a reader can re-run each line and compare:
 
 ```text
 $ grep -rnE 'Runtime\.getRuntime|ProcessBuilder|java\.lang\.reflect|Class\.forName|createNativeQuery' src/main/java/
@@ -1230,7 +1215,7 @@ import javax\.         0
 ```
 
 The suppression figure is reported separately because its scope and its method both differ. Over
-`src/main/java` and `src/test/java` together — 791 sources — the raw `grep` returns **twelve** lines and the
+`src/main/java` and `src/test/java` together — 793 sources — the raw `grep` returns **twelve** lines and the
 code-only measurement returns **zero**:
 
 ```text
@@ -1439,7 +1424,7 @@ hits in this file.
 | **Requirement** | The extended specification tier: multi-subsystem batch processing, file I/O, inter-program calls, JCL orchestration and AWS service integration, with at least 80% line coverage. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/site/jacoco-merged/index.html` — the report over the merged unit and integration data, which is the data the failing check measures. `target/site/jacoco/index.html` and `target/site/jacoco-it/index.html` are the per-tier reports and are informational: either alone understates the figure. A report produced by a scoped run is not this artefact and cannot occupy its path — the `scoped-tests` profile writes under `target/scoped-site/` (DL-284) — so a figure quoted from here always comes from a full unscoped `verify`. |
-| **Recorded status** | **PASS (measured).** Merged line coverage 96.07% against a build-failing floor of 80%. |
+| **Recorded status** | **PASS (measured).** Merged line coverage 96.06% against a build-failing floor of 80%. |
 
 ### The acceptance criterion, stated precisely
 
@@ -1454,14 +1439,14 @@ The recorded run's figures, read from the merged report:
 
 | Metric | Covered | Total | Percentage | Gated |
 | --- | ---: | ---: | ---: | :---: |
-| **Line** | 23,339 | 24,295 | **96.07%** | **yes, floor 80%** |
-| Branch | 7,789 | 8,710 | 89.43% | no |
-| Instruction | 101,073 | 104,956 | 96.30% | no |
-| Method | 4,435 | 4,486 | 98.86% | no |
+| **Line** | 23,368 | 24,326 | **96.06%** | **yes, floor 80%** |
+| Branch | 7,800 | 8,724 | 89.41% | no |
+| Instruction | 101,217 | 105,106 | 96.30% | no |
+| Method | 4,446 | 4,497 | 98.87% | no |
 
-The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 494 classes` followed by
+The build's own confirmation, quoted: `Analyzed bundle 'carddemo-java' with 496 classes` followed by
 `All coverage checks have been met.` **Every repeat run over one tree measured these figures to the line** —
-23,339 covered of 24,295 in each — which is what a coverage figure should do when the code has not changed.
+23,368 covered of 24,326 in each — which is what a coverage figure should do when the code has not changed.
 The figures move when the tree does, which is the ordinary case rather than an exception: they are read from
 the merged report of the run that carries this page, and the workflow's *Reconcile the published coverage
 counters with the merged report* step fails the build whenever this table and that report disagree, so the
@@ -1471,9 +1456,9 @@ Per tier, which is why the merged report and not either component is the gated a
 
 | Report | Line | Branch |
 | --- | ---: | ---: |
-| Unit only — `target/site/jacoco/` | 94.76% | 88.53% |
-| Integration only — `target/site/jacoco-it/` | 74.99% | 59.55% |
-| **Merged — `target/site/jacoco-merged/`** | **96.07%** | **89.43%** |
+| Unit only — `target/site/jacoco/` | 94.76% | 88.51% |
+| Integration only — `target/site/jacoco-it/` | 74.76% | 59.45% |
+| **Merged — `target/site/jacoco-merged/`** | **96.06%** | **89.41%** |
 
 **Every counter above is reconciled against the merged report by CI, and three of them were wrong before it
 was.** The four covered-and-total pairs in the metric table are read out of
@@ -1530,8 +1515,8 @@ point of this subsection: publishing 26,235 unit and 1,601 integration tests by 
 as soon as the tree moves underneath it — such numbers are a transcription of a run nobody can
 still identify. Each row now names the directory it was derived from, and two mechanisms hold it there.
 
-The suite behind those figures is the whole estate rather than a sample: the unit tier runs 27,089 test
-executions across 450 classes and the integration and end-to-end tier runs 1,666 across 77 classes,
+The suite behind those figures is the whole estate rather than a sample: the unit tier runs 27,123 test
+executions across 451 classes and the integration and end-to-end tier runs 1,666 across 77 classes,
 under the two inclusion rules stated above. Those class counts are the asserted half of the sentence —
 `config/DocumentedSourceCountsTest` measures both against this tree and fails the build on a
 disagreement — and the execution counts beside them are the dated half, read out of the runners' own
@@ -1548,9 +1533,9 @@ is why this paragraph states the distinction rather than leaving it to be inferr
 
 | Tier | Report directory | Classes | Tests | Failures | Errors | Skips |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Unit | `target/surefire-reports/` | 450 | 27,089 | 0 | 0 | 0 |
+| Unit | `target/surefire-reports/` | 451 | 27,123 | 0 | 0 | 0 |
 | Integration and end-to-end | `target/failsafe-reports/` | 74 | 1,666 | 0 | 0 | 0 |
-| **Whole suite** | both directories | **524** | **28,755** | **0** | **0** | **0** |
+| **Whole suite** | both directories | **525** | **28,789** | **0** | **0** | **0** |
 
 Derive them for yourself from any completed unscoped run. One report file per top-level class, with nested
 classes rolled into their outer class's file, so the file count is the count of classes that **ran**:
@@ -1570,7 +1555,7 @@ claim — and the table counts the report files a run *produced*. Three of the 7
 `AbstractPostgresIT`, `AbstractLocalStackIT` and `AbstractPostgresAndLocalStackIT`, which hold container
 lifecycle for their subclasses and declare no test of their own, so they run as part of every subclass and
 produce no report file of their own. The unit tier has no such base class, which is why its two figures are
-both 450 and why the equality is what tells `GateVerificationTest` the run was unscoped.
+both 451 and why the equality is what tells `GateVerificationTest` the run was unscoped.
 
 **The count is of `<testcase>` elements, not of the `tests` attribute, and the difference is real.** The
 attribute on `<testsuite>` counts *distinct* testcase names, so where two nests of one class each declare a
@@ -1687,7 +1672,7 @@ bound always reached the index — it was a wider index range than necessary. DL
 | Interface contract verification | seven sign-on message texts; the seventeen-card job image with its four slots and transmitted sentinel; a real SQS FIFO queue | `e2e/OnlineTransactionE2ETest`, plus `service/JobSubmissionServiceIT` | **PASS (measured)** |
 | Performance baseline | `support/RunScopedPerformanceRecorder`, whose generated `target/gate-evidence/gate3-*.md` files are where every quotable figure comes from; the Micrometer timers at `/actuator/prometheus` corroborate them. Transcribed into this page's *Measured runs* table | `./mvnw -B clean verify`, then read `target/gate-evidence/gate3-*.md` | **PASS (measured)** — thirty dated rows, each with its machine and its fixture volumes, the newest three from the recorded run |
 | Unsafe code audit | the fixed grep list scoped to `src/main/java/**` | the commands and raw output under Gate 6 | **PASS (measured)** — every count the requirement names is zero; the wider cast measure Gate 6 adds stands at five, all checked |
-| Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 96.07% |
+| Line coverage ≥ 80% | JaCoCo 0.8.15 failing check over `target/jacoco-merged.exec` | `./mvnw -B clean verify` | **PASS (measured)** — 96.06% |
 | Zero critical/high CVEs | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0 over compile, runtime and test scope | `./mvnw -B clean verify`; report published below | **PASS (measured)** — zero unsuppressed critical, zero unsuppressed high |
 | Traceability 100% | [traceability-matrix.md](traceability-matrix.md) | `e2e/GateVerificationTest` row-count assertion at **544** | **PASS (measured)** |
 | Final-boundary criteria, each held by an executed suite | ten criteria covering bounded provider calls and pinned retry, resource trust and proven capability, durable publication integrity under an ambiguous upload, bounded cross-system coordination, trace continuity across the durable and notification boundaries, provider-log containment, truthful terminal and refused-request telemetry, the boundary panel inventory, collector trust and sampling, and durable attributable evidence | `e2e/GateVerificationTest` resolves each criterion to a suite under `src/test/java` and checks that one of the two tiers actually executes it | **PASS (measured)** — 10 of 10 held |
@@ -1739,7 +1724,7 @@ The executed result, from the recorded run:
 | Scanner | `dependency-check-maven` 12.1.3, bound to `verify` |
 | Report | `target/dependency-check-report.html`, with `.json` and `.xml` beside it |
 | Tree scanned | the module as it stands in the revision that carries this page; the scan reads `target/` artefacts of that build rather than a named commit |
-| Scan completed | **2026-08-13T00:28:46Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the dated figures below were read from |
+| Scan completed | **2026-08-13T23:01:52Z**, the report date carried inside `dependency-check-report.json` itself at `projectInfo.reportDate`, in the recorded run, which is where the dated figures below were read from |
 | Vulnerability data state | NVD API last checked 2026-08-12T09:16:09Z, last modified 2026-08-12T08:17:19Z |
 | Dependencies scanned | 166 report entries, covering 244 files once the scanner's own grouping is counted — and this is the one figure in the table that is a property of the **scanner** rather than of the module. It read 168 before `commons-logging` was excluded from the three AWS starters ([DL-357](decision-log.md)), 167 after, and 166 on this run: the version moves recorded below changed **no coordinate in the graph**, which `dependency:list` confirms at 239 artefacts before and after with an identical membership set, but on the new logback release the scanner groups `logback-classic` underneath `logback-core` as a related dependency instead of listing it separately. Two entries became one entry plus one related file. Every other figure in this table was re-measured on the same run |
 | **Unsuppressed critical** | **0** |

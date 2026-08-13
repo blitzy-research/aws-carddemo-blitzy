@@ -27,12 +27,14 @@ import com.carddemo.domain.TransactionCategory;
 import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.TransactionType;
 import com.carddemo.domain.UserSecurity;
+import com.carddemo.exception.RecordParseException;
 import com.carddemo.util.AccountRecordMapper;
 import com.carddemo.util.CardRecordMapper;
 import com.carddemo.util.CardXrefRecordMapper;
 import com.carddemo.util.CustomerRecordMapper;
 import com.carddemo.util.DailyTransactionRecordMapper;
 import com.carddemo.util.DisclosureGroupRecordMapper;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.TranCatBalRecordMapper;
 import com.carddemo.util.TranCatRecordMapper;
 import com.carddemo.util.TranTypeRecordMapper;
@@ -47,10 +49,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.function.UnaryOperator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.file.BufferedReaderFactory;
 import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.item.file.FlatFileParseException;
 import org.springframework.batch.item.file.LineMapper;
-import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.item.file.separator.SimpleRecordSeparatorPolicy;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
@@ -208,24 +212,32 @@ import org.springframework.stereotype.Component;
  * demands: a terminator left in place would count towards the width and the mapper would reject an
  * otherwise valid record.
  *
- * <h2>Failures are reported, never reinterpreted</h2>
+ * <h2>Failures are reported bounded, and never reinterpreted</h2>
  *
  * <p>Width and character validation belong to the mappers and are not repeated here - a second check
  * would be a second thing to keep in step with the layout. When a mapper rejects an image it throws
  * an {@code IllegalArgumentException}; the framework wraps that in a
- * {@code FlatFileParseException} which names the resource and the line number and carries the original
- * exception as its cause. This class neither catches nor translates it, so the diagnosis reaches the
- * owning step intact and is adapted there once, by the shared step skeleton, into the estate's
- * display-then-abend behaviour.
+ * {@code FlatFileParseException} which names the resource and the line number - <strong>and which
+ * carries the whole offending record, verbatim, in both its message and its payload</strong>.
  *
- * <p><strong>Finding for the owning step, recorded here because it is a property of the framework and
- * not of this class:</strong> that wrapping exception's message and payload include the offending line
- * verbatim. For ten of the eleven layouts that is merely verbose. For the user-security layout the line
- * contains the record's credential field, so a step that logs such a failure directly would publish a
- * credential to a log collector. A step handling a parse failure from
- * {@link #userSecurityReader(Resource, UnaryOperator)} must render it through the module's bounded
- * failure-chain helper, which publishes the shape of the failure and none of its payload, rather than
- * handing the exception object to an appender.
+ * <p>That wrapping exception must not leave this class, and every reader built here is therefore a
+ * {@link SanitisingFlatFileItemReader}: it translates the framework's parse exception into
+ * {@link RecordParseException}, which reports the layout, the resource, the line number and a bounded
+ * chain of failure type names, and reports no record content at all. The verdict is unchanged - the
+ * read still fails, still terminally, still at the same record - so the owning step's
+ * display-then-abend behaviour is preserved exactly; what changes is that the diagnosis a step hands
+ * to an appender, and that the job repository persists into an execution's exit message, can no
+ * longer be a copy of the record.
+ *
+ * <p><strong>Why this is translated here rather than in each owning step.</strong> Three of the eleven
+ * layouts carry data that must not be republished: the card, transaction and daily-transaction images
+ * carry a full primary account number, the card image its verification code, the customer image a
+ * national identifier, and the user-security image a sign-on credential. A step-by-step remedy would
+ * have to be repeated in every present and future consumer of this factory and would be silently
+ * incomplete the moment one was added. One translation on the single path every reader is built
+ * through covers all eleven layouts and cannot be forgotten. The layout diagnosis the mapper produced
+ * is not lost, only unlinked: its type is named in the bounded chain, and the mapper's own message
+ * remains asserted by that mapper's own tests, where no record content is involved.
  *
  * <h2>Threading, state and instances</h2>
  *
@@ -358,6 +370,27 @@ public final class FixedWidthFlatFileReaderFactory {
      * element to mutate, and the reader copies the array it is given rather than retaining this one.
      */
     private static final String[] NO_COMMENT_PREFIXES = new String[0];
+
+    /**
+     * The diagnostic channel for a translated parse failure.
+     *
+     * <p>The only logger in this class, and it exists for one statement: the bounded diagnosis raised in
+     * place of the framework's record-bearing parse exception. Every other decision this class makes is
+     * either configuration, which the framework already reports at start-up, or a caller error, which is
+     * reported by the exception the caller receives.
+     */
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(FixedWidthFlatFileReaderFactory.class);
+
+    /**
+     * The fixed segment of the framework's parse-exception message that precedes the resource
+     * description.
+     *
+     * <p>Named here so the one place that parses that message says which segment it reads, and so it is
+     * visible that the segment read is the resource and never the {@code input=[...]} segment that
+     * follows it and holds the record.
+     */
+    private static final String RESOURCE_SEGMENT = "resource=[";
 
     /** Message used when a caller supplies no resource. */
     private static final String RESOURCE_REQUIRED = "resource must not be null";
@@ -669,13 +702,14 @@ public final class FixedWidthFlatFileReaderFactory {
      * same reason the customer layout's sealer is - it is a policy owned by the layer that configures
      * it, not by a reader factory.
      *
-     * <p><strong>Handle a parse failure from this reader with care.</strong> When any mapper rejects an
-     * image the framework raises a parse exception that carries the offending line verbatim in its
-     * message and payload. For this layout alone that line contains the cleartext credential, so a step
-     * that passes such an exception to a logging appender publishes a credential. Render it through the
-     * module's bounded failure-chain helper, which reports the types involved and none of the payload.
-     * This method does not catch the failure, because suppressing or rewriting it here would hide a
-     * malformed dataset.
+     * <p><strong>A parse failure from this reader is already bounded, and that is not this layout's
+     * privilege alone.</strong> When any mapper rejects an image the framework raises a parse exception
+     * that carries the offending line verbatim in its message and payload; for this layout that line
+     * contains the cleartext credential. Every reader this class builds therefore translates that
+     * exception into {@link RecordParseException} before it can reach a caller, so a step that hands the
+     * failure straight to a logging appender publishes the layout, the resource, the line number and a
+     * chain of failure type names, and no credential. The failure itself is not suppressed or softened -
+     * a malformed dataset still ends the read at the record that is malformed.
      *
      * <p><strong>This reader needs one record per line, and this layout is the one of the eleven whose
      * available datasets are not shaped that way.</strong> The estate ships no plain-text sample for it
@@ -717,9 +751,10 @@ public final class FixedWidthFlatFileReaderFactory {
      * class and no cast anywhere on this path.
      *
      * <p>The line number the framework offers each mapped line is deliberately unused. A mapper
-     * identifies a bad record by its content, and the framework already reports the line number and the
-     * resource description when it wraps a mapping failure, so passing it further would add nothing and
-     * would tempt a mapper into position-dependent behaviour.
+     * identifies a bad record by its content, and the line number and resource description reach the
+     * caller anyway - they are carried by the bounded failure this class raises in place of the
+     * framework's record-bearing one - so passing them further would add nothing and would tempt a
+     * mapper into position-dependent behaviour.
      *
      * @param  <T>        the domain type the mapper produces
      * @param  readerName the stable, unique name under which this reader's progress is persisted
@@ -730,24 +765,7 @@ public final class FixedWidthFlatFileReaderFactory {
      */
     private static <T> FlatFileItemReader<T> newReader(final String readerName,
             final Resource resource, final LineMapper<T> lineMapper) {
-        Objects.requireNonNull(resource, RESOURCE_REQUIRED);
-        return new FlatFileItemReaderBuilder<T>()
-                // Stable and unique, so a restarted execution resumes this reader and no other.
-                .name(readerName)
-                .resource(resource)
-                // Explicit: the reader's own default is UTF-8, and the datasets are 7-bit ASCII.
-                .encoding(RECORD_CHARSET_NAME)
-                // One line is one whole record, returned unchanged: no continuation joining, no quote
-                // handling, and every trailing space preserved.
-                .recordSeparatorPolicy(new SimpleRecordSeparatorPolicy())
-                // Comment recognition off. Left on, a record beginning with a hash would be discarded
-                // silently, and seven of the eleven layouts open with an unconstrained field.
-                .comments(NO_COMMENT_PREFIXES)
-                // A missing input fails on open instead of yielding an empty, apparently successful run.
-                .strict(true)
-                // The whole record image, terminator already removed, handed to the mapper untouched.
-                .lineMapper(lineMapper)
-                .build();
+        return configure(readerName, resource, lineMapper, null);
     }
 
     /**
@@ -762,20 +780,150 @@ public final class FixedWidthFlatFileReaderFactory {
      */
     private static <T> FlatFileItemReader<T> newFixedStrideReader(final String readerName,
             final Resource resource, final int recordLength, final LineMapper<T> lineMapper) {
-        Objects.requireNonNull(resource, RESOURCE_REQUIRED);
         final BufferedReaderFactory readerFactory = (source, encoding) ->
                 new FixedStrideBufferedReader(
                         new InputStreamReader(source.getInputStream(), encoding), recordLength);
-        return new FlatFileItemReaderBuilder<T>()
-                .name(readerName)
-                .resource(resource)
-                .encoding(RECORD_CHARSET_NAME)
-                .bufferedReaderFactory(readerFactory)
-                .recordSeparatorPolicy(new SimpleRecordSeparatorPolicy())
-                .comments(NO_COMMENT_PREFIXES)
-                .strict(true)
-                .lineMapper(lineMapper)
-                .build();
+        return configure(readerName, resource, lineMapper, readerFactory);
+    }
+
+    /**
+     * Applies every reader decision this class owns to one new sanitising reader.
+     *
+     * <p>The single construction point. Both {@link #newReader} and {@link #newFixedStrideReader} route
+     * through here, so the charset, the separator policy, comment recognition, resource strictness and
+     * - decisively - the parse-failure translation cannot differ between one layout and another, and a
+     * reader added later inherits all of them without its author having to know they exist.
+     *
+     * <p>The properties are set rather than assembled through the framework's builder because the
+     * instance has to be {@link SanitisingFlatFileItemReader} and the builder can only produce the base
+     * type. The set is exactly the set the builder was previously given, with the same values; every
+     * other property is left at the framework default, as it was before.
+     *
+     * @param  <T>           the domain type the mapper produces
+     * @param  readerName    the stable, unique name under which this reader's progress is persisted,
+     *                       and the name by which a failure identifies the layout
+     * @param  resource      the sequential dataset to read; must not be {@code null}
+     * @param  lineMapper    the mapping from one untouched record image to one domain object
+     * @param  readerFactory the framing strategy for fixed-unblocked input, or {@code null} to frame by
+     *                       line as the framework does by default
+     * @return a new reader, never {@code null} and never shared with a previous caller
+     * @throws NullPointerException if {@code resource} is {@code null}
+     */
+    private static <T> FlatFileItemReader<T> configure(final String readerName,
+            final Resource resource, final LineMapper<T> lineMapper,
+            final BufferedReaderFactory readerFactory) {
+        Objects.requireNonNull(resource, RESOURCE_REQUIRED);
+        final SanitisingFlatFileItemReader<T> reader =
+                new SanitisingFlatFileItemReader<>(readerName);
+        // Stable and unique, so a restarted execution resumes this reader and no other.
+        reader.setName(readerName);
+        reader.setResource(resource);
+        // Explicit: the reader's own default is UTF-8, and the datasets are 7-bit ASCII.
+        reader.setEncoding(RECORD_CHARSET_NAME);
+        if (readerFactory != null) {
+            // Fixed-unblocked input is framed by width; a line-terminated dataset keeps the default.
+            reader.setBufferedReaderFactory(readerFactory);
+        }
+        // One line is one whole record, returned unchanged: no continuation joining, no quote
+        // handling, and every trailing space preserved.
+        reader.setRecordSeparatorPolicy(new SimpleRecordSeparatorPolicy());
+        // Comment recognition off. Left on, a record beginning with a hash would be discarded
+        // silently, and seven of the eleven layouts open with an unconstrained field.
+        reader.setComments(NO_COMMENT_PREFIXES);
+        // A missing input fails on open instead of yielding an empty, apparently successful run.
+        reader.setStrict(true);
+        // The whole record image, terminator already removed, handed to the mapper untouched.
+        reader.setLineMapper(lineMapper);
+        return reader;
+    }
+
+    /**
+     * A flat-file reader whose parse failures name the failure and never republish the record.
+     *
+     * <p>The framework's reader composes its parse exception as
+     * {@code "Parsing error at line: N in resource=[...], input=[<the whole record>]"} and additionally
+     * retains the record as the exception's payload. Both are unavoidable at the point of the throw -
+     * they are assembled inside the framework - so the only place the disclosure can be removed is
+     * immediately above it, which is what this class is. {@link #doRead()} is the single method the
+     * framework routes every record read through, so nothing can bypass the translation.
+     *
+     * <p>The translation is deliberately narrow. Only the parse exception is caught: a missing
+     * resource, an unreadable stream and a short fixed-unblocked stride are all reported by other types
+     * whose messages this module either authors itself or which name only the resource, so translating
+     * those too would obscure diagnoses that are already safe. The read verdict is not softened - no
+     * record is skipped, no failure is swallowed, and the step still ends exactly as it did.
+     *
+     * <p>The diagnosis is logged here, once, before the raise. That is both the module's convention at
+     * a boundary and the legacy batch ordering - write the diagnostic, then end - and it means the
+     * layout, resource and line survive even where a job's own failure logging is quietened.
+     *
+     * @param <T> the domain type the bound mapper produces
+     */
+    private static final class SanitisingFlatFileItemReader<T> extends FlatFileItemReader<T> {
+
+        /** Stable reader name, used to identify the layout in a failure that carries no record. */
+        private final String layout;
+
+        /**
+         * @param layout the stable reader name identifying the layout being read
+         */
+        private SanitisingFlatFileItemReader(final String layout) {
+            super();
+            this.layout = layout;
+        }
+
+        /**
+         * Reads one record, translating a parse failure into a diagnosis that carries no record.
+         *
+         * @return the next mapped object, or {@code null} at end of input
+         * @throws RecordParseException if the record at the current line could not be mapped
+         * @throws Exception            as the framework's own reader declares, for every other failure
+         */
+        @Override
+        protected T doRead() throws Exception {
+            try {
+                return super.doRead();
+            } catch (final FlatFileParseException disclosing) {
+                final String resourceDescription = describeResource(disclosing);
+                final String failureChain =
+                        FailureDiagnostics.failureChainOf(disclosing.getCause());
+                LOGGER.error("A fixed-width record could not be mapped: layout={} resource=[{}]"
+                        + " line={} failureChain={}. {}", this.layout, resourceDescription,
+                        disclosing.getLineNumber(), failureChain,
+                        RecordParseException.REDACTION_NOTICE);
+                throw new RecordParseException(this.layout, resourceDescription,
+                        disclosing.getLineNumber(), failureChain);
+            }
+        }
+
+        /**
+         * Recovers the resource description from the framework's message without carrying the record.
+         *
+         * <p>The framework does not expose the resource on its parse exception, and this reader's own
+         * resource field is private to the framework class, so the description is taken from the one
+         * place it is available: the fixed {@code resource=[...]} segment the framework's own message
+         * always contains. Only the text between that segment's brackets is taken, so the
+         * {@code input=[...]} segment that follows it - the record - is never read. When the segment is
+         * absent, because a future framework version words the message differently, the description is
+         * reported as unknown rather than guessed at, and the line number and layout still identify the
+         * failure.
+         *
+         * @param  disclosing the framework's parse exception
+         * @return the resource description, or {@link RecordParseException#UNKNOWN}
+         */
+        private static String describeResource(final FlatFileParseException disclosing) {
+            final String message = disclosing.getMessage();
+            if (message == null) {
+                return RecordParseException.UNKNOWN;
+            }
+            final int start = message.indexOf(RESOURCE_SEGMENT);
+            if (start < 0) {
+                return RecordParseException.UNKNOWN;
+            }
+            final int from = start + RESOURCE_SEGMENT.length();
+            final int end = message.indexOf(']', from);
+            return end < 0 ? RecordParseException.UNKNOWN : message.substring(from, end);
+        }
     }
 
     /**
