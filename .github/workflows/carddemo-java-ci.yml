@@ -1,0 +1,1965 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+#
+# Continuous integration for the carddemo-java module.
+#
+# This is the one migration target that cannot live inside carddemo-java/, because GitHub Actions
+# resolves workflow definitions only from .github/workflows/ at the repository root. It scopes
+# itself back into the module with defaults.run.working-directory.
+#
+# WHAT THIS RUN PROVES
+# SEVEN linear gates, every one of which ends the run where it is not satisfied - directly, by failing
+# its own step, with nothing recording a failure and carrying on.
+#
+# There is one inventory of those gates and it is the list below. It is written out because the count is
+# stated in three places - this header, each step's own banner, and the closing summary - and a reviewer
+# signing the gates off has to be able to tell which is authoritative. SEVEN is the count, and a gate
+# added to fewer than all three places is the defect DL-186 exists to prevent; config/BuildAndCiContractTest
+# fails the build when the three disagree, so the inventory cannot drift again.
+#
+# Three properties are carried by ONE gate, the Maven build gate, because they are bound to its verify
+# phase rather than invoked separately. Each remaining property is a gate of its own:
+#
+#   gate 1  repository whitespace hygiene
+#   gate 2  zero-warning build, coverage floor and supply chain (all three bound to verify)
+#   gate 3  locale hardening
+#   gate 4  bootstrap contract
+#   gate 5  reproducibility
+#   gate 6  jar deployability
+#   gate 7  container, Compose and monitoring deployability
+#
+# Decision log DL-186 records why this list is written out rather than left implied.
+#
+#   whitespace hygiene : the whole committed tree of the paths this migration authors is read by
+#                        git's own whitespace diagnostic, so a trailing space cannot reach a
+#                        reviewer again. Nothing in the Maven build can see such a defect: javac
+#                        does not read trailing whitespace and the suite asserts behaviour, not
+#                        layout, which is why this is a gate rather than a lint preference.
+#   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
+#                        25, so any warning ends the run instead of accumulating in a report.
+#   coverage floor     : the coverage plugin applies a check rule over the merged unit plus
+#                        integration execution data - LINE counter, covered ratio, minimum
+#                        0.80, halting on failure. LINE is the enforced counter; the other
+#                        counters are produced for information only.
+#   locale hardening   : the unit tier is re-executed under two hostile default locales, because
+#                        the suite pins the locale and so cannot observe such a defect on its own.
+#                        It is one of two mechanisms rather than the only one: this gate observes
+#                        real behaviour but only in the tier it re-executes, while
+#                        LocaleDeterminismAuditTest forbids the constructs by reading every source
+#                        file in both trees - which is how the integration tier, never re-executed
+#                        here, is covered too. Decision log DL-187 records the ban.
+#   supply chain       : the vulnerability plugin runs its check goal and ends the build on any
+#                        finding at or above the configured score. It is EXECUTED here rather
+#                        than merely declared: the module build leaves the scan switched on by
+#                        default, so a developer running the build by hand gets the scan with
+#                        no command-line override.
+#   bootstrap contract : the emulator initializer that provisions the local AWS surface is
+#                        linted and then actually RUN against the pinned emulator image, and
+#                        each resource it reports is read back and compared. Nothing in the
+#                        Maven build touches that script, so without this gate the one file the
+#                        container-backed tiers and the whole local gate runbook depend on
+#                        would be the only executable artifact here that nothing verified.
+#   reproducibility    : a second package build with the same revision and source epoch is compared
+#                        byte for byte with the verified jar.
+#   jar deployability  : the repackaged jar's declared start class is proven present inside the
+#                        artifact, and the artifact is started against a real database and must
+#                        report live on the same group the container image probes.
+#   container and      : the digest-pinned image and complete Compose stack are built, scanned,
+#   monitoring           started and queried through application, Prometheus, Grafana and Jaeger
+#   deployability        endpoints before the artifact is published. EVERY image the stack ships at
+#                        run time is gated on the same terms - the application image, both base
+#                        images and every third-party service image - and a HIGH or CRITICAL fails
+#                        the gate unless a scoped, reviewed, expiring determination covers it.
+#                        Nothing is filtered out of the scans: a finding with no fix available
+#                        upstream, and a finding a determination covers, are both retained in the
+#                        archived report rather than dropped from it.
+#
+# Stopping at package instead of verify would run none of the build-phase gates and a green run
+# would prove nothing, so the build invocation below always goes all the way to verify.
+#
+# WHY THE GATES ARE LINEAR
+# Each gate fails the job at the point of failure. Maven executes dependency-check before the
+# coverage check inside verify, so a coverage failure still leaves a vulnerability report; the
+# workflow does not split those mechanisms into separate verdict steps or reconstruct their status
+# later. Runtime gates follow only after the build is green because they consume the jar and image
+# it produced. Evidence uploads use if: always() solely to preserve reports that already exist; they
+# never turn a failed gate into a successful run. Adding a new gate therefore means adding one
+# ordinary failing step in sequence, not updating a second list of outcomes in a final verdict.
+#
+# WHY THE REPORTS ARE UPLOADED
+# Every report those gates produce is deliberately untracked by the module's ignore file, so the
+# uploaded artifacts of this run are their only durable record and the raw input a reviewer
+# cites when signing the gates off. The uploads therefore run even when a gate fails, because a
+# failed run's coverage and vulnerability reports are exactly what a reviewer needs.
+#
+# WHY EVERY ACTION IS PINNED TO A COMMIT
+# A moving major-version tag is a mutable reference: the same workflow text can run different
+# third-party code tomorrow than it ran today, and a compromised or simply changed release is
+# picked up with no review and no diff. Every action below is therefore pinned to the full
+# commit it resolved to when this file was written, with the release it corresponds to recorded
+# in a trailing comment so the pin stays readable and can be moved deliberately. This is the
+# same intent as the legacy procedures naming exact library data sets rather than accepting
+# whatever happened to be installed, and as the build tool wrapper pinning its own distribution
+# by digest.
+#
+# CONCEPTUAL ANTECEDENT
+# The legacy estate's compile-and-link pipeline - three job members under samples/jcl (job names
+# CNJBATMP, CBLDBMS, CICCMP) driving three cataloged procedures under samples/proc (BLDBAT,
+# BUILDBMS, BLDONL). Five structural traits carry over. They are cited as metadata only; no
+# line of legacy source text is reproduced anywhere in this file.
+#
+#   1. Pinned toolchain. The procedures named exact compiler and transaction-monitor library
+#      data sets rather than accepting whatever happened to be installed, so every action
+#      reference below is pinned to an immutable commit identifier and the JDK vendor and
+#      feature release are stated explicitly. A release tag is deliberately NOT used for that
+#      purpose: a major-version tag such as v4 is mutable and its owner re-points it at every
+#      new release, so a tag pin lets the code a run executes change with nothing in this file
+#      changing - the integrity gap the pinning below closes. Each reference therefore carries
+#      the full forty-character commit identifier, with the release it belongs to retained in a
+#      trailing comment so a maintainer can move the pin deliberately rather than silently. Each
+#      identifier was read from the action repository's own tag reference and independently
+#      confirmed against the published release for that tag; every one resolves to a commit
+#      object and to the exact code the previous v4 reference already selected, so pinning
+#      changes the reference's integrity and not the build's behaviour.
+#   2. Explicit compiler options. Every compile and link step carried an explicit option list -
+#      the direct ancestor of the strict lint settings the module build applies.
+#   3. Condition-code gating. The whole pipeline contained exactly two condition-code clauses,
+#      one on a program-reload step and one on a link-edit step naming its compile predecessor,
+#      and both ran downstream work only where the upstream step had succeeded. Nothing in this
+#      file lets a warning or a failing test pass quietly, because that would invert those
+#      semantics rather than preserve them.
+#   4. Listing replication. Three steps existed purely to copy a compile listing to the
+#      operator's output stream. Publishing the reports as artifacts is the same intent with
+#      durable storage.
+#   5. Symbol substitution. The job members set qualifier and member symbols once and resolved
+#      them through a procedure library. Here the equivalent values are stated once at their
+#      point of use and pinned. In particular the build tool version is NOT restated in this
+#      file at all: the module's wrapper properties file is its single source of truth, and a
+#      second copy here would quietly break the reproducibility guarantee the module rests on.
+#
+# Four legacy traits have no counterpart and are deliberately not translated - the interactive
+# program-reload steps, the map copybook generation step, the temporary data set cleanup step,
+# and the submitter notification option. Reload and copybook generation are meaningless once the
+# transaction monitor is gone, hosted runners are ephemeral, and notification is native here.
+#
+# PROVENANCE
+# Migrated from the AWS CardDemo mainframe estate at commit
+# 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
+# CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19.
+# ---------------------------------------------------------------------------------------------
+
+---
+name: CardDemo Java CI
+
+# Neither event is narrowed by a path filter: a filtered pull request event can leave a required
+# check pending indefinitely, and a run that never happens produces no evidence.
+#
+# The key is quoted because bare `on` is a YAML 1.1 boolean. GitHub reads either form; quoting
+# keeps linters and parsers seeing the same workflow GitHub does.
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Least privilege: reading the checkout is all any step needs.
+permissions:
+  contents: read
+
+# =================================================================================================
+# SUPPLY CHAIN NOTE :: every action below is pinned to an immutable commit, never to a tag.
+#
+# A tag reference such as @v4 is a MOVING pointer that the action's own maintainer controls. A
+# retargeted tag, a compromised release or a hijacked account silently changes the code that runs
+# here, and that code runs with this workflow's repository read access, its dependency and
+# vulnerability caches, and its build artifacts. A tag reference therefore delegates trust to
+# whatever that tag points at on the day the run happens, which is exactly the class of supply
+# chain compromise this build must not be exposed to.
+#
+# Each `uses:` below therefore names a full 40-character commit identifier - content addressed and
+# immutable - with the human readable release it corresponded to written beside it as a comment so
+# that a reviewer can see at a glance which release is in force. The comment is documentation; the
+# identifier is the contract, and only the identifier is what the runner resolves.
+#
+# Upgrading is deliberately a reviewed edit: bump the identifier and the comment together, in one
+# change, having read what moved. Automated dependency updates may propose that change, but nothing
+# may make it implicitly, which is precisely the property a tag reference gives away.
+# =================================================================================================
+
+# Supersede an in-flight run of the same ref only while a pull request is still being iterated.
+# Runs on main are never cancelled: a main-branch evidence bundle is the record a reviewer cites.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Scopes every run: step into the module. Action steps are unaffected - their inputs stay relative
+# to the repository root, which is why each one below carries the carddemo-java/ prefix.
+defaults:
+  run:
+    working-directory: carddemo-java
+
+jobs:
+  build:
+    name: Build, test and verify gates
+    # Ubuntu is required, not preferred: the integration and end-to-end tiers start real
+    # PostgreSQL and LocalStack Community containers through Testcontainers, which needs the
+    # Docker daemon the hosted Ubuntu image provides. Testcontainers owns that lifecycle, so no
+    # service container is declared and no compose stack is brought up. No repository secret is
+    # required by any step.
+    runs-on: ubuntu-24.04
+    # Bounded but generous: a cold run fetches the Maven distribution, the dependency graph, the
+    # vulnerability data set and several container images before a single test executes.
+    #
+    # The bound is set from a measurement, not from an estimate. Building the vulnerability data
+    # set from empty against the anonymous NVD endpoint was timed at approximately 112 minutes
+    # during environment setup; a warm rescan of the same data takes about 40 seconds. Every
+    # other cold cost - the wrapper distribution, the 231-artifact dependency graph, the
+    # PostgreSQL and LocalStack images, then the unit, integration and end-to-end tiers - stacks
+    # on top of that first figure. A 120-minute cap therefore left roughly 8 minutes of headroom
+    # over the data set download alone, so the first run in any repository whose caches are cold
+    # was expected to be killed mid-scan rather than to fail on a finding. 240 minutes clears the
+    # measured worst case with real margin while still bounding a hung run, and it costs nothing
+    # on the steady-state path: a cache-warm run finishes far inside it and exits when the build
+    # exits, not when the timeout does.
+    timeout-minutes: 240
+
+    # Every action below is pinned to a full 40-character commit SHA with its release tag kept in
+    # a trailing comment. A tag - including a major-version tag like v4 - is a mutable pointer:
+    # whoever can move actions/checkout@v4 can change what executes in this job on the next run,
+    # without a commit to this repository and without any diff for a reviewer to read. These steps
+    # handle the checkout, the toolchain, the restored caches and the evidence bundle, so a moved
+    # tag would be an unreviewed third-party change inside the very pipeline that produces the gate
+    # evidence - exactly the exposure the pinned build tool and the pinned dependency graph exist to
+    # close. Pinning the commit makes the third-party code that runs here as fixed as the code in the
+    # module it builds, and the retained tag keeps the pinned commit legible so an upgrade is a
+    # deliberate, reviewable edit rather than a silent drift. Each SHA below was resolved from the
+    # upstream repository and is the exact commit its v4 tag pointed at, so pinning changed the
+    # identity of what runs, not its behaviour:
+    #
+    #   actions/checkout         11d5960a326750d5838078e36cf38b85af677262  v4 == v4.4.0
+    #   actions/setup-java       d7793b545071e98d581d3bf084a51c3213318a07  v4 == v4.9.0
+    #   actions/cache            0057852bfaa89a56745cba8c7296529d2fc39830  v4 == v4.3.0
+    #   actions/upload-artifact  ea165f8d65b6e75b540449e92b4886f43607fa02  v4 == v4.6.2
+    #
+    # To upgrade one of them, read the release notes, resolve the new tag to its commit, replace
+    # both the SHA and the tag in the comment together - never one without the other - and say in
+    # the commit message which release was adopted.
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # ---- gate 1 of 7: repository whitespace hygiene -----------------------------------------
+      # WHY THIS GATE EXISTS. A trailing space was committed inside a test assertion and reached a
+      # reviewer, who found it by running `git diff --check` against an explicit base. Nothing in
+      # the build could have found it first: javac does not read trailing whitespace, and the suite
+      # asserts behaviour rather than layout. This is the check that would have, so it runs first -
+      # it needs only the checkout, and failing here costs seconds instead of the container work.
+      #
+      # WHY THE EMPTY TREE IS THE BASE. `git diff --check` with no revision compares the working
+      # tree with the index, and on a fresh checkout that difference is empty by construction, so
+      # the bare command would pass unconditionally and prove nothing. Diffing against a branch
+      # point instead would need history this checkout does not fetch, and would read only the
+      # lines one change touched - the defect above was already committed, so a change-scoped
+      # check would have called this tree clean. Diffing the empty tree against HEAD presents
+      # every line in the scoped paths as an added line, so the diagnostic reads the whole
+      # committed tree, deterministically, with no dependence on fetch depth or on which commit
+      # the base happens to be.
+      #
+      # WHY THE PATHS ARE SCOPED. The legacy estate under app/ and samples/ carries roughly 32,900
+      # such lines and must stay byte-identical: it is the parity baseline this migration is
+      # verified against, and reformatting it would invalidate the traceability matrix. The estate
+      # README is upstream CRLF text with 59 trailing-space lines of its own, and .gitattributes'
+      # `/README.md whitespace=cr-at-eol` exempts the carriage return rather than those spaces, so
+      # naming it here would report 59 upstream lines this migration did not author. This gate
+      # therefore reads exactly the trees this migration authors and no others. Inside them,
+      # .gitattributes already exempts the fixed-width fixtures, whose records are space-padded to a
+      # declared width - that padding is content, and reporting it would bury real defects under
+      # thousands of false ones.
+      #
+      # WHY TWO FILES ARE NAMED BESIDE THE THREE DIRECTORIES, AND WHY A DIRECTORY LIST ALONE LEFT A
+      # HOLE. This migration authors two files that sit at the repository ROOT rather than inside any
+      # of the three trees: mkdocs.yml, whose explicit nav list is what publishes the five new
+      # documentation pages, and catalog-info.yaml, whose type and tags this migration updates. A
+      # pathspec of directories cannot reach a root-level file, so both were authored by this
+      # migration and read by no whitespace gate - the exact gap the estate README exclusion is
+      # sometimes mistaken for. They are named individually rather than by widening the pathspec to
+      # `.`, which would pull in the estate tree the paragraph above excludes. Both are clean at the
+      # revision this was added, and BuildAndCiContractTest holds the pathspec to naming them, so a
+      # third authored root file has to be added here rather than silently escaping the gate.
+      # Reasoned in docs/decision-log.md DL-340.
+      #
+      # WHY IT OVERRIDES THE DEFAULT DIRECTORY. Every other run: step is scoped into the module.
+      # This one is the exception because the pathspec it passes is repository-relative and the
+      # repository, not the module, is what it reads.
+      #
+      # --check exits non-zero when it reports anything, so no comparison is needed here: a finding
+      # fails this step, and this step masks nothing.
+      - name: Repository whitespace gate
+        working-directory: ${{ github.workspace }}
+        run: |
+          git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- \
+            carddemo-java docs .github catalog-info.yaml mkdocs.yml
+
+      - name: Set up Eclipse Temurin JDK 25.0.3+9
+        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
+        with:
+          java-version: '25.0.3+9'
+          distribution: 'temurin'
+
+      # Declared explicitly rather than using the JDK action's built-in option, which restores the
+      # artefact repository alone: the script-only wrapper also installs the Maven distribution
+      # beneath the same home directory. The key is bound to both files that change what lands
+      # there.
+      - name: Cache the Maven home directory
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.m2
+          key: m2-${{ runner.os }}-${{ hashFiles('carddemo-java/pom.xml', 'carddemo-java/.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: |
+            m2-${{ runner.os }}-
+
+      # The vulnerability data set lives outside the build directory on purpose so that it
+      # survives the clean at the start of every run and can be restored from here instead of
+      # refetched. The key rotates per run so each run saves its updated copy, and the prefix
+      # fallback restores the most recent one. This is an optimisation only - it never changes
+      # whether the scan executes or what it ends the build on.
+      #
+      # This cache is what separates the two very different costs of the scan, and the job
+      # timeout above is sized for the worse one. Restoring roughly 234 MB of previously built
+      # data turns the scan into an incremental update measured in seconds; missing the cache
+      # entirely means rebuilding that data set from empty against the anonymous NVD endpoint,
+      # which was timed at approximately 112 minutes during environment setup. The prefix
+      # fallback means only a genuinely first run - a new repository, a new runner OS, or an
+      # evicted cache - pays that price, but the bound has to accommodate it, because a scan
+      # killed by a timeout is indistinguishable from a scan that found nothing.
+      #
+      # Two accelerators exist and neither is wired in, deliberately. Supplying an NVD API key
+      # would cut the cold build substantially, and pre-seeding the data set from a trusted
+      # mirror would remove it altogether - but both turn this job into something that needs
+      # repository-level configuration to succeed, and every step here is written to run
+      # anonymously on a fork with no secrets available. The cache plus a sufficient bound gets
+      # the same steady-state result without that dependency. If a cold run ever has to be made
+      # routinely fast, add the key as an optional input rather than a required one, so that an
+      # absent secret degrades to the anonymous path instead of failing the build.
+      - name: Cache the vulnerability data set
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.dependency-check-data
+          key: nvd-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            nvd-${{ runner.os }}-
+
+      # Trivy runs from a digest-pinned container below. Its vulnerability and Java databases are
+      # cached separately from Maven's dependency-check data because the formats and update cadences
+      # are unrelated.
+      - name: Cache the container vulnerability data set
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-${{ runner.os }}-0.62.1-${{ github.run_id }}
+          restore-keys: |
+            trivy-${{ runner.os }}-0.62.1-
+
+      # Fail fast and legibly on an unusable runner rather than forty minutes into the container
+      # tiers. This is also the wrapper's first invocation, which proves it can fetch and
+      # digest-verify its configured distribution before the real build depends on it. That
+      # verification needs nothing from the runner image beyond the JDK just installed: the
+      # wrapper digests with sha256sum or shasum and falls back to java.security, and extracts
+      # with unzip and falls back to the JDK's own zip filesystem provider, so a change to the
+      # hosted image's utility set can slow this step down but cannot skip the digest check.
+      - name: Report the toolchain and container runtime
+        run: |
+          java_output="$(java -version 2>&1)"
+          printf '%s\n' "${java_output}"
+          case "${java_output}" in
+            *'25.0.3'*) ;;
+            *)
+              echo 'The runner did not install the pinned Temurin 25.0.3+9 toolchain.' >&2
+              exit 1
+              ;;
+          esac
+          ./mvnw -B --version
+          docker version --format 'Docker server {{.Server.Version}}'
+
+      # One identity feeds Maven, the Docker build and the OCI labels. The source epoch comes from
+      # the checked-out commit, not the wall clock, so rebuilding the same commit produces the same
+      # build-info resource and archive timestamps.
+      - name: Derive the reproducible build identity
+        run: |
+          set -euo pipefail
+          app_version="$(./mvnw -q -DforceStdout help:evaluate -Dexpression=project.version)"
+          source_revision="$(git rev-parse HEAD)"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+
+          case "${source_revision}" in
+            *[!0-9a-f]*)
+              echo 'The checked-out revision is not a 40-character lowercase Git SHA.' >&2
+              exit 1
+              ;;
+          esac
+          test "${#source_revision}" -eq 40
+          case "${source_date_epoch}" in
+            '' | *[!0-9]*)
+              echo 'The source commit timestamp is not an epoch second.' >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            printf 'APP_VERSION=%s\n' "${app_version}"
+            printf 'SOURCE_REVISION=%s\n' "${source_revision}"
+            printf 'SOURCE_DATE_EPOCH=%s\n' "${source_date_epoch}"
+            printf 'COMPOSE_PROJECT_NAME=carddemo-ci-%s-%s\n' \
+              "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+          } >> "${GITHUB_ENV}"
+
+      # ---- gate 2 of 7: build, test, coverage and supply chain --------------------------------
+      # The command reaches verify with no gate-disabling property. The two identity properties do
+      # not change what runs: they make the generated build-info and archive timestamps derive from
+      # the checked-out commit rather than the wall clock. Coverage and full-scope dependency-check
+      # remain bound to verify, so a warning, failing test, coverage shortfall or HIGH/CRITICAL
+      # dependency finding ends this step and the run.
+      #
+      # NOTHING MASKS THIS STEP. It tolerates no error of its own and carries no if: condition, so
+      # its failure is the run's failure directly. The legacy compile-and-link pipeline gated
+      # downstream work on upstream success - two COND= clauses in the whole of it, both of that
+      # shape - and a step that recorded a failure while letting the run continue would invert that.
+      #
+      # The list of properties that may never appear on this command is enumerated in the module's
+      # own build documentation rather than restated here, precisely so that this file can be
+      # verified by searching it for those names and finding none.
+      - name: Build, test, coverage and supply chain gate
+        id: build_gate
+        run: |
+          ./mvnw -B \
+            -Dbuild.revision="${SOURCE_REVISION}" \
+            -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
+            clean verify
+
+      # ---- gate 3 of 7: locale-hostile re-execution -----------------------------------------
+      # The module pins -Duser.language=en -Duser.country=US in test.jvm.args so that a test's
+      # result never depends on the machine running it. That pinning is correct, and it has one
+      # cost: it makes the suite structurally unable to observe a locale defect. The module emits
+      # fixed-width records whose widths are counted in bytes, and two JDK behaviours would break
+      # them under a different default locale - a locale whose numbering system is not Latin makes
+      # String.format("%d", n) emit non-ASCII digits, and Turkish casing folds ASCII i to U+0130,
+      # which is not a US-ASCII byte at all. Decision DL-118 forbids every locale-sensitive formatter
+      # for exactly this reason, but a forbidden call is only actually absent if something checks.
+      #
+      # This step is that check: the unit tier is re-run twice with the default locale overridden,
+      # once for each hazard. tr-TR carries the casing hazard and ar-EG the numbering hazard, so the
+      # pair covers both ways a default locale can change an emitted byte. Only test.jvm.args is
+      # overridden - the timezone and file encoding stay pinned, so a failure here can only be a
+      # locale defect and not a clock or charset difference.
+      #
+      # The unit tier alone is re-run, not verify: this is a byte-output property of pure functions,
+      # the container-backed tiers add execution time without adding locale surface, and coverage
+      # and the supply chain are already gated above.
+      #
+      # EACH LOCALE WRITES ITS OWN EVIDENCE, AND OVERWRITES NONE OF THE BUILD GATE'S. That is not
+      # tidiness, it is what keeps the evidence bundle below honest. This step re-runs the whole unit
+      # tier after the build gate has already written its Surefire XML, its coverage execution data
+      # and its unit coverage report, so every one of those three destinations is redirected per
+      # locale. Without the redirects the second execution would overwrite all of them and the
+      # uploaded artifacts would silently describe an ar-EG run while claiming to describe the
+      # pinned one.
+      #
+      # THREE DESTINATIONS, AND NO DISABLING SWITCH. Redirecting only the Surefire reports and dealing with
+      # the coverage collision by appending a property that switches the coverage agent off is prohibited, as
+      # is appending one that switches off the vulnerability scan - the latter would do nothing whatsoever
+      # here, because the test phase never reaches verify, so that scan was never going to run in this
+      # invocation. Disabling a gate mechanism in order to protect that mechanism's own evidence is the
+      # wrong trade when a destination override achieves the same thing with the agent still running and
+      # still recording. pom.xml exposes
+      # jacoco.unit.exec and jacoco.unit.report.dir for exactly this purpose, alongside the
+      # test.reports.dir it already exposed.
+      #
+      # NOTHING MASKS THIS STEP EITHER. A locale defect in a fixed-width byte format is a parity
+      # defect, so it fails the run where it is found rather than being recorded for a later summary.
+      - name: Locale-hostile re-execution gate
+        id: locale_gate
+        run: |
+          for locale in 'tr TR' 'ar EG'; do
+            set -- $locale
+            printf '::group::unit tier under %s-%s\n' "$1" "$2"
+            ./mvnw -B -ntp test \
+              -Dbuild.revision="${SOURCE_REVISION}" \
+              -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
+              -Dtest.reports.dir="target/surefire-reports-locale-$1-$2" \
+              -Djacoco.unit.exec="target/jacoco-locale-$1-$2.exec" \
+              -Djacoco.unit.report.dir="target/site/jacoco-locale-$1-$2" \
+              -Dtest.jvm.args="-XX:+EnableDynamicAgentLoading -Xshare:off -Duser.language=$1 -Duser.country=$2 -Duser.timezone=UTC -Dfile.encoding=UTF-8"
+            echo '::endgroup::'
+          done
+
+      # ---- the supply chain gate is NOT a step of its own, and that is deliberate -------------
+      # A separate `dependency-check:check` step invoked after the build gate had been asked to skip the scan
+      # would be two steps, one switch and one scan. This is zero steps, no switch, and still one scan -
+      # because the plugin is bound to the verify phase in pom.xml, so the build, test, coverage and supply
+      # chain gate above executes it as part of `./mvnw -B clean verify`. It is named rather than numbered
+      # here so inserting a gate cannot silently repoint this sentence at another step. The phase binding
+      # is the mechanism this module is designed around; invoking the goal separately compensates for a
+      # skip property that has no reason to exist.
+      #
+      # WHAT IS GIVEN UP, STATED RATHER THAN GLOSSED. A separate step needs only the resolved
+      # dependency graph, so it would produce a scan report even when compilation failed. Inside verify,
+      # a build that never reaches verify produces no scan report. That is the correct trade: a run
+      # that fails to compile has no artifact to assess and is already red, whereas a scan invoked
+      # with the build's own scan switched off can report clean while nothing in the build enforced
+      # it. One property is preserved deliberately and must not be undone - pom.xml declares the
+      # scan AHEAD of the coverage check, both bound to verify, so a build that misses the coverage
+      # floor has still produced and uploaded its vulnerability report. Reordering those two plugins
+      # would silently lose that.
+      #
+      # Nothing about the gate's strictness is decided in this file: the score that fails the build
+      # and the report formats are all declared in the module build.
+
+      # ---- gate 4 of 7: bootstrap contract --------------------------------------------------
+      # The module's local AWS surface is provisioned by a single emulator initializer,
+      # localstack/init/01-create-aws-resources.sh. Nothing in the Maven build reads that file, so
+      # every other gate here can pass while it is broken - and it is the one file the
+      # container-backed test tiers and the whole local gate runbook depend on. Left unchecked its
+      # defects surface either as a confusing failure somewhere else entirely or, worse, as a stack
+      # that starts cleanly and only comes up short on the first publish: the legacy queue write it
+      # stands in for was defined errors-ignored, so the publisher records a failure and carries on
+      # rather than raising.
+      #
+      # This gate closes that gap in two halves.
+      #
+      # The static half needs no emulator and catches the cheap failures. The file has to be
+      # present, executable, and committed as mode 100755 - a ready hook without the execute bit is
+      # silently never run rather than reported, which is the one defect that leaves no trace at
+      # all - free of carriage returns, syntactically valid, and clean under the linter. The linter
+      # is REQUIRED rather than skipped when it is absent, because a gate that quietly stops
+      # checking is worse than no gate.
+      #
+      # The behavioural half runs the hook for real against the SAME pinned emulator image the
+      # module's compose stack and integration tests pin, then reads every resource back and
+      # compares it. Reading back is the entire point: the hook reporting a resource ready is a
+      # different fact from the resource being correct, and two of these attributes fail silently.
+      # A queue that is not first-in-first-out reorders the cards of a submission, and a queue with
+      # content-based deduplication switched on discards every card whose body repeats one already
+      # accepted - three of the seventeen - so both produce a wrong result with no error anywhere.
+      #
+      # No CARDDEMO_ variable is passed in, and that is deliberate: the hook's own defaults are the
+      # canonical names, so proving the defaults is what proves the contract. No credential is
+      # passed either, because the emulator's client wrapper supplies its own throwaway values
+      # internally.
+      #
+      # The hook is then executed a second time and must exit zero and leave exactly one of each
+      # resource. The emulator re-runs its ready hooks on every container start, so an initializer
+      # that is not idempotent breaks the second start rather than the first.
+      #
+      # Nothing masks this step. It runs after the build gate because a broken initializer is not a
+      # reason to skip compiling, and it fails the run directly when the contract does not hold -
+      # the evidence uploads below carry if: always(), so stopping here still publishes whatever
+      # was gathered.
+      - name: Bootstrap contract gate
+        id: bootstrap_gate
+        run: |
+          set -euo pipefail
+
+          hook='localstack/init/01-create-aws-resources.sh'
+          container='carddemo-bootstrap-gate'
+
+          # Removal is written as a conditional rather than tolerated with a shell || so that
+          # nothing in this file suppresses an exit status, and it hangs off a trap so the
+          # container is removed even when an assertion below ends the step early.
+          cleanup() {
+            if docker rm -f "${container}" >/dev/null 2>&1; then
+              printf 'Removed %s.\n' "${container}"
+            else
+              printf 'No %s to remove.\n' "${container}"
+            fi
+          }
+          trap cleanup EXIT
+
+          # A comparison that names what it was checking, so a failure reads as a contract
+          # violation rather than as a bare non-zero exit status.
+          assert_equals() {
+            if [ "$2" != "$3" ]; then
+              printf 'Bootstrap contract violated: %s is %s, expected %s.\n' "$1" "$2" "$3" >&2
+              exit 1
+            fi
+            printf '  %s: %s\n' "$1" "$2"
+          }
+
+          echo '::group::static checks'
+          command -v shellcheck >/dev/null
+          test -f "${hook}"
+          test -x "${hook}"
+          assert_equals 'committed file mode' \
+            "$(git ls-files -s "${hook}" | cut -c 1-6)" '100755'
+          assert_equals 'carriage returns in the file' \
+            "$(tr -cd '\r' < "${hook}" | wc -c | tr -d ' ')" '0'
+          bash -n "${hook}"
+          shellcheck "${hook}"
+          echo '  parses under bash and lints clean under shellcheck'
+          echo '::endgroup::'
+
+          # The three files an interpreter reads by its first line, and the one input this
+          # repository cannot see: the core.autocrlf setting of the machine that clones it. The
+          # check above proves this runner's checkout is free of carriage returns, which is a
+          # weaker statement than it looks - this runner checks out with autocrlf off, so it would
+          # pass whether or not anything protected the file. The interesting checkout is the one
+          # this runner never performs.
+          #
+          # So the filter is run rather than assumed. `checkout-index` applies exactly the smudge
+          # conversion a checkout applies, so writing the index out with core.autocrlf=true
+          # reproduces a Windows clone byte for byte, and the assertions below are made against
+          # those bytes. Without the eol attributes this fails in three places at once: mvnw
+          # arrives with a "#!/bin/sh\r" shebang, which the Docker builder stage - which copies
+          # that file into a Linux image and runs it - rejects as a bad interpreter; the LocalStack
+          # hook arrives with "#!/usr/bin/env bash\r" and "set -eu\r" and is bind-mounted into a
+          # Linux container in that state, so the emulator's startup breaks on a host that changed
+          # nothing; and mvnw.cmd's CRLF form, which cmd.exe needs to resolve its labels, is left
+          # to chance in the other direction.
+          #
+          # checkout-index writes paths relative to the repository root even when it is run from a
+          # subdirectory, so the module prefix is asked for rather than assumed.
+          echo '::group::line-ending contract under a normalising checkout'
+          assert_equals 'declared eol for mvnw' \
+            "$(git check-attr eol -- mvnw | sed 's/.*: //')" 'lf'
+          assert_equals 'declared eol for mvnw.cmd' \
+            "$(git check-attr eol -- mvnw.cmd | sed 's/.*: //')" 'crlf'
+          assert_equals 'declared eol for the bootstrap hook' \
+            "$(git check-attr eol -- "${hook}" | sed 's/.*: //')" 'lf'
+
+          simulated="$(mktemp -d)"
+          git -c core.autocrlf=true checkout-index -f --prefix="${simulated}/" \
+            -- mvnw mvnw.cmd "${hook}"
+          simulated_module="${simulated}/$(git rev-parse --show-prefix)"
+          assert_equals 'carriage returns in mvnw after a normalising checkout' \
+            "$(tr -cd '\r' < "${simulated_module}mvnw" | wc -c | tr -d ' ')" '0'
+          assert_equals 'shebang of mvnw after a normalising checkout' \
+            "$(head -1 "${simulated_module}mvnw")" '#!/bin/sh'
+          assert_equals 'carriage returns in the bootstrap hook after a normalising checkout' \
+            "$(tr -cd '\r' < "${simulated_module}${hook}" | wc -c | tr -d ' ')" '0'
+          assert_equals 'lines of mvnw.cmd that end CRLF after a normalising checkout' \
+            "$(tr -cd '\r' < "${simulated_module}mvnw.cmd" | wc -c | tr -d ' ')" \
+            "$(tr -cd '\n' < "${simulated_module}mvnw.cmd" | wc -c | tr -d ' ')"
+          rm -rf "${simulated}"
+          echo '::endgroup::'
+
+          # Every attribute is read back and compared. Declared once and called after each
+          # execution, so the second run is held to exactly the same standard as the first.
+          verify_resources() {
+            queue_url="$(docker exec "${container}" \
+              awslocal sqs get-queue-url --queue-name JOBS.fifo --output text)"
+            case "${queue_url}" in
+              */JOBS.fifo) printf '  queue url: %s\n' "${queue_url}" ;;
+              *)
+                printf 'Bootstrap contract violated: queue url %s does not name JOBS.fifo.\n' \
+                  "${queue_url}" >&2
+                exit 1
+                ;;
+            esac
+            assert_equals 'queue FifoQueue attribute' \
+              "$(docker exec "${container}" awslocal sqs get-queue-attributes \
+                --queue-url "${queue_url}" --attribute-names FifoQueue \
+                --query 'Attributes.FifoQueue' --output text)" 'true'
+            assert_equals 'queue ContentBasedDeduplication attribute' \
+              "$(docker exec "${container}" awslocal sqs get-queue-attributes \
+                --queue-url "${queue_url}" --attribute-names ContentBasedDeduplication \
+                --query 'Attributes.ContentBasedDeduplication' --output text)" 'false'
+            assert_equals 'bucket object versioning' \
+              "$(docker exec "${container}" awslocal s3api get-bucket-versioning \
+                --bucket carddemo-batch-staging --query 'Status' --output text)" 'Enabled'
+            topic_arn="$(docker exec "${container}" \
+              awslocal sns list-topics --query 'Topics[0].TopicArn' --output text)"
+            case "${topic_arn}" in
+              arn:aws:sns:*:*:carddemo-job-notifications)
+                printf '  topic: %s\n' "${topic_arn}"
+                ;;
+              *)
+                printf 'Bootstrap contract violated: %s does not identify the topic.\n' \
+                  "${topic_arn}" >&2
+                exit 1
+                ;;
+            esac
+            assert_equals 'queues in the emulator' \
+              "$(docker exec "${container}" awslocal sqs list-queues \
+                --query 'length(QueueUrls)' --output text)" '1'
+            assert_equals 'buckets in the emulator' \
+              "$(docker exec "${container}" awslocal s3api list-buckets \
+                --query 'length(Buckets)' --output text)" '1'
+            assert_equals 'topics in the emulator' \
+              "$(docker exec "${container}" awslocal sns list-topics \
+                --query 'length(Topics)' --output text)" '1'
+          }
+
+          echo '::group::first execution, performed by the emulator as a ready hook'
+          docker run -d --name "${container}" \
+            -e SERVICES=s3,sqs,sns \
+            -e AWS_DEFAULT_REGION=us-east-1 \
+            -e PERSISTENCE=0 \
+            -v "${PWD}/localstack/init:/etc/localstack/init/ready.d:ro" \
+            localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a \
+            >/dev/null
+
+          # The emulator publishes the outcome of every ready-stage script it ran. That is the
+          # authoritative answer to whether the hook succeeded, so it is polled for rather than
+          # guessed at from the log text. A probe failing while the edge port is still coming up
+          # is the normal case, which is why the poll tolerates it and the outcome is asserted
+          # afterwards instead.
+          state=''
+          for _ in $(seq 1 120); do
+            if payload="$(docker exec "${container}" \
+                curl -fsS http://localhost:4566/_localstack/init 2>/dev/null)"; then
+              state="$(printf '%s' "${payload}" \
+                | tr ',' '\n' \
+                | sed -n 's/.*"state": *"\([A-Z]*\)".*/\1/p')"
+              case "${state}" in
+                SUCCESSFUL|ERROR) break ;;
+              esac
+            fi
+            sleep 2
+          done
+          echo '::endgroup::'
+
+          echo '---- the initializer output, as the emulator recorded it ----'
+          docker logs "${container}" 2>&1 | grep -F '[carddemo-init]'
+
+          assert_equals 'ready-hook outcome reported by the emulator' "${state}" 'SUCCESSFUL'
+
+          echo '::group::read-back after the first execution'
+          verify_resources
+          echo '::endgroup::'
+
+          echo '::group::second execution, as the emulator performs on every restart'
+          docker exec "${container}" "/etc/localstack/init/ready.d/$(basename "${hook}")"
+          echo '::endgroup::'
+
+          echo '::group::read-back after the second execution'
+          verify_resources
+          echo '::endgroup::'
+
+          echo 'Bootstrap contract holds: linted, executed, read back, and idempotent.'
+
+      # ---- evidence bundle ------------------------------------------------------------------
+      # THE REQUIRED REPORTS ARE ASSERTED BEFORE THEY ARE UPLOADED, because an upload cannot tell the
+      # difference between "this gate never ran" and "this gate ran and published nothing".
+      #
+      # The three uploads below carry if: always() so that a gate's own report survives that gate's
+      # failure, which is exactly what a reviewer needs in order to see why it failed. That is right,
+      # and on its own it left a hole: every upload also carried if-no-files-found: warn, so a run in
+      # which every gate PASSED and yet produced no coverage report, no vulnerability report and no test
+      # reports finished green with an annotation nobody reads. Coverage, the CVE scan and the test
+      # tiers are gate evidence for Gate 7, Gate 8 and Gates 1/4/5 respectively; a green run that
+      # publishes none of them cannot be signed off, and the run must say so rather than warn about it.
+      #
+      # So the assertion is made where it can be unambiguous - after the producing gates, under
+      # if: success(), so it only judges a run in which those gates actually completed - and the uploads
+      # then resolve their own missing-file policy from the job status: error on a run that is still
+      # green, warn on a run that has already failed and is publishing diagnostics. Both halves are
+      # needed: without the assertion an upload of a partial path set still succeeds because SOME file
+      # matched; without the conditional policy a genuinely absent bundle is reported as a warning.
+      - name: Assert the required gate evidence exists
+        if: success()
+        run: |
+          set -euo pipefail
+
+          # One required artefact per line, as PATH<TAB>WHAT-IT-EVIDENCES. A directory is required to
+          # contain at least one file; a file is required to be non-empty. Every path is relative to
+          # this module, which is this job's working directory.
+          missing=0
+          require() {
+            local path="$1" purpose="$2"
+            if [ -d "${path}" ]; then
+              if [ -z "$(find "${path}" -type f -print -quit)" ]; then
+                printf '::error::%s is empty; it must carry %s\n' "${path}" "${purpose}"
+                missing=$((missing + 1))
+              else
+                printf 'present: %-56s %s\n' "${path}" "${purpose}"
+              fi
+            elif [ -s "${path}" ]; then
+              printf 'present: %-56s %s\n' "${path}" "${purpose}"
+            else
+              printf '::error::%s is missing or empty; it must carry %s\n' "${path}" "${purpose}"
+              missing=$((missing + 1))
+            fi
+          }
+
+          require target/site/jacoco-merged/index.html 'the merged coverage report Gate 7 is read from'
+          require target/jacoco-merged.exec 'the merged coverage execution data'
+          require target/jacoco.exec 'the unit tier execution data'
+          require target/jacoco-it.exec 'the integration tier execution data'
+          require target/dependency-check-report.html "Gate 8's human-readable CVE report"
+          require target/dependency-check-report.json "Gate 8's machine-readable CVE report"
+          require target/dependency-check-report.xml "Gate 8's archival CVE report"
+          require target/surefire-reports 'the unit tier result XML the published counts derive from'
+          require target/failsafe-reports 'the integration tier result XML the published counts derive from'
+          require target/gate-evidence 'the per-gate evidence files the gates write'
+
+          if [ "${missing}" -ne 0 ]; then
+            printf '%d required gate artefact(s) are absent from a run whose gates all passed.\n' \
+              "${missing}" >&2
+            printf 'A green run that publishes no evidence cannot be signed off: see docs/gate-evidence.md.\n' >&2
+            exit 1
+          fi
+          printf 'All required gate artefacts are present and non-empty.\n'
+      #
+      # These uploads are also what makes the linear gate model above affordable. A failing gate now
+      # stops the job, so the gates after it never run and produce nothing - but everything produced
+      # up to that point is still published here, which is the evidence that matters.
+      #
+      # THE LOCALE RUNS' COVERAGE EVIDENCE IS UPLOADED TOO, and it exists to be uploaded only because
+      # the locale gate no longer switches the coverage agent off. Those files are NOT a contribution
+      # to the coverage figure - the check ran once, in the build, test, coverage and supply chain gate,
+      # over the pinned execution - they are
+      # the record that each hostile-locale run genuinely instrumented and executed the tier it claims
+      # to have executed. Without them a reviewer has the locale runs' test reports and no independent
+      # evidence that the instrumented code was the same code.
+      #
+      # For that to hold, the ORDER INSIDE pom.xml matters as much as the if: always() here. The
+      # vulnerability scan and the coverage check both bind to the same verify phase, so whichever is
+      # declared first runs first - and a coverage failure ends the phase. pom.xml therefore declares
+      # the scan ahead of the coverage check, so a build that misses the coverage floor still produces
+      # and uploads its vulnerability report instead of publishing no supply-chain evidence at all.
+      # Reordering those two plugins would silently break this step.
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: jacoco-coverage-reports
+          path: |
+            carddemo-java/target/site/jacoco/**
+            carddemo-java/target/site/jacoco-it/**
+            carddemo-java/target/site/jacoco-merged/**
+            carddemo-java/target/jacoco.exec
+            carddemo-java/target/jacoco-it.exec
+            carddemo-java/target/jacoco-merged.exec
+            carddemo-java/target/site/jacoco-locale-*/**
+            carddemo-java/target/jacoco-locale-*.exec
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
+          retention-days: 30
+
+      - name: Upload vulnerability scan reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: owasp-dependency-check-report
+          path: |
+            carddemo-java/target/dependency-check-report.html
+            carddemo-java/target/dependency-check-report.json
+            carddemo-java/target/dependency-check-report.xml
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
+          retention-days: 30
+
+      - name: Upload unit and integration test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-reports
+          path: |
+            carddemo-java/target/surefire-reports/**
+            carddemo-java/target/failsafe-reports/**
+            carddemo-java/target/surefire-reports-locale-*/**
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
+          retention-days: 30
+
+      # THE GATE EVIDENCE IS THE ONE ARTEFACT SET THE RUN ITSELF AUTHORS, and it was the one set the
+      # run threw away. Three of the PROJECT'S EIGHT VALIDATION GATES - a separate numbering from this
+      # workflow's linear gates, and the reason each is named as well as numbered here - emit a run-scoped
+      # file into target/gate-evidence: the Gate 1 byte-equivalence comparison, the Gate 3 measured
+      # performance baselines and the Gate 8 sign-off checklist. No
+      # step uploaded them, and the reproducibility gate below runs a clean, so every recorded run
+      # destroyed its own evidence and docs/gate-evidence.md quoted figures whose producing artefact
+      # no longer existed anywhere. Uploaded here, before the clean, for the same reason the three
+      # uploads above are placed before it.
+      #
+      # THIS STEP CARRIES NO if: CONDITION, AND if-no-files-found IS error RATHER THAN warn. Both are
+      # deliberate and they work together. Reaching this step means every gate above passed, which
+      # means the integration tier ran, which means the three files exist - so their absence is a
+      # defect in the tier that writes them and must fail rather than upload nothing quietly. The
+      # three uploads above are the opposite case on purpose: they carry if: always() so that a FAILED
+      # run still publishes its coverage, scan and test reports, and warn because a run that failed
+      # early legitimately has none. Adding always() here would turn a failed run's empty directory
+      # into a second, misleading failure on top of the real one.
+      #
+      # The bundle is verified by name before it is uploaded, because the upload action's own
+      # no-files-found error names a glob rather than a file. A missing gate-3 baseline and a missing
+      # gate-8 sign-off are different defects with different owners, and the log line has to say which.
+      # EVERY EXPECTED FILE IS NAMED INDIVIDUALLY, including both gate-3 baselines, rather than one of
+      # them standing in for the pair behind a glob: a run that wrote the pipeline baseline and not the
+      # interest baseline satisfied `gate3-*.md` and published half a gate's evidence as if it were
+      # whole. The list is held honest from the other side by BuildAndCiContractTest, which reads the
+      # evidence file names out of the suite that writes them and requires this step to name each one,
+      # so a renamed or newly added report fails the build instead of quietly going unverified.
+      # Reasoned in docs/decision-log.md DL-315.
+      - name: Verify the gate evidence bundle
+        run: |
+          set -euo pipefail
+          missing=''
+          for required in \
+            target/gate-evidence/gate1-byte-equivalence.md \
+            target/gate-evidence/gate3-pipeline-baseline.md \
+            target/gate-evidence/gate3-interest-calculation.md \
+            target/gate-evidence/gate8-sign-off.md
+          do
+            test -s "${required}" || missing="${missing} ${required}"
+          done
+          if [ -n "${missing}" ]; then
+            echo "The gate evidence bundle is incomplete. Absent:${missing}" >&2
+            echo 'Every gate above passed, so the tier that writes these files ran. An absent file is' >&2
+            echo 'a defect in that tier, not a skippable condition.' >&2
+            exit 1
+          fi
+
+          # Every generated file names the build and the run that produced it, so a downloaded bundle
+          # can be attributed to code. The stamp is written by the producers rather than added here,
+          # which is what makes a developer-machine bundle attributable too; this only checks it.
+          for evidence in target/gate-evidence/*.md; do
+            grep -q '^Build provenance: revision ' "${evidence}" || {
+              echo "${evidence} carries no build provenance line." >&2
+              exit 1
+            }
+            grep -q "^Build provenance: revision ${SOURCE_REVISION}," "${evidence}" || {
+              echo "${evidence} does not name this run's revision ${SOURCE_REVISION}." >&2
+              exit 1
+            }
+          done
+          echo 'The gate evidence bundle is complete and every file names this run.'
+          ls -l target/gate-evidence
+
+      # THE EMITTED SIGN-OFF IS NOT THE RUN'S SIGN-OFF, AND THIS STEP IS WHERE IT BECOMES ONE. The table
+      # in gate8-sign-off.md is written by GateVerificationTest at integration-test. The vulnerability
+      # report and the merged coverage report are written at verify - a LATER phase. So a row whose
+      # evidence is either of those cannot be anything but outstanding when that table is written, and the
+      # table says so: it carries a `Sign-off status: PROVISIONAL` line naming each outstanding row and the
+      # artefact that discharges it. Before this step existed, the upload below published that interim
+      # table as the run's conclusion, and nothing anywhere rejected a PENDING row. A reviewer downloading
+      # the bundle got a sign-off checklist in which the supply-chain and performance rows read PENDING and
+      # no artefact said whether they had since passed.
+      #
+      # WHAT THIS STEP DOES, AND WHY IT CAN. It runs after verify, so every artefact the outstanding rows
+      # name now exists. It discharges each one against the real artefact - the scan's own JSON report for
+      # the supply-chain row, the measuring tiers' own baselines for the performance row - checks the
+      # coverage floor against the merged report's own counter, and only then writes final-sign-off.md
+      # carrying `Sign-off status: FINAL` and the evidence for each discharge. If a row cannot be
+      # discharged, or if the interim table still carries a MISSING row, this step FAILS and no final
+      # sign-off is written, so the bundle can never contain a FINAL table that was not earned.
+      #
+      # WHY THE FILE IS NOT NAMED gate8-*.md. The `gate<n>-` prefix denotes an artefact the TEST SUITE
+      # writes during the build, and the bundle-verification step above requires every such name the suite
+      # mentions to be verified there - a step that runs before this one. A file this step writes therefore
+      # has to sit outside that namespace or it would be required to exist before it is created.
+      # config/BuildAndCiContractTest asserts this step exists, that it rejects an undischarged row, and
+      # that it writes the file the upload publishes. Reasoned in docs/decision-log.md DL-340.
+      - name: Reconcile the provisional sign-off into a final one
+        if: success()
+        run: |
+          set -euo pipefail
+          interim='target/gate-evidence/gate8-sign-off.md'
+          final='target/gate-evidence/final-sign-off.md'
+
+          # A MISSING row fails the emitting assertion, so a table carrying one should never have reached
+          # this step. Checked anyway: this step's whole purpose is that the sign-off is earned rather than
+          # assumed, and that argument does not permit assuming the earlier assertion ran.
+          #
+          # MATCHED AS A ROW, NOT AS A WORD. The table's own explanatory paragraph says "A row marked
+          # MISSING is an outstanding work item", so a bare token search reports the sentence that explains
+          # the state as though it were the state - which it did, on the first run of this step against a
+          # real bundle. A row is a line opening with a pipe, and the state cell is emphasised, so the
+          # anchored pattern below reads the table and not the prose around it.
+          if grep -qE '^\|.*\*\*MISSING\*\*' "${interim}"; then
+            echo '::error::The interim sign-off carries a MISSING row, which is an outstanding work item.' >&2
+            grep -nE '^\|.*\*\*MISSING\*\*' "${interim}" >&2
+            exit 1
+          fi
+
+          status="$(sed -n 's/^Sign-off status: \([A-Z]*\).*/\1/p' "${interim}" | head -1)"
+          if [ -z "${status}" ]; then
+            echo "::error::${interim} carries no 'Sign-off status:' line, so nothing states whether it is" >&2
+            echo 'the run conclusion or an interim record. The emitting test writes that line; a bundle' >&2
+            echo 'without it is from a build whose suite did not produce this artefact.' >&2
+            exit 1
+          fi
+          echo "The interim sign-off reports: ${status}"
+
+          # ---- discharge 1: the supply-chain row, against the scan's own machine-readable report --------
+          # Counted over UNSUPPRESSED findings only, which is the invariant the build enforces: the module
+          # carries one written analyst determination, and the threshold ends the build on a qualifying
+          # finding that no determination covers. jq reads the report the scan wrote rather than the
+          # console line it printed, so a scan that reported and then had its output lost still discharges.
+          report='target/dependency-check-report.json'
+          qualifying="$(jq '[.dependencies[]? | .vulnerabilities[]? |
+                             (.cvssv3.baseScore // .cvssv2.score // 0) | tonumber |
+                             select(. >= 7.0)] | length' "${report}")"
+          if [ "${qualifying}" -ne 0 ]; then
+            printf '::error::%s reports %d unsuppressed finding(s) at or above CVSS 7.0.\n' \
+              "${report}" "${qualifying}" >&2
+            exit 1
+          fi
+          suppressed="$(jq '[.dependencies[]? | .suppressedVulnerabilities[]?] | length' "${report}")"
+          echo "Supply chain discharged: 0 unsuppressed findings at or above 7.0, ${suppressed} suppressed."
+
+          # ---- discharge 2: the performance row, against the measuring tiers' own baselines -------------
+          # The bundle step above has already required both baselines to exist and to name this run's
+          # revision. What is checked here is that each carries a measured ROW: a file with a header and no
+          # row satisfies existence and discharges nothing.
+          baselines=0
+          for baseline in target/gate-evidence/gate3-*.md; do
+            rows="$(grep -cE '^\| *[A-Za-z]' "${baseline}" || true)"
+            if [ "${rows}" -lt 2 ]; then
+              printf '::error::%s carries no measured row beneath its header.\n' "${baseline}" >&2
+              exit 1
+            fi
+            baselines=$((baselines + 1))
+          done
+          if [ "${baselines}" -eq 0 ]; then
+            echo '::error::No run-scoped performance baseline was produced, so the Gate 3 row cannot be' >&2
+            echo 'discharged. The measuring tiers write these files; their absence in a green run is a' >&2
+            echo 'defect in those tiers.' >&2
+            exit 1
+          fi
+          echo "Performance discharged: ${baselines} run-scoped baseline(s), each carrying measured rows."
+
+          # ---- the coverage floor, read from the merged report's own counter ----------------------------
+          # The build already fails below the floor, so this is not a second gate. It is the FIGURE, put
+          # into the final sign-off so the published conclusion states the coverage it was signed off at
+          # instead of asserting that a check passed somewhere.
+          coverage='target/site/jacoco-merged/jacoco.xml'
+          counter="$(grep -o '<counter type="LINE" missed="[0-9]*" covered="[0-9]*"/>' "${coverage}" \
+            | tail -1)"
+          missed="$(printf '%s' "${counter}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+          covered="$(printf '%s' "${counter}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+          total=$((missed + covered))
+          if [ "${total}" -eq 0 ]; then
+            echo "::error::${coverage} reports no LINE counter, so the floor cannot be stated." >&2
+            exit 1
+          fi
+          percent=$((covered * 10000 / total))
+          if [ "${percent}" -lt 8000 ]; then
+            printf '::error::Merged line coverage is %d.%02d%%, below the 80%% floor.\n' \
+              $((percent / 100)) $((percent % 100)) >&2
+            exit 1
+          fi
+          printf 'Coverage discharged: %d of %d lines, %d.%02d%%, floor 80%%.\n' \
+            "${covered}" "${total}" $((percent / 100)) $((percent % 100))
+
+          # ---- write the final sign-off ----------------------------------------------------------------
+          # It carries the same `Build provenance: revision` line every file in this bundle carries, so the
+          # conclusion is attributable to one commit exactly as the evidence behind it is.
+          {
+            printf '<!-- Gate 8 FINAL sign-off, reconciled after verify by the CI workflow. -->\n\n'
+            printf '## Gate 8 - final integration sign-off\n\n'
+            printf 'Build provenance: revision %s, run %s/%s attempt %s.\n\n' \
+              "${SOURCE_REVISION}" "${GITHUB_REPOSITORY}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+            printf 'Sign-off status: FINAL - every row of the interim table is discharged against the\n'
+            printf 'artefact it named, and each discharge is stated below rather than asserted.\n\n'
+            printf 'Interim table reported: %s.\n\n' "${status}"
+            printf '| Discharged row | Artefact read after verify | Result |\n'
+            printf '| :--- | :--- | :--- |\n'
+            printf '| Zero unsuppressed critical or high vulnerabilities | %s | 0 unsuppressed at or above CVSS 7.0, %s suppressed by written determination |\n' \
+              "${report}" "${suppressed}"
+            printf '| Performance baseline | target/gate-evidence/gate3-*.md | %s run-scoped baseline(s), each with measured rows naming this revision |\n' \
+              "${baselines}"
+            printf '| Line coverage at or above 80%% | %s | %s of %s lines, %d.%02d%% |\n' \
+              "${coverage}" "${covered}" "${total}" $((percent / 100)) $((percent % 100))
+            printf '\nThe interim table this reconciles is target/gate-evidence/gate8-sign-off.md, written\n'
+            printf 'at integration-test. It is published beside this file rather than replaced by it, so a\n'
+            printf 'reader can see both what the build knew then and what it knows now.\n'
+          } > "${final}"
+
+          if grep -q 'Sign-off status: PROVISIONAL' "${final}"; then
+            echo "::error::${final} still reads PROVISIONAL, which cannot be published as a sign-off." >&2
+            exit 1
+          fi
+          echo "Wrote ${final}:"
+          cat "${final}"
+
+      - name: Upload gate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gate-evidence
+          path: carddemo-java/target/gate-evidence/**
+          if-no-files-found: error
+          retention-days: 30
+
+      # THE PUBLISHED TEST TOTALS ARE RECONCILED HERE BECAUSE THIS IS THE ONLY POINT AT WHICH BOTH REPORT
+      # DIRECTORIES ARE COMPLETE. The unit row is also reconciled inside the build, by GateVerificationTest,
+      # which can read a finished target/surefire-reports/ while the integration tier runs. The integration
+      # row cannot be reconciled there for a structural reason rather than a practical one: that test is
+      # itself one of the classes in the tier, so its own report does not exist while it executes and neither
+      # do those of the classes after it. After verify, both are written, and this step derives all four
+      # figures from the XML and FAILS on any mismatch - which is what makes the evidence page's per-tier
+      # table a derived figure rather than a transcription that was true once.
+      #
+      # if: success() rather than always(). A run whose earlier gate failed has partial report directories by
+      # definition, and comparing a partial count against the published total would replace the real
+      # diagnosis with a spurious mismatch. The job is already failing in that case; this step has nothing to
+      # add to it.
+      - name: Reconcile the published test totals with the report XML
+        if: success()
+        run: |
+          # Same reasoning as the step above: errexit off, because a find over a directory that is being
+          # written or a grep that matches nothing must produce a zero here rather than end the step. The
+          # verdict is the explicit exit at the bottom.
+          set +e
+          set -uo pipefail
+          evidence='../docs/gate-evidence.md'
+          status=0
+
+          # Elements, not the <testsuite tests="..."> attribute. The attribute counts DISTINCT testcase
+          # names, so it undercounts by 146 across this suite - two nests may each declare a method of the
+          # same name. The element count is what the runners' own console totals report and what the evidence
+          # page publishes. grep -o counts every opening tag; the character class after the name keeps
+          # <failure> from matching <flakyFailure>.
+          derive() {
+            { find "$1" -maxdepth 1 -name 'TEST-*.xml' -exec grep -hoE "<$2[[:space:]/>]" {} + \
+              2>/dev/null || true; } | wc -l | tr -d ' '
+          }
+          classes_in() {
+            { find "$1" -maxdepth 1 -name 'TEST-*.xml' 2>/dev/null || true; } | wc -l | tr -d ' '
+          }
+          published() {
+            # The row is keyed on its report directory; the requested cell is stripped of emphasis and
+            # thousands separators. A row that is absent yields the empty string and fails the compare below.
+            awk -v key="$1" -v col="$2" -F'|' '
+              /^\|/ && index($3, key) > 0 {
+                cell = $(col + 3); gsub(/[*, ]/, "", cell);
+                if (cell ~ /^[0-9]+$/) { print cell; exit }
+              }' "${evidence}"
+          }
+
+          reconcile() {
+            local label="$1" dir="$2"
+            local measured_classes measured_tests measured_failures measured_errors measured_skips
+            measured_classes="$(classes_in "${dir}")"
+            measured_tests="$(derive "${dir}" testcase)"
+            measured_failures="$(derive "${dir}" failure)"
+            measured_errors="$(derive "${dir}" error)"
+            measured_skips="$(derive "${dir}" skipped)"
+            echo "${label}: measured classes=${measured_classes} tests=${measured_tests} failures=${measured_failures} errors=${measured_errors} skips=${measured_skips}"
+            if [ "${measured_classes}" -eq 0 ]; then
+              echo "::error title=No reports::${dir} holds no report XML, so the published ${label} row cannot be reconciled"
+              status=1
+              return
+            fi
+            local index=1
+            for measured in "${measured_classes}" "${measured_tests}" "${measured_failures}" \
+                            "${measured_errors}" "${measured_skips}"; do
+              local expected
+              expected="$(published "${dir}" "${index}")"
+              if [ -z "${expected}" ]; then
+                echo "::error title=Published figure missing::${evidence} carries no column ${index} for the ${label} row"
+                status=1
+              elif [ "${expected}" != "${measured}" ]; then
+                echo "::error title=Published total is wrong::${label} column ${index}: the page publishes ${expected}, this run measured ${measured}"
+                status=1
+              fi
+              index=$((index + 1))
+            done
+          }
+
+          reconcile 'unit' 'target/surefire-reports'
+          reconcile 'integration and end-to-end' 'target/failsafe-reports'
+
+          if [ "${status}" -eq 0 ]; then
+            echo 'Every published per-tier figure equals what this run executed.'
+          else
+            echo 'The published per-tier table does not match this run. Update the table in docs/gate-evidence.md from the figures above.'
+          fi
+          exit "${status}"
+
+      # THE PUBLISHED COVERAGE COUNTERS ARE RECONCILED HERE FOR THE SAME REASON THE TEST TOTALS ABOVE
+      # ARE, and they were not, which is how three of the four went stale. The evidence page publishes a
+      # four-row table of covered-and-total figures read from the merged report, and nothing anywhere
+      # compared those figures with the report. Two of the four were then correct and three were wrong -
+      # line by three, instruction by two hundred, method by two - which is invisible to every other check
+      # in this pipeline: the coverage GATE reads the report and passes, and the page's transcription of the
+      # same report can say anything at all without the gate noticing.
+      #
+      # WHY IT CANNOT BE A TEST INSTEAD. The merged report is written at post-integration-test. Every test
+      # in this module runs earlier, at test or integration-test, so no test in the suite can read the
+      # report of its own build. A test reading a PREVIOUS build's report would pass or fail on a stale
+      # file, which is worse than not checking. After verify both exist, which is here.
+      #
+      # THE PERCENTAGE COLUMN IS DERIVED RATHER THAN COMPARED, deliberately: a rounded percentage that
+      # follows from two correct counters carries no independent information, and comparing a rounded figure
+      # to a computed one invites a spurious mismatch in the last digit. What is checked is the pair, and
+      # the pair is what the report states.
+      - name: Reconcile the published coverage counters with the merged report
+        if: success()
+        run: |
+          set +e
+          set -uo pipefail
+          evidence='../docs/gate-evidence.md'
+          report='target/site/jacoco-merged/jacoco.xml'
+          status=0
+
+          if [ ! -s "${report}" ]; then
+            echo "::error title=No merged report::${report} is absent, so the published coverage table cannot be reconciled"
+            exit 1
+          fi
+
+          # The report-level counters are the LAST occurrence of each type in the file: JaCoCo writes
+          # per-class and per-package counters first and the bundle totals last. tail -1 is therefore the
+          # bundle figure rather than whichever class happened to be emitted first.
+          measured_of() {
+            local counter="$1"
+            grep -o "<counter type=\"${counter}\" missed=\"[0-9]*\" covered=\"[0-9]*\"/>" "${report}" \
+              | tail -1
+          }
+          published_of() {
+            # Row keyed on its metric name in the first cell, with emphasis and thousands separators
+            # stripped. Column 1 is covered and column 2 is total, as the page's own header states.
+            awk -v key="$1" -v col="$2" -F'|' '
+              /^\|/ {
+                name = $2; gsub(/[*` ]/, "", name);
+                if (name == key) {
+                  cell = $(col + 2); gsub(/[*, ]/, "", cell);
+                  if (cell ~ /^[0-9]+$/) { print cell; exit }
+                }
+              }' "${evidence}"
+          }
+
+          for pair in 'LINE:Line' 'BRANCH:Branch' 'INSTRUCTION:Instruction' 'METHOD:Method'; do
+            counter="${pair%%:*}"
+            row="${pair##*:}"
+            element="$(measured_of "${counter}")"
+            if [ -z "${element}" ]; then
+              echo "::error title=Counter absent::${report} carries no bundle ${counter} counter"
+              status=1
+              continue
+            fi
+            missed="$(printf '%s' "${element}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+            covered="$(printf '%s' "${element}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+            total=$((missed + covered))
+            echo "${row}: measured covered=${covered} total=${total}"
+
+            expected_covered="$(published_of "${row}" 1)"
+            expected_total="$(published_of "${row}" 2)"
+            if [ -z "${expected_covered}" ] || [ -z "${expected_total}" ]; then
+              echo "::error title=Published row missing::${evidence} carries no ${row} row with two numeric figures"
+              status=1
+              continue
+            fi
+            if [ "${expected_covered}" != "${covered}" ]; then
+              echo "::error title=Published counter is wrong::${row} covered: the page publishes ${expected_covered}, this run measured ${covered}"
+              status=1
+            fi
+            if [ "${expected_total}" != "${total}" ]; then
+              echo "::error title=Published counter is wrong::${row} total: the page publishes ${expected_total}, this run measured ${total}"
+              status=1
+            fi
+          done
+
+          # ---- the summary PERCENTAGES, which the counter loop above could not see ------------
+          #
+          # The loop reconciles four covered-and-total pairs. It says nothing about the percentages the
+          # page also publishes, and a percentage is what a reader actually quotes: the status-at-a-glance
+          # row, the Gate 7 recorded status, the metric table's own percentage column, the per-tier table
+          # and the final checklist all carry one. A stale percentage therefore survived a green
+          # reconciliation - the page published 95.60% beside the very counters that compute 96.04% - so
+          # every published percentage is now derived here from the same bundle counters as the pairs.
+          #
+          # Scoped deliberately. The prior delivery's figures are quoted on this page as that delivery's
+          # own, attributed and dated, and they are NOT this run's to reconcile; nothing below matches
+          # them, because each rule is anchored on either the phrase "merged line coverage", the metric
+          # table's own Line row, the merged per-tier row, or the final checklist's line-coverage row.
+          percentage_of() {
+            local counter="$1"
+            local element
+            element="$(measured_of "${counter}")"
+            if [ -z "${element}" ]; then
+              return 1
+            fi
+            local missed covered
+            missed="$(printf '%s' "${element}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+            covered="$(printf '%s' "${element}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+            if [ $((missed + covered)) -eq 0 ]; then
+              return 1
+            fi
+            awk -v c="${covered}" -v t="$((missed + covered))" 'BEGIN { printf "%.2f", (c * 100) / t }'
+          }
+
+          line_percentage="$(percentage_of LINE)" || line_percentage=''
+          branch_percentage="$(percentage_of BRANCH)" || branch_percentage=''
+          if [ -z "${line_percentage}" ] || [ -z "${branch_percentage}" ]; then
+            echo "::error title=Percentage not derivable::${report} carries no usable LINE or BRANCH counter, so the published percentages cannot be reconciled"
+            status=1
+          else
+            echo "Derived from the merged report: line ${line_percentage}%, branch ${branch_percentage}%"
+            floor='80'
+
+            # Rule A - every sentence that states the merged line coverage. Any percentage on such a line
+            # must be the derived one or the floor the same sentence names.
+            stale_sentences="$(grep -i 'merged line coverage' "${evidence}" \
+                | grep -oE '[0-9]{1,3}(\.[0-9]{1,2})?%' \
+                | grep -vxF "${line_percentage}%" \
+                | grep -vxF "${floor}%" || true)"
+            for offender in ${stale_sentences}; do
+              echo "::error title=Published percentage is wrong::a 'merged line coverage' statement carries ${offender}, this run measured ${line_percentage}%"
+              status=1
+            done
+
+            # Rule B - the metric table's own Line row, whose fourth cell is the percentage.
+            published_line_percentage="$(awk -F'|' '
+              /^\|/ {
+                name = $2; gsub(/[*` ]/, "", name);
+                if (name == "Line") {
+                  cell = $5; gsub(/[*%, ]/, "", cell);
+                  if (cell ~ /^[0-9]+\.[0-9]+$/) { print cell; exit }
+                }
+              }' "${evidence}")"
+            if [ -z "${published_line_percentage}" ]; then
+              echo "::error title=Published row missing::${evidence} carries no Line metric row with a numeric percentage cell"
+              status=1
+            elif [ "${published_line_percentage}%" != "${line_percentage}%" ]; then
+              echo "::error title=Published percentage is wrong::Line metric row: the page publishes ${published_line_percentage}%, this run measured ${line_percentage}%"
+              status=1
+            fi
+
+            # Rule C - the per-tier table's merged row, which publishes line then branch. Keyed on its own
+            # first cell rather than on the report path, because two prose rows elsewhere on the page also
+            # name that path and neither carries a percentage.
+            merged_row="$(awk -F'|' '
+              /^\|/ {
+                name = $2;
+                if (name ~ /Merged/ && name ~ /jacoco-merged/) { print; exit }
+              }' "${evidence}")"
+            if [ -z "${merged_row}" ]; then
+              echo "::error title=Published row missing::${evidence} carries no per-tier row for the merged report"
+              status=1
+            else
+              merged_percentages="$(printf '%s' "${merged_row}" | grep -oE '[0-9]{1,3}\.[0-9]{1,2}%' | tr '\n' ' ')"
+              if [ "${merged_percentages}" != "${line_percentage}% ${branch_percentage}% " ]; then
+                echo "::error title=Published percentage is wrong::the merged per-tier row publishes '${merged_percentages}', this run measured '${line_percentage}% ${branch_percentage}% '"
+                status=1
+              fi
+            fi
+
+            # Rule D - the final checklist's line-coverage row, whose own key names the floor.
+            stale_checklist="$(awk -F'|' '
+              /^\|/ {
+                name = $2; gsub(/[*` ]/, "", name);
+                if (name ~ /^Linecoverage/) { print }
+              }' "${evidence}" \
+                | grep -oE '[0-9]{1,3}(\.[0-9]{1,2})?%' \
+                | grep -vxF "${line_percentage}%" \
+                | grep -vxF "${floor}%" || true)"
+            for offender in ${stale_checklist}; do
+              echo "::error title=Published percentage is wrong::the checklist's line-coverage row carries ${offender}, this run measured ${line_percentage}%"
+              status=1
+            done
+          fi
+
+          # The analysed-class count is published in the same section and comes from the same report.
+          classes="$(measured_of CLASS)"
+          if [ -n "${classes}" ]; then
+            class_missed="$(printf '%s' "${classes}" | sed 's/.*missed="\([0-9]*\)".*/\1/')"
+            class_covered="$(printf '%s' "${classes}" | sed 's/.*covered="\([0-9]*\)".*/\1/')"
+            echo "Class: measured covered=${class_covered} total=$((class_missed + class_covered))"
+            if [ "${class_missed}" -ne 0 ]; then
+              echo "::error title=Wholly untested class::${report} reports ${class_missed} class(es) with no executed method; the build's own CLASS/MISSEDCOUNT rule allows zero"
+              status=1
+            fi
+          fi
+
+          if [ "${status}" -eq 0 ]; then
+            echo 'Every published coverage counter equals the merged report.'
+          else
+            echo 'The published coverage table does not match the merged report. Update the table in docs/gate-evidence.md from the figures above.'
+          fi
+          exit "${status}"
+
+      # ---- gate 5 of 7: reproducibility ------------------------------------------------------
+      # Save the verified jar, rebuild from a clean target with the same revision and source epoch,
+      # and compare bytes. The reports from the verified run have already been uploaded above, so the
+      # clean cannot erase evidence - and that sentence is only true because the gate-evidence bundle
+      # is now among the uploads above it. The `clean` below removes target/gate-evidence/ along with
+      # everything else, so any evidence artifact not published before this point is published nowhere.
+      # A timestamp or archive-order regression fails here even when both jars would run.
+      - name: Reproducible artifact gate
+        id: reproducibility_gate
+        run: |
+          set -euo pipefail
+          verified_jar="$(find target -maxdepth 1 -type f -name 'carddemo-java-*.jar' \
+            ! -name '*.original' ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print)"
+          test "$(printf '%s\n' "${verified_jar}" | sed '/^$/d' | wc -l)" -eq 1
+          cp "${verified_jar}" "${RUNNER_TEMP}/carddemo-java-verified.jar"
+
+          ./mvnw -B -ntp \
+            -Dbuild.revision="${SOURCE_REVISION}" \
+            -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
+            -DskipTests \
+            clean package
+
+          rebuilt_jar="$(find target -maxdepth 1 -type f -name 'carddemo-java-*.jar' \
+            ! -name '*.original' ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print)"
+          test "$(printf '%s\n' "${rebuilt_jar}" | sed '/^$/d' | wc -l)" -eq 1
+          cmp "${RUNNER_TEMP}/carddemo-java-verified.jar" "${rebuilt_jar}"
+          sha256sum "${rebuilt_jar}"
+          echo 'The clean rebuild is byte-identical to the verified artifact.'
+
+      # ---- gate 6 of 7: jar deployability ---------------------------------------------------
+      # A repackaged jar names a start class in its manifest, and nothing earlier in this workflow
+      # proves that the class is present in the artifact or that the context it starts can reach a
+      # started state. Both are proven here, before the upload, so that the only artifact this
+      # workflow publishes is one that was observed to start.
+      #
+      # A DATABASE IS STARTED AND THE AWS EMULATOR DELIBERATELY IS NOT. This gate is about the
+      # artifact, so it starts the one dependency the artifact cannot boot without and no more; the
+      # complete stack is the container, Compose and monitoring gate's subject. The consequence is stated
+      # where it matters, at the
+      # assertion below: with the emulator absent the aggregate health endpoint is DOWN by design, so
+      # the group this step reads has to be one that does not consult it.
+      #
+      # The database is started with the container runtime already present on the runner rather than
+      # through a job-level service block, so the job keeps its single-job shape and - importantly -
+      # no new action reference enters the workflow, which would otherwise have to be pinned to a
+      # commit as every reference here already is. The image tag matches the one the module's own
+      # compose stack and integration tests pin, so the smoke test and the tests agree on the server.
+      #
+      # The local profile is selected deliberately: it is the only profile that supplies a datasource
+      # URL and the personal-data encryption key material with inline defaults, so the artifact starts
+      # here without any secret. The production profile resolves all of its secrets from the
+      # environment with no fallback and is therefore not a smoke-test profile by design.
+      #
+      # The step carries no condition at all, and needs none. A guard on the build gate's recorded
+      # outcome
+      # would be necessary only if that gate were allowed to continue, since there is no jar to start when it
+      # failed. Because no gate above continues past its own failure, reaching this
+      # step already means every gate before it passed and the jar exists - the guard would be
+      # restating the control flow rather than adding to it.
+      - name: Smoke test the executable jar
+        id: deployability_gate
+        run: |
+          set -euo pipefail
+
+          app_pid=''
+          cleanup() {
+            if [ -n "${app_pid}" ] && kill -0 "${app_pid}" 2>/dev/null; then
+              kill "${app_pid}"
+              wait "${app_pid}" || :
+            fi
+            if docker rm -f carddemo-smoke-db >/dev/null 2>&1; then
+              echo 'Removed carddemo-smoke-db.'
+            else
+              echo 'No carddemo-smoke-db to remove.'
+            fi
+          }
+          trap cleanup EXIT
+
+          jar="$(ls target/carddemo-java-*.jar)"
+          echo "Artifact under test: ${jar}"
+
+          # The manifest's declared start class must actually be inside the artifact. This alone
+          # catches the failure mode where repackage names an entry point that was never written.
+          #
+          # Every match below reads a captured string rather than piping into grep -q. Under
+          # pipefail a grep -q closes the pipe as soon as it matches, the writer upstream is killed
+          # by SIGPIPE, and the pipeline reports failure even though the match succeeded - so the
+          # obvious spelling of this check would fail on a correct artifact.
+          manifest="$(unzip -p "${jar}" META-INF/MANIFEST.MF)"
+          start_class="$(printf '%s' "${manifest}" | tr -d '\r' | sed -n 's/^Start-Class: //p')"
+          echo "Declared start class: ${start_class}"
+          test -n "${start_class}"
+
+          listing="$(unzip -l "${jar}")"
+          start_class_entry="BOOT-INF/classes/${start_class//.//}.class"
+          case "${listing}" in
+            *"${start_class_entry}"*)
+              echo "Start class is present in the artifact: ${start_class_entry}"
+              ;;
+            *)
+              echo "The manifest declares ${start_class} but ${start_class_entry} is not in the jar."
+              exit 1
+              ;;
+          esac
+
+          docker run -d --name carddemo-smoke-db \
+            -e POSTGRES_DB=carddemo \
+            -e POSTGRES_USER=carddemo \
+            -e POSTGRES_PASSWORD=carddemo \
+            -p 127.0.0.1:5432:5432 \
+            postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+
+          database_ready=0
+          for _ in $(seq 1 30); do
+            if docker exec carddemo-smoke-db pg_isready -U carddemo -d carddemo; then
+              database_ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "${database_ready}" -eq 1
+
+          java -jar "${jar}" --spring.profiles.active=local --server.port=8080 > smoke.log 2>&1 &
+          app_pid=$!
+          echo "Started process ${app_pid}."
+
+          # THE LIVENESS GROUP IS THE GATE, AND IT IS THE SAME SIGNAL THE IMAGE PROBES. The Dockerfile's
+          # HEALTHCHECK asks for /actuator/health/liveness, so asserting that group is what makes this
+          # step's long-standing claim true - that a jar satisfying it satisfies the image too. While this
+          # read the aggregate instead, the claim was simply false, because the two are different signals.
+          #
+          # READING THE AGGREGATE HERE COULD NEVER HAVE PASSED, WHATEVER THE ARTIFACT. The aggregate
+          # includes every contributor, and this step starts only the database on purpose: the AWS
+          # emulator is not started, so the object-store, queue and topic contributors are all DOWN and
+          # the aggregate answers DOWN with status 503. A 503 is a failure under `curl -fsS`, so the loop
+          # never even received a body to match and the step failed on every run. Measured directly, with
+          # the database up and the emulator absent: /actuator/health returns {"status":"DOWN"} 503 while
+          # /actuator/health/liveness returns {"status":"UP"} 200.
+          #
+          # NOTHING ABOUT THE DATABASE IS GIVEN UP BY NOT NAMING ITS CONTRIBUTOR. It is proven
+          # transitively and unavoidably: Flyway runs inside context refresh, so an unreachable database
+          # fails the flywayInitializer bean, cancels the refresh and ends the process - liveness never
+          # turns UP at all, and this loop reports the exit instead. Measured, pointed at a closed port:
+          # the process exits during start-up having reported nothing. That is why the database is started
+          # above, and why this one assertion is sufficient rather than needing a second. Decision log DL-183
+          # records the measurement and why starting the emulator here was rejected.
+          started=0
+          for _ in $(seq 1 60); do
+            if liveness="$(curl -fsS http://localhost:8080/actuator/health/liveness)"; then
+              case "${liveness}" in
+                *'"status":"UP"'*)
+                  echo "Liveness reported: ${liveness}"
+                  started=1
+                  break
+                  ;;
+              esac
+            fi
+            if ! kill -0 "${app_pid}" 2>/dev/null; then
+              echo "Process ${app_pid} exited before reporting liveness."
+              break
+            fi
+            sleep 2
+          done
+
+          # Recorded for the log, never asserted. The aggregate is expected to be DOWN here because the
+          # emulator is deliberately absent, and printing it keeps that expectation visible to whoever
+          # reads a failed run rather than leaving them to rediscover it. `-f` is omitted precisely
+          # because the expected 503 would otherwise end the step.
+          echo "---- aggregate health, expected DOWN without the emulator ----"
+          curl -sS -o - -w '\n' http://localhost:8080/actuator/health || :
+
+          # Only the process this step started is signalled, by the identifier captured above.
+          if kill "${app_pid}" 2>/dev/null; then
+            echo "Stopped process ${app_pid}."
+          else
+            echo "Process ${app_pid} had already exited."
+          fi
+          if wait "${app_pid}"; then
+            echo "Process ${app_pid} exited cleanly."
+          else
+            echo "Process ${app_pid} exited on signal, which is the expected end of this test."
+          fi
+          docker rm -f carddemo-smoke-db
+
+          echo "---- last 60 lines of the start-up log ----"
+          tail -n 60 smoke.log
+          rm -f smoke.log
+
+          test "${started}" -eq 1
+          echo "The artifact starts and reports live on the group the container image probes."
+
+      # ---- gate 7 of 7: container, Compose and monitoring deployability ----------------------
+      # This banner is not decoration. Its absence is the reason the header of this file said five
+      # gates while the summary at the bottom listed six: every other gate announced itself and this
+      # one did not, so a reader counting banners counted one short of the steps that can fail.
+      #
+      # The full operational boundary: build the image with the same identity as Maven, resolve and
+      # start Compose without rebuilding, verify every service and monitoring contract, then scan
+      # EVERY IMAGE THIS REPOSITORY SHIPS AT RUN TIME and gate all of them alike - the application
+      # image, both digest-pinned Dockerfile bases, and every digest-pinned third-party Compose
+      # service image. A HIGH or CRITICAL finding in any of them fails this gate unless it is covered
+      # by a scoped, reviewed, expiring determination in container-scan-determinations.txt, and an
+      # expired or unused determination fails it too. No finding is filtered out of any scan.
+      #
+      # THE INVENTORY-ONLY VERDICT IS GONE, AND THAT IS THE CHANGE. Third-party service images used to
+      # be scanned and archived without being judged, on the reasoning that this repository cannot
+      # patch inside someone else's binary. It cannot - but it chooses which digest to run, and a
+      # database or emulator image carrying a CRITICAL is shipped by whoever runs this stack whether or
+      # not this repository authored the binary. An unjudged scan is evidence of looking rather than
+      # evidence of a decision. Decision log DL-350.
+      - name: Validate and scan the container and monitoring stack
+        id: container_gate
+        run: |
+          set -euo pipefail
+
+          scanner='ghcr.io/aquasecurity/trivy:0.62.1@sha256:fc10faf341a1d8fa8256c5ff1a6662ef74dd38b65034c8ce42346cf958a02d5d'
+          report_dir="${PWD}/target/container-scan-reports"
+          mkdir -p "${report_dir}"
+
+          cleanup() {
+            if docker compose down -v --remove-orphans; then
+              echo 'Removed the CI Compose stack and its volumes.'
+            else
+              echo 'The CI Compose stack was already absent.'
+            fi
+          }
+          trap cleanup EXIT
+
+          docker build --check .
+          docker build \
+            --build-arg APP_VERSION="${APP_VERSION}" \
+            --build-arg SOURCE_REVISION="${SOURCE_REVISION}" \
+            --build-arg SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+            -t "${COMPOSE_PROJECT_NAME}-app:local" .
+          docker compose config --quiet
+          docker compose up -d --no-build
+
+          services='postgres localstack jaeger app prometheus grafana'
+          stack_ready=0
+          for _ in $(seq 1 120); do
+            stack_ready=1
+            for service in ${services}; do
+              container_id="$(docker compose ps -q "${service}")"
+              if [ -z "${container_id}" ]; then
+                stack_ready=0
+                break
+              fi
+              health="$(docker inspect --format \
+                '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                "${container_id}")"
+              if [ "${health}" != 'healthy' ]; then
+                stack_ready=0
+                break
+              fi
+            done
+            [ "${stack_ready}" -eq 1 ] && break
+            sleep 2
+          done
+          docker compose ps
+          test "${stack_ready}" -eq 1
+
+          health="$(curl -fsS http://127.0.0.1:8080/actuator/health)"
+          printf '%s\n' "${health}" | jq -e '.status == "UP"'
+
+          datasource="$(curl -fsS -u admin:admin \
+            http://127.0.0.1:3000/api/datasources/uid/carddemo-prometheus)"
+          printf '%s\n' "${datasource}" \
+            | jq -e '.uid == "carddemo-prometheus" and .type == "prometheus"'
+          jaeger_status="$(curl -sS -o "${RUNNER_TEMP}/grafana-jaeger.json" -w '%{http_code}' \
+            -u admin:admin http://127.0.0.1:3000/api/datasources/uid/carddemo-jaeger)"
+          test "${jaeger_status}" = '404'
+
+          # THE DASHBOARD GRAFANA SERVES, NOT THE FILE IN THE REPOSITORY. A unit test already reads the
+          # file; only this step can prove that provisioning delivered that file rather than some other
+          # one, so every clause below is asserted against the served document.
+          #
+          # THE SELECTOR AND THE ASSERTION USED TO NAME DIFFERENT PANELS. This selected panels 11 and 12
+          # and then required their queries to carry the item-reader label names - which are panels 31 and
+          # 32's contract. Panels 11 and 12 read the application's own counters and carry six targets
+          # each, so the old filter failed twice over: `length == 2` was wrong against twelve targets, and
+          # every `contains` was false. Both contracts are now asserted, each against the panels that
+          # actually hold it, and the exact target counts are stated so that adding a counter has to be a
+          # deliberate edit here rather than a silent widening.
+          #
+          # THE LAST TWO CLAUSES CARRY THE GATE 3 HONESTY RULE ONTO THE SERVED DASHBOARD. A rolling
+          # PromQL rate divides by the rate window and a scraped maximum is not a process peak, so no
+          # panel may present itself as the Gate 3 figure; the quotable figures come from the run-scoped
+          # harness and are written up in docs/gate-evidence.md. Panels 11, 12 and 17 must therefore say
+          # what they are, and no panel anywhere may re-brand itself as the figure. Decision log DL-184
+          # records this; DL-182 records why the panels were relabelled.
+          dashboard="$(curl -fsS -u admin:admin \
+            http://127.0.0.1:3000/api/dashboards/uid/carddemo-overview)"
+          printf '%s\n' "${dashboard}" | jq -e '
+            .dashboard.title == "CardDemo Overview"
+            and (([.dashboard.panels[] | select(.id == 31 or .id == 32)
+                | .targets[].expr
+                | contains("spring_batch_item_read_job_name")
+                  and contains("spring_batch_item_read_step_name")]) as $itemRead
+              | ($itemRead | length) == 2 and ($itemRead | all))
+            and (([.dashboard.panels[] | select(.id == 11 or .id == 12)
+                | .targets[].expr
+                | contains("carddemo_batch_") and contains("_total")]) as $application
+              | ($application | length) == 12 and ($application | all))
+            and (([.dashboard.panels[] | select(.id == 11 or .id == 12 or .id == 17)
+                | .title | contains("visualization")]) as $labelled
+              | ($labelled | length) == 3 and ($labelled | all))
+            and ([.dashboard.panels[]
+                | (.title // "")
+                | contains("GATE 3 RECORDS PER SECOND")
+                  or contains("GATE 3 PEAK MEMORY")] | any | not)'
+
+          targets_ready=0
+          for _ in $(seq 1 60); do
+            targets="$(curl -fsS http://127.0.0.1:9090/api/v1/targets)"
+            if printf '%s\n' "${targets}" | jq -e '
+                any(.data.activeTargets[];
+                  .labels.job == "carddemo-app" and .health == "up")' >/dev/null; then
+              targets_ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "${targets_ready}" -eq 1
+
+          query="$(curl -fsS --get --data-urlencode 'query=up{job="carddemo-app"}' \
+            http://127.0.0.1:9090/api/v1/query)"
+          printf '%s\n' "${query}" | jq -e '
+            .status == "success"
+            and (.data.result | length) == 1
+            and .data.result[0].value[1] == "1"'
+
+          curl -fsS http://127.0.0.1:16686/api/services \
+            | jq -e '.data | type == "array"'
+
+          # NOTHING IS FILTERED OUT OF THE SCAN, AND THAT IS THE CHANGE. This used to pass
+          # --ignore-unfixed, which does not merely soften the verdict: it removes those findings from the
+          # JSON as well, so the archived report - the durable record a reviewer signs the gate off from -
+          # could not show what had been dropped. A gate that calls itself a strict zero-HIGH/CRITICAL
+          # gate while a flag deletes an unbounded subset of the findings from both the verdict and the
+          # evidence is not strict, and its report cannot be audited. Every HIGH and CRITICAL is now
+          # retained, whether or not a fix exists upstream.
+          #
+          # THE VERDICT IS DECIDED HERE RATHER THAN BY THE SCANNER'S EXIT CODE, for one concrete reason:
+          # --exit-code 1 ends the scanner before the breakdown below is printed, so a failing run
+          # reported that it had failed and not what it had found. Scanning with --exit-code 0 and then
+          # deciding lets the same run print every finding it is failing on, with the fix status of each.
+          # The two can no longer disagree either, because the count that is printed is the count that is
+          # judged - previously one came from the report and the other from the scanner.
+          #
+          # WHAT TO DO WHEN AN IMAGE FAILS ON A FINDING WITH NO FIX. There are exactly two honest
+          # actions and no mechanism here pre-empts either: move the digest pin to a rebuilt upstream
+          # image that no longer carries it, or record a reviewed determination for that one identifier
+          # on that one image. The determination file ships EMPTY, so nothing is accepted today, and
+          # accepting something is a reviewed edit to a tracked file rather than a flag.
+          #
+          # WHY THE DETERMINATION IS APPLIED HERE AND NOT BY THE SCANNER. Handing the file to the
+          # scanner as an ignore list would delete the covered findings from the archived JSON, which is
+          # exactly the defect DL-185 removed when it deleted --ignore-unfixed: the report a reviewer
+          # signs off from would stop showing what had been accepted. Deciding here keeps every finding
+          # in the report and prints which ones were covered, by whom, and until when. It also buys two
+          # properties an ignore file does not have: an EXPIRED determination fails the build rather
+          # than quietly resuming enforcement, and an UNUSED one fails it too - the same discipline
+          # failBuildOnUnusedSuppressionRule already holds over the dependency gate, and the reason is
+          # the same, that a determination nothing matches is a statement nobody has re-read.
+          # Decision log DL-185 for the retention rule, DL-350 for this gate.
+          determination_file="${PWD}/container-scan-determinations.txt"
+          test -f "${determination_file}"
+          determination_shape='^[[:space:]]*(#.*)?$'
+          determination_shape="${determination_shape}|^[^|[:space:]]+\\|[A-Z][A-Z0-9]*-[A-Za-z0-9._-]+\\|[0-9]{4}-[0-9]{2}-[0-9]{2}\\|[^|]+\\|[^|]+$"
+          if grep -nvE "${determination_shape}" "${determination_file}"; then
+            printf 'Every determination must read image|IDENTIFIER|YYYY-MM-DD|reviewer|reason, with no\n' >&2
+            printf 'whitespace around a separator. The lines above do not.\n' >&2
+            exit 1
+          fi
+
+          today="$(date -u +%Y-%m-%d)"
+          # Deliberately NOT inside report_dir. That directory holds one report per scanned image and
+          # nothing else, because the upload below treats an empty directory on a green run as an error -
+          # a file created before the first scan would satisfy that check on a run that never scanned
+          # anything.
+          determinations_used="${PWD}/target/container-scan-determinations-used.txt"
+          : > "${determinations_used}"
+
+          # An expiry in the past fails the build on its own, before any image is scanned. A reviewed
+          # acceptance is a decision with a date on it; once the date passes the decision has lapsed and
+          # the build says so rather than silently reverting to enforcement and reporting an unexplained
+          # new failure weeks later.
+          expired=0
+          while IFS='|' read -r d_key d_id d_expiry d_reviewer d_reason || [ -n "${d_key}" ]; do
+            case "${d_key}" in ''|'#'*) continue ;; esac
+            if [ "${d_expiry}" \< "${today}" ]; then
+              printf 'Determination %s / %s expired on %s (reviewer %s) and must be re-reviewed or removed.\n' \
+                "${d_key}" "${d_id}" "${d_expiry}" "${d_reviewer}" >&2
+              expired=1
+            fi
+          done < "${determination_file}"
+          if [ "${expired}" -ne 0 ]; then
+            exit 1
+          fi
+
+          # Returns the expiry of the determination covering one identifier on one image, or fails when
+          # there is none. Scoped to BOTH, so an acceptance on one image never silences another.
+          determination_expiry() {
+            awk -F '|' -v key="$1" -v id="$2" '
+              /^[[:space:]]*(#|$)/ { next }
+              $1 == key && $2 == id { print $3 "|" $4; found = 1; exit }
+              END { if (!found) { exit 1 } }
+            ' "${determination_file}"
+          }
+          # The report file is named after the DETERMINATION KEY rather than the image reference, so the
+          # application image's report has a stable name across builds even though its own identifier is
+          # a fresh content digest on every one.
+          scan_image() {
+            image="$1"
+            key="$2"
+            name="$(printf '%s' "${key}" | sha256sum | cut -d ' ' -f 1)"
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "${HOME}/.cache/trivy:/root/.cache/" \
+              -v "${report_dir}:/reports" \
+              "${scanner}" image \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --format json \
+              --output "/reports/${name}.json" \
+              --exit-code 0 \
+              "${image}"
+            count="$(jq '[.Results[]?.Vulnerabilities[]?] | length' \
+              "${report_dir}/${name}.json")"
+            unfixed="$(jq '[.Results[]?.Vulnerabilities[]?
+              | select((.FixedVersion // "") == "")] | length' \
+              "${report_dir}/${name}.json")"
+            printf 'Image %s (key %s): %s HIGH/CRITICAL finding(s), %s of them with no fix available.\n' \
+              "${image}" "${key}" "${count}" "${unfixed}"
+
+            # Every identifier is either covered by a determination scoped to this image or it fails the
+            # gate. Both halves are printed, so the run's own log says what was accepted as well as what
+            # was refused, and the archived JSON still carries all of it either way.
+            uncovered=0
+            while IFS= read -r finding_id; do
+              case "${finding_id}" in '') continue ;; esac
+              if covering="$(determination_expiry "${key}" "${finding_id}")"; then
+                printf '  COVERED %s until %s by %s\n' \
+                  "${finding_id}" "${covering%%|*}" "${covering#*|}"
+                printf '%s|%s\n' "${key}" "${finding_id}" >> "${determinations_used}"
+              else
+                uncovered=$((uncovered + 1))
+                jq -r --arg id "${finding_id}" '.Results[]?.Vulnerabilities[]?
+                  | select(.VulnerabilityID == $id)
+                  | "  UNCOVERED " + .VulnerabilityID + " " + .Severity + " " + .PkgName
+                    + " installed=" + (.InstalledVersion // "unknown")
+                    + " fixed_in=" + (if (.FixedVersion // "") == "" then "no fix available"
+                                      else .FixedVersion end)' \
+                  "${report_dir}/${name}.json" >&2
+              fi
+            done < <(jq -r '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique | .[]' \
+              "${report_dir}/${name}.json")
+
+            if [ "${uncovered}" -ne 0 ]; then
+              printf 'Image %s carries %s HIGH/CRITICAL finding(s) that no determination covers.\n' \
+                "${image}" "${uncovered}" >&2
+              printf 'Move the digest pin to a rebuilt image, or record a reviewed determination in\n' >&2
+              printf 'carddemo-java/container-scan-determinations.txt naming key %s.\n' "${key}" >&2
+              return 1
+            fi
+          }
+
+          # EVERY IMAGE THIS STACK SHIPS AT RUN TIME IS GATED, AND ALL OF THEM ALIKE. The product, its
+          # two immutable bases, and every third-party service image Compose resolves.
+          application_image_id="$(docker image inspect \
+            --format '{{.Id}}' "${COMPOSE_PROJECT_NAME}-app:local")"
+          case "${application_image_id}" in sha256:*) ;; *) exit 1 ;; esac
+          # The application image is keyed by the literal 'application' rather than by its identifier,
+          # which is a fresh digest on every build: a determination pinned to a content digest could
+          # never be matched twice, so it would be unusable and would fail the unused check immediately.
+          scan_image "${application_image_id}" application
+          while IFS= read -r image; do
+            case "${image}" in
+              *@sha256:*) ;;
+              *)
+                printf 'Dockerfile base is not digest pinned: %s\n' "${image}" >&2
+                exit 1
+                ;;
+            esac
+            scan_image "${image}" "${image}"
+          done < <(awk '/^FROM / {print $2}' Dockerfile)
+
+          # Every third-party service image, gated on the same terms. Its digest-pinned reference is its
+          # determination key, so a determination lapses by construction the moment the pin moves.
+          while IFS= read -r image; do
+            case "${image}" in
+              "${COMPOSE_PROJECT_NAME}-app:local") continue ;;
+              *@sha256:*) ;;
+              *)
+                printf 'Compose image is not digest pinned: %s\n' "${image}" >&2
+                exit 1
+                ;;
+            esac
+            scan_image "${image}" "${image}"
+          done < <(docker compose config --images | sort -u)
+
+          # A determination that matched nothing fails the build. It is either stale - the finding is
+          # gone, or the pin moved - or it names a key or identifier that does not exist, in which case
+          # it was never protecting anything and its presence misrepresents the gate.
+          unused=0
+          while IFS='|' read -r d_key d_id d_rest || [ -n "${d_key}" ]; do
+            case "${d_key}" in ''|'#'*) continue ;; esac
+            if ! grep -Fxq "${d_key}|${d_id}" "${determinations_used}"; then
+              printf 'Determination %s / %s matched no finding in this run and must be removed.\n' \
+                "${d_key}" "${d_id}" >&2
+              unused=1
+            fi
+          done < "${determination_file}"
+          if [ "${unused}" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo 'Container, Compose and monitoring validation passed.'
+
+      # The container gate above writes one report per scanned image into target/container-scan-reports,
+      # so on a run that reached this point green the directory cannot legitimately be empty - and the
+      # missing-file policy says exactly that. It stays a warning on a run that has already failed,
+      # because a gate that stopped before its first scan has nothing to publish and must not be given a
+      # second, misleading failure. Same reasoning, and same expression, as the three evidence uploads
+      # further up; the assertion step there deliberately does not cover this path, because these files
+      # are produced hundreds of lines later than it runs.
+      - name: Upload container vulnerability scan reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-vulnerability-scan-reports
+          path: carddemo-java/target/container-scan-reports/**
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
+          retention-days: 30
+
+      # The executable jar is build output rather than gate evidence, so it is uploaded only when
+      # every gate passed - and then an absent file is a hard error, because a fully green run
+      # that produced no artifact is a finding in its own right.
+      #
+      # THIS STEP CARRIES NO CONDITION, AND THAT IS THE POINT OF THE LINEAR MODEL. Enumerating every gate
+      # outcome here would be necessary only if a gate were allowed to continue past its own failure, so
+      # that the run could reach this step with a gate already red - and such an enumeration is a standing
+      # hazard: a gate added above and not added here would publish a jar from a run that was going to fail
+      # anyway, and the artifact outlives the run. No gate continues past its own failure, so reaching
+      # this step IS the proof that every one of them passed - including the
+      # jar smoke test, the full Compose stack and the image scans. A gate added above needs no change
+      # here, because the control flow states the condition instead of a list restating it.
+      - name: Upload the executable jar
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: carddemo-java-jar
+          path: carddemo-java/target/carddemo-java-*.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      # ---- the summary ----------------------------------------------------------------------
+      # THIS STEP DOES NOT DECIDE THE RUN, AND THAT IS THE POINT OF THE LINEAR MODEL. Letting every gate
+      # continue past its own failure and sourcing the job's status from a final step that reads every
+      # recorded outcome back would put the run's verdict at the end of a chain of recorded results rather
+      # than in the gates themselves, and such a step has to run unconditionally to be reached at all -
+      # which is the one thing this file may not do outside an evidence upload.
+      #
+      # Each gate now fails the run where it fails. The status is therefore decided by the failing
+      # step directly and there is nothing left for a verdict step to decide, so this step carries no
+      # condition: it is reached only when every gate before it passed, and its presence in the log
+      # is itself the statement that they did. It cannot report a pass that did not happen, because
+      # a failed gate stops the job before it.
+      #
+      # A gate added above needs no change here.
+      # The seven lines below are the same seven gates, in the same order and under the same names, as
+      # the inventory in this file's header and the "gate N of 7" banner on each step. Three places
+      # name them and all three must agree, which is what BuildAndCiContractTest checks this list
+      # against.
+      - name: Gate summary
+        run: |
+          echo 'gate 1 of 7  repository whitespace hygiene                   : passed'
+          echo 'gate 2 of 7  build, test, coverage and supply chain          : passed'
+          echo 'gate 3 of 7  locale-hostile re-execution                     : passed'
+          echo 'gate 4 of 7  bootstrap contract                              : passed'
+          echo 'gate 5 of 7  reproducibility                                 : passed'
+          echo 'gate 6 of 7  jar deployability                               : passed'
+          echo 'gate 7 of 7  container, Compose and monitoring deployability : passed'
+          echo 'Every gate passed.'

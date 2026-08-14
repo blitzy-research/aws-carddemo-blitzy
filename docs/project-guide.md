@@ -10,11 +10,14 @@ This project migrates the AWS CardDemo mainframe COBOL application — comprisin
 
 ### 1.2 Completion Status
 
-```mermaid
-pie title Project Completion Status
-    "Completed (391h)" : 391
-    "Remaining (43h)" : 43
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-project-completion-status-caption" markdown="1">
+![Pie chart titled Project Completion Status with two slices: Completed 391 hours, about 90 per cent, and Remaining 43 hours, about 10 per cent.](diagrams/project-completion-status.svg){ .diagram__image width="649" height="450" }
+</div>
+<figcaption class="diagram__caption" id="diagram-project-completion-status-caption" markdown="1">
+**Figure — Project completion status.** 391 completed hours against 43 remaining, out of 434 in total — the 90.1 per cent the metrics table below states. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
 
 | Metric | Value |
 |--------|-------|
@@ -248,27 +251,48 @@ All tests were executed autonomously by Blitzy's validation pipeline. Final comm
 
 ## 7. Visual Project Status
 
-```mermaid
-pie title Project Hours Breakdown
-    "Completed Work" : 391
-    "Remaining Work" : 43
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-project-hours-breakdown-caption" markdown="1">
+![Pie chart titled Project Hours Breakdown with two slices: Completed Work 391 hours, about 90 per cent, and Remaining Work 43 hours, about 10 per cent.](diagrams/project-hours-breakdown.svg){ .diagram__image width="639" height="450" }
+</div>
+<figcaption class="diagram__caption" id="diagram-project-hours-breakdown-caption" markdown="1">
+**Figure — Project hours breakdown.** The same 391 completed and 43 remaining hours, restated as the split of the 434-hour total. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
 
 **Hours Distribution by Completed Component:**
 
-```mermaid
-pie title Completed Work Distribution (391h)
-    "Online Services" : 86
-    "Batch Processing" : 64
-    "Data Layer" : 55
-    "Tests" : 82
-    "Configuration" : 38
-    "Documentation" : 24
-    "Build Infrastructure" : 14
-    "Observability" : 10
-    "QA Fixes" : 16
-    "Controllers" : 20
-```
+<figure class="diagram" markdown="1">
+<div class="diagram__viewport" role="region" tabindex="0" aria-labelledby="diagram-completed-work-distribution-caption" markdown="1">
+![Pie chart titled Completed Work Distribution 391h with ten slices: Online Services 86 hours, Tests 82, Batch Processing 64, Data Layer 55, Documentation 24, Configuration 20, Controllers 20, QA Fixes 16, Build Infrastructure 14, and Observability 10. The ten slices sum to 391.](diagrams/completed-work-distribution.svg){ .diagram__image width="655" height="450" }
+</div>
+<figcaption class="diagram__caption" id="diagram-completed-work-distribution-caption" markdown="1">
+**Figure — Completed work distribution.** How the 391 completed hours divide across the ten components. The slices sum to 391, and the table immediately below gives each one the detail rows it rolls up so the sum is checkable rather than asserted. Where this figure is wider than the page, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.
+</figcaption>
+</figure>
+
+**How each slice rolls up, so the total is checkable rather than asserted.** The ten slices above are a
+roll-up of the 20 rows of [&sect;2.1 Completed Work Detail](#21-completed-work-detail), and they sum to
+the same **391** that table totals. The mapping is published because it is the only way a reader can check
+a slice: a pie whose slices sum to something other than its own title is the defect this table exists to
+prevent, and it was one — the Configuration slice read 38 against a roll-up of 20, putting the ten slices
+at 409 against a stated 391.
+
+| Slice | Hours | &sect;2.1 rows it rolls up |
+|---|---:|---|
+| Online Services | 86 | Online Services (18 programs) 72 + Shared Utility Services 14 |
+| Tests | 82 | Unit Tests 40 + Integration Tests 28 + E2E Tests 14 |
+| Batch Processing | 64 | Batch Jobs &amp; Orchestration 24 + Batch Processors 24 + Batch Readers &amp; Writers 16 |
+| Data Layer | 55 | Data Model Layer 28 + Data Access Layer 12 + Database Migrations 10 + Validation Resources 5 |
+| Documentation | 24 | Documentation 24 |
+| Configuration | 20 | Configuration Layer 14 + Exception Hierarchy 4 + Application Entry Point 2 |
+| Controllers | 20 | REST Controllers 20 |
+| QA Fixes | 16 | QA Fixes &amp; Debugging 16 |
+| Build Infrastructure | 14 | Foundation &amp; Build Infrastructure 14 |
+| Observability | 10 | Observability 10 |
+| **Total** | **391** | all 20 rows, each counted once |
+
+Every &sect;2.1 row appears in exactly one slice, so the roll-up neither double-counts a row nor drops one.
 
 **Remaining Work by Priority:**
 

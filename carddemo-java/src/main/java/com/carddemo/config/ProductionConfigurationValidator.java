@@ -1,0 +1,1750 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.config;
+
+import com.carddemo.util.AwsResourceNamingRules;
+import com.carddemo.util.SqsNamingRules;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.UnaryOperator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
+import software.amazon.awssdk.profiles.ProfileFile;
+import software.amazon.awssdk.profiles.ProfileFileSystemSetting;
+
+/**
+ * Refuses to let the production profile start when a required deployment value is missing, empty or
+ * still standing as its own placeholder text.
+ *
+ * <h2>Why this class exists at all</h2>
+ *
+ * <p>{@code application-prod.yml} writes every required value as a bare {@code ${VARIABLE}} with no
+ * fallback tail, because a defaulted secret puts a usable value in the repository exactly as a literal
+ * one does. Writing it that way is necessary and it is <strong>not sufficient</strong>: the bare form
+ * expresses an intention, and on its own it does not enforce one.
+ *
+ * <p>Three behaviours of the framework, each confirmed by direct observation against the resolved
+ * Spring Boot 3.5.16 and Spring Framework 6.2.19 artifacts this module builds against, are the reason:
+ *
+ * <ol>
+ *   <li><strong>Settings bound as configuration properties tolerate an unresolved placeholder.</strong>
+ *       The binder resolves placeholders leniently, so with {@code CARDDEMO_JWT_SECRET} unset the
+ *       signing secret binds as the sixteen-character literal {@code ${CARDDEMO_JWT_SECRET}}. That
+ *       literal is not blank, so the {@code @NotBlank} constraint already declared on
+ *       {@link JwtProperties#secret()} records no violation and the application starts and signs
+ *       tokens with the text of its own placeholder. The data source location, the data source user,
+ *       the key store location, the key store format, the key entry alias and the region are bound the
+ *       same way and behave the same way.</li>
+ *   <li><strong>Settings read through a value expression fail, but late and obscurely.</strong> That
+ *       path resolves strictly, so it raises a placeholder-resolution failure - at the moment the one
+ *       bean that happens to read it is created, in terms that describe a placeholder rather than
+ *       naming a variable a deployer must set, and only for whichever such bean is reached first.</li>
+ *   <li><strong>An empty variable is silent on every path.</strong> {@code CARDDEMO_DB_PASSWORD=}
+ *       exported as an empty string resolves to an empty string, binds as an empty string, and is then
+ *       offered to the database server as a credential. Whether that is refused is the server's
+ *       decision, not this module's.</li>
+ * </ol>
+ *
+ * <p>The requirement being enforced is that a missing secret aborts start-up rather than binding a
+ * placeholder. This class is the mechanism that makes that true, and the reasoning is recorded in
+ * {@code docs/decision-log.md} DL-105.
+ *
+ * <h2>When the check runs, and why that point was chosen</h2>
+ *
+ * <p>The check is published as a {@link BeanFactoryPostProcessor} from a {@code static} factory method.
+ * Post-processors of that kind are instantiated and invoked while the context is still processing bean
+ * definitions - before the singleton phase creates the data source, before the migration runner opens a
+ * connection, before the embedded server reads the key store, and before any configuration-properties
+ * object is bound. So a deployment that is missing a variable stops with this message and never touches
+ * infrastructure with a placeholder in its hand. {@code ProductionInfrastructureIsUntouchedTest} proves
+ * that ordering by observing that a marker bean is never instantiated when the check fails.
+ *
+ * <p>Declaring the factory method {@code static} matters: a non-static one would force the enclosing
+ * configuration class to be instantiated before the container is ready to enhance it, which the
+ * framework reports and which serves no purpose here.
+ *
+ * <h2>What the check does and does not judge</h2>
+ *
+ * <p>It judges <em>usability</em>: for each required key the resolved text must exist, must not be
+ * blank, and must not still contain placeholder syntax. It deliberately does not judge <em>shape</em> -
+ * it does not test whether a JDBC location parses, whether a key decodes to thirty-two bytes or whether
+ * a queue name ends in the ordered-queue suffix. Those belong to the components that consume them, and
+ * three of the twelve keys already carry such a check:
+ * {@link JwtProperties} constrains the signing secret,
+ * {@code SensitiveFieldEncryptionService} decodes and length-checks the field-encryption key, and
+ * {@code JobSubmissionService} refuses a queue name that omits the ordered suffix. Duplicating those
+ * here would put the same rule in two places and let them drift.
+ *
+ * <p>It also does not judge whether the document was <em>written</em> without a fallback. That is a
+ * property of the source text rather than of a running application, and
+ * {@code ConfigurationProfileBaselineTest} asserts it directly against the document.
+ *
+ * <h2>Scope</h2>
+ *
+ * <p>{@link Profile} confines the whole class to the production profile. No other profile registers it,
+ * so the local profile keeps its developer defaults, the test profile keeps its fixture values, and a
+ * profile-less start is unaffected. Nothing here reads a value that is only present in production, so
+ * the confinement is a deliberate policy boundary rather than a technical necessity.
+ *
+ * @see JwtProperties
+ * @see <a href="https://docs.spring.io/spring-boot/reference/features/external-config.html">External
+ *      configuration</a>
+ */
+@Configuration(proxyBeanMethods = false)
+@Profile(ProductionConfigurationValidator.PRODUCTION_PROFILE)
+public final class ProductionConfigurationValidator {
+
+    /**
+     * Name of the profile this check is confined to. Held as a constant so the annotation above, the
+     * failure message below and every test naming the profile all read the same token.
+     */
+    public static final String PRODUCTION_PROFILE = "prod";
+
+    /**
+     * Diagnostic channel for the one condition this class observes without refusing: a shared
+     * configuration file the SDK itself could not read. Logged at debug rather than raised, because a
+     * file the SDK cannot read redirects nothing.
+     */
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(ProductionConfigurationValidator.class);
+
+    /**
+     * Opening of the placeholder syntax. A resolved value that still contains this has an environment
+     * reference in it that nothing satisfied.
+     */
+    private static final String PLACEHOLDER_PREFIX = "${";
+
+    /** Closing of the placeholder syntax. */
+    private static final String PLACEHOLDER_SUFFIX = "}";
+
+    /**
+     * The setting naming the database every production connection is opened to.
+     *
+     * <p>Declared as a constant because two independent checks read it - the required-settings sweep,
+     * which establishes that a deployment supplied a location at all, and
+     * {@link #validateDatabaseTransport} which establishes that the location it supplied opens an
+     * authenticated channel. Two spellings of one key is one spelling waiting to be corrected in only
+     * one place.
+     */
+    static final String DATASOURCE_URL_KEY = "spring.datasource.url";
+
+    /**
+     * The only JDBC sub-protocol a production data source may name.
+     *
+     * <p>Held here as well as by {@code driver-class-name} in the profile document because the two are
+     * independent: the declared driver decides which implementation is loaded, and the URL decides which
+     * driver actually accepts it. A URL naming another sub-protocol either fails to load - late, on the
+     * first connection attempt - or is accepted by a driver that happens to be on the class path, and
+     * neither outcome is a PostgreSQL server reached over the transport checked below.
+     */
+    static final String DATABASE_REQUIRED_SUBPROTOCOL = "jdbc:postgresql:";
+
+    /** The URL parameter carrying the transport rule the driver applies. */
+    static final String DATABASE_SSL_MODE_PARAMETER = "sslmode";
+
+    /**
+     * The only transport rule a production data source may declare.
+     *
+     * <p>This is what "authenticated TLS" reduces to in a PostgreSQL connection string. The driver's
+     * {@code verify-full} requires the session to be encrypted, validates the server certificate against
+     * the configured or platform trust anchor, <em>and</em> checks that the certificate's subject matches
+     * the host that was dialled. Every weaker mode drops at least one of those three, and the differences
+     * matter individually rather than as a spectrum - which is why {@link #DATABASE_REFUSED_SSL_MODES}
+     * names each one with the guarantee it gives up.
+     */
+    static final String DATABASE_REQUIRED_SSL_MODE = "verify-full";
+
+    /**
+     * Every transport rule the driver accepts other than the required one, mapped to what it gives up.
+     *
+     * <p>Enumerated rather than handled as "anything that is not {@value #DATABASE_REQUIRED_SSL_MODE}"
+     * because a deployer reading a refusal needs to know which guarantee their value dropped, and because
+     * the list is the driver's own closed set. An unrecognised value is still refused, by the fallback
+     * arm in {@link #validateDatabaseTransport}: the driver rejects it too, and it is refused here first
+     * so the refusal arrives before a connection is opened rather than after.
+     */
+    static final Map<String, String> DATABASE_REFUSED_SSL_MODES = Map.of(
+            "disable", "which forbids encryption outright, so credentials and account data cross the"
+                    + " network in clear text",
+            "allow", "which uses a plaintext session unless the server refuses one, so the transport is"
+                    + " chosen by whatever answers on the port",
+            "prefer", "which is the driver's own default and falls back to a plaintext session without"
+                    + " reporting that it did, so a downgrade is silent",
+            "require", "which encrypts but validates no certificate at all, so any party that answers on"
+                    + " the port can present its own and be believed",
+            "verify-ca", "which validates the certificate chain but not the host name, so a certificate"
+                    + " issued by the same authority for any other host is accepted");
+
+    /** The URL parameter that can replace the driver's certificate validation with none. */
+    static final String DATABASE_SSL_FACTORY_PARAMETER = "sslfactory";
+
+    /**
+     * The factory name that defeats certificate validation however the transport rule is set.
+     *
+     * <p>Matched as a case-insensitive substring because the driver ships this class under a package
+     * prefix a deployment may abbreviate or re-declare, and the simple name is the part that identifies
+     * it. This is the one setting that can make {@value #DATABASE_REQUIRED_SSL_MODE} a statement without
+     * an effect, so refusing the mode without refusing this would be a check with a documented bypass.
+     */
+    static final String DATABASE_NON_VALIDATING_SSL_FACTORY = "nonvalidatingfactory";
+
+    /**
+     * URL parameters that carry a credential, refused wherever they appear.
+     *
+     * <p>The driver reads the connection identity from either the parameters or the dedicated settings,
+     * and the profile document supplies the dedicated ones. A credential in the URL is a credential in
+     * the one production value that appears in a configuration dump, a process listing and every library
+     * that prints a data source, and it also silently overrides the guarded settings beside it.
+     */
+    static final List<String> DATABASE_CREDENTIAL_PARAMETERS = List.of("user", "password");
+
+    /**
+     * The setting naming the collector every span is posted to.
+     *
+     * <p>Declared as a constant because two independent checks read it - the required-settings sweep, which
+     * establishes that a deployment supplied one at all, and {@link #validateTraceCollectorAddress} which
+     * establishes that what it supplied is a collector this deployment can authenticate. Two spellings of
+     * one key is one spelling waiting to be corrected in only one place.
+     */
+    static final String TRACE_COLLECTOR_ENDPOINT_KEY = "management.otlp.tracing.endpoint";
+
+    /** The only transport a production collector may be addressed over. */
+    static final String TRACE_COLLECTOR_REQUIRED_SCHEME = "https";
+
+    /**
+     * The request path an OTLP traces receiver serves.
+     *
+     * <p>Fixed by the OTLP over HTTP specification rather than chosen here, which is exactly what makes it
+     * checkable: an address ending anywhere else is not addressing a traces receiver.
+     */
+    static final String TRACE_COLLECTOR_REQUIRED_PATH = "/v1/traces";
+
+    /**
+     * How many distinct characters a production management credential must contain.
+     *
+     * <p>Length alone does not make a shared secret unguessable: a credential of the required length made
+     * of one repeated character has the search space of that character. This floor refuses that shape.
+     *
+     * <p><strong>The floor is only comfortably clear of generated material when the generator draws from a
+     * wide alphabet, so the alphabet is part of the requirement rather than an aside.</strong> Thirty-two
+     * characters drawn from the 64-symbol base64 alphabet carry about twenty-five distinct symbols and fall
+     * below sixteen with probability on the order of one in ten million. Thirty-two characters of
+     * <em>hexadecimal</em> draw from sixteen symbols in total, so clearing this floor requires every one of
+     * them to appear, which happens for roughly seven values in a hundred - a hex value of the required
+     * length is therefore refused far more often than it is accepted. That is why
+     * {@code application-prod.yml} names a base64 generator and states the hexadecimal case explicitly
+     * instead of leaving a deployer to discover it by being refused.
+     */
+    static final int MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS = 16;
+
+    /**
+     * Words a credential must not contain, matched without regard to case.
+     *
+     * <p>Every entry here is a word that appears in a value somebody typed rather than generated. The list
+     * is short on purpose: it exists to catch the credential that was left as the example, not to score
+     * entropy, and a long list of banned substrings would eventually refuse a random value that happened
+     * to contain one of them.
+     */
+    private static final List<String> MANAGEMENT_TOKEN_FORBIDDEN_WORDS = List.of(
+            "changeme", "change-me", "placeholder", "example", "sample", "default",
+            "password", "secret", "token", "carddemo", "0123456789", "abcdefgh");
+
+    /** Key the job-submission queue destination is bound from, held to the production rule below. */
+    static final String QUEUE_DESTINATION_KEY = AwsProperties.Sqs.JOB_QUEUE_PROPERTY;
+
+    /**
+     * The fewest characters a production operator credential may carry.
+     *
+     * <h2>Why a length rule exists here and nowhere else</h2>
+     *
+     * <p>Every other required value in the list below is refused only for being absent, unresolved or
+     * blank, and that is right for all of them: a data source location, a key store format or a region
+     * is a value a deployment either knows or does not, and its content is checked by whatever consumes
+     * it. The operator credential is different in kind. It is the module's one <em>guessable</em>
+     * secret: {@code SecurityConfig}'s management filter accepts it as a bearer token on any request
+     * beneath the management base path, there is no sign-on, no account, no lockout and no attempt
+     * counter behind it, and a caller who presents the right bytes holds
+     * {@link SecurityConfig#MANAGEMENT_AUTHORITY} for that request. So its only defence is that it
+     * cannot be enumerated.
+     *
+     * <p>Before this rule, nothing enforced that. The comparison is constant-time and the token is
+     * stripped, both of which are necessary and neither of which helps against a short value: a
+     * one-character credential is accepted by the sweep below - it is set, it resolves, it is not blank
+     * - and then falls to at most a few hundred guesses. That is CWE-521, weak password requirements,
+     * and it was reachable in production with no other misconfiguration.
+     *
+     * <p><strong>Thirty-two characters</strong> is the floor because that is the width
+     * {@code openssl rand -base64 24} produces, and it is stated in characters rather than in bits
+     * because characters are what the value arrives as. It is a floor on LENGTH alone and therefore a
+     * proxy for unpredictability rather than a measure of it: thirty-two repetitions of one letter
+     * satisfies it, which is why {@link #MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS} accompanies it.
+     * Meeting this length with a narrow alphabet is not sufficient - a 32-character hexadecimal value is
+     * long enough here and is then usually refused by the distinctness rule - so the generator named in
+     * {@code application-prod.yml} is a base64 one and the two rules have to be read together.
+     *
+     * @see #MINIMUM_LENGTH_BY_KEY
+     */
+    static final int MINIMUM_MANAGEMENT_TOKEN_LENGTH = 32;
+
+    /**
+     * The keys whose value is refused for being too short as well as for being absent.
+     *
+     * <p>A map rather than a field on {@link RequiredSetting} because the rule applies to exactly one of
+     * the fourteen and inventing a per-setting minimum would invite a length rule onto values that have
+     * no business carrying one - a region and a key store alias are as long as they are. Adding a
+     * second entry here is the supported way to extend it.
+     *
+     * <p>The signing secret is deliberately absent: {@link JwtProperties} already refuses a secret
+     * shorter than the signature algorithm's own key-length floor, and duplicating that here would
+     * create a second place for the number to drift from the algorithm that dictates it.
+     */
+    static final Map<String, Integer> MINIMUM_LENGTH_BY_KEY = Map.of(
+            SecurityConfig.MANAGEMENT_TOKEN_PROPERTY, MINIMUM_MANAGEMENT_TOKEN_LENGTH);
+
+    /**
+     * Key carrying the notification destination, read by the ownership check below.
+     *
+     * <p>Named from the settings type rather than restated, for the reason the queue key is: two spellings
+     * of one key are two answers waiting to disagree.</p>
+     */
+    static final String TOPIC_DESTINATION_KEY = AwsProperties.Sns.JOB_NOTIFICATION_TOPIC_PROPERTY;
+
+    /**
+     * Prefix that distinguishes a resource identifier from a bare name.
+     *
+     * <p>A value carrying it names an account, so its account can be - and is - compared against the one
+     * this deployment declares it owns. A value without it carries no account and needs no check.</p>
+     */
+    private static final String RESOURCE_ID_PREFIX = "arn:";
+
+    /**
+     * Key carrying the region every destination is checked against.
+     *
+     * <p>The region is guarded at {@code carddemo.aws.region}, which is where the production document
+     * writes the bare reference, and not at the cloud integration's own
+     * {@code spring.cloud.aws.region.static}: that key derives its value from this one, so the region is
+     * stated once per profile and the two namespaces cannot disagree.
+     */
+    static final String REGION_KEY = AwsProperties.REGION_PROPERTY;
+
+    /**
+     * Every setting the production profile requires from its environment, in the order they appear in
+     * {@code application-prod.yml} so that a failure message reads down the document.
+     *
+     * <p>This list is the <strong>fourteen</strong> values that are written as a bare environment
+     * reference with no fallback. The six that carry a fallback - the tracing sample rate, the staging
+     * bucket, the message group, the notification topic, the token lifetime and the trusted-proxy list -
+     * are deliberately absent, because a value that is allowed to default is by definition not required
+     * from the environment. The
+     * count is not transcribed anywhere it can drift: {@code DocumentedSourceCountsTest} derives it from
+     * this list and holds every document that states it to the derived figure.
+     *
+     * <p>The region is guarded at {@code carddemo.aws.region}, which is where the production document
+     * writes the bare reference, and <strong>not</strong> at the cloud integration's own
+     * {@code spring.cloud.aws.region.static}: that key derives its value from this one rather than
+     * restating it, so the region is stated once per profile and the two namespaces cannot disagree.
+     * Guarding both would name one environment variable twice, which is a duplicate this list forbids
+     * and a test asserts against.
+     *
+     * <p>{@code ProductionConfigurationValidatorTest} compares this list against the document itself,
+     * so a further bare reference added to the profile without a matching entry here fails the build
+     * rather than going unguarded. That check is what carried the operator credential into this list: the
+     * management surface's machine credential is presented on every scrape and must no more be defaulted
+     * than the signing secret is, and it is what carried the declared account identifier in beside it.
+     */
+    static final List<RequiredSetting> REQUIRED_SETTINGS = List.of(
+            new RequiredSetting(DATASOURCE_URL_KEY, "CARDDEMO_DB_URL"),
+            new RequiredSetting("spring.datasource.username", "CARDDEMO_DB_USERNAME"),
+            new RequiredSetting("spring.datasource.password", "CARDDEMO_DB_PASSWORD"),
+            new RequiredSetting("server.ssl.key-store", "CARDDEMO_TLS_KEYSTORE"),
+            new RequiredSetting("server.ssl.key-store-password", "CARDDEMO_TLS_KEYSTORE_PASSWORD"),
+            new RequiredSetting("server.ssl.key-store-type", "CARDDEMO_TLS_KEYSTORE_TYPE"),
+            new RequiredSetting("server.ssl.key-alias", "CARDDEMO_TLS_KEY_ALIAS"),
+            new RequiredSetting(TRACE_COLLECTOR_ENDPOINT_KEY, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
+            new RequiredSetting(REGION_KEY, "AWS_REGION"),
+            new RequiredSetting(QUEUE_DESTINATION_KEY, "CARDDEMO_SQS_QUEUE"),
+            new RequiredSetting("carddemo.security.jwt.secret", "CARDDEMO_JWT_SECRET"),
+            new RequiredSetting("carddemo.security.field-encryption.key", "CARDDEMO_FIELD_ENCRYPTION_KEY"),
+            new RequiredSetting(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY,
+                    "CARDDEMO_MANAGEMENT_TOKEN"),
+            new RequiredSetting(AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY,
+                    "CARDDEMO_AWS_ACCOUNT_ID"));
+
+    /**
+     * Every configuration key that redirects a cloud client away from the endpoint its region resolves
+     * to, global first and then one per client.
+     *
+     * <p><strong>Production may declare none of them, and the difference between "declares none" and
+     * "may declare none" is this list.</strong> The production profile document happens to declare no
+     * endpoint key, and that fact is not the control. A document cannot see the
+     * environment: an override supplied as {@code SPRING_CLOUD_AWS_SQS_ENDPOINT}, as a command-line
+     * property, or by a co-activated overlay binds perfectly well for a key no document mentions, and
+     * every client then addresses whatever host it names.
+     *
+     * <p>What that costs is specific rather than theoretical. The queue is the estate's single
+     * online-to-batch bridge, and every message on it is an eighty-column job-control card naming the
+     * job, the procedure library, the step and the reporting period. A redirected queue client sends
+     * those cards to the named host and reports success, because the queue is defined ignore-on-error;
+     * the operator sees report requests completing and no job ever running. A redirected object-store
+     * client writes statements, reports and rejected records - which carry account identifiers, card
+     * numbers and monetary balances - to the named host just as quietly.
+     *
+     * <p>The per-client keys are listed alongside the global one because either alone redirects that
+     * client, so refusing only the global key would leave three ways to do the same thing.
+     */
+    static final List<String> FORBIDDEN_PRODUCTION_KEYS = List.of(
+            AwsProperties.ENDPOINT_OVERRIDE_PROPERTY,
+            "spring.cloud.aws.endpoint",
+            "spring.cloud.aws.s3.endpoint",
+            "spring.cloud.aws.sqs.endpoint",
+            "spring.cloud.aws.sns.endpoint");
+
+    /**
+     * Every environment variable the AWS SDK itself reads an endpoint redirection from.
+     *
+     * <h2>Why this list exists separately from {@link #FORBIDDEN_PRODUCTION_KEYS}</h2>
+     *
+     * <p>The list above closes the keys that reach a client <em>through this application</em> - the
+     * module's own setting and the cloud integration's four. Closing them is necessary and it is
+     * <strong>not sufficient</strong>, because the SDK resolves an endpoint from a chain of its own that
+     * no Spring property source participates in. Declaring no override, and validating that no override
+     * is declared, therefore does not mean no override is in force: with none of the five keys above
+     * present, {@link AwsConfig} calls no {@code endpointOverride(...)} at all, logs that the client is
+     * "resolving the endpoint of region ...", and the SDK then quietly applies the redirection it found
+     * in its own chain. The log line asserts a posture the code was not enforcing.
+     *
+     * <p>The variables below are that chain's environment half, as resolved by the
+     * {@code software.amazon.awssdk} 2.31.78 artifacts this module builds against: one global variable
+     * and one per service identifier, where the service half of the name is the SDK's own service
+     * identifier upper-cased. Only the three services this module uses are listed, because only three
+     * clients exist to redirect.
+     *
+     * <p>What a redirection costs here is specific rather than theoretical, and it is the same cost the
+     * list above records: the queue carries the eighty-column job-control cards of every batch
+     * submission, and the object store carries statements, reports and rejected records bearing account
+     * identifiers, card numbers and monetary balances.
+     *
+     * @see #FORBIDDEN_SDK_SYSTEM_PROPERTIES
+     */
+    static final List<String> FORBIDDEN_SDK_ENVIRONMENT_VARIABLES = List.of(
+            "AWS_ENDPOINT_URL",
+            "AWS_ENDPOINT_URL_S3",
+            "AWS_ENDPOINT_URL_SQS",
+            "AWS_ENDPOINT_URL_SNS");
+
+    /**
+     * Every JVM system property the AWS SDK itself reads an endpoint redirection from.
+     *
+     * <p>The system-property half of the same chain described on
+     * {@link #FORBIDDEN_SDK_ENVIRONMENT_VARIABLES}. It is listed separately from the environment half
+     * because the two are read from different places and a deployment can supply either: a container
+     * image sets variables, an orchestrator's launch arguments set properties, and a
+     * {@code JAVA_TOOL_OPTIONS} value sets properties without appearing on the command line at all.
+     * Refusing one half would leave the other open.
+     *
+     * <p>These are the camel-case forms the SDK's own setting definitions declare, not the
+     * upper-snake-case variable names above, so neither list can be derived from the other and both are
+     * stated literally.
+     */
+    static final List<String> FORBIDDEN_SDK_SYSTEM_PROPERTIES = List.of(
+            "aws.endpointUrl",
+            "aws.endpointUrlS3",
+            "aws.endpointUrlSqs",
+            "aws.endpointUrlSns");
+
+    /**
+     * The shared-configuration property that redirects every client, and the same property inside a
+     * per-service subsection.
+     *
+     * <p>The third arm of the SDK's chain is the shared configuration file - {@code ~/.aws/config} by
+     * default, relocatable by {@code AWS_CONFIG_FILE}. A deployment that mounts a configuration file
+     * carrying {@code endpoint_url} redirects every client without setting a single variable or
+     * property, which is why detecting the file's content is part of closing the channel rather than an
+     * optional extra.
+     *
+     * <p>The file is read through the SDK's own profile reader rather than parsed here, so the section
+     * selection, the profile precedence and the {@code services} indirection are resolved exactly as the
+     * client that would honour them resolves them. A hand-written scan would have to reimplement those
+     * rules and would then be wrong in a different way than the SDK.
+     */
+    static final String SDK_SHARED_CONFIG_ENDPOINT_PROPERTY = "endpoint_url";
+
+    /**
+     * The SDK switch that makes the shared configuration file's endpoint settings inert.
+     *
+     * <p>Recognised so the check can <em>stand down</em> rather than refuse: a deployment that has
+     * already told the SDK to ignore configured endpoint URLs has closed the file channel by the SDK's
+     * own mechanism, and refusing it as well would reject a correct posture. The variable and property
+     * forms are both honoured because the SDK honours both.
+     */
+    static final String SDK_IGNORE_ENDPOINTS_VARIABLE = "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS";
+
+    /** System-property form of {@link #SDK_IGNORE_ENDPOINTS_VARIABLE}. */
+    static final String SDK_IGNORE_ENDPOINTS_PROPERTY = "aws.ignoreConfiguredEndpointUrls";
+
+    /** Variable relocating the shared configuration file the SDK reads. */
+    static final String SDK_CONFIG_FILE_VARIABLE = "AWS_CONFIG_FILE";
+
+    /** Variable selecting which section of the shared configuration file applies. */
+    static final String SDK_PROFILE_VARIABLE = "AWS_PROFILE";
+
+    /** Section name used when no profile is selected. */
+    static final String SDK_DEFAULT_PROFILE = "default";
+
+    /** Shared-configuration key whose value names the per-service subsection to consult. */
+    static final String SDK_SERVICES_PROPERTY = "services";
+
+    /**
+     * The SDK service identifiers this module operates a client for, lower-case as the file uses them.
+     *
+     * <p>Used only to look inside a {@code services} subsection. A redirection declared for a service
+     * this module never calls redirects nothing and is not this deployment's business to refuse.
+     */
+    static final List<String> SDK_SERVICE_IDENTIFIERS = List.of("s3", "sqs", "sns");
+
+    /**
+     * Creates the configuration class.
+     *
+     * <p>The container instantiates it in order to read the factory method below, even though that
+     * method is {@code static} and holds no state of its own.
+     */
+    public ProductionConfigurationValidator() {
+    }
+
+    /**
+     * Publishes the start-up check.
+     *
+     * <p>The returned post-processor performs the validation when the container invokes it, which is
+     * before the singleton phase begins. The check is placed in the post-processor rather than in this
+     * method's body on purpose: a failure raised while a bean is being <em>created</em> arrives wrapped
+     * in a bean-creation failure, whereas one raised from the post-processor arrives as itself, which is
+     * what a deployer reads in the log and what a test asserts on.
+     *
+     * <p>Three checks run, in this order and for a reason. The required settings are validated first,
+     * because the outbound-trust check compares a destination against the configured region and a
+     * missing region should be reported as a missing region rather than as an uncheckable destination.
+     * The native-channel check runs last because it is the one check that reads outside the environment
+     * abstraction, and a deployment with a missing region or an untrusted queue should learn that first.
+     *
+     * @param environment resolved environment for the active profiles, supplied by the container
+     * @return a post-processor that validates the production posture and changes no bean definition
+     */
+    @Bean
+    static BeanFactoryPostProcessor productionConfigurationGuard(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+        return beanFactory -> {
+            validateRequiredSettings(environment);
+            validateDatabaseTransport(environment);
+            validateOutboundTrust(environment);
+            validateConfiguredResourceOwnership(environment);
+            validateTraceCollectorAddress(environment);
+            validateManagementCredentialQuality(environment);
+            validateNativeSdkEndpointChannels(System::getenv, System::getProperty,
+                    ProductionConfigurationValidator::readSharedConfiguration);
+        };
+    }
+
+    /**
+     * Refuses a production deployment in which the AWS SDK's own endpoint chain would redirect a client.
+     *
+     * <h2>The gap this closes</h2>
+     *
+     * <p>{@link #validateOutboundTrust(Environment)} closes the five configuration keys that reach a
+     * client through this application, and {@link AwsConfig} calls {@code endpointOverride(...)} only
+     * when one of them is present. Neither fact constrains the SDK, which resolves an endpoint from a
+     * chain of its own - environment variables, JVM system properties and the shared configuration file
+     * - that no Spring property source participates in. So with every key above absent, the previous
+     * posture was: no override applied by this module, a log line stating the client resolves its
+     * region's endpoint, and the SDK silently honouring a redirection from its own chain. The claim in
+     * the log was not the behaviour of the process.
+     *
+     * <p>All three arms are refused here, and refused rather than merely logged, because a redirected
+     * client is indistinguishable from a working one from inside the application: the queue is defined
+     * ignore-on-error, so a redirected submission reports success and no job ever runs, and a redirected
+     * object store accepts statements, reports and rejected records bearing account identifiers, card
+     * numbers and monetary balances. A deployment that cannot address its own account must not start.
+     *
+     * <h2>What is deliberately NOT refused</h2>
+     *
+     * <p>The SDK's regional-variant settings - the FIPS and dual-stack endpoint selectors - are absent
+     * from every list. They select a variant <em>of the region's own endpoint</em> rather than replacing
+     * it with an arbitrary host, so a deployment obliged to use validated cryptography or a dual-stack
+     * network is expressing a legitimate posture. Refusing them would reject correct deployments while
+     * closing nothing.
+     *
+     * <p>{@link #SDK_IGNORE_ENDPOINTS_VARIABLE} is likewise not a fault: it is the SDK's own switch for
+     * making the shared configuration file inert, so a deployment that sets it has closed the file
+     * channel by the supported mechanism and the file is not read at all.
+     *
+     * <h2>Why the readers are parameters</h2>
+     *
+     * <p>Process environment variables cannot be set from within a JVM, so a check that called
+     * {@link System#getenv()} directly could not be exercised for the variable half of the chain at all
+     * - which is the half a container image supplies. The three readers are therefore parameters, bound
+     * to the real sources by the guard above and to fakes by the tests, so every channel is proven
+     * closed rather than assumed closed.
+     *
+     * @param environmentReader     reads one process environment variable by name
+     * @param systemPropertyReader  reads one JVM system property by name
+     * @param sharedConfiguration   supplies the shared configuration file's endpoint declarations, given
+     *                              the resolved configuration file location and profile name
+     * @throws IllegalStateException when any arm of the SDK's endpoint chain supplies a redirection; the
+     *                               message names each offending channel and never repeats its value
+     * @throws NullPointerException  when any reader is {@code null}
+     */
+    static void validateNativeSdkEndpointChannels(
+            final UnaryOperator<String> environmentReader,
+            final UnaryOperator<String> systemPropertyReader,
+            final SharedConfigurationReader sharedConfiguration) {
+        Objects.requireNonNull(environmentReader, "environmentReader");
+        Objects.requireNonNull(systemPropertyReader, "systemPropertyReader");
+        Objects.requireNonNull(sharedConfiguration, "sharedConfiguration");
+
+        final List<String> faults = new ArrayList<>();
+        for (final String variable : FORBIDDEN_SDK_ENVIRONMENT_VARIABLES) {
+            if (isSuppliedExternalValue(environmentReader.apply(variable))) {
+                faults.add("  " + variable + " (process environment): the AWS SDK reads an endpoint"
+                        + " redirection from this variable directly, so declaring no application"
+                        + " endpoint setting does not stop it. Unset the variable");
+            }
+        }
+        for (final String property : FORBIDDEN_SDK_SYSTEM_PROPERTIES) {
+            if (isSuppliedExternalValue(systemPropertyReader.apply(property))) {
+                faults.add("  " + property + " (JVM system property): the AWS SDK reads an endpoint"
+                        + " redirection from this property directly, including when it arrives through"
+                        + " JAVA_TOOL_OPTIONS rather than the command line. Remove the property");
+            }
+        }
+        faults.addAll(sharedConfigurationFaults(environmentReader, systemPropertyReader,
+                sharedConfiguration));
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(nativeChannelFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Reports the shared-configuration file's endpoint declarations, or nothing when the SDK is already
+     * told to ignore them.
+     *
+     * @param environmentReader    reads one process environment variable by name
+     * @param systemPropertyReader reads one JVM system property by name
+     * @param sharedConfiguration  supplies the file's endpoint declarations
+     * @return one indented fault line per declaration found, in a stable order
+     */
+    private static List<String> sharedConfigurationFaults(
+            final UnaryOperator<String> environmentReader,
+            final UnaryOperator<String> systemPropertyReader,
+            final SharedConfigurationReader sharedConfiguration) {
+
+        if (isIgnoringConfiguredEndpoints(environmentReader, systemPropertyReader)) {
+            return List.of();
+        }
+        final String configuredLocation = firstSupplied(
+                environmentReader.apply(SDK_CONFIG_FILE_VARIABLE),
+                systemPropertyReader.apply(ProfileFileSystemSetting.AWS_CONFIG_FILE.property()));
+        final String profileName = firstSupplied(
+                environmentReader.apply(SDK_PROFILE_VARIABLE),
+                systemPropertyReader.apply(ProfileFileSystemSetting.AWS_PROFILE.property()));
+        final String resolvedProfile = profileName == null ? SDK_DEFAULT_PROFILE : profileName;
+
+        final List<String> declarations =
+                sharedConfiguration.endpointDeclarations(configuredLocation, resolvedProfile);
+        final List<String> faults = new ArrayList<>(declarations.size());
+        for (final String declaration : declarations) {
+            faults.add("  " + declaration + " (AWS shared configuration, profile '" + resolvedProfile
+                    + "'): the AWS SDK reads an endpoint redirection from the shared configuration"
+                    + " file. Remove the declaration, or set " + SDK_IGNORE_ENDPOINTS_VARIABLE
+                    + "=true so the SDK ignores the file's endpoint settings");
+        }
+        return List.copyOf(faults);
+    }
+
+    /**
+     * Reports whether the deployment has told the SDK to ignore configured endpoint URLs.
+     *
+     * @param environmentReader    reads one process environment variable by name
+     * @param systemPropertyReader reads one JVM system property by name
+     * @return {@code true} when either form of the switch is set to a true value
+     */
+    private static boolean isIgnoringConfiguredEndpoints(
+            final UnaryOperator<String> environmentReader,
+            final UnaryOperator<String> systemPropertyReader) {
+        return isTrueValue(environmentReader.apply(SDK_IGNORE_ENDPOINTS_VARIABLE))
+                || isTrueValue(systemPropertyReader.apply(SDK_IGNORE_ENDPOINTS_PROPERTY));
+    }
+
+    /**
+     * Recognises the SDK's boolean spelling without importing a parser for one word.
+     *
+     * <p>Compared without regard to case and after trimming, because a deployment writes {@code TRUE},
+     * {@code True} or {@code true} and all three mean the same thing to the SDK.
+     *
+     * @param value the raw text, which may be {@code null}
+     * @return {@code true} only for the literal {@code true}
+     */
+    private static boolean isTrueValue(final String value) {
+        return value != null && "true".equalsIgnoreCase(value.strip());
+    }
+
+    /**
+     * Returns the first of two external readings that a deployment actually supplied.
+     *
+     * @param preferred the reading that wins when both are present
+     * @param fallback  the reading consulted when the preferred one is absent
+     * @return the stripped winning value, or {@code null} when neither was supplied
+     */
+    private static String firstSupplied(final String preferred, final String fallback) {
+        if (isSuppliedExternalValue(preferred)) {
+            return preferred.strip();
+        }
+        if (isSuppliedExternalValue(fallback)) {
+            return fallback.strip();
+        }
+        return null;
+    }
+
+    /**
+     * Reports whether an environment variable or system property carries a value at all.
+     *
+     * <p>Distinct from {@link #isSuppliedValue(String, String)}, which additionally recognises Spring's
+     * placeholder syntax. A variable read straight from the process environment never contains a Spring
+     * placeholder, so only absence and blankness are non-values here - and an empty variable must count
+     * as absent, because {@code AWS_ENDPOINT_URL=} redirects nothing.
+     *
+     * @param value the raw reading, which may be {@code null}
+     * @return {@code true} when the value is present and not blank
+     */
+    private static boolean isSuppliedExternalValue(final String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /**
+     * Reads the AWS shared configuration file through the SDK's own profile reader.
+     *
+     * <p>Using the SDK's reader rather than parsing the file here is the point: the profile precedence,
+     * the section naming and the {@code services} indirection are resolved exactly as the client that
+     * would honour them resolves them, so this check cannot disagree with the SDK about what the file
+     * says. A missing or unreadable file declares nothing, which is the ordinary case and not a fault.
+     *
+     * @param configuredLocation the location named by the deployment, or {@code null} for the default
+     * @param profileName        the resolved profile section name
+     * @return one description per endpoint declaration found, empty when the file declares none
+     */
+    private static List<String> readSharedConfiguration(final String configuredLocation,
+            final String profileName) {
+        final ProfileFile profileFile;
+        try {
+            profileFile = configuredLocation == null
+                    ? ProfileFile.defaultProfileFile()
+                    : ProfileFile.builder()
+                            .type(ProfileFile.Type.CONFIGURATION)
+                            .content(Path.of(configuredLocation))
+                            .build();
+        } catch (final RuntimeException unreadable) {
+            // A file the SDK cannot read declares nothing to the SDK either, so it redirects nothing.
+            // The type is recorded rather than the path or the parser's message, so a diagnostic can
+            // never echo a mounted location.
+            LOGGER.debug("The AWS shared configuration file was not readable and declares no endpoint;"
+                    + " failureType={}", unreadable.getClass().getSimpleName());
+            return List.of();
+        }
+        // Fully qualified because the simple name Profile is already taken in this file by the Spring
+        // annotation that confines the whole class to the production profile.
+        final Optional<software.amazon.awssdk.profiles.Profile> profile =
+                profileFile.profile(profileName);
+        if (profile.isEmpty()) {
+            return List.of();
+        }
+        final software.amazon.awssdk.profiles.Profile resolved = profile.get();
+        final List<String> declarations = new ArrayList<>();
+        resolved.property(SDK_SHARED_CONFIG_ENDPOINT_PROPERTY)
+                .ifPresent(ignored -> declarations.add(SDK_SHARED_CONFIG_ENDPOINT_PROPERTY));
+        resolved.property(SDK_SERVICES_PROPERTY).ifPresent(section ->
+                declarations.addAll(serviceSectionDeclarations(profileFile, section)));
+        return List.copyOf(declarations);
+    }
+
+    /**
+     * Reports the per-service endpoint declarations of one {@code services} subsection.
+     *
+     * @param profileFile the parsed shared configuration
+     * @param sectionName the subsection named by the profile's {@code services} key
+     * @return one description per service identifier this module operates a client for
+     */
+    private static List<String> serviceSectionDeclarations(final ProfileFile profileFile,
+            final String sectionName) {
+        final Optional<software.amazon.awssdk.profiles.Profile> section =
+                profileFile.getSection(SDK_SERVICES_PROPERTY, sectionName);
+        if (section.isEmpty()) {
+            return List.of();
+        }
+        final software.amazon.awssdk.profiles.Profile services = section.get();
+        final List<String> declarations = new ArrayList<>();
+        for (final String service : SDK_SERVICE_IDENTIFIERS) {
+            final String key = service + '.' + SDK_SHARED_CONFIG_ENDPOINT_PROPERTY;
+            if (services.property(key).isPresent()) {
+                declarations.add(SDK_SERVICES_PROPERTY + '.' + sectionName + '.' + key);
+            }
+        }
+        return List.copyOf(declarations);
+    }
+
+    /**
+     * Assembles the native-channel failure text.
+     *
+     * @param faults one line per refusal, already indented
+     * @return a message that states the count, explains why the application's own settings could not
+     *         have caught it, lists every channel and points at the recorded decision
+     */
+    private static String nativeChannelFailureMessage(final List<String> faults) {
+        return "The '" + PRODUCTION_PROFILE + "' profile cannot start: " + faults.size()
+                + " AWS SDK endpoint redirection channel(s) outside this application's configuration"
+                + " would send data somewhere this deployment does not own." + System.lineSeparator()
+                + "These channels are read by the SDK itself, not by any Spring property source, so"
+                + " declaring no endpoint setting in a profile document does not close them and no"
+                + " property-based check can see them." + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "The FIPS and dual-stack selectors are NOT refused: they select a variant of the"
+                + " region's own endpoint rather than replacing it with another host."
+                + System.lineSeparator()
+                + "See docs/decision-log.md DL-105 and the variable list at the head of "
+                + "application-prod.yml.";
+    }
+
+    /**
+     * Supplies the AWS shared configuration file's endpoint declarations.
+     *
+     * <p>Named rather than expressed as a two-argument function so the parameters have names at the call
+     * site and a test double reads as what it stands in for.
+     */
+    @FunctionalInterface
+    interface SharedConfigurationReader {
+
+        /**
+         * Reports every endpoint declaration one profile of the shared configuration carries.
+         *
+         * @param configuredLocation the location named by the deployment, or {@code null} for the
+         *                           SDK's default location
+         * @param profileName        the resolved profile section name, never {@code null}
+         * @return one description per declaration, empty when the profile declares none
+         */
+        List<String> endpointDeclarations(String configuredLocation, String profileName);
+    }
+
+    /**
+     * Refuses a production deployment that redirects a cloud client, or that aims the job-submission
+     * queue at a destination this deployment cannot have meant.
+     *
+     * <h2>The gap this closes</h2>
+     *
+     * <p>Two configuration facts were previously left to a document's silence rather than enforced. The
+     * first is the endpoint override, addressed on {@link #FORBIDDEN_PRODUCTION_KEYS}. The second is
+     * the destination itself: the queue property was checked for shape - non-blank, a recognisable form,
+     * a first-in-first-out name - and shape cannot distinguish a destination that names this
+     * deployment's own queue from one that names somebody else's host. The messaging client accepts any
+     * syntactically valid locator, so a plain-transport URL on an unrelated host whose last path
+     * segment ends in the required suffix passed every check and then received the job cards.
+     *
+     * <p>Both are refused here rather than in the settings type, because both are questions about the
+     * <em>deployment</em>. The local and test profiles legitimately declare an emulator endpoint and
+     * name an emulator queue, and a rule that refused those would refuse the two profiles the
+     * acceptance gates run in. Confining the rule to this class, which
+     * {@link Profile} already confines to production, is what lets it be strict without being wrong
+     * anywhere else.
+     *
+     * @param environment environment to read the settings from
+     * @throws IllegalStateException when an endpoint override is declared, or the queue destination is
+     *                              not one this deployment may send to; the message names each
+     *                              offending key and why it was refused, and never repeats a configured
+     *                              value
+     * @throws NullPointerException when {@code environment} is {@code null}
+     */
+    static void validateOutboundTrust(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final List<String> faults = new ArrayList<>();
+        for (final String forbidden : FORBIDDEN_PRODUCTION_KEYS) {
+            final String declared = resolveLeniently(environment, forbidden);
+            if (isSuppliedValue(forbidden, declared)) {
+                faults.add("  " + forbidden + ": an endpoint override redirects a cloud client away"
+                        + " from the endpoint its region resolves to. A deployment may not declare one:"
+                        + " the queue carries the job-control cards of every batch submission and the"
+                        + " object store carries statements, reports and rejected records. Remove the"
+                        + " key and every variable that supplies it");
+            }
+        }
+
+        final String destination = resolveLeniently(environment, QUEUE_DESTINATION_KEY);
+        if (isSuppliedValue(QUEUE_DESTINATION_KEY, destination)) {
+            final String region = resolveLeniently(environment, REGION_KEY);
+            try {
+                SqsNamingRules.requireProductionQueueDestination(destination.strip(),
+                        QUEUE_DESTINATION_KEY,
+                        isSuppliedValue(REGION_KEY, region) ? region.strip() : null);
+            } catch (final IllegalArgumentException refused) {
+                // The rule composes its own diagnostic and never echoes the configured value, so the
+                // message is carried through as the explanation rather than re-derived here.
+                faults.add("  " + refused.getMessage());
+            }
+        }
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(outboundTrustFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Refuses a production deployment whose configured queue or topic <em>locator</em> names an account
+     * other than the one it declares it owns.
+     *
+     * <h2>What this adds to the two checks either side of it</h2>
+     *
+     * <p>{@link #validateOutboundTrust(Environment)} establishes that the queue destination is
+     * well-formed and belongs to the configured region, and {@link AwsResourceTrustVerifier} establishes
+     * - by asking the services themselves - that the <em>resolved</em> queue and topic are owned by the
+     * declared account. This check sits between them and is neither redundant nor a substitute for
+     * either: it compares the account carried by the value a deployer typed, which means a
+     * cross-account locator is refused <strong>before a single bean is created</strong> rather than when
+     * the verifier's bean is initialised. For a fault that a deployer fixes by editing one variable,
+     * being told at the earliest possible moment is the difference between a failed deployment and a
+     * partially started one.
+     *
+     * <p><strong>A bare name is not checked, and that is not a gap.</strong> A bare queue or topic name
+     * carries no account: the client resolves it against this deployment's own credentials, so it cannot
+     * name another account's resource at all. The preferred form is therefore the form that needs no
+     * check, and requiring a resource identifier instead - which is what "require exact identifiers"
+     * would mean - would be strictly weaker, because it would replace a value that cannot be
+     * cross-account with one that can and then check it.
+     *
+     * <p>Only the two <em>outbound</em> resources are checked. The bucket is deliberately absent: a
+     * bucket name carries no account either, and its ownership is established by the object store on
+     * every call through the expected-owner comparison the verifier makes.
+     *
+     * @param environment environment to read the settings from
+     * @throws IllegalStateException when a configured locator names an account other than the declared
+     *                               one, or is not a locator of the service it is configured as; the
+     *                               message names each offending key and never repeats a configured
+     *                               value
+     * @throws NullPointerException  when {@code environment} is {@code null}
+     */
+    static void validateConfiguredResourceOwnership(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final String declaredAccount = resolveLeniently(environment,
+                AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY);
+        if (!isSuppliedValue(AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY, declaredAccount)) {
+            // Already reported, in full and by variable name, by the required-settings sweep that runs
+            // first. Reporting it a second time here would say the same thing in weaker terms.
+            return;
+        }
+        final String region = resolveLeniently(environment, REGION_KEY);
+        if (!isSuppliedValue(REGION_KEY, region)) {
+            // Same reasoning: a locator can only be judged against the deployment it belongs to, and a
+            // missing region is reported as a missing region by the sweep above.
+            return;
+        }
+
+        final List<String> faults = new ArrayList<>();
+        requireOwnedLocator(environment, faults, QUEUE_DESTINATION_KEY,
+                AwsResourceTrustVerifier.QUEUE_SERVICE, region.strip(), declaredAccount.strip());
+        requireOwnedLocator(environment, faults, TOPIC_DESTINATION_KEY,
+                AwsResourceTrustVerifier.TOPIC_SERVICE, region.strip(), declaredAccount.strip());
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(resourceOwnershipFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Adds a fault when one configured locator is a resource identifier naming another account.
+     *
+     * @param environment      environment to read the locator from
+     * @param faults           collector of refusal lines, each already indented
+     * @param propertyKey      the key carrying the locator
+     * @param service          the service segment the locator must carry when it is a resource identifier
+     * @param region           the region this deployment configured
+     * @param declaredAccount  the account this deployment declares it owns
+     */
+    private static void requireOwnedLocator(final Environment environment, final List<String> faults,
+            final String propertyKey, final String service, final String region,
+            final String declaredAccount) {
+        final String locator = resolveLeniently(environment, propertyKey);
+        if (!isSuppliedValue(propertyKey, locator) || !locator.strip().startsWith(RESOURCE_ID_PREFIX)) {
+            return;
+        }
+        try {
+            AwsResourceNamingRules.requireResourceOwnedByAccount(locator.strip(), service, region,
+                    declaredAccount, AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY);
+        } catch (final IllegalArgumentException refused) {
+            faults.add("  " + propertyKey + ": " + refused.getMessage());
+        }
+    }
+
+    /**
+     * Assembles the resource-ownership failure text.
+     *
+     * @param  faults one line per refusal, already indented
+     * @return a message that states what class of fault it is, lists every fault and points at the
+     *         recorded decision
+     */
+    private static String resourceOwnershipFailureMessage(final List<String> faults) {
+        return "Production start-up refused: " + faults.size() + " configured resource locator(s) name"
+                + " an account other than the one "
+                + AwsResourceTrustVerifier.EXPECTED_ACCOUNT_ID_PROPERTY + " declares this deployment"
+                + " owns. A well-formed locator in another account resolves and is addressed, and both"
+                + " outbound channels here tolerate a failure rather than raise, so the deployment would"
+                + " report success while its job cards or completion notices landed elsewhere."
+                + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "Use a bare name, which carries no account and cannot be redirected, or a locator in"
+                + " the declared account. See docs/decision-log.md DL-302.";
+    }
+
+    /**
+     * Reports whether a key resolved to a value a deployment actually supplied.
+     *
+     * <p>Three non-values are recognised and all three mean "not supplied": the key's own placeholder,
+     * which is what an undeclared key resolves to; text still containing placeholder syntax, which is a
+     * declared key whose variable nothing set; and blank text. The distinction matters in both
+     * directions here - an unset endpoint variable must not be reported as an override, and a declared
+     * destination whose variable is unset is already reported by the required-settings sweep.
+     *
+     * @param propertyKey the key that was read
+     * @param resolved    the text {@link #resolveLeniently} produced
+     * @return {@code true} when the value was genuinely supplied
+     */
+    private static boolean isSuppliedValue(final String propertyKey, final String resolved) {
+        return resolved != null
+                && !resolved.equals(PLACEHOLDER_PREFIX + propertyKey + PLACEHOLDER_SUFFIX)
+                && !resolved.contains(PLACEHOLDER_PREFIX)
+                && !resolved.isBlank();
+    }
+
+    /**
+     * Assembles the outbound-trust failure text.
+     *
+     * @param faults one line per refusal, already indented
+     * @return a message that states the count, explains what class of fault it is, lists every fault
+     *         and points at the recorded decision
+     */
+    private static String outboundTrustFailureMessage(final List<String> faults) {
+        return "The '" + PRODUCTION_PROFILE + "' profile cannot start: " + faults.size()
+                + " outbound-destination setting(s) would send data somewhere this deployment does not"
+                + " own." + System.lineSeparator()
+                + "A destination is not validated by its shape alone, because a correctly formed value"
+                + " can name any host at all, and the job-submission queue carries the job-control"
+                + " cards of every batch submission." + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "Correct the settings named above and start again. "
+                + "See docs/decision-log.md DL-105 and the variable list at the head of "
+                + "application-prod.yml.";
+    }
+
+    /**
+     * Refuses a production deployment whose trace collector is not a host this deployment can authenticate.
+     *
+     * <h2>What presence alone did not establish</h2>
+     *
+     * <p>The collector address is a required setting, so a production deployment cannot start without one -
+     * and until now that was the whole of the check. Presence is a weak property for an address every span
+     * of every request is posted to. {@code http://} was accepted, which puts the trace of an
+     * authenticated banking request - its route, its timing, its span names and every attribute the
+     * instrumentation attached - on the wire in clear text and gives whatever answers on that port the
+     * ability to impersonate the collector. So was a locator carrying user information, which places a
+     * credential in a value that configuration dumps, process listings and any library printing an endpoint
+     * will happily reproduce. So was a query string or a fragment, neither of which an OTLP receiver has
+     * any use for, so their presence means the value was assembled out of something that was not an OTLP
+     * endpoint. And so was a loopback address, which in production means the variable was never really set
+     * and every span is being posted into a socket nothing is listening on.
+     *
+     * <h2>The five rules, and why each is the enforceable form of the requirement</h2>
+     *
+     * <ol>
+     *   <li><strong>The scheme must be {@code https}.</strong> This is what "authenticated TLS" reduces to
+     *       in a configuration check: the exporter's client verifies the collector's certificate against
+     * the       platform trust store, so the address names a host that can prove it is that host. Client
+     *       certificate authentication would be stronger still and is <em>not</em> asserted here, because
+     *       the framework's OTLP tracing properties expose no client key material and inventing a second
+     *       transport to carry it would put the export decision back into this module - see the recorded
+     *       decision for that divergence rather than a silent claim.</li>
+     *   <li><strong>No user information.</strong> A credential in a locator is a credential in every place
+     *       a locator is written down.</li>
+     *   <li><strong>No query and no fragment.</strong> The OTLP over HTTP specification fixes the request
+     *       shape; a receiver reads neither. Their presence is evidence about where the value came from.</li>
+     *   <li><strong>The path must be the OTLP traces path.</strong> Also fixed by that specification, which
+     *       is what makes it checkable at all: an address ending anywhere else is not pointing at a traces
+     *       receiver, however well formed it is. This is the "approved path" in a form that needs no
+     *       deployment to maintain an allow list.</li>
+     *   <li><strong>The host must not be loopback.</strong> A production collector is not in this process,
+     *       so a loopback host is an unset variable that happens to have a fallback somewhere, and every
+     *       span is being dropped into nothing while the deployment believes it is exporting.</li>
+     * </ol>
+     *
+     * <p><strong>Why a host allow list is deliberately not required.</strong> It would be a further
+     * required variable for every deployment to maintain, and it would be enforced against the same value
+     * it is derived from - a deployer able to set the endpoint is able to set the list. The five rules
+     * above hold without a list and cannot be satisfied by a value that is wrong in any of the ways the
+     * finding names.
+     *
+     * <p>Refused here rather than at first export, and that ordering is the point. This runs as a
+     * bean-factory post-processor, before any singleton is created, so a deployment addressing the wrong
+     * collector never starts - it does not start, run, and quietly post traces somewhere for a while.
+     *
+     * @param environment environment to read the setting from
+     * @throws IllegalStateException when the configured address is not an authenticated OTLP traces
+     *                               endpoint; the message names the property and the rule it broke and
+     *                               never repeats the configured value
+     * @throws NullPointerException  when {@code environment} is {@code null}
+     */
+    static void validateTraceCollectorAddress(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final String configured = resolveLeniently(environment, TRACE_COLLECTOR_ENDPOINT_KEY);
+        if (!isSuppliedValue(TRACE_COLLECTOR_ENDPOINT_KEY, configured)) {
+            // An absent value is already the required-settings sweep's to report, and reporting it twice
+            // would send a deployer looking for two faults where there is one.
+            return;
+        }
+
+        final List<String> faults = new ArrayList<>();
+        final URI address;
+        try {
+            address = new URI(configured.strip());
+        } catch (final URISyntaxException malformed) {
+            // The configured text is never echoed, here or anywhere below: it is the one production value
+            // whose typical failure mode - a credential pasted into the locator - is the thing a refusal
+            // must not repeat into a log.
+            throw new IllegalStateException(traceCollectorFailureMessage(
+                    List.of("  " + TRACE_COLLECTOR_ENDPOINT_KEY + ": is not a well-formed address")));
+        }
+
+        final String scheme = address.getScheme();
+        if (scheme == null || !TRACE_COLLECTOR_REQUIRED_SCHEME.equalsIgnoreCase(scheme)) {
+            faults.add("  " + TRACE_COLLECTOR_ENDPOINT_KEY + ": must use the "
+                    + TRACE_COLLECTOR_REQUIRED_SCHEME + " scheme, so the exporter authenticates the"
+                    + " collector and the spans of authenticated requests are not carried in clear text");
+        }
+        if (address.getUserInfo() != null) {
+            faults.add("  " + TRACE_COLLECTOR_ENDPOINT_KEY + ": must carry no user information; a"
+                    + " credential in a locator is a credential in every place a locator is written down");
+        }
+        if (address.getQuery() != null || address.getFragment() != null) {
+            faults.add("  " + TRACE_COLLECTOR_ENDPOINT_KEY + ": must carry neither a query nor a"
+                    + " fragment; an OTLP receiver reads neither, so their presence says the value was"
+                    + " assembled from something that is not an OTLP endpoint");
+        }
+        final String host = address.getHost();
+        if (host == null || host.isBlank()) {
+            faults.add("  " + TRACE_COLLECTOR_ENDPOINT_KEY + ": must name a host");
+        } else if (isLoopbackHost(host)) {
+            faults.add("  " + TRACE_COLLECTOR_ENDPOINT_KEY + ": must not name a loopback host in"
+                    + " production; the collector is not in this process, so a loopback address means the"
+                    + " variable was never set and every span is being discarded");
+        }
+        final String path = address.getPath();
+        if (path == null || !path.equals(TRACE_COLLECTOR_REQUIRED_PATH)) {
+            faults.add("  " + TRACE_COLLECTOR_ENDPOINT_KEY + ": must end at the OTLP traces path "
+                    + TRACE_COLLECTOR_REQUIRED_PATH + ", which the OTLP over HTTP specification fixes;"
+                    + " any other path is not a traces receiver");
+        }
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(traceCollectorFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Holds the production data source to an authenticated, non-downgradeable transport, rather than
+     * merely to having been supplied.
+     *
+     * <h2>What was wrong with presence</h2>
+     *
+     * <p>Until this check existed the location at {@value #DATASOURCE_URL_KEY} was required to be
+     * declared, resolved and non-blank, and nothing else. <strong>The PostgreSQL driver defaults
+     * {@value #DATABASE_SSL_MODE_PARAMETER} to {@code prefer}</strong>, so a URL that names no transport
+     * rule at all - the shape a deployment writes by default, and the shape this module's own tests used
+     * to accept - asks for encryption and <em>falls back to a plaintext session without reporting that it
+     * did</em>. Every credential this deployment presents and every row it reads then crosses the network
+     * in clear text, and nothing in a log, a health probe or a metric says so. Worse, {@code prefer} and
+     * {@code require} validate no certificate, so whatever answers on the port is believed: a party in
+     * the path can present its own certificate, terminate the session and read or alter it.
+     *
+     * <p>That is not a hypothetical for this module in particular. The data source carries the account
+     * balances, the card numbers, and the two sealed regulated identifier columns whose envelopes are
+     * opened by the running process - so a session an attacker can read is a session in which the sealed
+     * values travel beside nothing that re-seals them.
+     *
+     * <h2>The six rules, and why each is the enforceable form of the requirement</h2>
+     *
+     * <ol>
+     *   <li><strong>The sub-protocol must be {@value #DATABASE_REQUIRED_SUBPROTOCOL}.</strong> The
+     *       transport rules below are the PostgreSQL driver's, so they mean nothing against a URL another
+     *       driver accepts. This is also the one rule that refuses an embedded database outright.</li>
+     *   <li><strong>{@value #DATABASE_SSL_MODE_PARAMETER} must be present and exactly
+     *       {@value #DATABASE_REQUIRED_SSL_MODE}.</strong> Present, because absence <em>is</em>
+     *       {@code prefer} and a silent downgrade is the failure this check exists for. Exactly, because
+     *       each weaker mode gives up a different one of the three guarantees - encryption, chain
+     *       validation, host-name validation - and only {@value #DATABASE_REQUIRED_SSL_MODE} keeps all
+     *       three. Both directions of "not exactly" are refused: a weaker named mode with the reason it
+     *       gives up, and an unrecognised value because the driver would reject it later and this refusal
+     *       arrives before a connection is opened.</li>
+     *   <li><strong>No non-validating SSL factory.</strong> {@value #DATABASE_NON_VALIDATING_SSL_FACTORY}
+     *       replaces the driver's trust decision with acceptance, which would make rule 2 a statement
+     *       with no effect. Refusing the mode without refusing this would be a check with a documented
+     *       bypass.</li>
+     *   <li><strong>No embedded credentials</strong>, neither as authority user information nor as a
+     *       {@code user} or {@code password} parameter. A credential in a locator is a credential in every
+     *       place a locator is written down, and either form silently overrides the two dedicated settings
+     *       this class guards beside it.</li>
+     *   <li><strong>The URL must name a host.</strong> The driver's host-less forms address a server
+     *       through defaults, and a production data source that is inferred is the thing the profile
+     *       document refuses to allow for the location as a whole.</li>
+     *   <li><strong>The host must not be loopback.</strong> The database is not in this process, so a
+     *       loopback host means the variable was never really set and a fallback answered - and it is also
+     *       the one host for which an operator is most tempted to relax rule 2.</li>
+     * </ol>
+     *
+     * <p><strong>Why a trust-anchor file is deliberately not required.</strong> A rule demanding
+     * {@code sslrootcert} would add a further deployment obligation without adding a guarantee:
+     * {@value #DATABASE_REQUIRED_SSL_MODE} already refuses to connect when no trust anchor validates the
+     * server, so a deployment whose anchor is unresolvable fails loudly at the first connection rather
+     * than degrading quietly. Enforcing the mode is the check; enforcing where the anchor lives is
+     * platform configuration this module has no authority over.
+     *
+     * <p><strong>Why the parameters are read from the URL rather than from the pool.</strong> The pool is
+     * not built yet. This runs as part of the same bean-factory post-processor as the checks around it,
+     * before any singleton is created, so a deployment configured to talk to its database over a
+     * downgradeable channel never starts - it does not start, serve authenticated banking requests over
+     * that channel for a while, and get noticed later.
+     *
+     * <p>An absent value is not reported here. {@link #validateRequiredSettings} already reports it, and
+     * one missing variable producing two messages teaches a deployer to fix one of them and stop reading.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-336.
+     *
+     * @param environment environment to read the setting from
+     * @throws IllegalStateException when the configured location is not an authenticated PostgreSQL
+     *                               channel; the message names the rule that was broken and never
+     *                               repeats the configured value
+     * @throws NullPointerException  when {@code environment} is {@code null}
+     */
+    static void validateDatabaseTransport(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final String configured = resolveLeniently(environment, DATASOURCE_URL_KEY);
+        if (!isSuppliedValue(DATASOURCE_URL_KEY, configured)) {
+            return;
+        }
+
+        final String url = configured.strip();
+        if (!url.toLowerCase(Locale.ROOT).startsWith(DATABASE_REQUIRED_SUBPROTOCOL)) {
+            // Returned rather than accumulated: every rule below is a PostgreSQL driver rule, so
+            // reporting them against a URL that driver never sees would be advice about the wrong driver.
+            throw new IllegalStateException(databaseTransportFailureMessage(List.of(
+                    "  " + DATASOURCE_URL_KEY + ": must name the "
+                            + DATABASE_REQUIRED_SUBPROTOCOL + " sub-protocol, because the transport rules"
+                            + " this check applies are the PostgreSQL driver's and no other driver"
+                            + " honours them")));
+        }
+
+        final List<String> faults = new ArrayList<>();
+        // A JDBC URL is not a URI - the `jdbc:` prefix leaves it with two schemes - so the prefix is
+        // removed and the remainder parsed, which yields exactly the authority and query the driver reads.
+        final URI address = parseJdbcAuthority(url);
+        if (address == null) {
+            throw new IllegalStateException(databaseTransportFailureMessage(List.of(
+                    "  " + DATASOURCE_URL_KEY + ": is not a well-formed JDBC location")));
+        }
+
+        final String host = address.getHost();
+        if (host == null || host.isBlank()) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must name a host, so the server a production"
+                    + " deployment connects to is stated rather than inferred from a driver default");
+        } else if (isLoopbackHost(host)) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must not name a loopback host in production; the"
+                    + " database is not in this process, so a loopback host means the variable was never"
+                    + " set and something else answered");
+        }
+        if (address.getUserInfo() != null) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must carry no user information; a credential in a"
+                    + " locator is a credential in every place a locator is written down, and it"
+                    + " silently overrides the connection identity this profile guards separately");
+        }
+
+        final Map<String, String> parameters = urlParameters(address.getRawQuery());
+        for (final String credentialParameter : DATABASE_CREDENTIAL_PARAMETERS) {
+            if (parameters.containsKey(credentialParameter)) {
+                faults.add("  " + DATASOURCE_URL_KEY + ": must declare no '" + credentialParameter
+                        + "' parameter; the connection identity is supplied by"
+                        + " spring.datasource.username and spring.datasource.password, which this check"
+                        + " guards, and a parameter of the same meaning overrides them unseen");
+            }
+        }
+
+        final String sslMode = parameters.get(DATABASE_SSL_MODE_PARAMETER);
+        if (sslMode == null || sslMode.isBlank()) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must declare " + DATABASE_SSL_MODE_PARAMETER
+                    + "=" + DATABASE_REQUIRED_SSL_MODE + "; the driver's default is 'prefer', which"
+                    + " falls back to a plaintext session WITHOUT REPORTING IT, so omitting the"
+                    + " parameter asks for a downgradeable and unauthenticated channel");
+        } else if (!DATABASE_REQUIRED_SSL_MODE.equalsIgnoreCase(sslMode.strip())) {
+            final String surrendered =
+                    DATABASE_REFUSED_SSL_MODES.get(sslMode.strip().toLowerCase(Locale.ROOT));
+            faults.add("  " + DATASOURCE_URL_KEY + ": declares a " + DATABASE_SSL_MODE_PARAMETER
+                    + " other than " + DATABASE_REQUIRED_SSL_MODE + ", "
+                    + (surrendered == null
+                            ? "and one the driver does not recognise, so the connection would be"
+                                    + " refused later instead of here"
+                            : surrendered)
+                    + ". Only " + DATABASE_REQUIRED_SSL_MODE + " requires encryption, validates the"
+                    + " certificate chain and checks the server's name against the host dialled");
+        }
+
+        final String sslFactory = parameters.get(DATABASE_SSL_FACTORY_PARAMETER);
+        if (sslFactory != null
+                && sslFactory.toLowerCase(Locale.ROOT).contains(DATABASE_NON_VALIDATING_SSL_FACTORY)) {
+            faults.add("  " + DATASOURCE_URL_KEY + ": must not declare a non-validating "
+                    + DATABASE_SSL_FACTORY_PARAMETER + "; it replaces the driver's trust decision with"
+                    + " acceptance, which would leave " + DATABASE_SSL_MODE_PARAMETER + "="
+                    + DATABASE_REQUIRED_SSL_MODE + " stated and unenforced");
+        }
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(databaseTransportFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Parses the authority and query of a JDBC location.
+     *
+     * <p>A JDBC URL carries two schemes - {@code jdbc:} and then the driver's own - so it is not a URI as
+     * written. Removing the leading {@code jdbc:} leaves {@code postgresql://host:port/database?query},
+     * which parses into exactly the authority and query components the driver itself reads.
+     *
+     * @param  url the trimmed JDBC location, already known to carry the required sub-protocol
+     * @return the parsed remainder, or {@code null} when it is not well formed
+     */
+    private static URI parseJdbcAuthority(final String url) {
+        try {
+            return new URI(url.substring("jdbc:".length()));
+        } catch (final URISyntaxException | IndexOutOfBoundsException malformed) {
+            return null;
+        }
+    }
+
+    /**
+     * Splits a raw query string into its parameters, lower-casing each name.
+     *
+     * <p>Names are lower-cased because the driver reads them case-insensitively, so a check that did not
+     * would be defeated by {@code sslMode=prefer}. A repeated name keeps its <em>last</em> value, which is
+     * the driver's own precedence, so a URL appending a weaker mode after a stronger one is judged on the
+     * value that will actually take effect. The raw query is used rather than the decoded one so that an
+     * encoded separator cannot hide a parameter from this split.
+     *
+     * @param  rawQuery the query component as written, which may be {@code null}
+     * @return the parameters, names lower-cased; never {@code null}
+     */
+    private static Map<String, String> urlParameters(final String rawQuery) {
+        final Map<String, String> parameters = new LinkedHashMap<>();
+        if (rawQuery == null || rawQuery.isBlank()) {
+            return parameters;
+        }
+        for (final String pair : rawQuery.split("&")) {
+            if (pair.isBlank()) {
+                continue;
+            }
+            final int separator = pair.indexOf('=');
+            final String name = separator < 0 ? pair : pair.substring(0, separator);
+            final String value = separator < 0 ? "" : pair.substring(separator + 1);
+            parameters.put(name.strip().toLowerCase(Locale.ROOT), value);
+        }
+        return parameters;
+    }
+
+    /**
+     * Builds the refusal for a data source whose transport is not authenticated.
+     *
+     * <p>The configured value is never repeated. It is the production value most likely to have a
+     * credential pasted into it, which is one of the faults this method reports, so echoing it would
+     * write the credential into the start-up log the refusal is read from.
+     *
+     * @param  faults one line per broken rule
+     * @return the message the refusal carries
+     */
+    private static String databaseTransportFailureMessage(final List<String> faults) {
+        return "The \'" + PRODUCTION_PROFILE + "\' profile cannot start: the configured data source"
+                + " location breaks " + faults.size() + " rule(s)." + System.lineSeparator()
+                + "Every credential this deployment presents and every account balance, card number and"
+                + " sealed identifier it reads travels over this connection."
+                + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "The configured value is deliberately not repeated here. Correct it and start again. "
+                + "The required form is " + DATABASE_REQUIRED_SUBPROTOCOL
+                + "//host:port/database?" + DATABASE_SSL_MODE_PARAMETER + "="
+                + DATABASE_REQUIRED_SSL_MODE + ". See docs/decision-log.md DL-336 and the variable list"
+                + " at the head of application-prod.yml.";
+    }
+
+    /**
+     * Reports whether a host names this machine.
+     *
+     * <p>Decided on the text rather than by resolving the name, because resolution would make a
+     * configuration check depend on a name server and would let a deployment pass or fail according to what
+     * DNS answered at start-up. The three forms a fallback or a typo actually produces are the three
+     * recognised: the conventional name, the IPv4 loopback range, and the IPv6 loopback literal.
+     *
+     * @param  host the host component of the configured address
+     * @return {@code true} when the host names this machine
+     */
+    private static boolean isLoopbackHost(final String host) {
+        final String candidate = host.strip().toLowerCase(Locale.ROOT);
+        return candidate.equals("localhost")
+                || candidate.equals("[::1]")
+                || candidate.equals("::1")
+                || candidate.startsWith("127.");
+    }
+
+    /**
+     * Holds the production management credential to a quality floor, not merely to being present.
+     *
+     * <h2>What was wrong with presence</h2>
+     *
+     * <p>The management surface accepts one shared machine credential, compared in constant time, and every
+     * metrics endpoint, every exposition scrape and every non-probe management path is reachable with it
+     * and with nothing else. Until this check existed the only requirement was that the value be non-blank,
+     * so a single character was a valid production credential. A one-character shared secret over an
+     * unthrottled comparison is not a credential; it is an invitation, and it is presented on every scrape,
+     * which means it is also long-lived by construction.
+     *
+     * <h2>Why a length floor, and why this floor</h2>
+     *
+     * <p>Thirty-two bytes is the same floor this module already applies to its signing material, for the
+     * same reason: it is the point at which guessing stops being an attack and becomes arithmetic. It is
+     * stated once, on the class that consumes the credential, and read here, so the rule and its use cannot
+     * disagree.
+     *
+     * <p>Length is necessary and not sufficient, so two shape rules accompany it. A credential must contain
+     * at least {@link #MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS} distinct characters, which refuses a
+     * long run of one symbol and, as that constant records, also refuses most values drawn from an
+     * alphabet as narrow as hexadecimal - so the generator and the rule have to be chosen together. And it
+     * must not contain one of a short list of words that only appear in values a person typed - the
+     * credential left as the example is the failure this catches, and it is the common one.
+     *
+     * <h2>What this check deliberately does not attempt</h2>
+     *
+     * <p>It does not measure entropy and does not claim the value is random. Randomness is not a property
+     * of a string, and a check that pretended otherwise would refuse legitimate credentials while passing
+     * crafted ones. What it guarantees is that a credential which is obviously not random is refused before
+     * a single bean is created, and the rotation expectation is documented where the variable is.
+     *
+     * <p>An absent value is not reported here. {@link #validateRequiredSettings} already reports it, and
+     * one missing variable producing two messages teaches a deployer to fix one of them and stop reading.
+     *
+     * <p>It also does not describe the value it rejected. Each fault names the rule and not the finding:
+     * the word list is refused by size rather than by naming the match, and every measurement - the byte
+     * count, the distinct-character count and the length applied by
+     * {@link #validateRequiredSettings} - is reported as the requirement rather than as the actual. A
+     * property of a credential is part of a credential once it reaches a log. Recorded as
+     * {@code docs/decision-log.md} DL-348.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-312.
+     *
+     * @param environment the environment to read, never {@code null}
+     * @throws IllegalStateException if a supplied credential breaks any rule
+     */
+    static void validateManagementCredentialQuality(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final String configured =
+                resolveLeniently(environment, SecurityConfig.MANAGEMENT_TOKEN_PROPERTY);
+        if (!isSuppliedValue(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY, configured)) {
+            return;
+        }
+
+        // Stripped before measuring, because the consumer strips before comparing: measuring the
+        // unstripped text would accept a credential whose length is mostly whitespace the filter discards.
+        final String credential = configured.strip();
+        final List<String> faults = new ArrayList<>();
+        final int suppliedBytes = credential.getBytes(StandardCharsets.UTF_8).length;
+        if (suppliedBytes < SecurityConfig.MANAGEMENT_TOKEN_MINIMUM_BYTES) {
+            faults.add("  " + SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + ": must be at least "
+                    + SecurityConfig.MANAGEMENT_TOKEN_MINIMUM_BYTES + " bytes of generated material,"
+                    + " which is the floor at which guessing a shared secret stops being feasible");
+        }
+        if (credential.chars().distinct().count() < MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS) {
+            faults.add("  " + SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + ": must contain at least "
+                    + MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS + " distinct characters; a value of"
+                    + " the required length built from a few repeated symbols has the search space of"
+                    + " those symbols");
+        }
+        final String folded = credential.toLowerCase(Locale.ROOT);
+        for (final String forbidden : MANAGEMENT_TOKEN_FORBIDDEN_WORDS) {
+            if (folded.contains(forbidden)) {
+                // WHICH word was found is deliberately withheld. It is a substring of a live credential,
+                // so naming it published part of the value into the log of the deployment that rejected
+                // it - and it narrowed a guess at the rest, because a reader then knows a run of the
+                // credential exactly and knows the remainder is shorter than it looks. The category and
+                // the size of the refused list are what a deployer needs, and the list itself is a
+                // constant in this file for anybody who wants to read it. Recorded as DL-348.
+                faults.add("  " + SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + ": must not contain any of"
+                        + " the " + MANAGEMENT_TOKEN_FORBIDDEN_WORDS.size() + " words this check"
+                        + " refuses, each of which appears in values that were typed rather than"
+                        + " generated. Which one was found is deliberately not reported, because it is a"
+                        + " substring of the configured credential");
+                break;
+            }
+        }
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(managementCredentialFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Composes the management credential refusal.
+     *
+     * <p>The configured value is never repeated, for a reason narrower than the general one: this value is
+     * a live credential for the surface that publishes this deployment's metrics, so a refusal that echoed
+     * it would write a working credential into the log of the deployment that rejected it, where it would
+     * outlive the correction. The rule that was broken is named instead, which is what a deployer needs.
+     *
+     * <p><strong>No property of the value is repeated either, which is the stronger discipline and the
+     * correction this method carries.</strong> Two faults used to describe the value rather than the rule:
+     * the dictionary-word fault named the word it had found, which is a substring of the credential and
+     * therefore part of the credential; and the length fault named the number of characters supplied, which
+     * is the search space a guesser needs. Both are now stated as requirements alone. Neither withholding
+     * costs a deployer anything - they have the value in front of them - and each removes something a
+     * reader of the log gains. Recorded as {@code docs/decision-log.md} DL-348.
+     *
+     * @param  faults one line per broken rule
+     * @return the message the refusal carries
+     */
+    private static String managementCredentialFailureMessage(final List<String> faults) {
+        return "The \'" + PRODUCTION_PROFILE + "\' profile cannot start: the configured management"
+                + " credential breaks " + faults.size() + " rule(s)." + System.lineSeparator()
+                + "This one shared secret reaches every metrics endpoint and every exposition scrape,"
+                + " it is presented on every scrape, and it is compared and not derived."
+                + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "The configured value is deliberately not repeated here. Generate a new one, for"
+                + " example with 32 bytes from a cryptographic source rendered as text, and start again. "
+                + "See docs/decision-log.md DL-312 and the variable list at the head of "
+                + "application-prod.yml.";
+    }
+
+    /**
+     * Assembles the trace-collector failure text.
+     *
+     * @param  faults one line per refusal, already indented
+     * @return a message that states what class of fault it is, lists every fault and never repeats the
+     *         configured value
+     */
+    private static String traceCollectorFailureMessage(final List<String> faults) {
+        return "The \'" + PRODUCTION_PROFILE + "\' profile cannot start: the configured trace collector"
+                + " address breaks " + faults.size() + " rule(s)." + System.lineSeparator()
+                + "Every span of every authenticated request is posted to this address, and the collector"
+                + " is a remote party this deployment must be able to authenticate."
+                + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "The configured value is deliberately not repeated here. Correct it and start again. "
+                + "See docs/decision-log.md DL-311 and the variable list at the head of "
+                + "application-prod.yml.";
+    }
+
+    /**
+     * Checks every required setting and reports all of the unusable ones together.
+     *
+     * <p>Reporting every fault in one message rather than the first one is deliberate: a deployment
+     * missing four variables should learn that in one attempt, not in four.
+     *
+     * @param environment environment to read the settings from
+     * @throws IllegalStateException when at least one required setting is undeclared, unresolved,
+     *                               blank, or - for a setting carrying a minimum in
+     *                               {@link #MINIMUM_LENGTH_BY_KEY} - shorter than that minimum; the
+     *                               message names each offending property, the environment variable
+     *                               that supplies it and why it was rejected
+     * @throws NullPointerException  when {@code environment} is {@code null}
+     */
+    static void validateRequiredSettings(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final List<String> faults = new ArrayList<>();
+        for (final RequiredSetting setting : REQUIRED_SETTINGS) {
+            final String resolved = resolveLeniently(environment, setting.propertyKey());
+            final String reason = rejectionReason(setting, resolved);
+            if (reason != null) {
+                faults.add("  " + setting.propertyKey() + " <- " + setting.environmentVariable()
+                        + ": " + reason);
+            }
+        }
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(failureMessage(faults));
+        }
+    }
+
+    /**
+     * Reads a property while leaving an environment reference nothing satisfied as visible text.
+     *
+     * <p>The ordinary read is strict about a nested reference and raises a placeholder-resolution
+     * failure on the first unsatisfied one, which would end the sweep at the first fault and would
+     * describe the placeholder instead of naming the variable. Resolving an expression built from the
+     * key is lenient, so an unsatisfied reference survives into the returned text and can be reported
+     * against the setting that carries it.
+     *
+     * @param environment environment to read from
+     * @param propertyKey key to read
+     * @return the resolved text; the key's own placeholder when the key is not declared at all, and the
+     *         inner environment reference when the key is declared but nothing supplies it
+     */
+    private static String resolveLeniently(final Environment environment, final String propertyKey) {
+        return environment.resolvePlaceholders(PLACEHOLDER_PREFIX + propertyKey + PLACEHOLDER_SUFFIX);
+    }
+
+    /**
+     * Decides whether a resolved value is usable, and says why when it is not.
+     *
+     * <p>The undeclared case is tested before the unresolved case because the text of an undeclared key
+     * also contains placeholder syntax, and reporting it as merely unresolved would send a deployer
+     * looking for a variable when the property itself is the thing that is missing.
+     *
+     * <p>The length rule is applied last, and only to the keys {@link #MINIMUM_LENGTH_BY_KEY} names.
+     * Order matters here for the same reason it does above: a value that is absent is not also "too
+     * short", and reporting it that way would send a deployer to generate a credential for a variable
+     * they have not set yet.
+     *
+     * @param setting setting the value belongs to
+     * @param resolved text produced by {@link #resolveLeniently}
+     * @return a sentence explaining the rejection, or {@code null} when the value is usable
+     */
+    private static String rejectionReason(final RequiredSetting setting, final String resolved) {
+        if (resolved == null) {
+            return "the property is not declared by any active profile";
+        }
+        if (resolved.equals(PLACEHOLDER_PREFIX + setting.propertyKey() + PLACEHOLDER_SUFFIX)) {
+            return "the property is not declared by any active profile, so nothing referenced "
+                    + setting.environmentVariable() + " at all";
+        }
+        if (resolved.contains(PLACEHOLDER_PREFIX)) {
+            return "the variable is not set, so the value is still the unresolved reference "
+                    + resolved;
+        }
+        if (resolved.isBlank()) {
+            return resolved.isEmpty()
+                    ? "the variable is set but empty, and an empty value is not a value"
+                    : "the variable is set to whitespace only, and whitespace is not a value";
+        }
+        final Integer minimumLength = MINIMUM_LENGTH_BY_KEY.get(setting.propertyKey());
+        if (minimumLength != null && resolved.strip().length() < minimumLength) {
+            // Measured on the STRIPPED value, because that is the credential: SecurityConfig strips the
+            // configured token before comparing, so surrounding whitespace is not part of what an
+            // attacker has to guess and must not be allowed to count towards the floor.
+            //
+            // The measurement is not reported. A length is a property OF the credential, and this class
+            // withholds properties of a configured secret for the same reason it withholds the secret:
+            // start-up failure reporting renders this text into the deployment log, where it outlives the
+            // correction. The deployer already knows how long their own value is, so the actual adds
+            // nothing for them and hands a reader the search space to work in. The requirement is what
+            // makes the message actionable, and the requirement is a published constant. Recorded as
+            // DL-348.
+            return "the value is shorter than the " + minimumLength + " characters this credential "
+                    + "requires; its actual length is deliberately not reported. It is presented as a "
+                    + "bearer token on the management surface, with no sign-on and no attempt limit "
+                    + "behind it, so its only defence is that it cannot be guessed. Generate one with "
+                    + "`openssl rand -base64 24`, which yields " + minimumLength + " characters over a "
+                    + "64-symbol alphabet and so also satisfies the "
+                    + MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS + "-distinct-character rule; a "
+                    + minimumLength + "-character hexadecimal value is long enough but usually is not, "
+                    + "because hexadecimal has only " + MANAGEMENT_TOKEN_MINIMUM_DISTINCT_CHARACTERS
+                    + " symbols in total";
+        }
+        return null;
+    }
+
+    /**
+     * Assembles the failure text.
+     *
+     * @param faults one line per rejected setting, already indented
+     * @return a message that states the count, explains that no fallback exists by design, lists every
+     *         fault and points at the recorded decision
+     */
+    private static String failureMessage(final List<String> faults) {
+        return "The '" + PRODUCTION_PROFILE + "' profile cannot start: " + faults.size() + " of "
+                + REQUIRED_SETTINGS.size() + " required settings are unusable."
+                + System.lineSeparator()
+                + "Each is supplied by an environment variable and carries no fallback by design, so "
+                + "start-up stops here rather than continuing with a placeholder or an empty value."
+                + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "Set the variables named above and start again. "
+                + "See docs/decision-log.md DL-105 and the variable list at the head of "
+                + "application-prod.yml.";
+    }
+
+    /**
+     * One required production setting: the property the application reads and the environment variable
+     * a deployment sets.
+     *
+     * <p>Both halves are carried because a failure message needs both. The property key is what appears
+     * in the profile document and in a framework message; the variable name is the only part a deployer
+     * can act on.
+     *
+     * @param propertyKey         key as declared in {@code application-prod.yml}
+     * @param environmentVariable variable the profile references for that key, with no fallback
+     */
+    record RequiredSetting(String propertyKey, String environmentVariable) {
+
+        /**
+         * Rejects a half-built setting.
+         *
+         * @throws NullPointerException     when either half is {@code null}
+         * @throws IllegalArgumentException when either half is blank
+         */
+        RequiredSetting {
+            Objects.requireNonNull(propertyKey, "propertyKey");
+            Objects.requireNonNull(environmentVariable, "environmentVariable");
+            if (propertyKey.isBlank() || environmentVariable.isBlank()) {
+                throw new IllegalArgumentException(
+                        "A required setting needs both a property key and a variable name, but was "
+                                + "propertyKey='" + propertyKey + "' environmentVariable='"
+                                + environmentVariable + '\'');
+            }
+        }
+    }
+}

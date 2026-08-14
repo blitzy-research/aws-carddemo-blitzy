@@ -1,0 +1,2145 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.api.dto;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+
+import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+/**
+ * Unit tests for {@link AccountUpdateRequest}, the inbound contract for legacy CICS transaction
+ * {@code CAUP}, derived from program {@code app/cbl/COACTUPC.cbl}, symbolic map
+ * {@code app/cpy-bms/COACTUP.CPY} and mapset {@code app/bms/COACTUP.bms}.
+ *
+ * <p>The legacy program runs a first-error-wins validation cascade: every edit stage is gated on
+ * the summary-message slot still being empty, so a submission with five bad fields yields exactly
+ * one summary message - that of the first failing stage in source order - alongside as many
+ * independently set field flags as there are bad fields. Bean Validation evaluates constraints in
+ * an unspecified order and would report all of them at once under an arbitrary message, which is a
+ * different externally observable contract. The ordered cascade therefore lives in the service
+ * layer, and this request must <em>tolerate</em> null, blank and out-of-range input rather than
+ * reject it.
+ *
+ * <p>That makes the interesting property of this type the constraints it does <em>not</em> carry. A
+ * test that only checked happy-path accessors would pass while a well-meaning future edit silently
+ * added a bound and broke parity. Every assertion below therefore either establishes that a value
+ * is carried untouched or establishes that no rule fired on it, and two of them are contrast checks
+ * that would fail if the constraint inventory ever drifted.
+ *
+ * <p>The map declares 54 input families, eleven of which are non-editable screen furniture and are
+ * absent from the request, leaving the 43 components exercised here - 38 bounded strings and 5
+ * exact decimals. Thirty nine of the 43 are error-decoration targets, so exactly four are
+ * editable-but-undecorated - the account id, the account group id, the customer id and the
+ * government-issued id - and {@link StringComponent#UNDECORATED} pins that set down.
+ *
+ * <p>Independent oracles: no expected value here is produced by the type under test or by any
+ * production collaborator. Every declared width in {@link StringComponent} and
+ * {@link MoneyComponent} was read from the symbolic map, not from the request. The only helpers
+ * used to build an expectation are the platform's own {@link String#repeat(int)} and string
+ * concatenation, which produce literal runs rather than compute anything. The zoned-decimal codec
+ * is deliberately not imported: it owns truncation for the whole module, and using it to generate
+ * an expectation would make this test agree with a defect rather than detect one.
+ *
+ * <p>Byte-exact, never trimmed: leading, interior and trailing spaces are contractual data on a
+ * 3270 screen, so no comparison here trims, strips, case-folds or normalises either side. Nothing
+ * in this class parses a date, assembles a telephone number, concatenates a lookup key, slices a
+ * fixed-width image or rescales a decimal.
+ */
+@DisplayName("AccountUpdateRequest - the CAUP inbound contract")
+class AccountUpdateRequestTest {
+
+    /**
+     * Shared factory for the whole class, closed once in {@link #closeValidatorFactory()}. This is
+     * the reference implementation obtained straight from the specification's bootstrap entry point,
+     * never a framework-managed validator bean, because this is a pure unit test with no
+     * application context.
+     */
+    private static ValidatorFactory validatorFactory;
+
+    private static Validator validator;
+
+    /**
+     * Mapper configured with the four settings the module declares in its own
+     * {@code application.yml}: null-valued properties omitted, date-as-timestamp serialisation off,
+     * unknown incoming properties tolerated and decimals written in plain notation.
+     *
+     * <p>It comes from {@link JsonContractSupport#declaredSettingsMapper()} rather than being built
+     * here. That factory is the single place in the test tree where those four settings are written
+     * out by hand, so this file cannot transcribe them differently from any sibling suite. No
+     * framework context is started and no auto-configuration is consulted, which is what keeps this
+     * suite fast.
+     *
+     * <p>What this mapper evidences is the shape this type takes <em>under those settings</em>, and
+     * nothing more. It is not evidence about the mapper a deployed instance holds, and no assertion
+     * below is worded as though it were. Two separate facts in {@link ApplicationJsonContractTest}
+     * carry that burden instead, both against a mapper taken from a real context that has read the
+     * module's file: one compares that mapper's output with this very factory's output, so an edit
+     * to the module's settings fails there rather than silently invalidating this file; the other
+     * binds this type through the deployed object directly, so its participation in the deployed
+     * contract does not rest on the comparison alone.
+     */
+    private static final ObjectMapper MAPPER = JsonContractSupport.declaredSettingsMapper();
+
+    @BeforeAll
+    static void openValidatorFactory() {
+        validatorFactory = Validation.buildDefaultValidatorFactory();
+        validator = validatorFactory.getValidator();
+    }
+
+    /**
+     * Releases the validator factory, tolerating the case where it was never opened. The guard is
+     * not decoration: this method runs even when {@link #openValidatorFactory()} threw - a missing
+     * provider on the classpath is the realistic cause - and an unguarded call would then raise a
+     * second failure that hides the first.
+     */
+    @AfterAll
+    static void closeValidatorFactory() {
+        if (validatorFactory != null) {
+            validatorFactory.close();
+        }
+    }
+
+    private static Set<ConstraintViolation<AccountUpdateRequest>> violations(
+            AccountUpdateRequest request) {
+        return validator.validate(request);
+    }
+
+    /**
+     * The literal the request emits in place of every withheld component. Restated here rather than
+     * read from the request, so that a change to the production constant has to be made deliberately
+     * in both places and cannot silently weaken these assertions.
+     */
+    private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
+
+    /**
+     * Stand-in for the sealed concurrency token: shaped like one, and deliberately not a real one
+     * because minting a real token needs a server-held key. This contract never opens what it
+     * carries and nothing in this file may read a token's content, so a stand-in is exactly as
+     * informative as the genuine article.
+     */
+    private static final String SEALED_TOKEN = "ENC1:dGhpcy1pcy1ub3QtYS1yZWFsLXRva2Vu";
+
+    /** Wire property name of the concurrency token, which is the one component that is not a map field. */
+    private static final String CONCURRENCY_TOKEN_PROPERTY = "concurrencyToken";
+
+    /** Wire name of the attention-key component, spelled as the whole package spells it. */
+    private static final String KEY_ACTION_PROPERTY = "keyAction";
+
+    /** Wire name of the carried navigation state, spelled as the whole package spells it. */
+    private static final String NAVIGATION_CONTEXT_PROPERTY = "navigationContext";
+
+    /**
+     * Right-pads with spaces to an exact screen width. A 3270 field is always transmitted at its
+     * declared width, so this builds realistic <em>input</em>; it never touches a value being
+     * asserted. Passing a value longer than the width fails fast, which keeps the seed data below
+     * honest about the widths it claims.
+     */
+    private static String padded(String value, int width) {
+        return value + " ".repeat(width - value.length());
+    }
+
+    /*
+     * Staging holder. The canonical constructor takes one argument per component, so the call
+     * appears exactly once, in build(), rather than at every test site where a silent argument
+     * transposition would be invisible. Tests assign only the fields they care about and leave the
+     * rest null, which is itself faithful: an operator who tabs past a 3270 field transmits nothing
+     * for it. Hand-written throughout - no builder library, no annotation processor, no code
+     * generation, and nothing here reads or writes a field by name at run time.
+     */
+    static final class Draft {
+
+        String accountId;
+        String accountStatus;
+        String openYear;
+        String openMonth;
+        String openDay;
+        String creditLimit;
+        String expiryYear;
+        String expiryMonth;
+        String expiryDay;
+        String cashCreditLimit;
+        String reissueYear;
+        String reissueMonth;
+        String reissueDay;
+        String currentBalance;
+        String currentCycleCredit;
+        String accountGroupId;
+        String currentCycleDebit;
+        String customerId;
+        String ssnPart1;
+        String ssnPart2;
+        String ssnPart3;
+        String dateOfBirthYear;
+        String dateOfBirthMonth;
+        String dateOfBirthDay;
+        String ficoScore;
+        String firstName;
+        String middleName;
+        String lastName;
+        String addressLine1;
+        String stateCode;
+        String addressLine2;
+        String zipCode;
+        String city;
+        String countryCode;
+        String phone1AreaCode;
+        String phone1Prefix;
+        String phone1LineNumber;
+        String governmentIssuedId;
+        String phone2AreaCode;
+        String phone2Prefix;
+        String phone2LineNumber;
+        String eftAccountId;
+        String primaryCardHolderIndicator;
+        KeyAction keyAction;
+        NavigationContext navigationContext;
+        String concurrencyToken;
+
+        /**
+         * The one and only invocation of the canonical constructor - the 43 map components plus the
+         * three that are not map fields: the attention key, the carried navigation state and the
+         * concurrency token. Argument order follows the symbolic map's declaration order, which
+         * interleaves the account group id between two of the monetary components and places the
+         * three date-of-birth parts before the credit score, and the three non-map components follow
+         * it in that order.
+         */
+        AccountUpdateRequest build() {
+            return new AccountUpdateRequest(
+                    accountId, accountStatus, openYear, openMonth, openDay,
+                    creditLimit,
+                    expiryYear, expiryMonth, expiryDay,
+                    cashCreditLimit,
+                    reissueYear, reissueMonth, reissueDay,
+                    currentBalance, currentCycleCredit, accountGroupId, currentCycleDebit,
+                    customerId, ssnPart1, ssnPart2, ssnPart3,
+                    dateOfBirthYear, dateOfBirthMonth, dateOfBirthDay,
+                    ficoScore,
+                    firstName, middleName, lastName, addressLine1, stateCode, addressLine2,
+                    zipCode, city, countryCode,
+                    phone1AreaCode, phone1Prefix, phone1LineNumber,
+                    governmentIssuedId,
+                    phone2AreaCode, phone2Prefix, phone2LineNumber,
+                    eftAccountId, primaryCardHolderIndicator,
+                    keyAction, navigationContext, concurrencyToken);
+        }
+
+        /**
+         * Every one of the 43 components populated with realistic terminal input at its exact
+         * declared width. Deliberate properties of this seed data:
+         *
+         * <ul>
+         *   <li>The names carry embedded spaces, which the legacy alphabetic check accepts.</li>
+         *   <li>The account group id and the padded text fields carry trailing spaces, which must
+         *       survive untrimmed.</li>
+         *   <li>The monetary lexemes span positive, negative, zero and the full width, each written
+         *       the way an operator types it.</li>
+         *   <li>The social-security parts use a number range that is never issued and the
+         *       government-issued id is self-evidently invented, so no real identifier and no
+         *       credential of any kind appears in this file.</li>
+         *   <li>The middle name and the second address line are deliberately punctuated and are not
+         *       padded to a width, because no width applies to them.</li>
+         * </ul>
+         */
+        static Draft realistic() {
+            Draft draft = new Draft();
+            draft.accountId = "00000000011";
+            draft.accountStatus = "Y";
+            draft.openYear = "2020";
+            draft.openMonth = "01";
+            draft.openDay = "15";
+            draft.creditLimit = "5000.00";
+            draft.expiryYear = "2027";
+            draft.expiryMonth = "12";
+            draft.expiryDay = "31";
+            draft.cashCreditLimit = "1500.00";
+            draft.reissueYear = "2024";
+            draft.reissueMonth = "06";
+            draft.reissueDay = "30";
+            draft.currentBalance = "-250.75";
+            draft.currentCycleCredit = "0.00";
+            draft.accountGroupId = padded("DEFAULT", 10);
+            draft.currentCycleDebit = "1234567890.12";
+            draft.customerId = "000000011";
+            draft.ssnPart1 = "999";
+            draft.ssnPart2 = "88";
+            draft.ssnPart3 = "7777";
+            draft.dateOfBirthYear = "1985";
+            draft.dateOfBirthMonth = "07";
+            draft.dateOfBirthDay = "04";
+            draft.ficoScore = "742";
+            draft.firstName = padded("MARY ANN", 25);
+            draft.middleName = "Q. Ann-Marie 3rd, Jr.";
+            draft.lastName = padded("Aniya Von", 25);
+            draft.addressLine1 = padded("1500 Woodward Avenue", 50);
+            draft.stateCode = "MI";
+            draft.addressLine2 = "Apt. 4B / Bldg #7, c/o D'Angelo & Sons";
+            draft.zipCode = "48226";
+            draft.city = padded("Detroit", 50);
+            draft.countryCode = "USA";
+            draft.phone1AreaCode = "313";
+            draft.phone1Prefix = "555";
+            draft.phone1LineNumber = "0100";
+            draft.governmentIssuedId = padded("FICTIONAL-ID-0000001", 20);
+            draft.phone2AreaCode = "248";
+            draft.phone2Prefix = "555";
+            draft.phone2LineNumber = "0199";
+            draft.eftAccountId = "EFT0000001";
+            draft.primaryCardHolderIndicator = "Y";
+            draft.concurrencyToken = SEALED_TOKEN;
+            return draft;
+        }
+    }
+
+    /** One string component populated, the other 42 absent. */
+    private static AccountUpdateRequest withOnly(StringComponent component, String value) {
+        Draft draft = new Draft();
+        component.write(draft, value);
+        return draft.build();
+    }
+
+    /** One monetary component populated, the other 42 absent. */
+    private static AccountUpdateRequest withOnly(MoneyComponent component, String value) {
+        Draft draft = new Draft();
+        component.write(draft, value);
+        return draft.build();
+    }
+
+    @Nested
+    @DisplayName("No declarative constraint pre-empts the ordered cascade")
+    class NoConstraintPreemptsTheOrderedCascade {
+
+        @Test
+        @DisplayName("all 43 components absent draws no violation, so nothing is mandatory")
+        void allFortyThreeComponentsAbsentDrawsNoViolation() {
+            AccountUpdateRequest empty = new Draft().build();
+
+            assertThat(violations(empty))
+                    .as("an entirely empty submission must reach the service intact so the "
+                            + "first-error-wins cascade can choose the single summary message")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("all 43 components blank draws no violation, so nothing is non-blank")
+        void allFortyThreeComponentsBlankDrawsNoViolation() {
+            Draft draft = new Draft();
+            for (StringComponent component : StringComponent.values()) {
+                component.write(draft, "");
+            }
+            for (MoneyComponent component : MoneyComponent.values()) {
+                component.write(draft, "");
+            }
+
+            assertThat(violations(draft.build()))
+                    .as("a blank string field and a zero amount are both legitimate terminal "
+                            + "input; the required-versus-optional distinction belongs to the "
+                            + "service, not to this contract")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a fully populated realistic submission draws no violation")
+        void fullyPopulatedRealisticSubmissionDrawsNoViolation() {
+            assertThat(violations(Draft.realistic().build())).isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} tolerates an absent value")
+        @EnumSource(StringComponent.class)
+        @DisplayName("every string component independently tolerates being absent")
+        void everyStringComponentToleratesAbsence(StringComponent component) {
+            Draft draft = Draft.realistic();
+            component.write(draft, null);
+
+            assertThat(violations(draft.build()))
+                    .as("clearing %s must not raise a violation", component.described())
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} tolerates a blank value")
+        @EnumSource(StringComponent.class)
+        @DisplayName("every string component independently tolerates being blank")
+        void everyStringComponentToleratesBlank(StringComponent component) {
+            Draft draft = Draft.realistic();
+            component.write(draft, "");
+
+            assertThat(violations(draft.build()))
+                    .as("blanking %s must not raise a violation", component.described())
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} tolerates an absent amount")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("every monetary component independently tolerates being absent")
+        void everyMonetaryComponentToleratesAbsence(MoneyComponent component) {
+            Draft draft = Draft.realistic();
+            component.write(draft, null);
+
+            assertThat(violations(draft.build()))
+                    .as("clearing %s must not raise a violation", component.described())
+                    .isEmpty();
+        }
+
+        /**
+         * The contrast check. Without it, "no violation was raised" could equally mean the width
+         * constraints are missing everywhere and the suite is asserting nothing. Each of the 36
+         * annotated string components is pushed one character past its declared width and must raise
+         * exactly one violation naming itself, which establishes that width enforcement is genuinely
+         * active - and therefore that its deliberate absence on the other two components is a real,
+         * load-bearing property rather than a vacuous one.
+         */
+        @ParameterizedTest(name = "{0} rejects one character past its declared width")
+        @EnumSource(value = StringComponent.class, mode = EnumSource.Mode.EXCLUDE,
+                names = {"MIDDLE_NAME", "ADDRESS_LINE_2"})
+        @DisplayName("each width-bounded component rejects exactly one character too many")
+        void eachWidthBoundedComponentRejectsOneCharacterTooMany(StringComponent component) {
+            AccountUpdateRequest request = withOnly(component, component.overWidthValue());
+
+            Set<ConstraintViolation<AccountUpdateRequest>> raised = violations(request);
+
+            assertThat(raised)
+                    .as("%s carries a width constraint, so one character past its width must "
+                            + "raise precisely one violation", component.described())
+                    .hasSize(1);
+            assertThat(raised.iterator().next().getPropertyPath())
+                    .hasToString(component.jsonProperty());
+        }
+
+        @Test
+        @DisplayName("the two unvalidated components are the only ones without a width bound")
+        void theTwoUnvalidatedComponentsAreTheOnlyOnesWithoutAWidthBound() {
+            List<StringComponent> unbounded = new ArrayList<>();
+            for (StringComponent component : StringComponent.values()) {
+                if (violations(withOnly(component, component.overWidthValue())).isEmpty()) {
+                    unbounded.add(component);
+                }
+            }
+
+            assertThat(unbounded)
+                    .as("exactly two components accept a value past their declared width")
+                    .containsExactlyInAnyOrderElementsOf(StringComponent.UNVALIDATED);
+        }
+
+        @Test
+        @DisplayName("a monetary component carries its map width and no digit, scale or range rule")
+        void aMonetaryComponentCarriesItsMapWidthAndNoDigitScaleOrRangeRule() {
+            Draft draft = new Draft();
+            for (MoneyComponent component : MoneyComponent.values()) {
+                // 14 characters: absurd as a credit limit, malformed as a number, and inside the
+                // physical width of the 3270 field, so only the cascade may object to it.
+                component.write(draft, "99999999999.9x");
+            }
+
+            assertThat(violations(draft.build()))
+                    .as("the credit-limit rule and the numeric edit are both the service's; the "
+                            + "request transports the lexeme so the cascade emits its own message")
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} rejects one character past its 15-character map width")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("a monetary component rejects a lexeme wider than the 3270 field it came from")
+        void aMonetaryComponentRejectsALexemeWiderThanThe3270FieldItCameFrom(
+                MoneyComponent component) {
+            String oneTooMany = "1".repeat(MoneyComponent.SCREEN_WIDTH + 1);
+
+            Set<ConstraintViolation<AccountUpdateRequest>> raised =
+                    violations(withOnly(component, oneTooMany));
+
+            assertThat(raised)
+                    .as("%s restates the physical width of its map field, which no terminal can "
+                            + "exceed, so exceeding it is a malformed request rather than a "
+                            + "business error", component.described())
+                    .hasSize(1);
+            assertThat(raised.iterator().next().getPropertyPath())
+                    .hasToString(component.jsonProperty());
+        }
+
+        @Test
+        @DisplayName("a negative amount is transported rather than rejected")
+        void negativeAmountIsTransportedRatherThanRejected() {
+            Draft draft = new Draft();
+            for (MoneyComponent component : MoneyComponent.values()) {
+                component.write(draft, "-1234567890.12");
+            }
+
+            assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the concurrency token carries no constraint, so its absence is not a violation")
+        void theConcurrencyTokenCarriesNoConstraintSoItsAbsenceIsNotAViolation() {
+            AccountUpdateRequest withoutToken = new Draft().build();
+            Draft longToken = new Draft();
+            longToken.concurrencyToken = "E".repeat(4096);
+
+            assertThat(violations(withoutToken))
+                    .as("an absent token is a conflict for the service to report, not a binding "
+                            + "failure for the framework to reject")
+                    .isEmpty();
+            assertThat(violations(longToken.build()))
+                    .as("the token is opaque and its length is the sealing scheme's business, so no "
+                            + "width bound may be asserted here")
+                    .isEmpty();
+            assertThat(withoutToken.concurrencyToken()).isNull();
+        }
+    }
+
+    /**
+     * The middle name and the second address line are decorated for error display but are never
+     * validated. The program says so in its own comments, and measurement bears it out: the second
+     * address line's validation flag is declared and consumed by the decoration but is never
+     * assigned anywhere in the program, and the statement that would set its error label is
+     * commented out as optional. The middle name does pass through the <em>optional</em> alphabetic
+     * stage, whose flag is read for cursor placement, but an optional stage accepts blank values and
+     * accepts embedded spaces, which no declarative constraint can express while leaving cascade
+     * order intact.
+     *
+     * <p>So both components must carry zero constraints - not even a width constraint. Attaching one
+     * would reject input the legacy system accepts, which is exactly the behavioural regression the
+     * migration forbids.
+     *
+     * <p>Unvalidated is not the same as undecorable. Both fields <em>can</em> carry a per-field error
+     * state, and the response contract's own test covers marking them missing or invalid.
+     * "Unvalidated" here means precisely "no rule fires on the way in".
+     */
+    @Nested
+    @DisplayName("The middle name and second address line carry no constraint at all")
+    class UnvalidatedComponentsCarryNoConstraint {
+
+        private static final String PUNCTUATED_AND_SPACED =
+                "  Mary-Ann 3rd, c/o O'Neill & Sons (Apt. 4B)  ";
+
+        @ParameterizedTest(name = "{0} accepts a value far past its declared width")
+        @EnumSource(value = StringComponent.class, mode = EnumSource.Mode.INCLUDE,
+                names = {"MIDDLE_NAME", "ADDRESS_LINE_2"})
+        @DisplayName("a value far past the declared width draws no violation")
+        void valueFarPastTheDeclaredWidthDrawsNoViolation(StringComponent component) {
+            String farTooLong = "Q".repeat(component.declaredWidth() * 10);
+
+            AccountUpdateRequest request = withOnly(component, farTooLong);
+
+            assertThat(violations(request))
+                    .as("%s must accept any length; its declared width is documentation, never a "
+                            + "rule", component.described())
+                    .isEmpty();
+            assertThat(component.read(request))
+                    .as("and the over-length value must be carried untouched")
+                    .isEqualTo(farTooLong)
+                    .hasSize(component.declaredWidth() * 10);
+        }
+
+        @ParameterizedTest(name = "{0} accepts one character past its declared width")
+        @EnumSource(value = StringComponent.class, mode = EnumSource.Mode.INCLUDE,
+                names = {"MIDDLE_NAME", "ADDRESS_LINE_2"})
+        @DisplayName("even one character past the declared width draws no violation")
+        void evenOneCharacterPastTheDeclaredWidthDrawsNoViolation(StringComponent component) {
+            assertThat(violations(withOnly(component, component.overWidthValue())))
+                    .as("the boundary case matters most: a width constraint would fire here and "
+                            + "nowhere else, so this is where a regression would first show")
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} accepts digits, punctuation and surrounding spaces")
+        @EnumSource(value = StringComponent.class, mode = EnumSource.Mode.INCLUDE,
+                names = {"MIDDLE_NAME", "ADDRESS_LINE_2"})
+        @DisplayName("digits, punctuation, embedded, leading and trailing spaces all pass")
+        void digitsPunctuationAndSurroundingSpacesAllPass(StringComponent component) {
+            AccountUpdateRequest request = withOnly(component, PUNCTUATED_AND_SPACED);
+
+            assertThat(violations(request))
+                    .as("no character-class rule, no pattern and no length rule applies to %s",
+                            component.described())
+                    .isEmpty();
+            assertThat(component.read(request))
+                    .as("the value is carried byte for byte, keeping both leading spaces and both "
+                            + "trailing spaces")
+                    .isEqualTo(PUNCTUATED_AND_SPACED)
+                    .startsWith("  ")
+                    .endsWith("  ");
+        }
+
+        @ParameterizedTest(name = "{0} accepts an absent value")
+        @EnumSource(value = StringComponent.class, mode = EnumSource.Mode.INCLUDE,
+                names = {"MIDDLE_NAME", "ADDRESS_LINE_2"})
+        @DisplayName("an absent value draws no violation")
+        void absentValueDrawsNoViolation(StringComponent component) {
+            AccountUpdateRequest request = withOnly(component, null);
+
+            assertThat(violations(request)).isEmpty();
+            assertThat(component.read(request)).isNull();
+        }
+
+        @ParameterizedTest(name = "{0} accepts an empty value")
+        @EnumSource(value = StringComponent.class, mode = EnumSource.Mode.INCLUDE,
+                names = {"MIDDLE_NAME", "ADDRESS_LINE_2"})
+        @DisplayName("an empty value draws no violation and stays empty")
+        void emptyValueDrawsNoViolationAndStaysEmpty(StringComponent component) {
+            AccountUpdateRequest request = withOnly(component, "");
+
+            assertThat(violations(request)).isEmpty();
+            assertThat(component.read(request))
+                    .as("empty must not be normalised to null")
+                    .isNotNull()
+                    .isEmpty();
+        }
+
+        /**
+         * The sharpest form of the argument: the unvalidated component and its width-bounded
+         * neighbour are pushed past their widths in the <em>same</em> submission. Exactly one
+         * violation must come back, and it must name the neighbour.
+         */
+        @Test
+        @DisplayName("over-length middle name is ignored while over-length first name is not")
+        void overLengthMiddleNameIsIgnoredWhileOverLengthFirstNameIsNot() {
+            Draft draft = new Draft();
+            draft.firstName = StringComponent.FIRST_NAME.overWidthValue();
+            draft.middleName = StringComponent.MIDDLE_NAME.overWidthValue();
+
+            Set<ConstraintViolation<AccountUpdateRequest>> raised = violations(draft.build());
+
+            assertThat(raised)
+                    .as("both fields are 25 characters wide on the map, yet only one is enforced")
+                    .hasSize(1);
+            assertThat(raised.iterator().next().getPropertyPath()).hasToString("firstName");
+        }
+
+        @Test
+        @DisplayName("over-length second address line is ignored while the first line is not")
+        void overLengthSecondAddressLineIsIgnoredWhileTheFirstLineIsNot() {
+            Draft draft = new Draft();
+            draft.addressLine1 = StringComponent.ADDRESS_LINE_1.overWidthValue();
+            draft.addressLine2 = StringComponent.ADDRESS_LINE_2.overWidthValue();
+
+            Set<ConstraintViolation<AccountUpdateRequest>> raised = violations(draft.build());
+
+            assertThat(raised)
+                    .as("both lines are 50 characters wide on the map, yet only one is enforced")
+                    .hasSize(1);
+            assertThat(raised.iterator().next().getPropertyPath()).hasToString("addressLine1");
+        }
+
+        @Test
+        @DisplayName("both unvalidated components survive a JSON round trip byte for byte")
+        void bothUnvalidatedComponentsSurviveAJsonRoundTripByteForByte() throws Exception {
+            Draft draft = new Draft();
+            draft.middleName = PUNCTUATED_AND_SPACED;
+            draft.addressLine2 = PUNCTUATED_AND_SPACED + "X".repeat(200);
+
+            AccountUpdateRequest sent = draft.build();
+            AccountUpdateRequest received = MAPPER.readValue(
+                    MAPPER.writeValueAsString(sent), AccountUpdateRequest.class);
+
+            assertThat(received.middleName()).isEqualTo(draft.middleName);
+            assertThat(received.addressLine2()).isEqualTo(draft.addressLine2);
+            assertThat(violations(received)).isEmpty();
+        }
+    }
+
+    /**
+     * The credit score window is inclusive 300 through 850, declared as a condition name and applied
+     * by an edit stage that is reached only after the score has already passed the required-numeric
+     * stage. Its message is the 31-character suffix {@code : should be between 300 and 850}.
+     *
+     * <p>That gating is the whole reason the bound is delegated to the service layer and not
+     * annotated here. A declarative minimum and maximum would hoist the check out of the ordered
+     * cascade and change which single summary message a bad submission produces, so this request must
+     * accept 299 and 851 exactly as readily as it accepts 300 and 850. The window is not weakened by
+     * that - it is simply enforced one layer in, where source order can be honoured.
+     *
+     * <p>The value also crosses the API as a three-character string rather than a number, so that a
+     * score such as 001 survives. Twenty-one of the fifty seeded customers score below 300, the
+     * lowest being 001, which is why the read path must never apply the window either.
+     */
+    @Nested
+    @DisplayName("The credit score window is delegated, not annotated")
+    class CreditScoreWindowIsDelegatedNotAnnotated {
+
+        @ParameterizedTest(name = "credit score {0} draws no violation here")
+        @ValueSource(strings = {"300", "850", "299", "851", "001"})
+        @DisplayName("both boundaries and both values just outside them are accepted")
+        void bothBoundariesAndBothValuesJustOutsideThemAreAccepted(String score) {
+            AccountUpdateRequest request = withOnly(StringComponent.FICO_SCORE, score);
+
+            assertThat(violations(request))
+                    .as("300 and 850 are inside the window and 299 and 851 are outside it, yet "
+                            + "all four must reach the service so paragraph "
+                            + "1275-EDIT-FICO-SCORE can apply the inclusive test in cascade order")
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "credit score {0} is carried as three characters")
+        @ValueSource(strings = {"300", "850", "299", "851", "001"})
+        @DisplayName("every boundary value round-trips byte for byte as three characters")
+        void everyBoundaryValueRoundTripsByteForByteAsThreeCharacters(String score)
+                throws Exception {
+            AccountUpdateRequest sent = withOnly(StringComponent.FICO_SCORE, score);
+
+            String json = MAPPER.writeValueAsString(sent);
+            AccountUpdateRequest received = MAPPER.readValue(json, AccountUpdateRequest.class);
+
+            assertThat(json)
+                    .as("the score is a quoted string on the wire, never a bare number")
+                    .isEqualTo("{\"ficoScore\":\"" + score + "\"}");
+            assertThat(received.ficoScore())
+                    .as("the service must receive exactly what the client sent")
+                    .isEqualTo(score)
+                    .hasSize(StringComponent.FICO_SCORE.declaredWidth());
+        }
+
+        @Test
+        @DisplayName("the lower boundary is never widened, renumbered or re-padded")
+        void theLowerBoundaryIsNeverWidenedRenumberedOrRePadded() {
+            AccountUpdateRequest request = withOnly(StringComponent.FICO_SCORE, "300");
+
+            assertThat(request.ficoScore())
+                    .isEqualTo("300")
+                    .hasSize(3)
+                    .isNotEqualTo("0300")
+                    .isNotEqualTo("300.0")
+                    .isNotEqualTo(" 300");
+        }
+
+        @Test
+        @DisplayName("leading zeroes survive, so 001 never collapses to 1")
+        void leadingZeroesSurviveSo001NeverCollapsesTo1() throws Exception {
+            AccountUpdateRequest sent = withOnly(StringComponent.FICO_SCORE, "001");
+
+            AccountUpdateRequest received = MAPPER.readValue(
+                    MAPPER.writeValueAsString(sent), AccountUpdateRequest.class);
+
+            assertThat(received.ficoScore())
+                    .as("carrying the score as a numeric type would silently produce 1 and break "
+                            + "the fixed-width record contract")
+                    .isEqualTo("001")
+                    .hasSize(3)
+                    .isNotEqualTo("1");
+        }
+
+        @Test
+        @DisplayName("a non-numeric score is transported rather than rejected")
+        void aNonNumericScoreIsTransportedRatherThanRejected() {
+            AccountUpdateRequest request = withOnly(StringComponent.FICO_SCORE, "ABC");
+
+            assertThat(violations(request))
+                    .as("the required-numeric stage runs before the window and belongs to the "
+                            + "service; a pattern here would report the wrong message")
+                    .isEmpty();
+            assertThat(request.ficoScore()).isEqualTo("ABC");
+        }
+
+        @Test
+        @DisplayName("a blank score is transported rather than rejected")
+        void aBlankScoreIsTransportedRatherThanRejected() {
+            assertThat(violations(withOnly(StringComponent.FICO_SCORE, "   "))).isEmpty();
+            assertThat(withOnly(StringComponent.FICO_SCORE, "   ").ficoScore())
+                    .as("three spaces are three spaces, never trimmed to empty")
+                    .isEqualTo("   ");
+        }
+    }
+
+    @Nested
+    @DisplayName("Every map width is carried exactly, never padded and never trimmed")
+    class MapWidthsAreCarriedExactly {
+
+        @ParameterizedTest(name = "{0} accepts a value at its exact declared width")
+        @EnumSource(StringComponent.class)
+        @DisplayName("a value occupying the field exactly is accepted and carried untouched")
+        void valueAtExactDeclaredWidthIsAcceptedAndCarriedUntouched(StringComponent component) {
+            String value = component.exactWidthValue();
+
+            AccountUpdateRequest request = withOnly(component, value);
+
+            assertThat(violations(request))
+                    .as("%s must accept a value that fills it exactly", component.described())
+                    .isEmpty();
+            assertThat(component.read(request))
+                    .isEqualTo(value)
+                    .hasSize(component.declaredWidth());
+        }
+
+        @ParameterizedTest(name = "{0} keeps a short value short")
+        @EnumSource(StringComponent.class)
+        @DisplayName("a value shorter than the field is never padded up to the width")
+        void shortValueIsNeverPaddedUpToTheWidth(StringComponent component) {
+            AccountUpdateRequest request = withOnly(component, "X");
+
+            assertThat(component.read(request))
+                    .as("%s must not be right-padded on the way in; padding is the mapper's job "
+                            + "at the record boundary, not this contract's", component.described())
+                    .isEqualTo("X")
+                    .hasSize(1);
+        }
+
+        @ParameterizedTest(name = "{0} keeps its trailing space")
+        @EnumSource(StringComponent.class)
+        @DisplayName("a trailing space is contractual data and is never trimmed")
+        void trailingSpaceIsNeverTrimmed(StringComponent component) {
+            String value = component.trailingSpaceValue();
+
+            AccountUpdateRequest request = withOnly(component, value);
+
+            assertThat(component.read(request))
+                    .as("%s must keep its trailing space", component.described())
+                    .isEqualTo(value)
+                    .hasSize(component.declaredWidth())
+                    .endsWith(" ");
+        }
+
+        @ParameterizedTest(name = "{0} keeps its leading space")
+        @EnumSource(StringComponent.class)
+        @DisplayName("a leading space is contractual data and is never stripped")
+        void leadingSpaceIsNeverStripped(StringComponent component) {
+            String value = component.leadingSpaceValue();
+
+            AccountUpdateRequest request = withOnly(component, value);
+
+            assertThat(component.read(request))
+                    .as("%s must keep its leading space", component.described())
+                    .isEqualTo(value)
+                    .hasSize(component.declaredWidth())
+                    .startsWith(" ");
+        }
+
+        @ParameterizedTest(name = "{0} survives a JSON round trip byte for byte")
+        @EnumSource(StringComponent.class)
+        @DisplayName("an exact-width value with surrounding spaces survives serialisation")
+        void exactWidthValueWithSurroundingSpacesSurvivesSerialisation(StringComponent component)
+                throws Exception {
+            String value = component.trailingSpaceValue();
+            AccountUpdateRequest sent = withOnly(component, value);
+
+            AccountUpdateRequest received = MAPPER.readValue(
+                    MAPPER.writeValueAsString(sent), AccountUpdateRequest.class);
+
+            assertThat(component.read(received))
+                    .as("%s must survive the wire unchanged", component.described())
+                    .isEqualTo(value)
+                    .hasSize(component.declaredWidth());
+        }
+
+        @ParameterizedTest(name = "{0} binds by its record component name")
+        @EnumSource(StringComponent.class)
+        @DisplayName("each component binds under its own property name, with no renaming")
+        void eachComponentBindsUnderItsOwnPropertyName(StringComponent component)
+                throws Exception {
+            String json = MAPPER.writeValueAsString(
+                    withOnly(component, component.exactWidthValue()));
+
+            assertThat(json)
+                    .as("%s must appear under exactly one key", component.described())
+                    .isEqualTo("{\"" + component.jsonProperty() + "\":\""
+                            + component.exactWidthValue() + "\"}");
+        }
+
+        @Test
+        @DisplayName("the inventory is 38 bounded strings and 5 exact decimals, so 43 in total")
+        void theInventoryIs38BoundedStringsAnd5ExactDecimals() {
+            assertThat(StringComponent.values())
+                    .as("54 map input families minus 11 non-editable furniture families leaves 43 "
+                            + "editable components, of which 38 are bounded strings")
+                    .hasSize(38);
+            assertThat(MoneyComponent.values()).hasSize(5);
+            assertThat(StringComponent.values().length + MoneyComponent.values().length)
+                    .isEqualTo(43);
+        }
+
+        @Test
+        @DisplayName("the four editable-but-undecorated components are all present and editable")
+        void theFourEditableButUndecoratedComponentsArePresentAndEditable() {
+            Draft draft = new Draft();
+            for (StringComponent component : StringComponent.UNDECORATED) {
+                component.write(draft, component.exactWidthValue());
+            }
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(StringComponent.UNDECORATED)
+                    .as("43 unprotected mapset fields minus 39 decoration sites leaves exactly "
+                            + "four editable fields that never receive field-level decoration")
+                    .hasSize(4);
+            assertThat(violations(request)).isEmpty();
+            assertThat(request.accountId()).isEqualTo("X".repeat(11));
+            assertThat(request.accountGroupId()).isEqualTo("X".repeat(10));
+            assertThat(request.customerId()).isEqualTo("X".repeat(9));
+            assertThat(request.governmentIssuedId()).isEqualTo("X".repeat(20));
+        }
+    }
+
+    /**
+     * The legacy screen decomposes four dates, one social-security number and two telephone numbers
+     * into independently entered, independently validated and independently decorated sub-fields.
+     * Merging any of them would destroy the field-level error contract, because each sub-field owns
+     * its own validation flag and its own decoration site. Nothing here parses, converts or
+     * assembles: no platform date type is imported, no date is interpreted and no telephone number is
+     * formatted. The persisted telephone form is assembled by the service, never by this request.
+     */
+    @Nested
+    @DisplayName("Split fields stay split")
+    class SplitFieldsStaySplit {
+
+        @Test
+        @DisplayName("all four dates are carried as twelve separate bounded strings")
+        void allFourDatesAreCarriedAsTwelveSeparateBoundedStrings() {
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            assertThat(request.openYear()).isEqualTo("2020").hasSize(4);
+            assertThat(request.openMonth()).isEqualTo("01").hasSize(2);
+            assertThat(request.openDay()).isEqualTo("15").hasSize(2);
+            assertThat(request.expiryYear()).isEqualTo("2027").hasSize(4);
+            assertThat(request.expiryMonth()).isEqualTo("12").hasSize(2);
+            assertThat(request.expiryDay()).isEqualTo("31").hasSize(2);
+            assertThat(request.reissueYear()).isEqualTo("2024").hasSize(4);
+            assertThat(request.reissueMonth()).isEqualTo("06").hasSize(2);
+            assertThat(request.reissueDay()).isEqualTo("30").hasSize(2);
+            assertThat(request.dateOfBirthYear()).isEqualTo("1985").hasSize(4);
+            assertThat(request.dateOfBirthMonth()).isEqualTo("07").hasSize(2);
+            assertThat(request.dateOfBirthDay()).isEqualTo("04").hasSize(2);
+        }
+
+        @Test
+        @DisplayName("the reissue date is genuinely present as the fourth split date")
+        void theReissueDateIsGenuinelyPresentAsTheFourthSplitDate() {
+            AccountUpdateRequest request = new Draft().build();
+
+            assertThat(request.reissueYear()).isNull();
+            assertThat(request.reissueMonth()).isNull();
+            assertThat(request.reissueDay()).isNull();
+
+            Draft draft = new Draft();
+            draft.reissueYear = "1999";
+            draft.reissueMonth = "02";
+            draft.reissueDay = "28";
+            AccountUpdateRequest populated = draft.build();
+
+            assertThat(populated.reissueYear()).isEqualTo("1999");
+            assertThat(populated.reissueMonth()).isEqualTo("02");
+            assertThat(populated.reissueDay()).isEqualTo("28");
+        }
+
+        @Test
+        @DisplayName("no date part is ever merged into a single date value")
+        void noDatePartIsEverMergedIntoASingleDateValue() throws Exception {
+            String json = MAPPER.writeValueAsString(Draft.realistic().build());
+
+            assertThat(json)
+                    .as("the twelve date parts must appear as twelve keys")
+                    .contains("\"openYear\":\"2020\"", "\"openMonth\":\"01\"",
+                            "\"openDay\":\"15\"")
+                    .as("and no merged eight- or ten-character date may appear")
+                    .doesNotContain("20200115", "2020-01-15", "\"openDate\"",
+                            "\"expiryDate\"", "\"reissueDate\"", "\"dateOfBirth\":");
+        }
+
+        @Test
+        @DisplayName("the social-security number arrives in three parts of widths 3, 2 and 4")
+        void theSocialSecurityNumberArrivesInThreePartsOfWidths324() {
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            assertThat(request.ssnPart1()).hasSize(3);
+            assertThat(request.ssnPart2()).hasSize(2);
+            assertThat(request.ssnPart3()).hasSize(4);
+            assertThat(StringComponent.SSN_PART_1.declaredWidth()).isEqualTo(3);
+            assertThat(StringComponent.SSN_PART_2.declaredWidth()).isEqualTo(2);
+            assertThat(StringComponent.SSN_PART_3.declaredWidth()).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("no nine-character social-security value is exposed anywhere")
+        void noNineCharacterSocialSecurityValueIsExposedAnywhere() throws Exception {
+            String json = MAPPER.writeValueAsString(Draft.realistic().build());
+
+            assertThat(json)
+                    .contains("\"ssnPart1\":\"999\"", "\"ssnPart2\":\"88\"",
+                            "\"ssnPart3\":\"7777\"")
+                    .as("a joined or hyphenated form would collapse three decoration sites into "
+                            + "one")
+                    .doesNotContain("999887777", "999-88-7777", "\"ssn\":");
+        }
+
+        @Test
+        @DisplayName("both telephone numbers arrive in three parts each, widths 3, 3 and 4")
+        void bothTelephoneNumbersArriveInThreePartsEach() {
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            assertThat(request.phone1AreaCode()).isEqualTo("313").hasSize(3);
+            assertThat(request.phone1Prefix()).isEqualTo("555").hasSize(3);
+            assertThat(request.phone1LineNumber()).isEqualTo("0100").hasSize(4);
+            assertThat(request.phone2AreaCode()).isEqualTo("248").hasSize(3);
+            assertThat(request.phone2Prefix()).isEqualTo("555").hasSize(3);
+            assertThat(request.phone2LineNumber()).isEqualTo("0199").hasSize(4);
+        }
+
+        @Test
+        @DisplayName("no preformatted telephone number is exposed anywhere")
+        void noPreformattedTelephoneNumberIsExposedAnywhere() throws Exception {
+            String json = MAPPER.writeValueAsString(Draft.realistic().build());
+
+            assertThat(json)
+                    .as("the persisted parenthesised form belongs to the service; this contract "
+                            + "carries six discrete parts")
+                    .doesNotContain("(313)555-0100", "(248)555-0199", "313-555-0100",
+                            "\"phone1\":", "\"phone2\":");
+        }
+
+        @Test
+        @DisplayName("a leading zero in a telephone line number is preserved")
+        void aLeadingZeroInATelephoneLineNumberIsPreserved() {
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            assertThat(request.phone1LineNumber())
+                    .as("a numeric type would render 0100 as 100 and break the fixed-width record")
+                    .startsWith("0")
+                    .hasSize(4);
+        }
+
+        /**
+         * The telephone cascade always runs all three stages - area code, prefix and line number -
+         * and sets all three flags independently.
+         *
+         * <p>It carries a preserved defect: the all-blank shortcut tests the area-code sub-field
+         * where the two clauses beside it test their own sub-fields, so a submission with a blank
+         * area code, a blank prefix and a populated line number is silently treated as no telephone
+         * supplied. That is reproduced in the service and recorded in the module decision log; it is
+         * contract, not a defect to correct. This request must therefore deliver exactly that
+         * combination to the service without pattern matching it away first.
+         */
+        @Test
+        @DisplayName("the combination the preserved shortcut mishandles reaches the service intact")
+        void theCombinationThePreservedShortcutMishandlesReachesTheServiceIntact() {
+            Draft draft = new Draft();
+            draft.phone1AreaCode = "   ";
+            draft.phone1Prefix = "   ";
+            draft.phone1LineNumber = "0100";
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(violations(request))
+                    .as("no pattern may fire on any of the six telephone components, or the "
+                            + "service would never see the combination the shortcut mishandles")
+                    .isEmpty();
+            assertThat(request.phone1AreaCode()).isEqualTo("   ").hasSize(3);
+            assertThat(request.phone1Prefix()).isEqualTo("   ").hasSize(3);
+            assertThat(request.phone1LineNumber()).isEqualTo("0100").hasSize(4);
+        }
+    }
+
+    /**
+     * The legacy alphabetic check blanks every letter in the field and then tests whether anything is
+     * left, so embedded spaces pass. A letters-only predicate would reject values the legacy system
+     * accepts, and the seeded customer data contains such values, so it would break existing data on
+     * the first submission. The four character-class stages are required-alphabetic,
+     * required-alphanumeric, optional-alphabetic and optional-alphanumeric; the optional variants
+     * accept blank and the required ones do not, and that distinction is the service's rather than
+     * this contract's.
+     *
+     * <p>One source comment is stale: it claims alphabetic-plus-space while the lines beneath it use
+     * the 62-character alphanumeric table. The code governs, so an alphanumeric value must be
+     * accepted in the affected field.
+     */
+    @Nested
+    @DisplayName("Character-class semantics belong to the service")
+    class CharacterClassSemanticsBelongToTheService {
+
+        @Test
+        @DisplayName("names carrying embedded spaces are accepted and carried byte for byte")
+        void namesCarryingEmbeddedSpacesAreAcceptedAndCarriedByteForByte() {
+            Draft draft = new Draft();
+            draft.firstName = "MARY ANN";
+            draft.lastName = "Aniya Von";
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(violations(request))
+                    .as("the legacy idiom blanks letters and then tests the remainder, so a space "
+                            + "inside a name is valid input")
+                    .isEmpty();
+            assertThat(request.firstName()).isEqualTo("MARY ANN").contains(" ");
+            assertThat(request.lastName()).isEqualTo("Aniya Von").contains(" ");
+        }
+
+        @Test
+        @DisplayName("a name that is entirely spaces is accepted")
+        void aNameThatIsEntirelySpacesIsAccepted() {
+            Draft draft = new Draft();
+            draft.firstName = " ".repeat(StringComponent.FIRST_NAME.declaredWidth());
+            draft.lastName = " ".repeat(StringComponent.LAST_NAME.declaredWidth());
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(violations(request))
+                    .as("the required-versus-optional distinction is applied by the cascade, so an "
+                            + "all-blank name must still arrive")
+                    .isEmpty();
+            assertThat(request.firstName()).hasSize(25);
+        }
+
+        @Test
+        @DisplayName("an alphanumeric value passes where the stale comment claims letters only")
+        void anAlphanumericValuePassesWhereTheStaleCommentClaimsLettersOnly() {
+            Draft draft = new Draft();
+            draft.addressLine1 = "1500 Woodward Avenue Suite 300";
+            draft.city = "Detroit 48226";
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(violations(request))
+                    .as("the optional stage converts through the 62-character alphanumeric table, "
+                            + "so digits are permitted whatever the adjacent comment says")
+                    .isEmpty();
+            assertThat(request.addressLine1()).isEqualTo("1500 Woodward Avenue Suite 300");
+            assertThat(request.city()).isEqualTo("Detroit 48226");
+        }
+
+        @Test
+        @DisplayName("a blank value in an optional-class field is accepted and stays blank")
+        void aBlankValueInAnOptionalClassFieldIsAcceptedAndStaysBlank() {
+            Draft draft = Draft.realistic();
+            draft.addressLine1 = "";
+            draft.city = "";
+            draft.countryCode = "";
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(violations(request)).isEmpty();
+            assertThat(request.addressLine1()).isEmpty();
+            assertThat(request.city()).isEmpty();
+            assertThat(request.countryCode()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("punctuation is never rejected on any component")
+        void punctuationIsNeverRejectedOnAnyComponent() {
+            Draft draft = new Draft();
+            draft.firstName = "O'Neill";
+            draft.lastName = "Smith-Jones";
+            draft.addressLine1 = "c/o Suite #7, Bldg. 4";
+            draft.governmentIssuedId = "ID/0001-A";
+
+            assertThat(violations(draft.build()))
+                    .as("no pattern constraint exists anywhere on this contract")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the case an operator typed is the case the service receives")
+        void theCaseAnOperatorTypedIsTheCaseTheServiceReceives() {
+            Draft draft = new Draft();
+            draft.firstName = "mary ann";
+            draft.lastName = "aNiYa";
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(request.firstName())
+                    .as("the embossed-name fold uses a strict 26-character table and lives in the "
+                            + "utility layer, so this contract must not case-fold anything")
+                    .isEqualTo("mary ann");
+            assertThat(request.lastName()).isEqualTo("aNiYa");
+        }
+    }
+
+    /**
+     * The state and the postal code are two independent components. The flat state-membership stage
+     * performs no trim, no numeric check and no blank pre-check. The combination stage builds its
+     * lookup key by positional concatenation with no trimming - the two-character state followed by
+     * the first two characters of the postal code - and on failure sets <em>both</em> flags, so one
+     * comparison can decorate two fields.
+     *
+     * <p>All of that is the service's work. This request performs no concatenation, no lookup, no
+     * slicing and no trimming; it only has to deliver both components at their exact widths with
+     * every space intact, because a trimmed value would build a different key and change the
+     * outcome.
+     */
+    @Nested
+    @DisplayName("State and postal code are carried positionally and untrimmed")
+    class StateAndPostalCodeAreCarriedPositionally {
+
+        @Test
+        @DisplayName("the state is two characters wide and the postal code five")
+        void theStateIsTwoCharactersWideAndThePostalCodeFive() {
+            assertThat(StringComponent.STATE_CODE.declaredWidth()).isEqualTo(2);
+            assertThat(StringComponent.ZIP_CODE.declaredWidth()).isEqualTo(5);
+
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            assertThat(request.stateCode()).isEqualTo("MI").hasSize(2);
+            assertThat(request.zipCode()).isEqualTo("48226").hasSize(5);
+        }
+
+        @Test
+        @DisplayName("both are carried untrimmed, because the lookup key is positional")
+        void bothAreCarriedUntrimmedBecauseTheLookupKeyIsPositional() {
+            Draft draft = new Draft();
+            draft.stateCode = "M ";
+            draft.zipCode = "48 26";
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(violations(request)).isEmpty();
+            assertThat(request.stateCode())
+                    .as("trimming the state would shift the positional key and change which "
+                            + "combination is looked up")
+                    .isEqualTo("M ")
+                    .hasSize(2);
+            assertThat(request.zipCode()).isEqualTo("48 26").hasSize(5);
+        }
+
+        @Test
+        @DisplayName("no concatenated lookup key is exposed by the contract")
+        void noConcatenatedLookupKeyIsExposedByTheContract() throws Exception {
+            Draft draft = new Draft();
+            draft.stateCode = "MI";
+            draft.zipCode = "48226";
+
+            String json = MAPPER.writeValueAsString(draft.build());
+
+            assertThat(json)
+                    .as("the state and the postal code cross the wire as two discrete keys; the "
+                            + "four-character key is assembled downstream and never here")
+                    .isEqualTo("{\"stateCode\":\"MI\",\"zipCode\":\"48226\"}")
+                    .doesNotContain("MI48", "\"stateZip\"", "\"stateAndZip\"");
+        }
+
+        @Test
+        @DisplayName("a state code absent from the reference list is transported, not rejected")
+        void aStateCodeAbsentFromTheReferenceListIsTransportedNotRejected() {
+            Draft draft = new Draft();
+            draft.stateCode = "ZZ";
+            draft.zipCode = "00000";
+
+            assertThat(violations(draft.build()))
+                    .as("membership is checked against the reference set by the service, whose "
+                            + "27-character message names the field; no set is loaded here")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a state code outside the flat list but inside the combination list is carried")
+        void aStateCodeOutsideTheFlatListButInsideTheCombinationListIsCarried() {
+            Draft draft = new Draft();
+            draft.stateCode = "AE";
+            draft.zipCode = "09000";
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(violations(request))
+                    .as("six of the combination prefixes are absent from the flat state list, so "
+                            + "the two reference sets must never be intersected; this contract "
+                            + "simply carries whatever was typed")
+                    .isEmpty();
+            assertThat(request.stateCode()).isEqualTo("AE");
+        }
+    }
+
+    /**
+     * The five monetary components are 15 characters wide on the screen, and what the screen
+     * transmits is the raw lexeme rather than a decoded number.
+     *
+     * <p>The signed-amount edit stage, invoked once per component, reaches one of three states rather
+     * than two: the field was not supplied, what was supplied is not a number, or the value is
+     * usable. Two of those states carry different operator messages, and a decoded numeric component
+     * cannot represent the middle one at all - an unparseable lexeme would fail body binding before
+     * any component was populated, replacing one ordered summary message plus N decorated fields with
+     * a single opaque body-read rejection.
+     *
+     * <p>So the lexeme travels, exactly as the map declares it and exactly as the legacy work field
+     * stages it, and the three-state edit runs in the service using {@code CobolStringUtils} and
+     * {@code ZonedDecimalCodec}. Nothing here parses, scales, rounds, re-signs, trims or reformats,
+     * and the tests below establish it by handing over blank, marked, malformed, oversized and
+     * well-formed input and getting the identical characters back.
+     */
+    @Nested
+    @DisplayName("Monetary components are raw screen lexemes carried unaltered")
+    class MonetaryComponentsAreRawScreenLexemesCarriedUnaltered {
+
+        @ParameterizedTest(name = "{0} carries its lexeme character for character")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("each monetary accessor yields the very characters it was constructed with")
+        void eachMonetaryAccessorYieldsTheVeryCharactersItWasConstructedWith(
+                MoneyComponent component) {
+            String lexeme = "1234567890.12";
+
+            AccountUpdateRequest request = withOnly(component, lexeme);
+
+            assertThat(component.read(request))
+                    .as("%s must hand on the transmitted characters untouched", component.described())
+                    .isSameAs(lexeme);
+        }
+
+        @ParameterizedTest(name = "{0} is a JSON string, never a JSON number")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("the wire form is a quoted string, so a malformed amount still binds")
+        void theWireFormIsAQuotedStringSoAMalformedAmountStillBinds(MoneyComponent component)
+                throws Exception {
+            String json = MAPPER.writeValueAsString(withOnly(component, "1234567890.12"));
+
+            assertThat(json)
+                    .as("%s must not be published as a JSON number: a number would make the "
+                            + "not-a-number state unrepresentable", component.described())
+                    .isEqualTo("{\"" + component.jsonProperty() + "\":\"1234567890.12\"}");
+        }
+
+        @ParameterizedTest(name = "{0} accepts all three legacy edit states")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("absent, blank, marked, malformed and valid input all bind without complaint")
+        void absentBlankMarkedMalformedAndValidInputAllBindWithoutComplaint(MoneyComponent component)
+                throws Exception {
+            for (String lexeme : new String[] {"", "   ", "*", "not a number", "1.2.3", "-", "$1,500",
+                    "1500.00"}) {
+                AccountUpdateRequest received = MAPPER.readValue(
+                        MAPPER.writeValueAsString(withOnly(component, lexeme)),
+                        AccountUpdateRequest.class);
+
+                assertThat(component.read(received))
+                        .as("%s must transport the lexeme [%s] so the cascade can classify it",
+                                component.described(), lexeme)
+                        .isEqualTo(lexeme);
+                assertThat(violations(received))
+                        .as("%s must draw no violation for the lexeme [%s]", component.described(),
+                                lexeme)
+                        .isEmpty();
+            }
+
+            AccountUpdateRequest absent = MAPPER.readValue(
+                    MAPPER.writeValueAsString(withOnly(component, null)),
+                    AccountUpdateRequest.class);
+            assertThat(component.read(absent))
+                    .as("%s must survive as absent, which is the legacy LOW-VALUES state",
+                            component.described())
+                    .isNull();
+            assertThat(violations(absent)).isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} is neither trimmed nor padded nor re-signed")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("surrounding spaces, a leading plus and trailing zeros all survive intact")
+        void surroundingSpacesALeadingPlusAndTrailingZerosAllSurviveIntact(MoneyComponent component)
+                throws Exception {
+            for (String lexeme : new String[] {"  1500.00  ", "+1500.00", "1500.000", "0001500.00",
+                    "1500.00-"}) {
+                AccountUpdateRequest received = MAPPER.readValue(
+                        MAPPER.writeValueAsString(withOnly(component, lexeme)),
+                        AccountUpdateRequest.class);
+
+                assertThat(component.read(received))
+                        .as("%s must not normalise [%s]; the legacy work field is alphanumeric and "
+                                + "keeps what was typed", component.described(), lexeme)
+                        .isEqualTo(lexeme);
+            }
+        }
+
+        @Test
+        @DisplayName("the five monetary components are independent of one another")
+        void theFiveMonetaryComponentsAreIndependentOfOneAnother() {
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            assertThat(request.creditLimit()).isEqualTo("5000.00");
+            assertThat(request.cashCreditLimit()).isEqualTo("1500.00");
+            assertThat(request.currentBalance()).isEqualTo("-250.75");
+            assertThat(request.currentCycleCredit()).isEqualTo("0.00");
+            assertThat(request.currentCycleDebit()).isEqualTo("1234567890.12");
+        }
+
+        @Test
+        @DisplayName("all five are 15 characters wide on the screen")
+        void allFiveAre15CharactersWideOnTheScreen() {
+            assertThat(MoneyComponent.SCREEN_WIDTH).isEqualTo(15);
+            assertThat(MoneyComponent.values()).hasSize(5);
+        }
+
+        @Test
+        @DisplayName("every monetary accessor is statically a String, so no scale can be applied here")
+        void everyMonetaryAccessorIsStaticallyAStringSoNoScaleCanBeAppliedHere() {
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            // These five assignments are the assertion: they compile only while the accessors are
+            // String-typed, and a decoded numeric component would break the build rather than a test.
+            String creditLimit = request.creditLimit();
+            String cashCreditLimit = request.cashCreditLimit();
+            String currentBalance = request.currentBalance();
+            String currentCycleCredit = request.currentCycleCredit();
+            String currentCycleDebit = request.currentCycleDebit();
+
+            assertThat(List.of(creditLimit, cashCreditLimit, currentBalance, currentCycleCredit,
+                    currentCycleDebit))
+                    .as("all five monetary components are carried as raw lexemes")
+                    .containsExactly("5000.00", "1500.00", "-250.75", "0.00", "1234567890.12");
+            assertThat(MoneyComponent.CONTRACT_SCALE)
+                    .as("the record field has two decimal places, which the codec applies once the "
+                            + "lexeme is decoded; nothing on this contract applies it")
+                    .isEqualTo(2);
+        }
+    }
+
+    @Nested
+    @DisplayName("The JSON contract")
+    class TheJsonContract {
+
+        private Set<String> propertyNamesOf(AccountUpdateRequest request) throws Exception {
+            Map<String, Object> parsed = MAPPER.readValue(
+                    MAPPER.writeValueAsString(request),
+                    new TypeReference<Map<String, Object>>() { });
+            return new LinkedHashSet<>(parsed.keySet());
+        }
+
+        @Test
+        @DisplayName("absent components are omitted entirely rather than sent as nulls")
+        void absentComponentsAreOmittedEntirelyRatherThanSentAsNulls() throws Exception {
+            String json = MAPPER.writeValueAsString(new Draft().build());
+
+            assertThat(json)
+                    .as("null-valued properties are omitted, so an untouched 3270 field costs "
+                            + "nothing on the wire")
+                    .isEqualTo("{}");
+        }
+
+        @Test
+        @DisplayName("an unknown incoming property is tolerated rather than rejected")
+        void anUnknownIncomingPropertyIsToleratedRatherThanRejected() throws Exception {
+            AccountUpdateRequest received = MAPPER.readValue(
+                    "{\"accountId\":\"00000000011\",\"aFieldThatDoesNotExist\":42}",
+                    AccountUpdateRequest.class);
+
+            assertThat(received.accountId()).isEqualTo("00000000011");
+            assertThat(received.middleName()).isNull();
+        }
+
+        @Test
+        @DisplayName("a fully populated request carries the 43 map properties plus the token, and "
+                + "nothing else")
+        void aFullyPopulatedRequestCarriesThe43MapPropertiesPlusTheToken() throws Exception {
+            Set<String> expected = new LinkedHashSet<>();
+            for (StringComponent component : StringComponent.values()) {
+                expected.add(component.jsonProperty());
+            }
+            for (MoneyComponent component : MoneyComponent.values()) {
+                expected.add(component.jsonProperty());
+            }
+
+            Set<String> mapProperties = propertyNamesOf(Draft.realistic().build());
+            mapProperties.remove(CONCURRENCY_TOKEN_PROPERTY);
+
+            assertThat(expected).hasSize(43);
+            assertThat(mapProperties)
+                    .as("the wire form is exactly the 43 editable map components plus the "
+                            + "concurrency token, and nothing else")
+                    .hasSize(43)
+                    .containsExactlyInAnyOrderElementsOf(expected);
+            assertThat(propertyNamesOf(Draft.realistic().build()))
+                    .as("with the attention key and the carried context absent, the token is the only "
+                            + "non-map property published, so an untouched conversation costs one "
+                            + "property and not three")
+                    .hasSize(44)
+                    .contains(CONCURRENCY_TOKEN_PROPERTY)
+                    .doesNotContain(KEY_ACTION_PROPERTY, NAVIGATION_CONTEXT_PROPERTY);
+        }
+
+        /**
+         * Eleven of the 54 map families are non-editable screen furniture: the transaction name, both
+         * title lines, the current date, the program name, the current time, the information message,
+         * the error message and the three function-key legends. The metadata and message items belong
+         * on the response; the legends are pure 3270 decoration and belong nowhere.
+         */
+        @Test
+        @DisplayName("no screen furniture appears on the request")
+        void noScreenFurnitureAppearsOnTheRequest() throws Exception {
+            Set<String> actual = propertyNamesOf(Draft.realistic().build());
+
+            assertThat(actual).doesNotContain(
+                    "transactionName", "trnName", "title01", "titleLine1", "title02",
+                    "titleLine2", "currentDate", "curDate", "currentTime", "curTime",
+                    "programName", "pgmName", "infoMessage", "informationMessage",
+                    "errorMessage", "errMsg", "functionKeys", "fKeys", "functionKey05",
+                    "functionKey12");
+        }
+
+        @Test
+        @DisplayName("no terminal attribute, control byte or map coordinate appears on the request")
+        void noTerminalAttributeControlByteOrMapCoordinateAppearsOnTheRequest() throws Exception {
+            String json = MAPPER.writeValueAsString(Draft.realistic().build());
+
+            assertThat(json)
+                    .as("the symbolic map's length, flag and attribute companions to every field, "
+                            + "the leading terminal-buffer filler and the colour constants are all "
+                            + "3270 artefacts with no place in a machine contract")
+                    .doesNotContain("Length\":", "\"attribute", "Attribute\":", "\"cursor",
+                            "DFHRED", "DFHGREEN", "\"row\":", "\"column\":", "\"filler");
+        }
+
+        @Test
+        @DisplayName("the contract is order-independent, so a reordered payload binds identically")
+        void theContractIsOrderIndependentSoAReorderedPayloadBindsIdentically() throws Exception {
+            AccountUpdateRequest first = MAPPER.readValue(
+                    "{\"accountId\":\"00000000011\",\"ficoScore\":\"742\"}",
+                    AccountUpdateRequest.class);
+            AccountUpdateRequest second = MAPPER.readValue(
+                    "{\"ficoScore\":\"742\",\"accountId\":\"00000000011\"}",
+                    AccountUpdateRequest.class);
+
+            assertThat(first).isEqualTo(second);
+        }
+
+        @Test
+        @DisplayName("an explicit null on the wire is accepted and stays null")
+        void anExplicitNullOnTheWireIsAcceptedAndStaysNull() throws Exception {
+            AccountUpdateRequest received = MAPPER.readValue(
+                    "{\"middleName\":null,\"addressLine2\":null,\"creditLimit\":null}",
+                    AccountUpdateRequest.class);
+
+            assertThat(violations(received)).isEmpty();
+            assertThat(received.middleName()).isNull();
+            assertThat(received.addressLine2()).isNull();
+            assertThat(received.creditLimit()).isNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("Value semantics and immutability")
+    class ValueSemanticsAndImmutability {
+
+        @Test
+        @DisplayName("two requests built from identical input are equal and agree on hash code")
+        void twoRequestsBuiltFromIdenticalInputAreEqualAndAgreeOnHashCode() {
+            AccountUpdateRequest first = Draft.realistic().build();
+            AccountUpdateRequest second = Draft.realistic().build();
+
+            assertThat(first).isEqualTo(second).isNotSameAs(second);
+            assertThat(first).hasSameHashCodeAs(second);
+        }
+
+        @Test
+        @DisplayName("changing any single component makes two requests unequal")
+        void changingAnySingleComponentMakesTwoRequestsUnequal() {
+            AccountUpdateRequest baseline = Draft.realistic().build();
+
+            for (StringComponent component : StringComponent.values()) {
+                Draft altered = Draft.realistic();
+                component.write(altered, "different");
+
+                assertThat(altered.build())
+                        .as("%s must participate in equality", component.described())
+                        .isNotEqualTo(baseline);
+            }
+            for (MoneyComponent component : MoneyComponent.values()) {
+                Draft altered = Draft.realistic();
+                component.write(altered, "7.77");
+
+                assertThat(altered.build())
+                        .as("%s must participate in equality", component.described())
+                        .isNotEqualTo(baseline);
+            }
+        }
+
+        @Test
+        @DisplayName("an empty request equals another empty request but not a populated one")
+        void anEmptyRequestEqualsAnotherEmptyRequestButNotAPopulatedOne() {
+            assertThat(new Draft().build())
+                    .isEqualTo(new Draft().build())
+                    .isNotEqualTo(Draft.realistic().build())
+                    .isNotEqualTo(null)
+                    .isNotEqualTo("not a request");
+        }
+
+        /**
+         * Immutability is demonstrated by construction, never by inspecting the type at run time. The
+         * contract is a record, so the canonical constructor is the only way to produce one and there
+         * is no mutator to call. What remains to establish is that construction itself does not copy
+         * or normalise, so the service receives the identical object the client's decoder produced.
+         */
+        @Test
+        @DisplayName("construction neither copies nor normalises the values handed to it")
+        void constructionNeitherCopiesNorNormalisesTheValuesHandedToIt() {
+            String spacedValue = "  spaced  ";
+            String amount = "1.20";
+            Draft draft = new Draft();
+            draft.middleName = spacedValue;
+            draft.firstName = spacedValue;
+            draft.creditLimit = amount;
+
+            AccountUpdateRequest request = draft.build();
+
+            assertThat(request.middleName()).isSameAs(spacedValue);
+            assertThat(request.firstName()).isSameAs(spacedValue);
+            assertThat(request.creditLimit()).isSameAs(amount);
+        }
+
+        @Test
+        @DisplayName("reconciling navigation replaces that component and preserves all forty-five others")
+        void reconcilingNavigationReplacesOnlyThatComponent() {
+            Draft originalDraft = Draft.realistic();
+            AccountUpdateRequest original = originalDraft.build();
+            NavigationContext reconciled = new NavigationContext(
+                    "CM00", "COMEN01C", "CAUP", "COACTUPC", "USER0001", "U",
+                    NavigationContext.ProgramContext.REENTER, "000000011", "MARY ANN", "Q",
+                    "SMITH", "00000000011", "Y", "4111111111111111", "CACTUPA", "CACTUP");
+            Draft expectedDraft = Draft.realistic();
+            expectedDraft.navigationContext = reconciled;
+
+            AccountUpdateRequest copied = original.withNavigationContext(reconciled);
+
+            assertThat(copied).isEqualTo(expectedDraft.build()).isNotSameAs(original);
+            assertThat(copied.navigationContext()).isSameAs(reconciled);
+            assertThat(original.navigationContext()).isNull();
+        }
+
+        /**
+         * The textual form is a redaction, asserted negatively on purpose. Every one of the
+         * forty-three components is either regulated personal data, a regulated financial value, or a
+         * key that joins straight to both, so the rendering discloses none of them. The assertion
+         * walks the realistic draft's whole component set and requires that no value appears anywhere
+         * in the rendered text, rather than spot-checking a handful: a spot-check would pass while a
+         * newly added component leaked, and the point of the override is that the type has no safe
+         * component to print.
+         */
+        @Test
+        @DisplayName("the textual form names the type and discloses no component value at all")
+        void theTextualFormNamesTheTypeAndDisclosesNoComponentValue() {
+            Draft draft = Draft.realistic();
+            AccountUpdateRequest request = draft.build();
+
+            String text = request.toString();
+
+            assertThat(text).isEqualTo("AccountUpdateRequest[***REDACTED***]");
+            for (StringComponent component : StringComponent.values()) {
+                assertThat(text)
+                        .as("%s must not appear in the rendered text", component.described())
+                        .doesNotContain(component.read(request));
+            }
+            for (MoneyComponent component : MoneyComponent.values()) {
+                assertThat(text)
+                        .as("%s must not appear in the rendered text", component.described())
+                        .doesNotContain(component.read(request));
+            }
+        }
+
+        @Test
+        @DisplayName("all 43 accessors return exactly the values they were constructed with")
+        void allFortyThreeAccessorsReturnExactlyTheValuesTheyWereConstructedWith() {
+            Draft draft = Draft.realistic();
+            AccountUpdateRequest request = draft.build();
+            List<String> readBack = new ArrayList<>();
+
+            for (StringComponent component : StringComponent.values()) {
+                String value = component.read(request);
+                assertThat(value)
+                        .as("%s must be readable exactly as supplied", component.described())
+                        .isNotNull();
+                readBack.add(component.jsonProperty() + "=" + value);
+            }
+            for (MoneyComponent component : MoneyComponent.values()) {
+                String value = component.read(request);
+                assertThat(value)
+                        .as("%s must be readable exactly as supplied", component.described())
+                        .isNotNull();
+                readBack.add(component.jsonProperty() + "=" + value);
+            }
+
+            assertThat(readBack)
+                    .as("every one of the 43 accessors is exercised, and none of them duplicates "
+                            + "another component's binding")
+                    .hasSize(43)
+                    .doesNotHaveDuplicates();
+            assertThat(request.accountId()).isEqualTo(draft.accountId);
+            assertThat(request.primaryCardHolderIndicator())
+                    .isEqualTo(draft.primaryCardHolderIndicator);
+        }
+
+        @Test
+        @DisplayName("a request survives two consecutive round trips unchanged")
+        void aRequestSurvivesTwoConsecutiveRoundTripsUnchanged() throws Exception {
+            AccountUpdateRequest original = Draft.realistic().build();
+
+            AccountUpdateRequest once = MAPPER.readValue(
+                    MAPPER.writeValueAsString(original), AccountUpdateRequest.class);
+            AccountUpdateRequest twice = MAPPER.readValue(
+                    MAPPER.writeValueAsString(once), AccountUpdateRequest.class);
+
+            assertThat(once)
+                    .as("serialisation must be lossless for every one of the 43 components")
+                    .isEqualTo(original);
+            assertThat(twice).isEqualTo(original);
+            assertThat(MAPPER.writeValueAsString(twice))
+                    .isEqualTo(MAPPER.writeValueAsString(original));
+        }
+    }
+
+    /*
+     * The 38 bounded string components, in the symbolic map's declaration order. Every declared
+     * width in this table was read from the map and is therefore an independent oracle: none of
+     * these numbers was taken from the request under test, so a width edited on the request alone
+     * fails here rather than agreeing with itself. Each constant carries the legacy map field name
+     * for readable diagnostics, the declared screen width, the JSON property name, an accessor and a
+     * writer; the accessor is an ordinary method reference and the writer an ordinary assignment
+     * lambda, so nothing is resolved by name at run time.
+     */
+    enum StringComponent {
+
+        ACCOUNT_ID("ACCTSID", 11, "accountId",
+                (d, v) -> d.accountId = v, AccountUpdateRequest::accountId),
+        ACCOUNT_STATUS("ACSTTUS", 1, "accountStatus",
+                (d, v) -> d.accountStatus = v, AccountUpdateRequest::accountStatus),
+        OPEN_YEAR("OPNYEAR", 4, "openYear",
+                (d, v) -> d.openYear = v, AccountUpdateRequest::openYear),
+        OPEN_MONTH("OPNMON", 2, "openMonth",
+                (d, v) -> d.openMonth = v, AccountUpdateRequest::openMonth),
+        OPEN_DAY("OPNDAY", 2, "openDay",
+                (d, v) -> d.openDay = v, AccountUpdateRequest::openDay),
+
+        EXPIRY_YEAR("EXPYEAR", 4, "expiryYear",
+                (d, v) -> d.expiryYear = v, AccountUpdateRequest::expiryYear),
+        EXPIRY_MONTH("EXPMON", 2, "expiryMonth",
+                (d, v) -> d.expiryMonth = v, AccountUpdateRequest::expiryMonth),
+        EXPIRY_DAY("EXPDAY", 2, "expiryDay",
+                (d, v) -> d.expiryDay = v, AccountUpdateRequest::expiryDay),
+
+        /* ----- the split reissue date: the fourth split date, easy to overlook ----- */
+        REISSUE_YEAR("RISYEAR", 4, "reissueYear",
+                (d, v) -> d.reissueYear = v, AccountUpdateRequest::reissueYear),
+        REISSUE_MONTH("RISMON", 2, "reissueMonth",
+                (d, v) -> d.reissueMonth = v, AccountUpdateRequest::reissueMonth),
+        REISSUE_DAY("RISDAY", 2, "reissueDay",
+                (d, v) -> d.reissueDay = v, AccountUpdateRequest::reissueDay),
+
+        ACCOUNT_GROUP_ID("AADDGRP", 10, "accountGroupId",
+                (d, v) -> d.accountGroupId = v, AccountUpdateRequest::accountGroupId),
+
+        CUSTOMER_ID("ACSTNUM", 9, "customerId",
+                (d, v) -> d.customerId = v, AccountUpdateRequest::customerId),
+
+        SSN_PART_1("ACTSSN1", 3, "ssnPart1",
+                (d, v) -> d.ssnPart1 = v, AccountUpdateRequest::ssnPart1),
+        SSN_PART_2("ACTSSN2", 2, "ssnPart2",
+                (d, v) -> d.ssnPart2 = v, AccountUpdateRequest::ssnPart2),
+        SSN_PART_3("ACTSSN3", 4, "ssnPart3",
+                (d, v) -> d.ssnPart3 = v, AccountUpdateRequest::ssnPart3),
+
+        /* ----- the split date of birth, declared before the credit score ----- */
+        DATE_OF_BIRTH_YEAR("DOBYEAR", 4, "dateOfBirthYear",
+                (d, v) -> d.dateOfBirthYear = v, AccountUpdateRequest::dateOfBirthYear),
+        DATE_OF_BIRTH_MONTH("DOBMON", 2, "dateOfBirthMonth",
+                (d, v) -> d.dateOfBirthMonth = v, AccountUpdateRequest::dateOfBirthMonth),
+        DATE_OF_BIRTH_DAY("DOBDAY", 2, "dateOfBirthDay",
+                (d, v) -> d.dateOfBirthDay = v, AccountUpdateRequest::dateOfBirthDay),
+
+        FICO_SCORE("ACSTFCO", 3, "ficoScore",
+                (d, v) -> d.ficoScore = v, AccountUpdateRequest::ficoScore),
+
+        FIRST_NAME("ACSFNAM", 25, "firstName",
+                (d, v) -> d.firstName = v, AccountUpdateRequest::firstName),
+        /** Carries no constraint at all. Its declared width is recorded but never enforced. */
+        MIDDLE_NAME("ACSMNAM", 25, "middleName",
+                (d, v) -> d.middleName = v, AccountUpdateRequest::middleName),
+        LAST_NAME("ACSLNAM", 25, "lastName",
+                (d, v) -> d.lastName = v, AccountUpdateRequest::lastName),
+        ADDRESS_LINE_1("ACSADL1", 50, "addressLine1",
+                (d, v) -> d.addressLine1 = v, AccountUpdateRequest::addressLine1),
+        STATE_CODE("ACSSTTE", 2, "stateCode",
+                (d, v) -> d.stateCode = v, AccountUpdateRequest::stateCode),
+        /** Carries no constraint at all. Its declared width is recorded but never enforced. */
+        ADDRESS_LINE_2("ACSADL2", 50, "addressLine2",
+                (d, v) -> d.addressLine2 = v, AccountUpdateRequest::addressLine2),
+        ZIP_CODE("ACSZIPC", 5, "zipCode",
+                (d, v) -> d.zipCode = v, AccountUpdateRequest::zipCode),
+        CITY("ACSCITY", 50, "city",
+                (d, v) -> d.city = v, AccountUpdateRequest::city),
+        COUNTRY_CODE("ACSCTRY", 3, "countryCode",
+                (d, v) -> d.countryCode = v, AccountUpdateRequest::countryCode),
+
+        PHONE_1_AREA_CODE("ACSPH1A", 3, "phone1AreaCode",
+                (d, v) -> d.phone1AreaCode = v, AccountUpdateRequest::phone1AreaCode),
+        PHONE_1_PREFIX("ACSPH1B", 3, "phone1Prefix",
+                (d, v) -> d.phone1Prefix = v, AccountUpdateRequest::phone1Prefix),
+        PHONE_1_LINE_NUMBER("ACSPH1C", 4, "phone1LineNumber",
+                (d, v) -> d.phone1LineNumber = v, AccountUpdateRequest::phone1LineNumber),
+
+        /* ----- government-issued id, declared between the two telephone numbers ----- */
+        GOVERNMENT_ISSUED_ID("ACSGOVT", 20, "governmentIssuedId",
+                (d, v) -> d.governmentIssuedId = v, AccountUpdateRequest::governmentIssuedId),
+
+        PHONE_2_AREA_CODE("ACSPH2A", 3, "phone2AreaCode",
+                (d, v) -> d.phone2AreaCode = v, AccountUpdateRequest::phone2AreaCode),
+        PHONE_2_PREFIX("ACSPH2B", 3, "phone2Prefix",
+                (d, v) -> d.phone2Prefix = v, AccountUpdateRequest::phone2Prefix),
+        PHONE_2_LINE_NUMBER("ACSPH2C", 4, "phone2LineNumber",
+                (d, v) -> d.phone2LineNumber = v, AccountUpdateRequest::phone2LineNumber),
+
+        EFT_ACCOUNT_ID("ACSEFTC", 10, "eftAccountId",
+                (d, v) -> d.eftAccountId = v, AccountUpdateRequest::eftAccountId),
+        PRIMARY_CARD_HOLDER_INDICATOR("ACSPFLG", 1, "primaryCardHolderIndicator",
+                (d, v) -> d.primaryCardHolderIndicator = v,
+                AccountUpdateRequest::primaryCardHolderIndicator);
+
+        /**
+         * The two components the legacy program decorates for error display but never validates.
+         * They must carry no constraint whatsoever, not even a width constraint.
+         */
+        static final Set<StringComponent> UNVALIDATED =
+                Set.of(MIDDLE_NAME, ADDRESS_LINE_2);
+
+        /**
+         * The four components that are editable on the mapset but are not among the 39 decoration
+         * targets.
+         */
+        static final Set<StringComponent> UNDECORATED =
+                Set.of(ACCOUNT_ID, ACCOUNT_GROUP_ID, CUSTOMER_ID, GOVERNMENT_ISSUED_ID);
+
+        private final String mapField;
+        private final int declaredWidth;
+        private final String jsonProperty;
+        private final BiConsumer<Draft, String> writer;
+        private final Function<AccountUpdateRequest, String> reader;
+
+        StringComponent(String mapField, int declaredWidth, String jsonProperty,
+                BiConsumer<Draft, String> writer,
+                Function<AccountUpdateRequest, String> reader) {
+            this.mapField = mapField;
+            this.declaredWidth = declaredWidth;
+            this.jsonProperty = jsonProperty;
+            this.writer = writer;
+            this.reader = reader;
+        }
+
+        String mapField() {
+            return mapField;
+        }
+
+        int declaredWidth() {
+            return declaredWidth;
+        }
+
+        String jsonProperty() {
+            return jsonProperty;
+        }
+
+        void write(Draft draft, String value) {
+            writer.accept(draft, value);
+        }
+
+        String read(AccountUpdateRequest request) {
+            return reader.apply(request);
+        }
+
+        String exactWidthValue() {
+            return "X".repeat(declaredWidth);
+        }
+
+        /** A value occupying the field exactly and ending in a space that must not be trimmed. */
+        String trailingSpaceValue() {
+            return declaredWidth == 1 ? " " : "X".repeat(declaredWidth - 1) + " ";
+        }
+
+        /** A value occupying the field exactly and starting with a space that must not be cut. */
+        String leadingSpaceValue() {
+            return declaredWidth == 1 ? " " : " " + "X".repeat(declaredWidth - 1);
+        }
+
+        /** One character past the declared width - rejected only where a width is enforced. */
+        String overWidthValue() {
+            return "X".repeat(declaredWidth + 1);
+        }
+
+        String described() {
+            return name() + " (map field " + mapField + ", declared width " + declaredWidth + ")";
+        }
+    }
+
+    /*
+     * The 5 signed-amount components. All five are 15 characters wide on the screen and land in a
+     * signed zoned decimal with ten integer digits and two decimal places in the account record,
+     * which maps to a numeric column of precision 12 and scale 2. What the screen transmits is the
+     * lexeme, not the number: the edit stage classifies it as blank, as malformed, or as valid, and
+     * only the valid case is decoded. Scale 2 is therefore a property of the decoded value, applied
+     * once by the codec, and never a property of anything this contract carries.
+     */
+    enum MoneyComponent {
+
+        CREDIT_LIMIT("ACRDLIM", "creditLimit",
+                (d, v) -> d.creditLimit = v, AccountUpdateRequest::creditLimit),
+        CASH_CREDIT_LIMIT("ACSHLIM", "cashCreditLimit",
+                (d, v) -> d.cashCreditLimit = v, AccountUpdateRequest::cashCreditLimit),
+        CURRENT_BALANCE("ACURBAL", "currentBalance",
+                (d, v) -> d.currentBalance = v, AccountUpdateRequest::currentBalance),
+        CURRENT_CYCLE_CREDIT("ACRCYCR", "currentCycleCredit",
+                (d, v) -> d.currentCycleCredit = v, AccountUpdateRequest::currentCycleCredit),
+        CURRENT_CYCLE_DEBIT("ACRCYDB", "currentCycleDebit",
+                (d, v) -> d.currentCycleDebit = v, AccountUpdateRequest::currentCycleDebit);
+
+        static final int SCREEN_WIDTH = 15;
+
+        static final int CONTRACT_SCALE = 2;
+
+        private final String mapField;
+        private final String jsonProperty;
+        private final BiConsumer<Draft, String> writer;
+        private final Function<AccountUpdateRequest, String> reader;
+
+        MoneyComponent(String mapField, String jsonProperty,
+                BiConsumer<Draft, String> writer,
+                Function<AccountUpdateRequest, String> reader) {
+            this.mapField = mapField;
+            this.jsonProperty = jsonProperty;
+            this.writer = writer;
+            this.reader = reader;
+        }
+
+        String mapField() {
+            return mapField;
+        }
+
+        String jsonProperty() {
+            return jsonProperty;
+        }
+
+        void write(Draft draft, String value) {
+            writer.accept(draft, value);
+        }
+
+        String read(AccountUpdateRequest request) {
+            return reader.apply(request);
+        }
+
+        String described() {
+            return name() + " (map field " + mapField + ", 15 characters on screen)";
+        }
+    }
+
+    // THE ATTENTION KEY AND THE CARRIED NAVIGATION STATE
+
+    /**
+     * The two components that carry the conversation rather than the screen.
+     *
+     * <p>The program does not begin with the fields. It stores the attention key, marks it invalid at
+     * {@code app/cbl/COACTUPC.cbl} lines 898 to 916 and re-marks it valid only for the enter key,
+     * program-function key 3, program-function key 5 while changes are validated but unconfirmed, and
+     * program-function key 12 once details have been fetched - substituting the enter key when the key
+     * is still invalid. Lines 921 to 1003 then dispatch on those actions together with the first-entry
+     * or re-entry state. Separately, the decoration macro {@code app/cpy/CSSETATY.cpy} colours a field
+     * and writes its marker only when the field's flag is set <em>and</em> the conversation is a
+     * re-entry, the condition on line 20 of that copybook.</p>
+     *
+     * <p>The rules below assert only that this contract carries both faithfully: typed, never defaulted,
+     * never constrained for presence, cascaded into for the nested bounds, and omitted rather than
+     * nulled on the wire. Nothing here validates a key, dispatches on one, or decides whether
+     * decoration applies.</p>
+     */
+    @Nested
+    @DisplayName("the attention key and the carried navigation state")
+    class TheAttentionKeyAndTheCarriedNavigationState {
+
+        @Test
+        @DisplayName("the contract is exactly forty-six components wide and the three non-map components "
+                + "are the last three, in the order the sibling card-update contract uses")
+        void theContractIsExactlyFortySixComponentsWide() {
+            assertThat(AccountUpdateRequest.class.getRecordComponents()).hasSize(46);
+            assertThat(AccountUpdateRequest.class.getRecordComponents())
+                    .extracting(java.lang.reflect.RecordComponent::getName)
+                    .endsWith(KEY_ACTION_PROPERTY, NAVIGATION_CONTEXT_PROPERTY,
+                            CONCURRENCY_TOKEN_PROPERTY);
+        }
+
+        @ParameterizedTest(name = "{0} is carried verbatim")
+        @EnumSource(KeyAction.class)
+        @DisplayName("every value of the published key vocabulary is carried through unchanged, so the "
+                + "service dispatches on the key the operator actually pressed")
+        void everyKeyValueIsCarriedVerbatim(KeyAction action) {
+            Draft draft = Draft.realistic();
+            draft.keyAction = action;
+
+            assertThat(draft.build().keyAction()).isSameAs(action);
+        }
+
+        @Test
+        @DisplayName("an absent key stays absent, because the legacy mapping substitutes none and the "
+                + "enter-key substitution is the service's decision")
+        void anAbsentKeyStaysAbsent() {
+            assertThat(Draft.realistic().build().keyAction()).isNull();
+        }
+
+        @Test
+        @DisplayName("an absent carried context stays absent, so a first presentation is distinguishable "
+                + "from a re-entry rather than defaulted into one")
+        void anAbsentCarriedContextStaysAbsent() {
+            assertThat(Draft.realistic().build().navigationContext()).isNull();
+        }
+
+        @Test
+        @DisplayName("both absent draws no violation, so neither is mandatory at the boundary")
+        void bothAbsentDrawsNoViolation() {
+            assertThat(violations(Draft.realistic().build())).isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} raises no violation")
+        @EnumSource(KeyAction.class)
+        @DisplayName("no key value raises a violation, because the component declares no constraint")
+        void noKeyValueRaisesAViolation(KeyAction action) {
+            Draft draft = Draft.realistic();
+            draft.keyAction = action;
+
+            assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the key component declares no annotation whatever, so nothing bounds, requires or "
+                + "reshapes it at the boundary")
+        void theKeyComponentDeclaresNoAnnotationWhatever() throws NoSuchFieldException {
+            assertThat(AccountUpdateRequest.class.getDeclaredField(KEY_ACTION_PROPERTY)
+                    .getAnnotations()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the key is typed as the domain vocabulary rather than as loose text, so an "
+                + "unmapped keystroke cannot reach the service disguised as a mapped one")
+        void theKeyIsTypedAsTheDomainVocabulary() throws NoSuchFieldException {
+            assertThat(AccountUpdateRequest.class.getDeclaredField(KEY_ACTION_PROPERTY).getType())
+                    .isEqualTo(KeyAction.class);
+        }
+
+        @Test
+        @DisplayName("the carried context declares the cascade marker and nothing else, because "
+                + "cascading an existing bound is not the same as adding a constraint")
+        void theCarriedContextDeclaresTheCascadeMarkerAndNothingElse() throws NoSuchFieldException {
+            assertThat(AccountUpdateRequest.class.getDeclaredField(NAVIGATION_CONTEXT_PROPERTY)
+                    .getAnnotations())
+                    .extracting(annotation -> annotation.annotationType().getName())
+                    .containsExactly("jakarta.validation.Valid");
+        }
+
+        @Test
+        @DisplayName("a valid carried context draws no violation, so a well-formed echo passes straight "
+                + "through to the service")
+        void aValidCarriedContextDrawsNoViolation() {
+            Draft draft = Draft.realistic();
+            draft.navigationContext = new NavigationContext("CAUP", "COACTUPC", "CAUP", "COACTUPC",
+                    "ADMIN001", null, NavigationContext.ProgramContext.REENTER, "000000011", "MARY ANN",
+                    "Q", "Aniya Von", "00000000011", "Y", "4111111111111111", "CACTUPA", "COACTUP");
+
+            assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the cascade reaches into the carried context, so an echoed value that could not "
+                + "have occupied its legacy field is reported here rather than in the service")
+        void theCascadeReachesIntoTheCarriedContext() {
+            Draft draft = Draft.realistic();
+            draft.navigationContext = new NavigationContext("TOOLONGTRANSID", null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null);
+
+            assertThat(violations(draft.build()))
+                    .isNotEmpty()
+                    .allSatisfy(violation -> assertThat(violation.getPropertyPath().toString())
+                            .startsWith(NAVIGATION_CONTEXT_PROPERTY + "."));
+        }
+
+        @Test
+        @DisplayName("the re-entry flag the decoration gate reads survives the round trip, because it is "
+                + "the precondition for every field-level error state")
+        void theReEntryFlagSurvivesTheRoundTrip() throws Exception {
+            Draft draft = Draft.realistic();
+            draft.navigationContext = new NavigationContext(null, null, null, null, null, null,
+                    NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            AccountUpdateRequest received = MAPPER.readValue(
+                    MAPPER.writeValueAsString(draft.build()), AccountUpdateRequest.class);
+
+            assertThat(received.navigationContext().reEntry()).isTrue();
+            assertThat(received.navigationContext().firstEntry()).isFalse();
+        }
+
+        @ParameterizedTest(name = "{0} survives a round trip")
+        @EnumSource(KeyAction.class)
+        @DisplayName("every key value survives a serialize-and-read round trip by name, so a client and "
+                + "the service agree on the keystroke")
+        void everyKeyValueSurvivesARoundTrip(KeyAction action) throws Exception {
+            Draft draft = Draft.realistic();
+            draft.keyAction = action;
+
+            AccountUpdateRequest received = MAPPER.readValue(
+                    MAPPER.writeValueAsString(draft.build()), AccountUpdateRequest.class);
+
+            assertThat(received.keyAction()).isSameAs(action);
+        }
+
+        @Test
+        @DisplayName("both are published by name when present, so a client can drive exit, save, cancel "
+                + "and re-entry over the wire")
+        void bothArePublishedByNameWhenPresent() throws Exception {
+            Draft draft = Draft.realistic();
+            draft.keyAction = KeyAction.PFK03;
+            draft.navigationContext = new NavigationContext(null, null, null, null, null, null,
+                    NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            Map<String, Object> emitted = MAPPER.readValue(
+                    MAPPER.writeValueAsString(draft.build()),
+                    new TypeReference<Map<String, Object>>() { });
+
+            assertThat(emitted.keySet())
+                    .contains(KEY_ACTION_PROPERTY, NAVIGATION_CONTEXT_PROPERTY)
+                    .hasSize(46);
+        }
+
+        @Test
+        @DisplayName("neither takes part in the ordered cascade, so a submission carrying only the two "
+                + "of them still reports nothing at the boundary")
+        void neitherTakesPartInTheOrderedCascade() {
+            Draft draft = new Draft();
+            draft.keyAction = KeyAction.ENTER;
+            draft.navigationContext = new NavigationContext(null, null, null, null, null, null,
+                    NavigationContext.ProgramContext.ENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the diagnostic representation still discloses nothing, because the placeholder "
+                + "stands for the whole component set rather than for a listed subset")
+        void theDiagnosticRepresentationStillDisclosesNothing() {
+            Draft draft = Draft.realistic();
+            draft.keyAction = KeyAction.PFK05;
+
+            assertThat(draft.build().toString())
+                    .isEqualTo("AccountUpdateRequest[***REDACTED***]")
+                    .doesNotContain(KeyAction.PFK05.name(), KEY_ACTION_PROPERTY,
+                            NAVIGATION_CONTEXT_PROPERTY);
+        }
+    }
+
+}

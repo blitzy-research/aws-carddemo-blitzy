@@ -1,0 +1,350 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# Docker build-context exclusions. The Dockerfile sits beside this file, so the context
+# root is THIS directory and everything above it - the legacy estate, docs, diagrams,
+# vendor archives and the .git tree - is already outside the context. Docker cannot escape
+# the context root, so no parent-directory pattern appears here; wanting one means the
+# build was invoked from the wrong directory.
+#
+# .dockerignore is not .gitignore. A bare extension rule matches the context root only,
+# so every extension rule is written twice: bare for the root and with a "**/" prefix for
+# every deeper level. Dropping the "**/" form silently reopens the hole it closes, which
+# for the credential rules is a security regression and not merely a context-size one.
+# A trailing slash prunes a whole subtree, and the last matching rule wins.
+#
+# Excluding too little bloats the context, breaks layer caching and risks a host-compiled
+# class reaching the image instead of one the builder stage compiled under -Xlint:all
+# -Werror. Excluding too much silently removes a build input, so the foot of this file
+# re-includes every required input by name as a tripwire against a future blanket rule.
+
+# Build output, in every location a tool might write it.
+target/
+**/target/
+build/
+out/
+bin/
+dist/
+*.jar
+*.JAR
+**/*.jar
+**/*.JAR
+*.war
+*.WAR
+**/*.war
+**/*.WAR
+*.ear
+*.EAR
+**/*.ear
+**/*.EAR
+*.class
+*.CLASS
+**/*.class
+**/*.CLASS
+*.exec
+*.EXEC
+**/*.exec
+**/*.EXEC
+*.hprof
+*.HPROF
+**/*.hprof
+**/*.HPROF
+
+# The wrapper ships as scripts only. The wrapper directory itself is never pruned: a
+# re-inclusion cannot resurrect a file beneath a pruned directory, and the builder stage
+# needs the descriptor to resolve Maven.
+.mvn/wrapper/maven-wrapper.jar
+.mvn/.develocity/
+.mvn/.gradle-enterprise/
+
+# Maven plugin residue. Complete file names, so none can match the wrapper descriptor.
+dependency-reduced-pom.xml
+.flattened-pom.xml
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+pom.xml.tag
+release.properties
+buildNumber.properties
+
+# Gate evidence and scan output. Reproducible from a clean checkout plus one build, so it
+# is never an image input.
+dependency-check-report.*
+**/dependency-check-report.*
+.dependency-check/
+**/.dependency-check/
+dependency-check-data/
+**/dependency-check-data/
+surefire-reports/
+**/surefire-reports/
+failsafe-reports/
+**/failsafe-reports/
+jacoco*.exec
+**/jacoco*.exec
+site/
+**/site/
+test-output/
+**/test-output/
+
+# Credential material. The image resolves every secret from the environment at run time,
+# so none of this may ever enter a layer - a file copied into an image stays in that
+# layer even if a later stage deletes it.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Keys, certificates and keystores, at the root and at every depth.
+*.pem
+*.PEM
+**/*.pem
+**/*.PEM
+*.key
+*.KEY
+**/*.key
+**/*.KEY
+*.crt
+*.CRT
+**/*.crt
+**/*.CRT
+*.cer
+*.CER
+**/*.cer
+**/*.CER
+*.p12
+*.P12
+**/*.p12
+**/*.P12
+*.pfx
+*.PFX
+**/*.pfx
+**/*.PFX
+*.jks
+*.JKS
+**/*.jks
+**/*.JKS
+*.keystore
+*.KEYSTORE
+**/*.keystore
+**/*.KEYSTORE
+*.truststore
+*.TRUSTSTORE
+**/*.truststore
+**/*.TRUSTSTORE
+
+# SSH private keys.
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+**/id_rsa
+**/id_rsa.*
+**/id_ed25519
+**/id_ed25519.*
+
+# Credential directories and cloud credential files.
+secrets/
+**/secrets/
+credentials
+credentials.*
+**/credentials
+**/credentials.*
+aws.properties
+**/aws.properties
+.aws/
+**/.aws/
+
+# Developer profile overrides. None of these can match a committed profile document: the
+# secret form requires the literal segment "secret" and the local form requires a
+# ".local.yml" suffix that application-local.yml does not have.
+application-secret*.yml
+application-secret*.yaml
+**/application-secret*.yml
+**/application-secret*.yaml
+application-*.local.yml
+application-*.local.yaml
+**/application-*.local.yml
+**/application-*.local.yaml
+application-local.properties
+**/application-local.properties
+
+# Local-stack definitions and the container recipes themselves. The image is built from
+# the module source; the compose stack that brings up PostgreSQL, the emulated AWS
+# services and the observability backends is a developer tool, not an image input, and
+# config/ and localstack/ are mounted by that stack rather than copied into the image.
+docker-compose.yml
+docker-compose.yaml
+docker-compose.*.yml
+docker-compose.*.yaml
+compose.yml
+compose.yaml
+Dockerfile*
+.dockerignore
+config/
+localstack/
+
+# Local stack state, if a named volume is ever switched to a bind mount.
+postgres-data/
+**/postgres-data/
+localstack-data/
+**/localstack-data/
+prometheus-data/
+**/prometheus-data/
+grafana-data/
+**/grafana-data/
+volume/
+volumes/
+**/volume/
+**/volumes/
+.localstack/
+**/.localstack/
+
+# The Windows launcher: the builder stage is Linux and runs ./mvnw only.
+
+# Documentation, version-control metadata and CI definitions: none affects the artefact,
+# and excluding them keeps a documentation edit from invalidating the dependency layer.
+mvnw.cmd
+*.md
+*.MD
+**/*.md
+**/*.MD
+*.adoc
+**/*.adoc
+.git
+.git/
+**/.git
+**/.git/
+.gitignore
+.gitattributes
+.gitmodules
+.github/
+
+# IDE, editor and operating-system state.
+.idea/
+*.iml
+*.IML
+**/*.iml
+**/*.IML
+*.ipr
+*.IPR
+*.iws
+*.IWS
+.classpath
+.project
+.settings/
+.factorypath
+.apt_generated/
+.apt_generated_tests/
+.vscode/
+nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
+*~
+**/*~
+*.swp
+*.SWP
+**/*.swp
+**/*.SWP
+*.swo
+*.SWO
+**/*.swo
+**/*.SWO
+*.bak
+*.BAK
+**/*.bak
+**/*.BAK
+*.orig
+*.ORIG
+**/*.orig
+**/*.ORIG
+*.rej
+*.REJ
+**/*.rej
+**/*.REJ
+*.tmp
+**/*.tmp
+.DS_Store
+**/.DS_Store
+Thumbs.db
+Desktop.ini
+desktop.ini
+
+# Runtime and diagnostic output. The container logs to stdout, so no log file is ever an
+# image input.
+*.log
+*.LOG
+*.log.*
+**/*.log
+**/*.LOG
+**/*.log.*
+logs/
+**/logs/
+hs_err_pid*
+**/hs_err_pid*
+replay_pid*
+**/replay_pid*
+heapdump*
+**/heapdump*
+core
+core.[0-9]*
+**/core.[0-9]*
+
+# Required build inputs, re-included by name. Nothing above matches them; because the last
+# matching rule wins, these lines also neutralise a future blanket rule added above.
+!pom.xml
+!mvnw
+!.mvn/wrapper/maven-wrapper.properties
+
+# The committed Spring profiles - ALL FOUR. The production profile holds no secret value, only
+# unresolved environment references.
+#
+# application-test.yml appears TWICE in this module, under src/main/resources and under
+# src/test/resources, and both are named deliverables. The one below is the packaged copy: it is the
+# complete definition of the profile and it is what lets the BUILT ARTEFACT be started with
+# --spring.profiles.active=test. Omitting it from the build context, as an earlier revision did,
+# silently withdrew that capability from the image while leaving the file in the repository looking
+# delivered. The suite-only copy is re-included further down for a different reason.
+!src/main/resources/application.yml
+!src/main/resources/application-local.yml
+!src/main/resources/application-test.yml
+!src/main/resources/application-prod.yml
+!src/main/resources/logback-spring.xml
+!src/main/resources/banner.txt
+
+# Schema migrations - all four, flat in the one location that carries them - and the externalised
+# validation lookup tables. The single recursive re-include below covers the whole set: db/migration
+# holds V1 through V4 side by side, with no subdirectory, and every profile resolves that one location.
+#
+# The two seed scripts are included deliberately: an image is run under the local and test profiles
+# as well as production, so they must be present on the image class path for those profiles to find
+# them. Production does not reach them, and it does not rely on their absence from the image to
+# achieve that - it stops at version 2, with FlywayConfig refusing a ceiling that reaches a seed
+# version and refusing any location other than the packaged one, and
+# ProductionSeedRejectionCallback refusing a start-up whose database has ever had one applied.
+# Excluding them from the image would be a control that only looks like one, because it would break
+# local and test instead. See docs/decision-log.md DL-127.
+!src/main/resources/db/migration/**
+!src/main/resources/lookup/**
+
+# Test resources and byte-parity fixtures. The builder stage packages with tests skipped, so
+# these are not inputs to the packaging step itself; they are sent so that the same context can
+# run the suite inside the builder stage without a second, differently-shaped context, and so a
+# byte-parity fixture can be compared against output produced by the image rather than only by a
+# workstation. This is the SUITE-ONLY copy of the test profile; it specialises the packaged copy
+# re-included above, and on the test class path it shadows it. Both are required.
+!src/test/resources/application-test.yml
+!src/test/resources/fixtures/input/**
+!src/test/resources/fixtures/expected/**

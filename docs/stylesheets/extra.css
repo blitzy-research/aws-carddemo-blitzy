@@ -1,0 +1,761 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+
+/*
+ * WHAT THIS FILE IS FOR, AND WHAT IT DELIBERATELY IS NOT.
+ *
+ * This is the publication stylesheet for the documentation site: it corrects reading defects that are
+ * properties of the theme's layout rather than of any page's content, so a single rule fixes every page
+ * instead of every page carrying a workaround. It re-themes nothing - no colour, type or spacing token is
+ * overridden - because the palette and scale are the theme's contract with every other Backstage TechDocs
+ * site in the catalogue, and a page of this documentation that looked different from its neighbours would
+ * be a defect of its own.
+ */
+
+/*
+ * THE CONTENT MEASURE, WIDENED BY THE MINIMUM THE WIDEST TABLE ACTUALLY NEEDS.
+ *
+ * The traceability matrix publishes thirty per-member tables of seven columns - source member, paragraph,
+ * source line, target class, target method, covering test, and a marker. Measured at a 1440-wide viewport,
+ * the theme's default measure gives those tables a 720px scroll box for content that needs 793 to 807px,
+ * so all thirty overflow and the seventh column is cut. The consequence is not a cosmetic crop: the marker
+ * column is centre-aligned, so at that width the glyph's ink sits wholly beyond the clip edge and all
+ * thirty-eight marked rows read as empty, under a header truncated to a single letter - on a page that
+ * explains, a few sections earlier, what those four glyphs mean.
+ *
+ * The widening is sized from that measurement rather than chosen: the widest table needs 87px more than it
+ * has, which is 65.35rem of measure, and at a 1920-wide viewport - where the theme scales the root font
+ * size up, so the shortfall scales with it - the same requirement is 65.32rem. 66rem satisfies both with
+ * headroom while staying well inside the narrower viewport, so no page acquires horizontal overflow, and it
+ * is deliberately the smallest step that does: the theme's default measure exists to keep prose lines
+ * readable, and every rem beyond what the tables need is paid for in line length on every page.
+ */
+.md-grid {
+  max-width: 66rem;
+}
+
+/*
+ * WHERE CONTENT STILL SCROLLS, IT HAS TO SAY SO.
+ *
+ * Widening the measure cannot fix everything, and one case proves it: the audit section of the onboarding
+ * guide publishes a 193-character grep whose line needs more width than the whole viewport, so it will
+ * always scroll. Scrolling is a perfectly good answer - the alternative, soft-wrapping code, would
+ * desynchronise every wrapped line from its number in the gutter beside it. The defect is that the scroll
+ * was silent: both scroll containers reserve no space for a scrollbar and paint none at rest, so five code
+ * blocks and thirty tables hid content behind no signal at all. A reader has no way to know a command they
+ * are copying is truncated, and mid-token is exactly where these truncate.
+ *
+ * Two mechanisms produced the silence and only one of them was the theme's. The table wrappers declare
+ * nothing at all, so they inherit whatever the platform does - and an engine drawing overlay scrollbars
+ * draws nothing at rest. The code blocks do declare a thin scrollbar, but with a scrollbar-color whose
+ * track alpha is zero: the groove that would show a reader there is somewhere to scroll TO is deliberately
+ * invisible, leaving at most a floating thumb.
+ *
+ * The answer is the two standard properties on both containers, and nothing else. The thin metric is kept
+ * because it is the theme's own and it reserves real layout space rather than overlaying the content; what
+ * changes is that the track is given a visible tint, so the groove is drawn whenever the element overflows
+ * and drawn nowhere else. This is deliberately NOT written with ::-webkit-scrollbar pseudo-elements, and
+ * the reason is worth recording because the mistake is easy and silent: a Chromium engine ignores that
+ * whole family of pseudo-elements outright as soon as either standard property is set to anything but auto,
+ * so pairing them produces rules that parse, raise no warning, and never apply. The standard pair also
+ * reaches engines that never implemented the pseudo-elements at all.
+ */
+.md-typeset .md-typeset__scrollwrap,
+.md-typeset pre > code {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.42) rgba(0, 0, 0, 0.08);
+}
+
+/*
+ * OFF-SITE REFERENCES ARE MARKED, BECAUSE THE READER CANNOT OTHERWISE TELL.
+ *
+ * Some references in this documentation intentionally leave the site: the estate's diagram assets and the
+ * repository-root governance files live outside the documentation root and are linked read-only in the
+ * repository rather than republished here, and the security-reporting reference is a third-party
+ * destination on purpose. Rendered with the theme's link colour and nothing else, those are indistinguishable
+ * from the in-site page links beside them, so a reader following one loses the site without being told - on
+ * pages that are tens of thousands of pixels long, that costs them their place.
+ *
+ * The marker is generated content rather than an image: it needs no request, it survives with images
+ * disabled, Chrome exposes it in the accessibility tree, and it prints. Links carrying an image are
+ * excluded, because an arrow beside a figure reads as part of the figure.
+ */
+.md-typeset a[href^="http://"]:not(.md-button):not(:has(img))::after,
+.md-typeset a[href^="https://"]:not(.md-button):not(:has(img))::after {
+  content: "\2197";
+  display: inline-block;
+  margin-left: 0.15em;
+  font-size: 0.85em;
+  line-height: 1;
+  vertical-align: baseline;
+  /* The glyph is decoration attached to the link's own colour, so it inherits rather than declaring one:
+     it can never fall below the contrast the link text itself clears. */
+  color: inherit;
+  text-decoration: none;
+  /* Excluded from selection so copying a link's text does not carry the arrow into the clipboard. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/*
+ * DIAGRAM FIGURES: NATURAL SIZE INSIDE A REGION THAT SAYS IT SCROLLS.
+ *
+ * Every diagram on this site is a pre-rendered SVG whose geometry was fixed at authoring time, published
+ * through <img> inside a labelled scroll region. That shape is what the three defects it replaces require,
+ * and each rule below answers one of them.
+ *
+ * max-width: none is the load-bearing declaration. The theme constrains every image with
+ * `.md-typeset img { max-width: 100% }`, which would scale a 2257px-wide entity diagram down to whatever
+ * the measure allows - 788px at a desktop width and 358px on a phone - and a 16px label scaled by 0.16
+ * renders at 2.5px. That was the defect: not that the diagram was absent, but that its text was present at
+ * a size no one can read, with no way to recover it. Serving the image at its intrinsic size and letting the
+ * frame scroll keeps every label at the size it was drawn, on every viewport.
+ *
+ * The frame then has to declare that it scrolls, because a scroll a reader cannot see is content the reader
+ * does not know is there. Two independent cues do it, deliberately not one:
+ *
+ *  - A visible cue, built from the four-layer scroll-shadow pattern. Two "cover" layers are attached local,
+ *    so they travel with the content and mask the shadow at whichever end the reader has reached; two
+ *    "shadow" layers are attached scroll, so they stay pinned to the frame. The net effect is a shadow at
+ *    exactly the edges where content continues, painted at rest and needing no script. This does NOT rely on
+ *    a scrollbar being drawn: an engine using overlay scrollbars reserves no space and paints nothing until
+ *    the reader is already scrolling, which is the mechanism that made the earlier silence silent.
+ *  - A textual cue, in the caption of every figure, which says the frame scrolls and how to pan it with the
+ *    keyboard. It survives with images off, with CSS off, in a screen reader and in print, none of which is
+ *    true of a shadow.
+ *
+ * role="region" with tabindex="0" and an accessible name taken from the caption is what makes the frame
+ * operable and announced rather than merely scrollable, so the outline below is not decoration - it is the
+ * only thing telling a keyboard reader where they are. It is drawn from currentColor so it can never fall
+ * below the contrast the surrounding text already clears.
+ */
+.md-typeset figure.diagram {
+  margin: 1.2em 0;
+  max-width: 100%;
+}
+
+.md-typeset .diagram__viewport {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.4rem;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 0.1rem;
+  background-color: var(--md-default-bg-color, #ffffff);
+  background-image:
+    linear-gradient(to right, var(--md-default-bg-color, #ffffff) 40%, rgba(255, 255, 255, 0)),
+    linear-gradient(to left, var(--md-default-bg-color, #ffffff) 40%, rgba(255, 255, 255, 0)),
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0));
+  background-position: left center, right center, left center, right center;
+  background-repeat: no-repeat;
+  background-size: 2.5rem 100%, 2.5rem 100%, 1.2rem 100%, 1.2rem 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+
+.md-typeset .diagram__viewport:focus-visible {
+  outline: 0.15rem solid currentColor;
+  outline-offset: 0.1rem;
+}
+
+/* Retained for engines that implement :focus but not :focus-visible, so the indicator is never absent. */
+.md-typeset .diagram__viewport:focus {
+  outline: 0.15rem solid currentColor;
+  outline-offset: 0.1rem;
+}
+
+.md-typeset .diagram__image {
+  display: block;
+  max-width: none;
+  height: auto;
+}
+
+.md-typeset .diagram__caption {
+  margin-top: 0.4rem;
+  text-align: left;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+/*
+ * In print there is no scrolling to recover from, so the frame stops scrolling and the diagram is scaled to
+ * the page instead. The caption still carries the text alternative, which is what a printed page needs most.
+ */
+@media print {
+  .md-typeset .diagram__viewport {
+    overflow: visible;
+    border: 0;
+    background: none;
+  }
+
+  .md-typeset .diagram__image {
+    max-width: 100%;
+  }
+}
+
+/*
+ * ================================================================================================
+ * A VISUALLY HIDDEN LABEL
+ * ================================================================================================
+ *
+ * The drawer and search openers are <label> elements holding nothing but an SVG, so each computed an
+ * EMPTY accessible name and the control it names inherited that emptiness. The theme override adds a
+ * span of real text inside each one; this is the rule that keeps that text out of the picture while
+ * leaving it in the accessibility tree.
+ *
+ * `clip-path: inset(50%)` rather than `display: none` or `visibility: hidden`, because both of those
+ * remove the text from the accessibility tree as well - which would leave the name empty again and
+ * the fix invisible in both senses. The 1px box with `overflow: hidden` is what stops the text from
+ * being painted; `white-space: nowrap` stops a long name from forcing a scrollbar on the page while
+ * it is collapsed to that box.
+ */
+.cd-sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+/*
+ * ================================================================================================
+ * THE NAVIGATION DRAWER: INERT WHEN CLOSED, AND OPERABLE FROM THE KEYBOARD
+ * ================================================================================================
+ *
+ * Two defects, one cause. Below the drawer breakpoint the navigation panel is moved off-screen with
+ * `left: -12.1rem` and nothing else: it stays `visibility: visible` with `pointer-events: auto`, so
+ * every link inside it remains in the tab order. Measured on this site, between 8 and 458 of them,
+ * and nine of the first twelve Tab presses on a phone landed on something no one can see. Worse, a
+ * browser scrolls a focused element into view, so tabbing into that panel dragged its own scroll
+ * container sideways and left a blank white drawer behind - which is also why "closing does not
+ * reset the scroll" was reported: the scroll was a symptom of the focus, not a separate bug.
+ *
+ * `visibility: hidden` on the closed panel is the fix, and it is the whole fix for that half:
+ * visibility is inherited and it removes descendants from the tab order, so no link inside can be
+ * reached, nothing can be scrolled into view, and the scroll cannot be disturbed in the first place.
+ * A reader who never reaches the panel never needs it reset.
+ *
+ * The transition is restated only to DELAY the hide. Visibility is not an animatable property, so
+ * without the delay the panel would blink out of existence at the instant it was closed instead of
+ * sliding out - the two transform and shadow timings are copied from the theme so the slide itself
+ * is unchanged, and visibility flips after it finishes.
+ *
+ * The second defect is that there was no keyboard way to OPEN it. The opener is a <label>, which is
+ * not focusable and does not respond to Enter or Space, and the checkbox it points at is
+ * `display: none`, which is not focusable either - so the drawer could be opened by pointer only.
+ * The checkbox is therefore given a real 44x44 box exactly over the opener icon. It is the control:
+ * natively focusable, natively toggled by Space, named by its own labels, and it never loses focus
+ * when the panel opens or closes, which is what makes "focus stays visible and returns on close"
+ * true by construction rather than by restoration.
+ *
+ * `appearance: none` rather than `opacity: 0` is deliberate and load-bearing: an opacity-0 control
+ * hides its own focus ring, which would have traded one invisible-focus defect for another.
+ * Removing the native appearance leaves nothing painted while keeping the element - and therefore
+ * its outline - fully visible.
+ */
+@media screen and (max-width: 76.234375em) {
+  [data-md-toggle="drawer"]:not(:checked) ~ .md-container .md-sidebar--primary {
+    visibility: hidden;
+    transition:
+      transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 0.25s,
+      visibility 0s linear 0.25s;
+  }
+
+  [data-md-toggle="drawer"]:checked ~ .md-container .md-sidebar--primary {
+    visibility: visible;
+  }
+}
+
+/* THE TOGGLE ITSELF AS THE CONTROL.
+ *
+ * Two blocks rather than one, because the drawer toggle belongs at the DRAWER breakpoint and the
+ * search toggle at the SEARCH one. Revealing both together at the drawer breakpoint left a
+ * focusable, invisible search toggle at the top right of every layout between 960px and 1220px - a
+ * width where the search field is already expanded in the header and the overlay it opens is not
+ * the interface at all. A control should be reachable only where the thing it operates exists.
+ *
+ * z-index 5, not 3, and the number was measured rather than picked. At 3 the control sat BEHIND the
+ * header, which computes 4: the checkbox was still focusable and Space still opened the drawer, but
+ * its focus ring painted underneath the header fill - the focused and unfocused screenshots came
+ * back BYTE-IDENTICAL - and every hit test inside its own box resolved to the label underneath
+ * instead of to it. 5 puts it above the header while still losing to the drawer panel and the scrim,
+ * which are also 5 and come later in document order, so an open drawer covers the toggle exactly as
+ * it did before.
+ *
+ * `appearance: none` rather than `opacity: 0` remains deliberate: an opacity-0 control hides its own
+ * focus ring, which is half of the defect these rules exist to remove.
+ *
+ * `pointer-events: none` CORRECTS A REGRESSION THESE RULES THEMSELVES CAUSED, and it costs nothing.
+ * A fixed 44x44 box at each top corner, sitting above the header at z-index 5, also sat above the
+ * two controls the SEARCH OVERLAY paints in exactly those corners once it is open: the back arrow at
+ * the left and the clear button at the right. Every hit test at their centres resolved to the
+ * checkbox instead, and a real pointer click on the clear button's centre closed the entire overlay
+ * and left the query text in place - the reader could see a clear button, press it, and lose the
+ * results instead of the query. `pointer-events` governs hit testing only. It does not affect focus,
+ * keyboard activation, or painting, so the checkbox is still tabbable, Space still toggles it, and
+ * its focus ring still paints above the header. The pointer path returns to the theme's own label,
+ * which is the native mechanism for a checkbox control and which carries its own 44x44 hit area from
+ * the enlargement rules further down - so the touch target survives at full size while the overlay's
+ * controls become reachable again. */
+@media screen and (max-width: 76.234375em) {
+  #__drawer.md-toggle {
+    display: block;
+    position: fixed;
+    top: 0.1rem;
+    width: 2.2rem;
+    height: 2.2rem;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+    z-index: 5;
+    pointer-events: none;
+  }
+
+  /* 0.3rem, not 0.2rem, so the control is CONCENTRIC with the label's own 44x44 tap area rather
+     than two pixels off it. The label is 40x40 at an eight-pixel inset and its enlargement is
+     centred on it, which puts the tap area at 6..49; the control at a four-pixel inset sat at
+     4..47. Both are the full 44 pixels wide, so the touch target was never short - but the two
+     boxes did not coincide, and a hit test taken twenty-one pixels from the CONTROL's centre
+     therefore landed one pixel outside the LABEL's area, on the inert header background. Six
+     pixels makes the two boxes identical, so the measurement is unambiguous from either origin,
+     and it centres the focus ring on the icon glyph as a side effect. */
+  [dir="ltr"] #__drawer.md-toggle { left: 0.3rem; }
+  [dir="rtl"] #__drawer.md-toggle { right: 0.3rem; }
+
+  #__drawer.md-toggle:focus-visible,
+  #__drawer.md-toggle:focus {
+    outline: 0.15rem solid var(--md-primary-bg-color, #ffffff);
+    outline-offset: -0.15rem;
+  }
+}
+
+@media screen and (max-width: 59.984375em) {
+  #__search.md-toggle {
+    display: block;
+    position: fixed;
+    top: 0.1rem;
+    width: 2.2rem;
+    height: 2.2rem;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+    z-index: 5;
+    pointer-events: none;
+  }
+
+  /* 0.3rem for the same reason as the drawer above: it makes this control coincide exactly with the
+     search label's 44x44 tap area instead of sitting two pixels outboard of it. */
+  [dir="ltr"] #__search.md-toggle { right: 0.3rem; }
+  [dir="rtl"] #__search.md-toggle { left: 0.3rem; }
+
+  #__search.md-toggle:focus-visible,
+  #__search.md-toggle:focus {
+    outline: 0.15rem solid var(--md-primary-bg-color, #ffffff);
+    outline-offset: -0.15rem;
+  }
+}
+
+/*
+ * ================================================================================================
+ * SEARCH: NOTHING REACHABLE WHILE IT IS COLLAPSED
+ * ================================================================================================
+ *
+ * Below the search breakpoint the panel is parked off the right edge of the viewport rather than
+ * hidden, so its field and its results stayed in the tab order exactly as the drawer's links did.
+ * The same mechanism closes it. The zero-by-zero `tabindex="0"` scroll wrapper that was the third
+ * Tab stop on every page is removed in the theme override, because a tabindex is an attribute and no
+ * stylesheet can take it away.
+ */
+@media screen and (max-width: 59.984375em) {
+  [data-md-toggle="search"]:not(:checked) ~ .md-header .md-search__inner {
+    visibility: hidden;
+    transition: visibility 0s linear 0.3s;
+  }
+
+  [data-md-toggle="search"]:checked ~ .md-header .md-search__inner {
+    visibility: visible;
+  }
+}
+
+/*
+ * ================================================================================================
+ * TOUCH TARGETS
+ * ================================================================================================
+ *
+ * Header controls measured 40x40, the search reset 18x18, and a heading's permalink 14.9 x 41.6 -
+ * all below the 44x44 minimum. Each is corrected by enlarging the TARGET rather than the control,
+ * with a transparent generated box centred on it, so every painted control keeps the size and
+ * position it has now. Growing the controls themselves would have deepened the header on every
+ * viewport to fix something no one can see.
+ *
+ * The permalink is the interesting one. It is not merely small: the theme paints it at `opacity: 0`
+ * until its heading is hovered, so on a touch screen - where there is no hover - it can never be
+ * seen or found at all, and there are 451 of them on one page here. The hover rule is left exactly
+ * as it is where a pointer exists, and the link is simply shown where hovering is not possible,
+ * which is the only condition under which it was unreachable. Its target extends to the RIGHT from
+ * its own left edge rather than being centred, because a permalink sits at the end of its heading:
+ * centring would have pushed the target back over the heading's last word, and extending it forward
+ * puts the extra area in the empty space that is already there.
+ */
+.md-header__button,
+.md-search__options .md-search__icon,
+.md-typeset .headerlink { position: relative; }
+
+.md-header__button::after,
+.md-search__options .md-search__icon::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2.2rem;
+  min-width: 2.2rem;
+  height: 2.2rem;
+}
+
+/*
+ * THE PERMALINK'S ENLARGEMENT GROWS INWARD, NOT OUTWARD, AND THAT IS WHAT KEEPS IT FROM WIDENING THE
+ * PAGE.
+ *
+ * A permalink is a pilcrow roughly ten to seventeen pixels wide at the end of a heading, and it is an
+ * inline-block with visible overflow. Anchored at its left edge, a 44-pixel box therefore projected up
+ * to thirty-four pixels PAST the anchor - and when a heading wrapped so its pilcrow landed near the
+ * right edge of the content column, that projection pushed the document's scrollable width past the
+ * viewport: measured at 12px on the traceability page, 16px on gate evidence and 17px on the decision
+ * log and the technical specification, and exactly zero on the four pages where the furthest pilcrow
+ * fell short of the edge. The overflow equalled the projection past the viewport on every page, with
+ * no residual. Nothing was clipped from view and the theme's own `html { overflow-x: hidden }` meant
+ * no scrollbar appeared, but the page could still be nudged sideways programmatically, and the phantom
+ * width was this rule's own doing.
+ *
+ * Anchoring the box at the anchor's RIGHT edge fixes it outright rather than by a margin: the box's
+ * right edge is then the anchor's right edge, which is inside the content column by construction, so
+ * no anchor width and no viewport width can make it reach the edge. Centring it would also have worked
+ * at 390px, but only by about half a pixel of slack, which is not a fix. The box grows back over the
+ * heading's trailing text instead of into the margin - text that is not interactive, so a tap there
+ * activating the permalink is harmless - and it stays a contiguous 44 by 44 containing the pilcrow.
+ */
+.md-typeset .headerlink::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2.2rem;
+  height: 2.2rem;
+}
+
+[dir="ltr"] .md-typeset .headerlink::after { right: 0; }
+[dir="rtl"] .md-typeset .headerlink::after { left: 0; }
+
+/*
+ * THE SEARCH OVERLAY'S OWN TWO ICONS, WHICH THE RULE ABOVE MISSED.
+ *
+ * That enlargement is scoped to `.md-search__options .md-search__icon`, and only one of the two icons
+ * lives there. The clear button does; the back arrow that dismisses the overlay is a label in
+ * `.md-search__form`, so it never received a pseudo-element at all and stayed at the bare 24x24 the
+ * theme paints - measured as `content: none` on the label while the button beside it had its 44x44.
+ * Widening the selector to `.md-search__icon` inside the SEARCH breakpoint covers both, and covers
+ * nothing else: at wider widths the header holds a real search field rather than an overlay, and
+ * enlarging the decorative magnifier inside that field would put a 44-pixel box over the place the
+ * reader clicks to type.
+ *
+ * The back arrow is absolutely positioned by the theme, so its pseudo-element centres on it directly.
+ * The clear button is static inside an absolutely positioned container, so the container's own child
+ * needs positioning declared for it - which is what the first selector does, and why it is scoped to
+ * the options container rather than applied to both.
+ */
+@media screen and (max-width: 59.984375em) {
+  .md-search__options .md-search__icon { position: relative; }
+
+  .md-search__icon::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2.2rem;
+    min-width: 2.2rem;
+    height: 2.2rem;
+  }
+}
+
+@media (hover: none) {
+  .md-typeset .headerlink { opacity: 1; }
+}
+
+/* The theme fades the permalink in on hover but leaves focus to inherit opacity 0, so a keyboard
+   reader could focus a link that was still invisible. */
+.md-typeset .headerlink:focus,
+.md-typeset .headerlink:focus-visible { opacity: 1; }
+
+/*
+ * ================================================================================================
+ * OVERFLOW: TABLES AND CODE
+ * ================================================================================================
+ *
+ * The theme's own table scroll frame is built by script at runtime, so the published HTML carries
+ * none of it and a reader that strips script gets none of it either. The frame this site uses is in
+ * the file instead, added by the theme override: a named region with `tabindex="0"`, which is what
+ * makes it reachable and announced. This block gives it the scrolling and the visible cue.
+ *
+ * THE TABLE ITSELF DELIBERATELY KEEPS NO CLASS. The theme styles tables through
+ * `table:not([class])`, so putting a class on one to keep the theme's script away from it would have
+ * stripped its borders, padding and type scale as well - the fix would have cost the appearance of
+ * every table on the site. Instead the inner scrollers are neutralised: the table's own
+ * `overflow: auto` and `max-width: 100%`, and the wrapper the script inserts if it runs, all stop
+ * scrolling, so exactly one element scrolls, one element is a Tab stop, and one element paints the
+ * cue - whether or not the script ran, and without a second frame nested inside the first.
+ *
+ * The cue is the four-layer scroll shadow used elsewhere on this site: two cover layers attached
+ * `local` so they travel with the content and mask the shadow at whichever end the reader has
+ * reached, and two shadow layers attached `scroll` so they stay pinned to the frame. It cannot be
+ * left to the scrollbar, because this engine draws OVERLAY scrollbars - which reserve no width and
+ * paint nothing until the reader is already scrolling, and that silence is the defect.
+ */
+.md-typeset .cd-tablewrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  margin: 1em 0;
+  background-color: var(--md-default-bg-color, #ffffff);
+  background-image:
+    linear-gradient(to right, var(--md-default-bg-color, #ffffff) 40%, rgba(255, 255, 255, 0)),
+    linear-gradient(to left, var(--md-default-bg-color, #ffffff) 40%, rgba(255, 255, 255, 0)),
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0));
+  background-position: left center, right center, left center, right center;
+  background-repeat: no-repeat;
+  background-size: 2.5rem 100%, 2.5rem 100%, 1.2rem 100%, 1.2rem 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+
+.md-typeset .cd-tablewrap:focus-visible,
+.md-typeset .cd-tablewrap:focus {
+  outline: 0.15rem solid currentColor;
+  outline-offset: 0.1rem;
+}
+
+/*
+ * THE INNER TABLE'S BACKGROUND HAS TO GO TRANSPARENT OR THE CUE ABOVE NEVER APPEARS.
+ *
+ * The theme gives `table:not([class])` an opaque `background-color: var(--md-default-bg-color)`, and
+ * that table is a child of the frame painting the cue. It therefore covers the frame's entire client
+ * box - white over both shadow layers - and the frame's right edge measured a flat rgb(255,255,255)
+ * for twenty-five consecutive pixels on a table with forty-six pixels still hidden to its right. The
+ * gradients were being painted correctly and then painted over. Making the table transparent lets
+ * them through; the frame keeps the same background colour, so nothing changes visually except that
+ * the cue is now visible. Every other layer between the two - the cells, and the two wrappers the
+ * theme's script inserts - was already transparent, which is why this one declaration is the whole
+ * of it.
+ */
+.md-typeset .cd-tablewrap > table:not([class]),
+.md-typeset .cd-tablewrap .md-typeset__table > table:not([class]) {
+  overflow: visible;
+  max-width: none;
+  margin: 0;
+  background-color: transparent;
+}
+
+/*
+ * A WIDE TABLE IS CLIPPED BY THE THEME'S OWN MINIMUM COLUMN WIDTH, NOT BY ITS CONTENT.
+ *
+ * `.md-typeset table:not([class]) th` carries `min-width: 5rem`, which is a hundred pixels here. At
+ * three columns that is generous spacing; at nine it is a nine-hundred-pixel floor inside a
+ * seven-hundred-and-eighty-eight-pixel column, and the ninth column - the one holding the recorded
+ * status, which is the entire point of the table - was pushed out of the scrollport with exactly zero
+ * pixels visible at 1440x900. The table's actual content needed nowhere near that width: its
+ * measured scroll width was 902 against a 900-pixel floor, so it was sitting on the minimum.
+ *
+ * The floor is lowered, and the theme's roomy cell padding tightened, ONLY for tables the template
+ * marked as wide. Everything narrower keeps the theme's density untouched, because the great majority
+ * of tables here are two to four columns and read better spaced out. Nine columns at the reduced
+ * floor come to well under the content width, so the table now fits at desktop and the cue and the
+ * named scroll region continue to carry the mobile case.
+ */
+.md-typeset .cd-tablewrap--wide > table:not([class]) th,
+.md-typeset .cd-tablewrap--wide > table:not([class]) td,
+.md-typeset .cd-tablewrap--wide .md-typeset__table > table:not([class]) th,
+.md-typeset .cd-tablewrap--wide .md-typeset__table > table:not([class]) td {
+  min-width: 3.6rem;
+  padding: 0.7em 0.8em;
+}
+
+/*
+ * The caption is the element HTML provides for naming a table, and it is the frame's accessible name.
+ * It is positioned out of flow at the frame's own origin so that a one-pixel clipped box can never
+ * contribute to the frame's scrollable width, and left in the accessibility tree by the shared
+ * screen-reader-only rule rather than hidden outright.
+ */
+.md-typeset .cd-tablewrap > table > caption.cd-sr-only,
+.md-typeset .cd-tablewrap caption.cd-sr-only {
+  top: 0 !important;
+  left: 0 !important;
+  caption-side: top;
+}
+
+.md-typeset .cd-tablewrap .md-typeset__scrollwrap {
+  overflow: visible;
+  margin: 0;
+}
+
+.md-typeset .cd-tablewrap .md-typeset__table {
+  padding: 0;
+  margin: 0;
+}
+
+/*
+ * The same cue for a code block, whose line endings were being hidden with no affordance at all -
+ * measured at up to 859 hidden pixels on a single command, on a page whose whole purpose is that the
+ * reader copies those commands. The theme's script makes an overflowing block focusable; this adds
+ * the part a script cannot be trusted with, and the focus ring the block needs once it is focusable.
+ */
+.md-typeset pre > code {
+  background-image:
+    linear-gradient(to right, var(--md-code-bg-color, #f5f5f5) 40%, rgba(245, 245, 245, 0)),
+    linear-gradient(to left, var(--md-code-bg-color, #f5f5f5) 40%, rgba(245, 245, 245, 0)),
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0));
+  background-position: left center, right center, left center, right center;
+  background-repeat: no-repeat;
+  background-size: 2.5rem 100%, 2.5rem 100%, 1.2rem 100%, 1.2rem 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+
+.md-typeset pre > code:focus-visible,
+.md-typeset pre > code:focus {
+  outline: 0.15rem solid currentColor;
+  outline-offset: -0.15rem;
+}
+
+/*
+ * ================================================================================================
+ * SYNTAX COLOUR CONTRAST
+ * ================================================================================================
+ *
+ * Every one of these tokens sat between 4.48:1 and 4.71:1 against the `#f5f5f5` the code background
+ * actually paints, so the comment, operator, punctuation and variable colours FAILED the 4.5:1
+ * minimum outright and the rest passed only by a hundredth - close enough that a different rounding
+ * or a different measurement tool disagrees about whether the page conforms, which is not a state
+ * worth publishing.
+ *
+ * Each replacement was computed rather than chosen: the original was scaled toward black, keeping its
+ * channel ratios and therefore its hue, until it cleared 5.5:1 against `#f5f5f5`. Highlighting still
+ * reads as the same palette - blue keywords, green strings, red numbers - and the whole set now has
+ * a full point of margin instead of a hundredth. The four that were failing were not their own
+ * colour at all but the theme's shared "light foreground", which is why they are named individually
+ * here: overriding that variable would have darkened body text far from any code block, at sizes
+ * and on backgrounds where it already conformed.
+ */
+:root {
+  --md-code-hl-comment-color: #636363;
+  --md-code-hl-generic-color: #636363;
+  --md-code-hl-operator-color: #636363;
+  --md-code-hl-punctuation-color: #636363;
+  --md-code-hl-variable-color: #636363;
+  --md-code-hl-keyword-color: #3861af;
+  --md-code-hl-special-color: #c2124d;
+  --md-code-hl-number-color: #be2626;
+  --md-code-hl-constant-color: #6350c4;
+  --md-code-hl-string-color: #197146;
+  --md-code-hl-function-color: #943ea3;
+}
+
+/*
+ * THE LINE-NUMBER GUTTER WAS THE ONE TOKEN LEFT UNDER THE MINIMUM, AND IT IS NOT A TOKEN.
+ *
+ * The eleven variables above cover the highlighter's palette; the ordinals down the left of a numbered
+ * block are coloured by two theme rules that reach past them - `.highlighttable .linenodiv pre` and
+ * `.highlight [data-linenos]:before` - both set to the shared light foreground, `#0000008a`. Over the
+ * `#f5f5f5` a code block paints, that composites to about 4.5:1, and which side of the minimum it
+ * falls on depends entirely on how the alpha is read: the browser serializes it as 0.54, which
+ * computes 4.4963 and fails; the authored 8a is 138/255, which computes 4.5153 and passes; the pixel
+ * that actually paints reads rgb(112,112,112), which computes 4.5423. Two independent measurements of
+ * this same value disagreed for exactly that reason.
+ *
+ * A published page should not conform by a margin thinner than a rounding step. The gutter is given
+ * the same computed grey the comment tokens use, 5.51:1, which removes the ambiguity without changing
+ * the design: the ordinals stay visibly lighter than the code beside them, which is the whole point of
+ * a gutter, because the code itself sits at 8.99:1.
+ */
+.md-typeset .highlighttable .linenodiv pre,
+.md-typeset .highlighttable .linenos,
+.md-typeset .highlighttable .linenos pre,
+.md-typeset .highlighttable .linenodiv pre span,
+.md-typeset .highlighttable .linenos span,
+.md-typeset .highlight [data-linenos]::before {
+  color: #636363;
+}
+
+/*
+ * ================================================================================================
+ * BACK TO TOP
+ * ================================================================================================
+ *
+ * The theme's back-to-top control is hidden with `opacity: 0` and `pointer-events: none` and nothing
+ * else. Neither of those removes an element from the accessibility tree, and the `hidden` attribute
+ * the theme also sets is overridden by its own `display: block`, so on every long page the control was
+ * announced and reachable while painting nothing and responding to nothing - a reader could focus a
+ * control that was not there. `visibility: hidden` is what actually takes it out, and it is scoped to
+ * the attribute the theme's script toggles, so the control appears and disappears exactly when the
+ * theme intends it to.
+ *
+ * The focus ring is added because the theme paints none: the control's focus style is a colour
+ * inversion, which came back as `outline-style: none` and left the focused state indistinguishable in
+ * a screenshot. The inverted pair was itself thin - white on the accent blue is 4.26:1 at the 14px
+ * this label renders at - so the focused background is set to the primary indigo, 6.87:1 against
+ * white, and the resting label darkened from the theme's translucent grey to the same 6.01:1 grey the
+ * gutter uses.
+ *
+ * Focus moves to the document body when the control is activated, and that is left as it is: the
+ * control's whole purpose is to send the reader to the top of the document, and the next Tab from the
+ * body lands on the first focusable element there, which is where a reader who just pressed
+ * "back to top" expects to be.
+ */
+.md-top[hidden] {
+  visibility: hidden;
+}
+
+.md-top {
+  color: #636363;
+}
+
+.md-top:focus,
+.md-top:focus-visible,
+.md-top:hover {
+  background-color: #3f51b5;
+  color: #ffffff;
+}
+
+.md-top:focus,
+.md-top:focus-visible {
+  outline: 0.15rem solid var(--md-default-fg-color, rgba(0, 0, 0, 0.87));
+  outline-offset: 0.1rem;
+}

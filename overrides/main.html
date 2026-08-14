@@ -1,0 +1,340 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates.
+  All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License").
+  You may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific
+  language governing permissions and limitations under the License
+-#}
+{#-
+  ============================================================================================
+  THEME OVERRIDE: the accessibility attributes that a stylesheet cannot express
+  ============================================================================================
+
+  WHY A TEMPLATE AT ALL. Most of the accessibility work on this site is done in
+  docs/stylesheets/extra.css, because a stylesheet is the one mechanism that survives every
+  publication path unchanged. Five things, though, are attributes rather than presentation - an
+  accessible name, aria-modal, aria-current, a scope, a tabindex that must be REMOVED - and no
+  stylesheet can add or remove an attribute. They are done here.
+
+  WHY NOT SCRIPT. The obvious alternative was a small script. It cannot be used, and this was
+  established by execution rather than assumed: the official publication path strips
+  `extra_javascript` from the configuration outright, and the Backstage reader sanitises the
+  rendered HTML, which removes an inline <script> as well. Anything load-bearing has to be in the
+  markup or the stylesheet by the time the build finishes.
+
+  WHY THIS DIRECTORY IS AT THE REPOSITORY ROOT rather than beside the pages it patches: MkDocs
+  resolves `theme.custom_dir` relative to the configuration file, and rejects a directory inside
+  `docs_dir`. The repository root is therefore the only place it can live - the same class of
+  constraint that puts the CI workflow at the root. It is a supported theme override, which is
+  what the finding on navigation and table semantics asks for by name.
+
+  HOW EACH PATCH WORKS, AND WHY IT IS SHAPED LIKE THIS. Each block below renders its PARENT
+  through `super()`, captures that output, and rewrites named substrings in it. Nothing upstream
+  is copied. That matters more than it sounds: a conventional override reproduces the upstream
+  partial and edits it, which silently freezes this site to one theme release - the copy keeps
+  working while the original gains fixes and markup the copy never receives. Capturing `super()`
+  means every upstream change flows through untouched except for the exact strings named here.
+
+  THE DRIFT GUARD. The cost of patching by substring is that a substring can stop existing, and a
+  `replace` that matches nothing does nothing SILENTLY - the build would succeed and the fix would
+  be gone. So every patch asserts its own needle: if the string is absent, the template reads an
+  attribute off an undefined variable, which raises and fails the build loudly. A broken override
+  is then impossible to publish, which is the only acceptable failure mode for a fix nobody can
+  see working.
+-#}
+{% extends "base.html" %}
+
+{#-
+  Header. Carries the two toggle openers and the whole search dialog, and every defect in it is an
+  attribute:
+
+  - The drawer and search openers are <label> elements holding nothing but an SVG, so each computes
+    an EMPTY accessible name. The visually hidden text added inside them becomes the label's text
+    alternative, which is what a <label for=...> contributes to the control it names - so naming the
+    label is what names the checkbox that actually operates the drawer.
+  - The search panel declares role="dialog" with no name at all. A nameless dialog is announced as
+    just "dialog", which tells a reader nothing about what they have entered.
+  - The scroll wrapper inside it carries tabindex="0" while collapsed, where it measures zero by
+    zero pixels: an unavoidable Tab stop on a target that cannot be seen, and empirically the third
+    stop on every page. Removing the attribute removes the stop; the wrapper is still scrollable by
+    pointer and, once the results are open, its own links are the reachable targets.
+-#}
+{% block header %}
+  {%- set header_html %}{{ super() }}{% endset -%}
+
+  {%- set drawer_opener = '<label class="md-header__button md-icon" for="__drawer">' -%}
+  {%- set search_opener = '<label class="md-header__button md-icon" for="__search">' -%}
+  {%- set search_dialog = '<div class="md-search" data-md-component="search" role="dialog">' -%}
+  {%- set search_scroll = '<div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>' -%}
+
+  {%- if drawer_opener not in header_html %}{{ theme_contract_broken.drawer_opener }}{% endif -%}
+  {%- if search_opener not in header_html %}{{ theme_contract_broken.search_opener }}{% endif -%}
+  {%- if search_dialog not in header_html %}{{ theme_contract_broken.search_dialog }}{% endif -%}
+  {%- if search_scroll not in header_html %}{{ theme_contract_broken.search_scroll }}{% endif -%}
+
+  {{- header_html
+        | replace(drawer_opener, drawer_opener
+            ~ '<span class="cd-sr-only">Open the navigation drawer</span>')
+        | replace(search_opener, search_opener
+            ~ '<span class="cd-sr-only">Open search</span>')
+        | replace(search_dialog, '<div class="md-search" data-md-component="search" role="dialog"'
+            ~ ' aria-modal="true" aria-label="Search this documentation">')
+        | replace(search_scroll, '<div class="md-search__scrollwrap" data-md-scrollfix>')
+        | safe -}}
+{% endblock %}
+
+{#-
+  Navigation. The entry for the page being read carried no aria-current, so the only signal that it
+  was the current page was a colour - available to a reader who can see it and to nobody else.
+
+  The needle is the anchor's class attribute WITH ITS CLOSING BRACKET, which is what makes this
+  precise. The theme emits two elements with that same class: the anchor, whose attribute list ends
+  there, and a <label for="__toc"> whose does not. Naming the bracket therefore matches the anchor
+  alone, and the label - which is not a link and must not claim to be the current page - is left as
+  it is.
+-#}
+{% block site_nav %}
+  {%- set nav_html %}{{ super() }}{% endset -%}
+  {%- set active_link = 'class="md-nav__link md-nav__link--active">' -%}
+
+  {#- The not-found page reaches this template too, and it is a real page in the published site.
+      Nothing in the navigation is current when a reader is on it, so there is no entry to mark and
+      no contract to assert - the guard below would fire on a correct build. Everything current-page
+      shaped is therefore conditioned on there being a current page at all. -#}
+  {%- if page -%}
+    {%- if active_link not in nav_html %}{{ theme_contract_broken.active_nav_link }}{% endif -%}
+    {{- nav_html
+          | replace(active_link,
+              'class="md-nav__link md-nav__link--active" aria-current="page">')
+          | safe -}}
+  {%- else -%}
+    {{- nav_html | safe -}}
+  {%- endif -%}
+{% endblock %}
+
+{#-
+  Page content. Four defects here, and all four are properties of markup generated from Markdown
+  rather than of anything an author wrote:
+
+  1. TABLES SCROLL WITH NO WAY IN AND NO WAY TO KNOW. Every table on this site is generated from a
+     Markdown table, so none has a caption, and the theme's own scroll frame is built by script at
+     runtime - meaning it is absent from the published HTML entirely, and absent for good in a
+     reader that strips script. The wrapper added here is static: it is in the file, it is a named
+     region, it is a Tab stop, and the stylesheet paints an edge cue on it that appears only at the
+     ends where content actually continues. The name is the same on every table, which is a real
+     limitation of generated markup and is accepted deliberately: a per-table name would have to
+     come from a caption, and adding captions to hundreds of generated tables is a content change
+     of a wholly different size. A repeated honest name is better than a nameless landmark.
+
+     The table itself deliberately keeps NO class. The theme styles tables through
+     `table:not([class])`, so classing one strips its borders, padding and type scale - the fix
+     would have cost the appearance of every table on the site. The stylesheet instead neutralises
+     the inner scrollers so this wrapper is the single scroll container, which holds whether or not
+     the theme's script ran.
+
+  2. HEADER CELLS DECLARE NO SCOPE. Markdown emits bare <th>, so nothing states that a header
+     governs its column. Every <th> on these pages is a column header - the generator cannot
+     produce a row header - so the scope is unambiguous.
+
+  3. EVERY PERMALINK IS NAMED THE SAME. The anchor's text is a pilcrow, so 451 links on one page
+     all announce identically and a reader listing them learns nothing. Each is given the text of
+     the heading it belongs to, taken from the page's own table of contents so the label cannot
+     drift from the heading it names.
+
+  4. MARKER GLYPHS STAND ALONE. A tick or a warning sign carries the whole meaning of the line it
+     opens, with no text alternative but the character's own Unicode name. Each is wrapped as an
+     image with the word it stands for.
+-#}
+{% block content %}
+  {%- set content_html %}{{ super() }}{% endset -%}
+  {%- set ns = namespace(html = content_html) -%}
+
+  {#- The not-found page has no source document behind it: no table of contents to read permalink
+      labels from, and no generated tables. It is passed through untouched, and the contract below is
+      asserted only where there is authored content to assert it against. -#}
+  {%- if not page -%}
+    {{- content_html | safe -}}
+  {%- else -%}
+
+  {%- if '<table>' not in content_html and '<th' not in content_html
+      and 'class="headerlink"' not in content_html %}
+    {{- theme_contract_broken.content_markup -}}
+  {%- endif -%}
+
+  {#- 1. a permalink named for the heading it points at, walked recursively so nested headings are
+         labelled too, and - in the same walk - a heading-id to heading-title map that step 3 reads to
+         name each table after the section it sits in. The walk runs first because that map has to
+         exist before the tables are wrapped.
+         The title is taken verbatim except for a double quote, which would close the attribute early;
+         it is turned into an apostrophe rather than escaped, because escaping would double-encode the
+         entities a heading may already contain. -#}
+  {%- set toc_titles = namespace(map = {}) -%}
+  {%- set walk_toc %}
+    {%- for entry in page.toc recursive -%}
+      {%- set _ = toc_titles.map.update({entry.id: entry.title}) -%}
+      {%- set needle = 'href="#' ~ entry.id ~ '" title="Permanent link"' -%}
+      {%- set ns.html = ns.html | replace(needle, needle
+            ~ ' aria-label="Permanent link to the section '
+            ~ (entry.title | replace('"', "'")) ~ '"') -%}
+      {{- loop(entry.children) -}}
+    {%- endfor -%}
+  {% endset -%}
+
+  {#- 2. column scope on every generated header cell, in each alignment the generator emits. This
+         precedes the wrapping because the wrapper counts scoped header cells to record how many
+         columns each table has. -#}
+  {%- set ns.html = ns.html
+        | replace('<th>', '<th scope="col">')
+        | replace('<th style="text-align: left;">', '<th scope="col" style="text-align: left;">')
+        | replace('<th style="text-align: right;">', '<th scope="col" style="text-align: right;">')
+        | replace('<th style="text-align: center;">',
+            '<th scope="col" style="text-align: center;">') -%}
+
+  {#- 2a. a name for the header cells that have no text in them.
+
+          Nine tables on the gate-evidence page are authored as two-column definition blocks with a
+          deliberately blank header row - the generator still emits the row, so each produced two
+          header cells with an empty string in them. They were correctly associated with their columns
+          and named nothing, which is the worst of both: a reader tabbing the table hears "blank" twice
+          before any content. The names added here describe the structure rather than inventing
+          content, because that is what the columns are: the first holds the name of a field and the
+          second holds its value. They are screen-reader-only, so the published table looks exactly as
+          it did - a blank header strip above the rows.
+
+          Matching the two cells as one adjacent pair is what keeps this from touching anything else.
+          Every such table in the estate is exactly two columns and the generator serializes the pair
+          identically in all nine, so a single needle covers them and cannot reach a header cell that
+          has text. No drift guard: a page with no blank-header table legitimately matches nothing, and
+          the published assertion is instead that no unnamed header cell survives anywhere. -#}
+  {%- set ns.html = ns.html
+        | replace('<th scope="col"></th>\n<th scope="col"></th>',
+            '<th scope="col"><span class="cd-sr-only">Field</span></th>\n'
+            ~ '<th scope="col"><span class="cd-sr-only">Value</span></th>') -%}
+
+  {#- 3. the static, named, focusable scroll frame around every generated table.
+
+         THE CLOSING NEEDLE IS `</tbody></table>`, NOT `</table>`, AND THAT IS THE WHOLE POINT.
+         Closing on `</table>` alone looked right and was badly wrong: a highlighted code block is
+         ALSO rendered as a table - `<table class="highlighttable">` - which the opening needle
+         correctly skips, because it is classed, while the closing needle matched it anyway. Every
+         code block therefore received a closing </div> with no opening one, and each stray closer
+         popped a real ancestor off the browser's parser stack: the content column collapsed to zero
+         width, most of the article was reparented out of it, headings painted one letter per line,
+         and the page grew a 2297px horizontal scroll. It affected all seven content pages, in
+         proportion to how many code blocks each had - and, being recovered silently by the parser,
+         it logged nothing at all.
+
+         A generated Markdown table always emits a body, and a Pygments code table never does, so
+         `</tbody>` immediately before `</table>` is exactly the set the opening needle matched. The
+         counts are asserted below rather than trusted, because a mismatch here does not fail - it
+         corrupts, quietly.
+
+         EACH FRAME IS NAMED FOR ITS OWN TABLE, NOT WITH ONE SHARED SENTENCE. The frame used to carry
+         a single literal label, which meant a page announced the same name up to forty-four times
+         over and a reader tabbing through them learned nothing about which table they had landed in.
+         The name now comes from a screen-reader-only `<caption>` - the element the HTML specification
+         actually provides for naming a table - carrying the title of the nearest preceding heading,
+         an ordinal when one section holds several tables, and the column count. The frame points at
+         it with `aria-labelledby`, and at one shared note with `aria-describedby` so the panning
+         instruction is still announced without being repeated in every name.
+
+         The column count is also written out as `data-cd-cols`, because the stylesheet needs it. A
+         wide table is clipped by the theme's own five-rem minimum column width, which is comfortable
+         at three columns and impossible at nine; the attribute lets the stylesheet tighten only the
+         tables that need tightening and leave the common narrow ones at the theme's density. It is
+         counted from the scoped header cells added in step 2, which is why that step runs first. -#}
+  {%- set table_open = '<table>' -%}
+  {%- set table_close = '</tbody>\n</table>' -%}
+
+  {%- if content_html.count(table_open) != content_html.count(table_close) -%}
+    {{- theme_contract_broken.table_wrapper_balance -}}
+  {%- endif -%}
+
+  {%- set ns.html = ns.html | replace(table_close, table_close ~ '</div>') -%}
+
+  {%- set headings = ['<h1 id="', '<h2 id="', '<h3 id="', '<h4 id="', '<h5 id="', '<h6 id="'] -%}
+  {%- set fragments = ns.html.split(table_open) -%}
+  {%- set wrapped = namespace(out = fragments[0], ordinal = 0, seen = {}) -%}
+  {%- for fragment in fragments[1:] -%}
+    {%- set wrapped.ordinal = wrapped.ordinal + 1 -%}
+
+    {#- the nearest heading before this table, found by taking the last opener of any level that
+        appears in the content emitted so far -#}
+    {%- set nearest = namespace(at = -1, id = '') -%}
+    {%- for opener in headings -%}
+      {%- set at = wrapped.out.rfind(opener) -%}
+      {%- if at > nearest.at -%}
+        {%- set nearest.at = at -%}
+        {%- set nearest.id = wrapped.out[at + (opener | length):].split('"')[0] -%}
+      {%- endif -%}
+    {%- endfor -%}
+
+    {%- set section = toc_titles.map.get(nearest.id, page.title) | replace('<', '')
+          | replace('>', '') -%}
+    {%- set _ = wrapped.seen.update({section: wrapped.seen.get(section, 0) + 1}) -%}
+    {%- set within = wrapped.seen.get(section) -%}
+    {%- set caption_id = 'cd-table-' ~ wrapped.ordinal -%}
+    {%- set columns = fragment.split('</thead>')[0].count('scope="col"') -%}
+
+    {%- set wrapped.out = wrapped.out
+          ~ '<div class="cd-tablewrap'
+          ~ (' cd-tablewrap--wide' if columns >= 7 else '')
+          ~ '" role="region" tabindex="0" aria-labelledby="'
+          ~ caption_id ~ '" aria-describedby="cd-table-panning-note" data-cd-cols="'
+          ~ columns ~ '">' ~ table_open
+          ~ '<caption class="cd-sr-only" id="' ~ caption_id ~ '">' ~ section
+          ~ (', table ' ~ within if within > 1 else '')
+          ~ ', ' ~ columns ~ ' columns</caption>' ~ fragment -%}
+  {%- endfor -%}
+  {%- set ns.html = wrapped.out -%}
+
+  {%- if wrapped.ordinal > 0 -%}
+    {%- set ns.html = ns.html
+          ~ '<p id="cd-table-panning-note" class="cd-sr-only">Scrolls sideways when wider than the'
+          ~ ' page. Press the left and right arrow keys to pan.</p>' -%}
+  {%- endif -%}
+
+  {#- 4. a text alternative on each marker glyph.
+
+         THE WARNING SIGN EXISTS IN TWO FORMS AND ONLY ONE OF THEM WAS BEING MATCHED. U+26A0 may be
+         followed by U+FE0F, the variation selector that asks for the colour emoji rendering, and the
+         needle here was originally the two-code-point form. The pages use the BARE code point: a
+         census of every text node found 16 occurrences of it and none of the emoji form, so the
+         replacement matched nothing and 16 glyphs published with no text alternative while the 66
+         ticks beside them all had one. They are the "Pending", "Partial" and "Open" markers in the
+         access-issues, compliance and risk tables.
+         Both forms are handled now, and the order is what makes that safe. Replacing the bare code
+         point first would cut the emoji form in half - wrapping its U+26A0 and leaving the variation
+         selector stranded outside the span - so the emoji form is parked on a sentinel first, the
+         bare form is then wrapped, and the sentinel is restored last. The sentinel contains no
+         glyph, so the middle step cannot see it and the pass stays idempotent.
+
+         The three severity discs were missing for the same reason as the warning sign - nobody had
+         listed them - and they are named for what the colour conveys rather than for the word beside
+         them, because the word is already read out and repeating it would say "High High". A
+         published test now enumerates every pictographic character in the documentation and fails if
+         one of them has no entry here, so a new marker cannot be introduced without a name. -#}
+  {%- set warn_vs16_sentinel = 'CD-WARN-WITH-VARIATION-SELECTOR-SENTINEL' -%}
+  {%- set ns.html = ns.html
+        | replace('✅', '<span role="img" aria-label="Done">✅</span>')
+        | replace('❌', '<span role="img" aria-label="Not done">❌</span>')
+        | replace('🔴', '<span role="img" aria-label="High severity">🔴</span>')
+        | replace('🟡', '<span role="img" aria-label="Medium severity">🟡</span>')
+        | replace('🟢', '<span role="img" aria-label="Low severity">🟢</span>')
+        | replace('⚠️', warn_vs16_sentinel)
+        | replace('⚠', '<span role="img" aria-label="Warning">⚠</span>')
+        | replace(warn_vs16_sentinel,
+            '<span role="img" aria-label="Warning">⚠️</span>') -%}
+
+  {{- ns.html | safe -}}
+  {%- endif -%}
+{% endblock %}

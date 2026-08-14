@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright Amazon.com, Inc. or its affiliates.
+ All Rights Reserved.
+
+ Licensed under the Apache License, Version 2.0 (the "License").
+ You may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing,
+ software distributed under the License is distributed on an
+ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ either express or implied. See the License for the specific
+ language governing permissions and limitations under the License
+-->
+
+<!--
+  ============================================================================================
+  ANALYST DETERMINATIONS FOR THE SUPPLY-CHAIN GATE
+
+  Every entry in this file is a finding this module has examined and can demonstrate does not
+  apply to the bytes it resolves. Nothing here lowers the gate: the threshold stays at CVSS
+  7.0, the test graph stays in scope, and the scan stays bound to `verify`. What an entry does
+  is record a determination, with its evidence, in the one place a reviewer will look for it.
+
+  THREE RULES GOVERN WHAT MAY BE WRITTEN HERE, and they are the reason this file is short.
+
+  1. A fix outranks a determination. If a patched version exists, the version moves and no
+     entry is written. An entry is only ever the answer when there is nothing to move to.
+  2. A determination needs a false-match argument that can be checked, not an opinion that the
+     risk is tolerable. "The vulnerable code is not in this artifact, and here is the command
+     that shows it" qualifies. "This is probably not exploitable here" does not. Where the
+     vulnerable classes are physically present, this module narrows the scanned scope and
+     discloses that instead of writing an entry - see the Gate 8 section of README.md, which
+     records that decision and why it went the other way.
+  3. Every entry is scoped to named artifacts and one named identifier. No blanket `<cve>`
+     without an artifact scope, no wildcard `<cpe>`, no `<gav>` regex broad enough to absorb a
+     future finding that nobody has looked at. Where an entry names more than one artifact, the
+     evidence has to cover every one of them individually.
+
+  EACH ENTRY EXPIRES BY ITSELF, WHICH IS WHY NO ENTRY CARRIES A REVIEW DATE. The plugin runs
+  with `failBuildOnUnusedSuppressionRule` set true. The moment a rule stops matching - because
+  a patched version was adopted, because the coordinate left the graph, or because the upstream
+  record was corrected - the build fails on the unused rule and the entry has to be removed. A
+  calendar date would be a second, weaker trigger that fires whether or not anything changed;
+  the unused-rule check fires exactly when the determination has become obsolete. That property
+  is the whole reason the flag was already enabled before this file existed.
+
+  `BuildAndCiContractTest` asserts the shape of this file and of the configuration that reads
+  it, so a later edit cannot quietly widen a rule, drop the scoping, or disarm the flag that
+  makes the entries self-expiring.
+  ============================================================================================
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!--
+      CVE-2026-66299 (CVSS 7.5 HIGH) - Uncontrolled resource consumption in Apache Tomcat's
+      WebSocket chat EXAMPLE, matched against the embedded servlet container by version alone.
+
+      WHY THERE IS NOTHING TO UPGRADE TO. The advisory names 10.1.58 as the fixed release on the
+      10.1 line (`versionEndExcluding` 10.1.58 in the NVD record) and 11.0.25 on the 11 line.
+      Neither is published. A direct HEAD against Maven Central returns 404 for 10.1.58, 10.1.59,
+      10.1.60 and 11.0.25, and the newest 10.1.x that resolves is 10.1.57 - the version this
+      module already pins upward, deliberately, in `pom.xml`. The advisory has been published
+      ahead of the artifact, so rule 1 above has no fix to prefer. Re-check with:
+
+          curl -sI -o /dev/null -w '%{http_code}\n' \
+            https://repo1.maven.org/maven2/org/apache/tomcat/embed/tomcat-embed-core/10.1.58/tomcat-embed-core-10.1.58.jar
+
+      WHY THE FINDING DOES NOT REACH THIS MODULE. The vulnerable component is the examples web
+      application that ships in the full Tomcat distribution under `webapps/examples`, and the
+      advisory says so itself: "Users who have followed the security guidance to remove the
+      examples web application are not affected by this issue." A Spring Boot application embeds
+      the container as a library and has no `webapps` directory to deploy an examples application
+      from. That is not an inference - the three embedded jars on this graph carry 2,036 entries
+      between them and not one of them is a `webapps/`, `examples/` or chat-example entry:
+
+          for a in tomcat-embed-core tomcat-embed-websocket tomcat-embed-el; do
+            unzip -l ~/.m2/repository/org/apache/tomcat/embed/$a/10.1.57/$a-10.1.57.jar \
+              | awk '{print $4}' | grep -cE 'webapps/|examples/|websocket/chat|ChatAnnotation'
+          done      # -> 0, 0, 0   (entry totals 1681, 191, 164)
+
+      WHY THE MATCH HAPPENED ANYWAY. The scanner matched on the product-level platform record
+      `cpe:2.3:a:apache:tomcat:10.1.57`, which addresses the Tomcat product at that version rather
+      than any file inside it. The report carries no evidence tying the match to the examples
+      application, because there is none in the artifact to find.
+
+      SCOPE OF THIS RULE, AND WHY IT NAMES THREE ARTIFACTS RATHER THAN THE ONE THAT WAS FLAGGED.
+      The product CPE is assigned per artifact, and which of the embedded jars receives it is not
+      stable between scans. Two runs six minutes apart, over the same graph and the same pinned
+      version, attributed this finding differently: the first reported it against
+      `tomcat-embed-core` only, and the second - after `core` was suppressed - reported it against
+      `tomcat-embed-websocket`, which had carried the identical pair of Tomcat CPEs all along.
+      `tomcat-embed-el` currently carries no Tomcat CPE at all, only its package URL, so it cannot
+      be matched today. Reproduce that reading from the report itself:
+
+          python3 -c "import json;d=json.load(open('target/dependency-check-report.json'));\
+          [print(x['fileName'],[i['id'] for i in x.get('packages',[])]) \
+           for x in d['dependencies'] if 'tomcat' in x['fileName']]"
+
+      Scoping the rule to whichever jar happened to be named in the last scan would leave the gate
+      failing the next time the assignment moved, for a determination that had already been made.
+      So the rule names all three embedded jars, and it may do that under rule 3 above only
+      because the evidence covers all three individually: the archive listing was taken for each
+      one separately and none of the three contains a single examples entry. It is one library, one
+      version, one advisory and one measurement - not a family wildcard.
+
+      The version is left open in the regex so the rule keeps matching while 10.1.57 remains the
+      newest published release. It stops matching, and therefore fails the build on the unused
+      rule, the moment a patched line is adopted - which is the intended way for this entry to
+      end.
+
+      Recorded in ../docs/decision-log.md DL-159 with the full measurement.
+    -->
+    <suppress>
+        <notes><![CDATA[
+            Apache Tomcat examples web application finding matched against the embedded container
+            by version alone. No patched artifact is published (10.1.58 and 11.0.25 are both 404 on
+            Maven Central), and the vulnerable examples application is not present in any of the
+            three embedded jars this module resolves - 0 of 2,036 archive entries across them are
+            webapps, examples or chat-example entries. All three are named because the product CPE
+            migrated between them across consecutive scans. See ../docs/decision-log.md DL-159.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/tomcat-embed-(core|websocket|el)@.*$</packageUrl>
+        <cve>CVE-2026-66299</cve>
+    </suppress>
+
+</suppressions>

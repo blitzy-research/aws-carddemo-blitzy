@@ -1,0 +1,41 @@
+%% Pre-rendered to the .svg beside this file, because the published site carries no diagram renderer.
+%% Regenerate after editing:
+%%   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome \
+%%   npx @mermaid-js/mermaid-cli@11.4.2 -i <this>.mmd -o <this>.svg -b white \
+%%     -p <puppeteer.json: {"args":["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"]}> \
+%%     -c <mermaid.json: {"htmlLabels":false,"flowchart":{"htmlLabels":false,"useMaxWidth":false},
+%%                        "er":{"useMaxWidth":false},"pie":{"useMaxWidth":false},
+%%                        "themeVariables":{"fontSize":"16px"}}>
+%% htmlLabels MUST stay false: a label inside a foreignObject does not render through <img>.
+%% Then set width/height on the root <svg> from its viewBox, drop max-width, and drop the dead
+%% div.mermaidTooltip rule - BuildAndCiContractTest asserts all three.
+graph TD
+    API["api<br/>REST controllers, contract adapters"]
+    DTO["api.dto<br/>request and response contracts"]
+    BATCH["batch / batch.step<br/>job and step configuration"]
+    SVC["service<br/>business logic — one method per COBOL paragraph"]
+    REPO["repository<br/>Spring Data interfaces"]
+    DOM["domain / domain.id / domain.enums<br/>entities, composite keys, enums"]
+    UTIL["util<br/>fixed-width mappers, codec, formatters"]
+    EXC["exception"]
+    CFG["config<br/>security, batch, AWS, observability, JPA, Flyway"]
+    DB[("PostgreSQL 16<br/>Flyway: schema then seed")]
+
+    API --> DTO
+    API --> SVC
+    API --> UTIL
+    API --> EXC
+    BATCH --> SVC
+    BATCH --> REPO
+    BATCH --> UTIL
+    BATCH --> EXC
+    SVC --> REPO
+    SVC --> DOM
+    SVC --> UTIL
+    SVC --> EXC
+    DTO --> DOM
+    REPO --> DOM
+    UTIL --> DOM
+    CFG -.-> SVC
+    CFG -.-> REPO
+    REPO --> DB

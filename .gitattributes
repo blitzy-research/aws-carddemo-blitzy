@@ -1,0 +1,12 @@
+# The estate README predates this migration and is stored with CRLF line endings, as the whole
+# original AWS CardDemo distribution is. Adding a line to it therefore adds a carriage return at
+# end of line, which git's whitespace diagnostic reports as trailing whitespace on every added
+# line unless it is told that CR belongs there. This declares exactly that, for this one path.
+#
+# Deliberately narrow. No `text` attribute is set, so checkout normalisation is unchanged and the
+# file keeps its own endings; and no pattern here touches `app/`, whose legacy members must stay
+# byte-identical. The module carries its own scoped .gitattributes for its fixed-width fixtures.
+# Anchored with a leading slash so it matches ONLY the estate README at the repository root. An
+# unanchored `README.md` would match every README at every depth - including the module's own,
+# which is LF-encoded and must keep the ordinary trailing-whitespace diagnostic.
+/README.md whitespace=cr-at-eol

@@ -1,0 +1,193 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# ===========================================================================
+# CardDemo - Prometheus scrape configuration
+# ===========================================================================
+#
+# PROVENANCE
+#   Legacy estate checkout SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec
+#   Upstream release stamp     : CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)
+#
+#   This file has no legacy antecedent. Nothing in the mainframe estate
+#   corresponds to it, so it is a net-new artifact rather than the
+#   translation of a COBOL program, a copybook or a job stream. Traceability
+#   to the legacy estate is by citation only - path and line number - and no
+#   legacy source text is reproduced anywhere in this module.
+#
+# PURPOSE
+#   This is the collection half of the observability layer that replaces the
+#   legacy estate's only diagnostic channel: approximately 217 DISPLAY
+#   statements spread across the 28 COBOL programs. Those give way to
+#   structured JSON logging over SLF4J together with Spring Boot Actuator,
+#   Micrometer and OTLP tracing. The count is deliberately approximate: it
+#   varies with parse tolerance, and a raw token grep over the legacy tree
+#   reports a higher figure than a statement-context parse does.
+#
+#   The application publishes its meter registry through
+#   micrometer-registry-prometheus 1.15.12 at /actuator/prometheus. This
+#   file turns that exposition into queryable time series, which is what
+#   makes the per-endpoint and per-batch-step panels of the provisioned
+#   Grafana dashboard resolve to data.
+#
+# PERFORMANCE GATE
+#   The performance gate ESTABLISHES the first Java baseline. It asserts NO
+#   threshold. No numeric latency, throughput, availability or capacity
+#   target exists anywhere in the legacy estate - not in the COBOL, not in
+#   the job streams, not in the CICS resource definitions - so there is
+#   nothing to test against. Elapsed time, peak memory and records-per-second
+#   are measured and written up in docs/gate-evidence.md.
+#
+#   Consequently this file declares no rule files and no notification
+#   pipeline, and it states no service level of any kind. It samples, and
+#   nothing more.
+#
+# SCOPE - THIS IS THE LOCAL VALIDATION STACK'S COLLECTOR AND NOTHING ELSE
+#   This file is mounted by the `prometheus` service of the sibling
+#   docker-compose.yml, addresses Compose service names, speaks plaintext,
+#   and presents NO credential. Every one of those properties is correct for
+#   a collector running on the same machine as the application under the
+#   `local` profile, and every one of them makes this file unfit to be
+#   pointed at a deployment running the `prod` profile.
+#
+#   IT IS NOT CREDENTIAL-FREE BECAUSE CREDENTIALS ARE UNNECESSARY. It is
+#   credential-free because the `local` profile deliberately opens the scrape
+#   endpoint to an anonymous caller, by setting
+#   carddemo.security.anonymous-metrics-scrape, and that key is closed in the
+#   shared baseline and restated closed in application-prod.yml. Under those
+#   profiles com.carddemo.config.SecurityConfig adds no anonymous permit and
+#   the path falls through to the rule that authenticates everything beneath
+#   the management base path, so a scrape presenting nothing is answered 401.
+#
+#   WHY, since a metrics endpoint can look like harmless diagnostics: the
+#   exposition carries per-endpoint request counts and latency distributions,
+#   per-batch-step record counts, data-source pool saturation, and JVM heap,
+#   thread and garbage-collection internals. Together those let an
+#   unauthenticated network client profile transaction volume, infer business
+#   activity from the batch counts, and time an attack against a deployment it
+#   holds no credential for. The health probe stays anonymous everywhere
+#   because its body is a status word; this is the shape of the workload.
+#
+#   WHAT A PRODUCTION COLLECTOR MUST DO INSTEAD, stated here because this is
+#   where a reader looks for it: address the deployment over HTTPS with
+#   `scheme: https` and a `tls_config` that verifies the server certificate,
+#   and present a scoped read-only bearer token per scrape - Prometheus reads
+#   one from a file with `authorization: {type: Bearer, credentials_file: ...}`
+#   so the credential is never written into a configuration file. The endpoint
+#   stays PUBLISHED under `prod`, so a collector that does this collects
+#   exactly what the job below collects. Provisioning that deployment's
+#   network, certificates and credential store is outside this module's
+#   delivery scope, which is why this file carries the requirement rather than
+#   an inert second job block that no stack would ever run.
+#
+#   THE TOKEN THAT SENTENCE REFERS TO IS A NAMED SETTING RATHER THAN A
+#   DESCRIPTION. Asking for a "scoped read-only bearer token" would describe
+#   nothing the security model offers if the management paths required only
+#   `authenticated()`, which every signed-on cardholder satisfies: the strongest
+#   credential a collector could then present would be an ordinary user's
+#   session token, and that same token would read the exposition.
+#
+#   The credential is now carddemo.security.management.token, supplied to a
+#   production deployment as CARDDEMO_MANAGEMENT_TOKEN with no fallback and
+#   refused at start-up if absent. It mints the ROLE_MONITORING authority, which
+#   config/SecurityConfig requires for every management path except the aggregate
+#   health endpoint and its two probe groups, and which NO token issued at sign-on
+#   carries - an administrator's included. That is the value a production
+#   collector puts in its `credentials_file`.
+# ===========================================================================
+
+global:
+  # Collection cadence only. This is how often Prometheus samples the target;
+  # it asserts NOTHING about application performance and is NOT a service level.
+  scrape_interval: 15s
+  # Inert in this deployment: no rule files are defined (see the header above).
+  evaluation_interval: 15s
+
+scrape_configs:
+  # -------------------------------------------------------------------------
+  # The CardDemo application - Spring Boot Actuator / Micrometer exposition.
+  #
+  # job_name is load-bearing. Prometheus stamps it onto every series it
+  # collects, as the `job` label, and job="carddemo-app" is what every panel
+  # of config/grafana/dashboards/carddemo-overview.json filters on. Renaming
+  # this string empties every dashboard panel while the stack still reports
+  # healthy - change the dashboard in lockstep, or do not change it.
+  #
+  # The application does also carry a Micrometer common tag: application.yml
+  # pins management.metrics.tags.application to spring.application.name, so
+  # every meter arrives tagged application="carddemo". The two labels are not
+  # interchangeable and neither replaces the other. The meter tag identifies
+  # WHICH SERVICE produced a series and travels with it through any collector;
+  # the `job` label identifies WHICH SCRAPE produced it and is added here, so
+  # it is the one that describes scrape topology - the selector to reach for
+  # when a panel must name a target rather than a service. That distinction
+  # is why the dashboard filters on `job`: the panels chart this stack's own
+  # single target, and a second deployment of the same service would carry an
+  # identical application tag while needing a job of its own.
+  # -------------------------------------------------------------------------
+  - job_name: carddemo-app
+    # The Actuator management base path is deliberately left at its default
+    # in every profile so that this path resolves literally. The endpoint is
+    # exposed in the shared defaults and stays exposed in the narrowed
+    # production surface; were it ever dropped, the scrape would answer 404
+    # and the performance gate would have no data whatsoever.
+    #
+    # This job carries no `authorization` and no `scheme: https` because it
+    # scrapes the `local` profile, which opens the endpoint anonymously over
+    # plaintext on this machine. Pointing this same job at a `prod` deployment
+    # would be answered 401, and adding a credential here to make that work
+    # would put one in a committed file - see the SCOPE note in the header for
+    # what a production collector does instead.
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # ONE target, and it is the compose service name of the application
+      # container reached over the project network. The compose stack in this
+      # module publishes exactly that service, so the target resolves without
+      # any host-gateway fallback, and the reason there is only one entry is
+      # arithmetic rather than tidiness.
+      #
+      # A SECOND ENTRY HERE - host.docker.internal at the same port, so that a
+      # host-run application would be collected by the same job - IS PROHIBITED.
+      # Both entries would belong to job="carddemo-app", which is the label every
+      # dashboard panel and every performance-gate query aggregates by - so
+      # whenever both answered, each series would exist twice and every rate and
+      # every memory reading would be doubled. In the ordinary case only one
+      # answers, which is worse in a quieter way: the job would carry a
+      # permanently DOWN target, so `up` would never be 1 for it and a reader
+      # could not tell a misconfigured scrape from a stopped application. The
+      # performance gate ESTABLISHES this module's first baseline from a single
+      # run, and a baseline that may or may not be doubled is not a baseline.
+      #
+      # If host-mode collection is ever wanted, it belongs to a job of its own,
+      # with its own name and its own evidence queries, never mixed into this
+      # one.
+      #
+      # Never the loopback address: inside this container it resolves to
+      # Prometheus itself, so the scrape would succeed at the transport level
+      # and yield nothing useful - a silent failure that surfaces only as an
+      # empty performance-gate write-up. The entry is quoted so that YAML reads
+      # it as a scalar rather than as a single-key mapping.
+      - targets:
+          - "app:8080"
+
+  # -------------------------------------------------------------------------
+  # Prometheus scraping itself, so collection health is visible alongside the
+  # application metrics on the same data source. Addressed by compose service
+  # name for the same reason as above.
+  # -------------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "prometheus:9090"

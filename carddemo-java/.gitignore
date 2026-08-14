@@ -1,0 +1,223 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# Module-scoped exclusions: every pattern resolves relative to this directory, and none uses
+# a parent traversal or an absolute path, so nothing here can reach the legacy estate that is
+# the parity baseline.
+#
+# Four broad patterns are forbidden because each would silently untrack a required deliverable:
+# *.properties (the wrapper descriptor), application-*.yml (the committed Spring profiles),
+# *.txt (the fixed-width golden fixtures and the banner) and *.json (the validation lookup
+# tables and the metrics dashboard). Patterns are therefore written as narrowly as the artefact
+# allows, anchored with a leading slash where the artefact only ever appears at the module root,
+# and the highest-risk deliverables are re-included by name at the foot of the file. Git applies
+# the last matching pattern, so those negations also act as a tripwire against a future broad
+# addition. Extension globs are paired lowercase/UPPERCASE because the estate mixes casing.
+
+# Anchored: Maven writes build output at the module root only.
+/target/
+
+# Defensive: Gradle is not this module's build tool, and none of these is ever a source.
+/build/
+/out/
+/bin/
+
+# The wrapper ships as scripts only, so no wrapper jar is committed. The wrapper DIRECTORY is
+# deliberately not excluded: a negation cannot resurrect a file beneath an excluded directory,
+# so excluding .mvn/ would make the descriptor negation below inert and break the build.
+.mvn/wrapper/maven-wrapper.jar
+.mvn/.develocity/
+.mvn/.gradle-enterprise/
+
+# Release, versions, shade, flatten and buildnumber residue. Each is a complete file name, so
+# none can match the wrapper descriptor.
+dependency-reduced-pom.xml
+release.properties
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+pom.xml.tag
+buildNumber.properties
+.flattened-pom.xml
+
+*.class
+*.CLASS
+
+# Gate evidence is reproducible from a clean checkout plus one build, so no report is committed
+# and no stale one can be mistaken for current. Coverage data and report trees already fall
+# under /target/, but both locations are overridable from the command line and would then land
+# outside it.
+*.exec
+*.EXEC
+surefire-reports/
+failsafe-reports/
+/target/test-output/
+
+# Three output formats are emitted, hence the wildcard suffix.
+dependency-check-report.*
+
+# Regenerable, and resolved beneath the user's home directory by default; these patterns cover
+# a redirect into the module.
+.dependency-check/
+dependency-check-data/
+
+# Local secrets. The production profile resolves every secret from the environment with no
+# fallback default, so a missing one fails startup there; the local and test profiles carry
+# development values instead, which is precisely why a real credential must never reach this
+# tree. Compose reads a .env file from this directory and interpolates the AWS keys and the
+# database password from it, which makes a module-level .env the most likely place for a real
+# credential to be committed by accident. No environment template is part of the frozen module
+# inventory, so every .env variant stays excluded rather than creating an undocumented exception.
+.env
+.env.*
+
+*.pem
+*.PEM
+*.key
+*.KEY
+*.p12
+*.P12
+*.pfx
+*.PFX
+*.jks
+*.JKS
+*.keystore
+*.KEYSTORE
+*.truststore
+*.TRUSTSTORE
+secrets/
+
+# Secret-bearing YAML appears under several conventional names in deployment tooling. Cover both
+# module-root files and arbitrarily deep overlays, and pair the lower/upper-case forms because Git
+# matching is case-sensitive. These are intentionally broader than the Spring-profile patterns below:
+# any file whose name advertises that it contains a secret is local deployment state, not source.
+secrets.yml
+secrets.yaml
+SECRETS.YML
+SECRETS.YAML
+**/secrets.y*ml
+**/SECRETS.Y*ML
+**/*secret*.yml
+**/*secret*.yaml
+**/*SECRET*.YML
+**/*SECRET*.YAML
+
+# Developer overrides, which commonly carry real credentials. None can match a committed
+# profile document: application-secret*.yml requires the literal segment "secret", and
+# application-*.local.yml requires a ".local.yml" suffix that application-local.yml lacks.
+application-local.properties
+application-secret*.yml
+application-secret*.yaml
+application-*.local.yml
+application-*.local.yaml
+
+# Cloud credential files, anchored to the module root: an unanchored "credentials" pattern
+# would also match a package directory of that name.
+/credentials
+/credentials.*
+/aws.properties
+.aws/
+
+.idea/
+*.iml
+*.IML
+*.ipr
+*.IPR
+*.iws
+*.IWS
+
+.classpath
+.project
+.settings/
+.factorypath
+.apt_generated/
+
+.vscode/
+
+# NetBeans: private and generated subtrees only, since a shared nbproject would be a
+# committed artefact.
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+*~
+*.swp
+*.SWP
+*.swo
+*.SWO
+*.bak
+*.BAK
+*.orig
+*.ORIG
+*.rej
+*.REJ
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+desktop.ini
+
+# Logging is structured JSON to the console only, so these cover a developer who enables a
+# file destination locally.
+*.log
+*.LOG
+*.log.*
+/logs/
+
+hs_err_pid*
+replay_pid*
+*.hprof
+*.HPROF
+heapdump*
+
+# Narrowed on purpose: a bare core.* would wrongly exclude core.json or core.yml, whereas a
+# Linux core dump is named core or core followed by the process id.
+/core
+core.[0-9]*
+
+# Local stack state lives in named Docker volumes, so nothing appears in the working tree;
+# these patterns cover switching a named volume to a bind mount. The read-only assets the
+# stack mounts - config/ and localstack/ - are never excluded.
+postgres-data/
+localstack-data/
+prometheus-data/
+grafana-data/
+volume/
+volumes/
+.localstack/
+
+# Required committed artefacts, re-included by name. Last matching pattern wins, so these also
+# neutralise a future broad pattern added above them.
+
+!.mvn/wrapper/maven-wrapper.properties
+
+# The four Spring profile documents. The test profile is a TEST resource, because it binds to
+# endpoints Testcontainers only publishes while a test JVM is running and must never ship inside
+# the deployable artifact; its negation therefore names src/test/resources rather than
+# src/main/resources. The production profile is safe to commit precisely because it holds no
+# secret value, only unresolved environment references with no fallback default.
+!src/main/resources/application.yml
+!src/main/resources/application-local.yml
+!src/main/resources/application-prod.yml
+!src/test/resources/application-test.yml
+
+!src/main/resources/banner.txt
+!src/main/resources/logback-spring.xml
+
+# Byte-parity fixtures: fixed-width golden output at the legacy record widths, so they are
+# sources rather than generated artefacts.
+!src/test/resources/fixtures/input/**
+!src/test/resources/fixtures/expected/**

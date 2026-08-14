@@ -1,0 +1,40 @@
+%% Pre-rendered to the .svg beside this file, because the published site carries no diagram renderer.
+%% Regenerate after editing:
+%%   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome \
+%%   npx @mermaid-js/mermaid-cli@11.4.2 -i <this>.mmd -o <this>.svg -b white \
+%%     -p <puppeteer.json: {"args":["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"]}> \
+%%     -c <mermaid.json: {"htmlLabels":false,"flowchart":{"htmlLabels":false,"useMaxWidth":false},
+%%                        "er":{"useMaxWidth":false},"pie":{"useMaxWidth":false},
+%%                        "themeVariables":{"fontSize":"16px"}}>
+%% htmlLabels MUST stay false: a label inside a foreignObject does not render through <img>.
+%% Then set width/height on the root <svg> from its viewBox, drop max-width, and drop the dead
+%% div.mermaidTooltip rule - BuildAndCiContractTest asserts all three.
+graph LR
+    F["Nine ASCII fixtures<br/>app/data/ASCII"] --> S3["Flyway V3<br/>reference and transaction seed"]
+    U["app/jcl/DUSRSECJ.jcl lines 35-44<br/>ten in-stream card images"] --> S4["Flyway V4<br/>identity seed, BCrypt hashed"]
+    F --> I["Carried input fixtures<br/>module test resources"]
+    S3 --> B["e2e/BatchPipelineE2ETest"]
+    S4 --> B
+    I --> B
+    B --> G1["Gate 1<br/>byte equivalence,<br/>4 contractual widths"]
+    C["batch/CategoryBalanceReportJobConfigIT<br/>the supplemental 40-byte width"] --> G1
+    B --> G4["Gate 4<br/>named artefacts"]
+    V["e2e/GateVerificationTest<br/>fixture names, seed cardinalities,<br/>544 rows, audit budgets"] --> G4
+    V --> G6["Gate 6<br/>unsafe code"]
+    V --> G8["Gate 8<br/>sign-off"]
+    B --> T["support/RunScopedPerformanceRecorder<br/>gate3-*.md"]
+    T --> G3["Gate 3<br/>baseline established"]
+    O["e2e/OnlineTransactionE2ETest<br/>real HTTP, real SQS FIFO"] --> G5["Gate 5<br/>interface contracts"]
+    P["pom.xml<br/>Xlint all, Werror"] --> G2["Gate 2<br/>zero warnings"]
+    A["Scoped grep audit<br/>production tree only"] --> G6
+    J["JaCoCo 0.8.15<br/>merged line floor"] --> G7["Gate 7<br/>scope tier"]
+    M["traceability-matrix.md<br/>544 rows"] --> G8
+    D["dependency-check 12.1.3"] --> G8
+    G1 --> G8
+    G2 --> G8
+    G3 --> G8
+    G4 --> G8
+    G5 --> G8
+    G6 --> G8
+    G7 --> G8
+    G8 --> E["This page"]

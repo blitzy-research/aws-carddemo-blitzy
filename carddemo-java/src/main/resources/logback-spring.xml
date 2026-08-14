@@ -1,0 +1,502 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright Amazon.com, Inc. or its affiliates.
+  All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License").
+  You may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific
+  language governing permissions and limitations under the License
+-->
+<!--
+  ===================================================================================================
+  STRUCTURED LOGGING FOR THE CARDDEMO JAVA MODULE
+
+  WHAT THIS FILE REPLACES. The migrated estate had no logging framework, no metrics and no tracing.
+  Its ONLY diagnostic channel was the console display statement, of which the migration plan records
+  217 across the 28 COBOL programs. Everything an operator could once read off a job's output must
+  now be visible through this configuration, structured and correlated.
+
+  PROVENANCE. Migrated from the CardDemo mainframe estate at commit
+  7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp CardDemo_v1.0-15-g27d6c6f-68
+  dated 2022-07-19. The legacy estate is cited, never transcribed: no COBOL, job control, screen
+  definition, copybook or CICS resource text appears in this module.
+
+  DIVISION OF RESPONSIBILITY, AND IT IS A CROSS FILE CONTRACT. This file owns appender selection,
+  the encoders, and the correlation fields. It owns NO verbosity policy: every level is owned by
+  application.yml and its three overlays (application-local.yml, application-test.yml,
+  application-prod.yml, plus the suite's own copy of the test overlay under src/test/resources), and
+  all four of those files say so in their own comments. The framework applies logging.level entries
+  AFTER this file is read, and a profile document MERGES with the shared baseline rather than
+  replacing it, so for any category those files name, their value is the authority and the value
+  stated here is only an agreeing baseline that keeps this file readable on its own. That is also
+  why the four application categories below are declared INHERITED rather than pinned: the local
+  overlay raises the whole com.carddemo tree to DEBUG, and pinning a descendant here would silently
+  defeat it.
+
+  THE FILE NAME IS LOAD BEARING. Named logback-spring.xml, not logback.xml, because the springProfile
+  and springProperty elements exist only when the framework loads the configuration after preparing
+  its environment. Under plain logback.xml the initialisation happens first and every springProfile
+  block below would be ignored without a word of complaint, leaving one appender layout for every
+  profile. Per profile appenders are a requirement, so the suffix is not a stylistic choice. The
+  module's .gitignore and .dockerignore each carry an explicit negation for this exact path so the
+  file is neither untracked nor left out of the container image.
+
+  CORRELATION IDENTIFIERS ARE AN ALLOW LIST, NOT THE WHOLE DIAGNOSTIC CONTEXT. The tracing bridge
+  publishes the current trace and span into the logging context under the keys traceId and spanId, which
+  are what joins a log line to its exported trace. The JSON encoder emits exactly those two keys. The
+  logging context is a thread-local map any code on the request thread can write, including a library
+  this module did not author, and the machine-facing appender is the one whose output leaves the process;
+  exporting the whole map would publish every future key with no review at the point it is added, and the
+  values this application handles include a card primary account number, a card verification code, a
+  government-issued identifier and a sign-on credential. An allow list makes a new key invisible until
+  someone adds it here deliberately. The readable pattern spells the same two keys out explicitly rather
+  than relying on the optional correlation segment of the framework's own console pattern, so the
+  identifiers are present whether or not that segment has been populated.
+
+  THE CONSTRAINT ON WHAT THIS CONFIGURATION EMITS. No key is added to the allow list above without first
+  establishing that it cannot carry a credential, a signing value, a bearer token, a full card primary
+  account number or a national identifier. The two categories that would otherwise carry such a value out
+  of the persistence provider - its statement text and its bound parameter values - are held below at a
+  level that emits neither. What a given application message contains is decided by the code composing
+  it, not by this file.
+
+  DIAGNOSTIC ORDERING IS PRESERVED ON PURPOSE. On a batch terminal path the legacy programs wrote the
+  error, then the raw two byte file status, and only then abended. The migrated batch tier keeps that
+  order and keeps the raw status in the message, so an operator reading a Java log sees the same
+  sequence, with the same code, that they read on the mainframe.
+
+  WHAT IS DELIBERATELY ABSENT, each an explicit decision rather than an omission
+    * No rolling file appender. The artefact runs as a container: its image writes the log to
+      standard output and its health check reads the actuator health endpoint, so a file appender
+      would write into an ephemeral layer that nothing collects.
+    * No asynchronous appender and therefore no queue size. Every full-queue policy either blocks or
+      discards events, and discarding would lose exactly the diagnostics an end-to-end output
+      comparison is read to explain, so events are written on the calling thread.
+    * No heap figure, no thread count, no latency, throughput, volume or availability number. No
+      numeric service level is documented anywhere in the legacy estate, so performance for this
+      implementation is measured and recorded rather than asserted.
+    * No second logging backend, no additional bridge and no additional appender library. The only
+      logging dependency beyond the framework's own logging starter is the structured encoder
+      declared in pom.xml, and no version is restated here: the build owns versions.
+    * No status listener that would swallow this file's own parse diagnostics. A configuration error
+      must be loud.
+  ===================================================================================================
+-->
+<configuration scan="false">
+
+  <!-- The framework's own defaults, imported rather than restated: the colour, whitespace throwable
+       and enclosed in brackets conversion words, the date, level and exception pattern properties
+       reused below, the console charset, and the handful of container and validator categories the
+       framework quietens by default. Nothing it already provides is redeclared here. -->
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <!-- The service label, read from the one place that owns it. spring.application.name is set in
+       application.yml and is the same label the meter registry carries as its `application` tag, so a
+       log line and a metric can be filtered by one value. The fallback is deliberately NOT the real
+       name: repeating it here would create a second place where the service is named, and a missing
+       property should be visible in the output rather than quietly papered over.
+
+       The active profile is deliberately not a field. It is reliably readable as a property only when
+       the platform sets it, so a profile activated programmatically would produce a field that
+       disagrees with reality, and the framework already states the active profiles on its own
+       start-up line. -->
+  <springProperty scope="context" name="applicationName" source="spring.application.name"
+                  defaultValue="unknown"/>
+
+  <!-- Correlation fields for the readable pattern, spelled out rather than delegated, so the trace
+       and span identifiers appear in developer output exactly as they appear in the JSON. An event
+       raised outside any request or job carries the empty default and stays aligned. -->
+  <property name="CORRELATION_FIELDS" value="[${applicationName},%X{traceId:-},%X{spanId:-}]"/>
+
+  <!-- The two bounds the machine readable throwable rendering is held to, declared here rather than
+       inline so that both figures are read in one place and neither can be widened without the other
+       being seen. The reasoning for bounding at all is on the appender that applies them.
+
+       Frames per throwable. Chosen so that the frames that identify a failing migrated unit - the
+       boundary handler, the service method standing in for the COBOL paragraph, and the collaborator
+       beneath it - are inside the cap on every layer of the chain, while the repetitive framework and
+       container tail below them is not. The cause chain itself is NOT capped: every cause is still
+       named and still rendered, each to this depth, so a chain stays diagnosable at its full length.
+
+       And the whole rendered trace. This is the backstop that makes one event's size independent of
+       how deep a chain happens to be, and it is what removes log amplification as a lever: a caller
+       who can provoke a failure carrying text they control cannot choose how many bytes it writes.
+       Generous enough that a genuine multi-layer failure renders complete and never reaches it. -->
+  <property name="JSON_THROWABLE_MAX_DEPTH_PER_THROWABLE" value="12"/>
+  <property name="JSON_THROWABLE_MAX_LENGTH" value="8192"/>
+
+  <!-- Human readable single line layout: instant, level, process, correlation, thread, category,
+       message, and the throwable through the framework's exception conversion word. The date, level
+       and exception segments reuse the imported properties so this pattern tracks the framework's
+       own defaults instead of drifting from them. -->
+  <property name="READABLE_LOG_PATTERN"
+            value="%clr(%d{${LOG_DATEFORMAT_PATTERN:-yyyy-MM-dd'T'HH:mm:ss.SSSXXX}}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}){} %clr(${PID:-}){magenta} %clr(${CORRELATION_FIELDS}){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
+
+  <!-- ===============================================================================================
+       APPENDER SELECTION BY PROFILE. Four profile treatments, in two groups.
+
+       WHY THE STRUCTURE IS GROUPED AND NESTED RATHER THAN FLAT. An appender must be declared inside
+       the profile block that references it: a declaration left at the top level is reported by the
+       logging framework as declared and not referenced under every profile that does not use it,
+       which is a start-up warning, and a start-up warning here is a defect. Grouping the two profiles
+       that share an appender keeps each encoder written EXACTLY ONCE, so the readable layout and the
+       JSON field set cannot drift apart between two copies, while the nested block inside each group
+       keeps every profile's own root level and its own reasoning. Selection is by outer group,
+       verbosity by inner profile.
+       =============================================================================================== -->
+
+  <!-- ===============================================================================================
+       GROUP ONE, human readable: the developer facing profiles. A person reads this output, so it is
+       one aligned line per event with the correlation identifiers in the line, and it is read from the
+       process's own standard output, which is also what the container log carries.
+       =============================================================================================== -->
+  <springProfile name="local,test">
+
+    <appender name="CONSOLE_READABLE" class="ch.qos.logback.core.ConsoleAppender">
+      <encoder>
+        <pattern>${READABLE_LOG_PATTERN}</pattern>
+        <charset>${CONSOLE_LOG_CHARSET}</charset>
+      </encoder>
+    </appender>
+
+    <!-- local: a developer's own machine, and the profile the container image activates by default.
+         The compose stack provisions the dependencies while the application itself is read from its
+         own output, and readiness is gated on the actuator health endpoint, so start-up has to stay
+         legible: a start-up that stops short must say so in a form a person can scan. The correlation
+         identifiers stay in the line, so a local flow can still be followed into the trace viewer the
+         compose stack provides. -->
+    <springProfile name="local">
+      <root level="INFO">
+        <appender-ref ref="CONSOLE_READABLE"/>
+      </root>
+    </springProfile>
+
+    <!-- test: readable as well, which is exactly what the test overlay's own comment says this file
+         selects for that profile. Quiet but diagnosable, and the quieting is the overlay's to do: it
+         lowers the framework categories whose per statement and per step chatter, multiplied by every
+         context the suite refreshes, is what makes a captured log unusable, while keeping the
+         application category and the migration tool where a failure explains itself without a re-run.
+
+         The test profile deliberately has NO trace collector, and what it switches off is EXPORT rather
+         than instrumentation: application-test.yml sets management.tracing.enabled to true and
+         management.otlp.tracing.export.enabled to false, so the tracer, the observation registry and
+         context propagation are all wired - a test can still assert on an observation - while no
+         exporter bean is created and nothing leaves the process. A line therefore carries a correlation
+         field whenever a span is in scope and an empty one when none is, which is the same behaviour as
+         any other profile; what differs is only that the identifiers go nowhere. That is the intended
+         configuration, not a defect. -->
+    <springProfile name="test">
+      <root level="INFO">
+        <appender-ref ref="CONSOLE_READABLE"/>
+      </root>
+    </springProfile>
+
+  </springProfile>
+
+  <!-- ===============================================================================================
+       GROUP TWO, machine readable: production, and any profile this file does not name. A collector
+       reads this output, so it is JSON.
+       =============================================================================================== -->
+  <springProfile name="!local &amp; !test">
+
+    <!-- Machine facing output: ONE JSON OBJECT PER LINE on standard output, for a container log driver
+         or a collector to ingest without a multiline rule.
+
+         Field set, chosen to be stable and flat rather than pretty:
+           @timestamp  instant, in UTC with a fixed millisecond pattern, so ordering across containers
+                       in different zones is a string comparison
+           level       severity
+           logger      category, which is what ties an event back to the migrated program or paragraph
+           thread      the executing thread, which is how concurrent batch chunks are told apart
+           message     the formatted message
+           stackTrace  present only when the event carries a throwable
+           application the service label, matching the meter tag of the same name
+           traceId     the current trace, from the diagnostic context, flattened to the top level
+           spanId      the current span, likewise
+           Flat rather than nested because a top level trace identifier is what a trace aware log search
+           expects. The two are named individually rather than taken as the whole diagnostic context:
+           the context is writable by any code on the thread and this appender's output leaves the
+           process, so a key added later must be admitted here deliberately rather than published by
+           default. Adding one is a single line; the rule it must satisfy is that it never reuses a field
+           name listed above.
+
+         Two encoder defaults are dropped rather than renamed: the schema version, which is a constant
+         and carries no information, and the numeric duplicate of the level. Two more are switched off:
+         the logging context's own properties, because the service label is already carried once as
+         `application` and emitting it twice under a second name invites a query that matches half the
+         events; and caller data, because capturing the call site costs a stack walk on every event
+         while the category already identifies the migrated unit precisely enough to trace back to it.
+
+         A throwable is rendered into the single stackTrace string with its newlines escaped, so the
+         event remains one physical line and line oriented ingestion still works. The root cause is
+         written first so it is the first thing read, and frames already printed by an enclosing cause
+         are summarised rather than repeated.
+
+         THE RENDERING IS BOUNDED IN BOTH DIRECTIONS, because a throwable message is arbitrary text this
+         module does not author: a driver failure carries the connection string, a constraint violation
+         carries the bound values, an interpolated message carries whatever a caller submitted, and a
+         rejected oversized input carries itself. Unbounded, each of those is published verbatim to a
+         collector that retains it, and a caller who can provoke a failure whose message they control can
+         choose how many bytes each request writes into centralised storage.
+
+         maxDepthPerThrowable caps the frames printed for each throwable in the chain, which keeps the
+         cause chain complete - every cause is still named, with its own top frames - while removing the
+         repetitive tail that explains nothing. maxLength caps the whole rendered trace, so one event
+         cannot grow without limit whatever the chain does. The converter marks each cut it makes, so a
+         reader can tell a bound from the end of the evidence, and the frame naming the failing migrated
+         unit is inside the cap because the root cause is written first.
+
+         These bounds are a backstop for a throwable this module never sees - one raised inside the
+         framework, a driver or a library. The primary control is at the boundary log sites, which record
+         a sanitised, bounded failure chain and do not hand an arbitrary throwable to an appender. -->
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+      <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+        <timeZone>UTC</timeZone>
+        <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</timestampPattern>
+        <!-- The diagnostic context is read, and read through an ALLOW LIST rather than wholesale.
+             includeMdc keeps the provider switched on; without it the two correlation identifiers below
+             would not be emitted at all. The two key names then narrow what it emits to exactly those
+             two, which are the only keys this module uses. It is stated explicitly rather than left to
+             the encoder default so that a future default change cannot silently drop the identifiers a
+             trace aware search joins on.
+
+             Why an allow list and not the whole context: the context is a thread local map that any code
+             on the thread can write, including a library this module did not author, and THIS appender's
+             output leaves the process. The values this service handles include a card primary account
+             number, a card verification code, a government issued identifier and a sign on credential,
+             so a key carrying one of those must be admitted here on purpose rather than published by
+             default. Adding one is a single line. -->
+        <includeMdc>true</includeMdc>
+        <includeMdcKeyName>traceId</includeMdcKeyName>
+        <includeMdcKeyName>spanId</includeMdcKeyName>
+        <includeContext>false</includeContext>
+        <includeCallerData>false</includeCallerData>
+        <customFields>{"application":"${applicationName}"}</customFields>
+        <fieldNames>
+          <version>[ignore]</version>
+          <levelValue>[ignore]</levelValue>
+          <logger>logger</logger>
+          <thread>thread</thread>
+          <message>message</message>
+          <stackTrace>stackTrace</stackTrace>
+        </fieldNames>
+        <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+          <rootCauseFirst>true</rootCauseFirst>
+          <omitCommonFrames>true</omitCommonFrames>
+          <!-- Frames per throwable, and the whole rendered trace. Both are caps rather than targets:
+               a well behaved failure is rendered in full and never reaches either. -->
+          <maxDepthPerThrowable>${JSON_THROWABLE_MAX_DEPTH_PER_THROWABLE}</maxDepthPerThrowable>
+          <maxLength>${JSON_THROWABLE_MAX_LENGTH}</maxLength>
+        </throwableConverter>
+      </encoder>
+    </appender>
+
+    <!-- prod: JSON only, on standard output, for a log driver or a collector. See
+         application-prod.yml, which restates the shared baseline's four published management endpoints
+         rather than narrowing to them - health, info, metrics and prometheus - withholds health
+         component detail, samples traces rather than exporting all of them, requires transport
+         security, and resolves every secret from the environment with no fallback.
+
+         Publishing an endpoint there is not the same as opening it. config/SecurityConfig permits the
+         health probe anonymously, because a container health check arrives without a token, and adds an
+         anonymous permit for the metrics scrape path ONLY where carddemo.security.anonymous-metrics-scrape
+         is set. Production leaves that key false, as the shared baseline does, so in production the
+         unauthenticated surface is the health probe alone and the other three published paths -
+         prometheus, metrics and info - are published but authenticated. A collector that presents a
+         bearer token still scrapes.
+
+         What this configuration guarantees about a production log line is what an encoder and an appender
+         can guarantee: no statement text and no bound parameter value reaches a log, because the
+         persistence provider's own statement echo is off in that overlay and the two provider categories
+         at the end of this file are held at levels that emit neither. It cannot guarantee the content of
+         an arbitrary application message; that is the responsibility of the code composing the message,
+         and the module's diagnostic rule for it is recorded in docs/decision-log.md. -->
+    <springProfile name="prod">
+      <root level="WARN">
+        <appender-ref ref="CONSOLE_JSON"/>
+      </root>
+    </springProfile>
+
+    <!-- No profile, or any profile this file does not name. The application must NEVER be silent: an
+         artefact started without a profile still logs, and it logs in the machine readable form,
+         because an unnamed profile is far likelier to be a deployment than a workstation. The level is
+         the shared baseline's, which is also the safe floor for a run that somehow has no overlay at
+         all. -->
+    <springProfile name="!prod">
+      <root level="INFO">
+        <appender-ref ref="CONSOLE_JSON"/>
+      </root>
+    </springProfile>
+
+  </springProfile>
+
+  <!-- ===============================================================================================
+       CATEGORIES. Named here so the diagnostic surface of the migrated estate is legible in one
+       place. Levels stay with the overlays, as recorded at the top of this file: a category the
+       overlays name carries its agreeing baseline, and a category they do not name carries INHERITED
+       so that raising the parent tree in a profile reaches it.
+       =============================================================================================== -->
+
+  <!-- The application base package, com.carddemo. Every overlay names this category, so its effective
+       level is theirs. -->
+  <logger name="com.carddemo" level="INFO"/>
+
+  <!-- The batch tier: the ten migrated batch programs. Their legacy diagnostics were console displays
+       inside one repeated skeleton, open, read loop, status check, close, abend, which the target
+       factors into a single template step class. What that template reports is the tri state outcome
+       of each operation, ok, end of file or error, and on the terminal path the RAW two byte file
+       status, written into the error message BEFORE the abend is raised. That ordering and that raw
+       code are reproduced deliberately: they are the diagnostic an operator of the legacy system
+       recognises, and a prettified message in their place would lose the code the operator needs. -->
+  <logger name="com.carddemo.batch" level="INHERITED"/>
+  <logger name="com.carddemo.batch.step" level="INHERITED"/>
+
+  <!-- The service tier: the business events the migrated programs reported. Among them the five daily
+       transaction reject reason codes, 100, 101, 102, 103 and 109, each written with the record it
+       rejected identified by key rather than reproduced; and the disclosure group default fallback,
+       where a missing group is reported and the run continues against the default group code. A
+       sensitive record-display and user-administration diagnostics use bounded outcomes, counts,
+       status/reference codes and failure types rather than protected fields or provider text. Those
+       source-level decisions are recorded in DL-100 and DL-152; this category declaration is not itself
+       a confidentiality control. -->
+  <logger name="com.carddemo.service" level="INHERITED"/>
+
+  <!-- The request tier, standing in for the 17 screen transactions. A request scoped event carries
+       the correlation identifiers and the outcome. It carries NO credential and NO full card number:
+       an identifier is reported as a key, and a card is reported by the fields the screen contract
+       already exposes. -->
+  <logger name="com.carddemo.api" level="INHERITED"/>
+
+  <!-- Job and step lifecycle, which is how batch progress is followed now that no job log exists.
+       INFO shows a job's steps and their outcomes without the per chunk volume that would bury the
+       application's own events. The shared baseline and the local overlay both name this category at
+       this level; the test overlay lowers it for the suite, where per step chatter multiplied by every
+       refreshed context is what makes a captured log unusable. -->
+  <logger name="org.springframework.batch" level="INFO"/>
+
+  <!-- The framework's job launcher, named here because it is the ONE category in this tree that must sit
+       ABOVE its parent rather than with it. At INFO that class announces every launch as "Attempting to
+       launch job with name=... and parameters=..." - the whole parameter map, VALUES INCLUDED - and the
+       launch surface of this module is reached over HTTP, so those values arrive from a caller. Every
+       diagnostic this module authors reports parameter KEYS and withholds their values, for the reason set
+       out on com.carddemo.config.BatchConfig#batchJobBoundaryListener: a log stream leaves the process while
+       the values stay readable in the framework's own execution-parameter table, which is reached through
+       the database. One INFO line from inside the framework would undo that policy on every launch.
+       The level itself is WARN and lives with the other levels in application.yml, as this file's own
+       ownership rule requires; it is pinned in the SHARED BASELINE rather than per overlay so that raising
+       the parent category in any profile cannot reach it. WARN rather than OFF because the same class
+       reports genuine launch failures, and those must still be heard. Nothing is lost by the raise: the
+       boundary listener still announces START OF JOB with the job name, the instance and execution
+       identifiers and the sorted parameter keys, and the launch endpoint records the job and the execution
+       the framework assigned. -->
+  <logger name="org.springframework.batch.core.launch.support.SimpleJobOperator" level="INHERITED"/>
+
+  <!-- Schema migration, and this one is a CROSS FILE CONTRACT rather than a preference. Local
+       validation reads the application's log to confirm that every delivered migration was applied and
+       that the schema reached its highest delivered version before anything else about a run is
+       believed. At this level the migration tool announces each migration as it applies it, by version
+       and description, which covers every delivered script - V1__create_schema, V2__create_indexes and
+       V2_2__add_protected_value_invariants from the schema location, then V3__seed_reference_data and
+       V4__seed_user_security from the seed location - and the two seed scripts additionally
+       announce themselves by name and report what they seeded. Silencing this category would break
+       that check and would also hide a start-up that stopped short of the seeds. Every overlay keeps
+       it here for the same reason. -->
+  <logger name="org.flywaydb" level="INFO"/>
+
+  <!-- The migration tool's own executor, and the ONE Flyway category that must sit ABOVE its parent. At
+       INFO that class announces "Database: <jdbc url> (<product version>)", "Driver: <driver and version>"
+       and "Database Type: <type>" before any migration runs, so the host, the port, the database name and
+       the exact server and driver versions of the estate reach the stream that leaves the process. The
+       credential is already redacted from that URL, which is why the line reads as safe and is not:
+       topology is what a reader needs BEFORE a credential is worth anything, and a version pair is a
+       vulnerability lookup. The cross-file contract above survives the raise untouched, because every line
+       it depends on is emitted by a DIFFERENT category - org.flywaydb.core.internal.command.DbMigrate -
+       which stays at INFO through the parent, and because config/MigrationVersionRecordCallback now writes
+       an application-owned record of each applied version and of the version reached. Level lives in
+       application.yml per this file's ownership rule; declared INHERITED here so the two cannot conflict.
+       See docs/decision-log.md DL-311. -->
+  <logger name="org.flywaydb.core.FlywayExecutor" level="INHERITED"/>
+
+  <!-- The queue client's two send templates. Unlike every category above, these are switched OFF rather
+       than raised, and the reason is that the offending content and the useful content are the same
+       statement. Both classes format the whole outbound message - payload AND headers - into their own log
+       text: at TRACE and DEBUG on the way out and on success, and at ERROR together with the raw provider
+       exception and the resolved endpoint when a send fails. The payload of this module's one outbound
+       queue is an eighty-character job-control card, so the message IS the submitted job, and the endpoint
+       is the destination nothing else here prints. No level keeps the failure and drops the card.
+
+       Nothing is lost that this module does not say better itself. service/JobSubmissionService reports a
+       refused publish naming the card's ORDINAL and never its text, and carddemo.job.submission.publish
+       counts the outcome, so a failed submission is both legible and countable without a byte of the card
+       leaving the process. Measured against Spring Cloud AWS 3.4.2. See docs/decision-log.md DL-311. -->
+  <logger name="io.awspring.cloud.sqs.operations.AbstractMessagingTemplate" level="INHERITED"/>
+  <logger name="io.awspring.cloud.sqs.operations.SqsTemplate" level="INHERITED"/>
+
+  <!-- The trace exporter's two transports, switched off for a different reason again: the text is written
+       by somebody else. On a failed export both compose their message out of the COLLECTOR's own response -
+       the HTTP status line and the response body verbatim, or the transport exception's message - and the
+       collector is a remote party this deployment authenticates but does not author. Anything it returns
+       would be published into the machine-facing appender below, which is the output that leaves the
+       process, so a compromised or merely misconfigured collector would be choosing content in this
+       deployment's log stream.
+
+       An export failure stays visible: config/ObservabilityConfig counts every failed export batch on
+       carddemo.tracing.export, tagged by outcome, which is a bounded signal this module composes and which
+       a dashboard can alert on. Both categories log through java.util.logging and reach this configuration
+       by way of the JUL bridge the framework installs, which is why naming them here works at all.
+       Measured against OpenTelemetry 1.62.0, and re-confirmed at that release rather than carried
+       forward: the two categories below are internal names, so both were re-read in
+       opentelemetry-exporter-common-1.62.0.jar and exist under exactly these names. See
+       docs/decision-log.md DL-311, DL-358 and DL-366. -->
+  <logger name="io.opentelemetry.exporter.internal.http.HttpExporter" level="INHERITED"/>
+  <logger name="io.opentelemetry.exporter.internal.grpc.GrpcExporter" level="INHERITED"/>
+
+  <!-- The two persistence provider categories that would otherwise put data into the log. The first
+       writes the statement text, the second writes the bound parameter values, and both write only at
+       DEBUG, so declaring them at INFO means neither is emitted under any profile unless a profile
+       asks for it by name.
+
+       The parameter category is the sensitive one: a bound parameter can be a card primary account
+       number or a national identifier, so it must never be raised in production, and nothing raises
+       it here. Where a developer does want to see statements, the local overlay turns on the
+       provider's OWN statement echo through its own switch rather than through this category, which
+       keeps the two decisions separate.
+
+       THIS IS ONE HALF OF ONE RULE. The other half is in docker-compose.yml, where the database's
+       slow-statement diagnostic is given log_parameter_max_length=0 so the server cannot print the
+       values a statement was bound with either - its default is to print them in full. Closing one
+       channel and leaving the other open would read as though both were closed. Both halves are
+       asserted: this one by ObservabilityConfigTest, the other by ContainerHardeningContractTest. -->
+  <logger name="org.hibernate.SQL" level="INFO"/>
+  <logger name="org.hibernate.orm.jdbc.bind" level="INFO"/>
+
+  <!-- The servlet container's cookie parser, and this one is CONFIDENTIALITY rather than legibility.
+       When a request arrives with a Cookie header the parser cannot read, it reports the refusal by
+       printing the header it received IN FULL, at INFO for the first occurrence and at DEBUG for every
+       occurrence after that. A client that presents its bearer credential in a Cookie header instead of
+       an Authorization header, which this application correctly declines to authenticate, therefore had
+       its entire still valid token written into the log in clear text, where a token read back out of it
+       authenticated. The container's categories reach this logging system because the framework bridges
+       the container's own logging to it, so a category declared here governs them.
+
+       Declared at WARN rather than switched off, and that is the point of the level: the record exists
+       only at INFO and at DEBUG, so WARN closes BOTH forms of it while leaving a genuinely more serious
+       report from the same class audible. It is declared here in the shared block rather than per
+       profile, so raising a profile's root level cannot reach it: the production profile's root already
+       sat above INFO and so never emitted the record, while every other profile did.
+
+       Narrow on purpose. Silencing the container's parsing categories wholesale would also hide the
+       protocol diagnostics that explain a malformed request, which is exactly the evidence a local gate
+       run depends on. One emitter was found printing a credential, so one emitter is named. Recorded as
+       decision DL-266 and asserted by ObservabilityConfigTest. -->
+  <logger name="org.apache.tomcat.util.http.parser.Cookie" level="WARN"/>
+
+</configuration>

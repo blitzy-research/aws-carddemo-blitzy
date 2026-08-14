@@ -1,0 +1,672 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.config;
+
+import com.carddemo.domain.enums.UserType;
+import com.carddemo.service.SignOnStateService;
+import com.carddemo.util.SessionTokenIssuer;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.OctetSequenceKey;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
+import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.Objects;
+import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.JwsHeader;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtClaimsSet;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
+import org.springframework.security.oauth2.jwt.JwtException;
+import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.stereotype.Component;
+
+/**
+ * Mints and verifies the bearer token that carries a signed-on identity across requests, replacing the
+ * communication area the legacy pseudo-conversation handed from one program to the next.
+ *
+ * <p><strong>What is being replaced.</strong> The legacy sign-on transaction closed every turn by
+ * returning with its own transaction identifier re-armed and the shared communication area passed back
+ * at that area's own declared length ({@code app/cbl/COSGN00C.cbl} L98-L102). The terminal manager
+ * handed the area to whichever program ran next, and nineteen such re-arms across the seventeen online
+ * programs, together with twenty-five program-to-program transfers, all depended on it. The area is
+ * {@code CARDDEMO-COMMAREA}, declared at {@code app/cpy/COCOM01Y.cpy} L19, 160 bytes wide and included
+ * textually by every one of those programs. It could be trusted because only the transaction manager
+ * could produce one. Nothing over HTTP has that property, so the facts that must survive a request
+ * boundary travel instead in a token whose signature is the entire reason to trust them, and this class
+ * is the only place in the module that produces or checks that signature.
+ *
+ * <p><strong>The split: exactly two facts are signed, and the whole remainder is echoed by the
+ * client.</strong> That area carried five groups, and only two of its fields are security facts. Two
+ * further claims accompany them which are not fields of that area at all: a fingerprint of the record
+ * those two facts were read from - see the revocation section below - and {@link #AUTHORITY_CLAIM}, the
+ * authority the sign-on route split resolved the stored type code to, which is carried apart from the
+ * code itself because the two genuinely differ for a record holding a code the estate never declared:
+ *
+ * <ul>
+ *   <li>{@code CDEMO-USER-ID}, {@code PIC X(08)} at {@code app/cpy/COCOM01Y.cpy} L25, becomes the
+ *       subject claim. It is carried through exactly as supplied - eight characters, never trimmed,
+ *       never folded in case, never parsed as a number - because it is the fixed-width key of the user
+ *       record and any change of width or case would stop matching it. Sign-on upper-cases what was
+ *       keyed in before using it at all, and does so unconditionally
+ *       ({@code app/cbl/COSGN00C.cbl} L132-L136), so the value reaching this class is already
+ *       upper-cased and this class deliberately does not fold it again.</li>
+ *   <li>{@code CDEMO-USER-TYPE}, {@code PIC X(01)} at L26, becomes the role claim, carrying the raw
+ *       one-character code rather than a renamed equivalent, because that code is the vocabulary the
+ *       estate used and round-tripping it unchanged keeps a token readable against the source record.
+ *       Its two declared values are the level-88 condition names {@code CDEMO-USRTYP-ADMIN}, value
+ *       {@code A} at L27, and {@code CDEMO-USRTYP-USER}, value {@code U} at L28, modelled by
+ *       {@link UserType}.</li>
+ * </ul>
+ *
+ * <p>Everything else that area held is mutable per-request navigation state, and it belongs to
+ * {@code com.carddemo.api.dto.NavigationContext}, which the client echoes on its next call: the from-
+ * and to-transaction identifiers and program names of the general-info group, the last map and mapset
+ * names of the more-info group, the selected customer identifier and the three customer name fields,
+ * the selected account identifier and status, the selected card number, and the one-digit
+ * {@code CDEMO-PGM-CONTEXT} re-entry flag at L29 whose level-88 values are {@code CDEMO-PGM-ENTER},
+ * value {@code 0} at L30, and {@code CDEMO-PGM-REENTER}, value {@code 1} at L31 - the flag that decides
+ * whether field-level error decoration is applied at all. None of that is signed here.
+ *
+ * <p>Reproducing the area wholesale as claims would be wrong twice over. It would publish business
+ * selections into an artifact that clients log, forward and cache, which the communication area never
+ * was; and it would put server-carried navigation state back into a design whose whole point is that
+ * the client drives the next call. So no customer name, account identifier, card number,
+ * social-security number or credit score is ever placed in a token, and neither is a route, a target
+ * program name, a screen name nor any other selection.
+ *
+ * <p><strong>A signed fact is not a current fact, so a third claim carries a fingerprint of the
+ * record.</strong> The legacy system had nothing to revoke: every terminal turn re-entered a
+ * transaction that read the credential master again, so a record changed between two turns was simply
+ * read again on the next one. A signed claim has the opposite property - it stays true to its
+ * signature long after it has stopped being true about the record it describes - and without a remedy
+ * an administrator who demoted an operator, deleted an operator or reset an operator's credential
+ * would have changed nothing until the token already in that operator's hands expired. So a minted
+ * token additionally carries {@link #SECURITY_STATE_CLAIM}, the fingerprint
+ * {@link SignOnStateService} derives from the identifier, the raw type code and the stored credential
+ * digest of the user-security record; and {@link #namesCurrentState(Jwt)} recomputes that fingerprint
+ * from the record on every request and refuses a token that no longer matches. Demotion, promotion,
+ * credential reset and deletion each take effect on the next request rather than at the end of the
+ * token's lifetime. Nothing is stored for this: there is no revocation list, no session table and no
+ * version column, because the fingerprint is derived from the record each time it is needed - which is
+ * also why no future write path can forget to invalidate anything.
+ *
+ * <p>The fingerprint is not the stored credential digest and cannot be turned back into it; the
+ * disclosure analysis is stated once, on {@link SignOnStateService}, rather than repeated here. What
+ * matters at this boundary is that verifying a signature and establishing an identity are now two
+ * different questions: {@link #verify(String)} answers the first and is unchanged, and
+ * {@link #namesCurrentState(Jwt)} answers the second. The filter chain requires both.
+ *
+ * <p><strong>Routing tolerance is preserved, not tightened.</strong> Sign-on tests the administrator
+ * condition and, when it holds, transfers to the administrative menu; the alternative is
+ * <em>unconditional</em> and transfers to the main menu, with no second test and no third branch for a
+ * code the estate never declared ({@code app/cbl/COSGN00C.cbl} L230-L240). So reading a role claim never
+ * throws on an unexpected character: an unrecognised code yields no user type, and a token whose type
+ * cannot be read grants no authority rather than falling back to the lesser of the two.
+ *
+ * <p><strong>The algorithm is fixed here and is not configurable.</strong> A token is minted under
+ * {@link MacAlgorithm#HS256}, stated on the header this class writes, and the verifier is built for that
+ * algorithm alone - so a token offering a different one, including none at all, is refused rather than
+ * accepted on the strength of its own claim about how it ought to be checked. Making this a setting
+ * would make the strength of every verification a deployment accident, which is the whole of the reason
+ * it is a constant. The same reasoning keeps the minimum key length out of configuration: it is a
+ * property of the fixed algorithm, so it is enforced beside the algorithm rather than restated as a
+ * setting that could disagree with it.
+ *
+ * <p><strong>Verification never throws for an untrustworthy token.</strong> {@link #verify(String)}
+ * answers with an empty result for every rejection - absent, malformed, wrongly signed, expired, or
+ * issued by somebody else - because the caller's decision is identical in all five cases, and a caller
+ * handed the distinction would be tempted to relay it to whoever presented the token. What a client
+ * learns is that it is not authenticated; which of the five reasons applies stays on this side.
+ *
+ * <p><strong>Three traps are avoided deliberately, and each was established against the library rather
+ * than assumed.</strong> The first is that the issuer claim of a verified token must be read with
+ * {@link Jwt#getClaimAsString(String)} and never through the locator-typed issuer accessor: this
+ * module's issuer names a module rather than an address, and the decoded claim reads back as plain text.
+ * The second is that expiry is judged against the {@link Clock} this class is given rather than against
+ * the platform clock, so the instant a token is minted at and the instant it is judged against come
+ * from one source - which is also what lets a test assert expiry without waiting. The third is that the
+ * library's window validator judges expiry only when the presented token carries it, so a token carrying
+ * no expiry claim at all passes it and would be usable for as long as the signing key stands; the
+ * presence of the claim is therefore required in its own right, ahead of the window check, and the
+ * validator that requires it is the reason the sentence above about expiry is true of every token this
+ * class admits rather than only of the tokens it mints.
+ *
+ * <p><strong>Nothing secret is ever logged, and nothing secret ever reaches a message.</strong> No
+ * token, no fragment of one and no signing material appears in any log statement here; the only thing
+ * recorded is the category of a verification failure, deliberately excluding the library's own failure
+ * message, because such a message can quote the offending token. The refusals this class raises for
+ * unusable configuration name the configuration key at fault and the length the fixed algorithm
+ * requires, and disclose neither the configured value, nor any part of it, nor its length, nor a digest
+ * of it - the length of a secret narrows a search for it.
+ *
+ * <p><strong>Why the signing key is expressed as a JOSE key rather than as a platform key
+ * specification.</strong> Both consumers of the key are JOSE components, and the symmetric key type of
+ * the JOSE library already on the compile class path is their native representation, so the key is
+ * described once in that form and each consumer takes what it needs from it. The verifying side's
+ * builder accepts only a platform secret key, so the JOSE key is asked to render itself as one, naming
+ * the platform algorithm explicitly rather than letting the key be built without one. Expressing it
+ * this way also keeps this file's type references inside the namespaces the module standardises on. No
+ * dependency is added for any of it: the token library arrives with the framework security artifact the
+ * manifest already declares, and the manifest is not touched.
+ *
+ * <p>The choice of signing primitive, the decision to add no dependency for it, the fixed algorithm, the
+ * rule that no profile may default the signing material, and the reason a service-label issuer is read
+ * from the raw claim rather than through the locator-typed accessor are reasoned in
+ * {@code docs/decision-log.md} DL-097. The legacy estate is cited above by member path, field name,
+ * width, condition-name value and line number only; no COBOL, copybook or screen-map source text is
+ * reproduced here or anywhere else in this module.
+ */
+@Component
+public class JwtTokenProvider implements SessionTokenIssuer {
+
+    /**
+     * Claim name under which a token carries the user type.
+     *
+     * <p>Published so that the minting side, the verifying side, the filter chain and any test naming
+     * the claim all refer to one authority rather than repeating the literal.</p>
+     */
+    public static final String ROLE_CLAIM = "role";
+
+    /**
+     * Authority granted to a token whose user type is the administrative one.
+     *
+     * <p>Spelled with the framework's conventional role prefix so that authorization rules expressed as
+     * an authority and rules expressed as a role agree, and published as a constant so the filter chain
+     * and this class cannot drift apart on the spelling.</p>
+     */
+    public static final String ADMIN_AUTHORITY = "ROLE_ADMIN";
+
+    /** Authority granted to a token whose user type is the standard one. */
+    public static final String USER_AUTHORITY = "ROLE_USER";
+
+    /**
+     * Claim name under which a token carries the fingerprint of the record it was minted from.
+     *
+     * <p>Deliberately not named for a hash, a digest or a credential: it is none of those, it is a
+     * fingerprint of three record fields, and a claim named after the credential would invite the
+     * belief that the credential is in the token. Published for the same reason
+     * {@link #ROLE_CLAIM} is - the minting side, the currency check and any test naming the claim
+     * refer to one authority - and renaming it invalidates every token already issued, which is a
+     * contract change rather than a rename.</p>
+     */
+    public static final String SECURITY_STATE_CLAIM = "authstate";
+
+    /**
+     * Claim name under which a token carries the authority resolved from its user type.
+     *
+     * <p><strong>Why the resolved authority is a separate claim from {@link #ROLE_CLAIM}.</strong> The
+     * two are different facts and are false of each other for a genuine class of record. The role claim
+     * carries the stored type code exactly as the user-security record holds it, because that is what
+     * {@link #namesCurrentState(Jwt)} has to compare the record against - a claim carrying anything else
+     * could never reconcile. The authority claim carries the type the legacy route split <em>resolved</em>
+     * that code to, and the legacy split tests one condition with an unconditional alternative: every
+     * stored code that is not the administrator letter reaches the standard authority, including a code
+     * the estate never declared. For such a record the stored code and the resolved authority differ, so
+     * one claim cannot carry both without either refusing an operator the legacy admitted or asserting an
+     * entitlement the record does not support.
+     *
+     * <p>The authority claim is the one an authorization decision reads, and it can only ever hold one of
+     * the two declared codes - a claim holding anything else grants nothing at all rather than falling
+     * back to the lesser authority, because a token whose entitlement cannot be read is a token whose
+     * entitlement is unknown. The stored code, meanwhile, is free to be any byte the record holds.
+     * Reading the two apart is what closes the defect where an operator whose stored code was neither
+     * declared letter signed on successfully and was then refused a session.</p>
+     */
+    public static final String AUTHORITY_CLAIM = "authority";
+
+    /**
+     * Logger. Receives the category of a verification failure and nothing else: never a token, never a
+     * fragment of one, never signing material, and never a third-party failure message.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(JwtTokenProvider.class);
+
+    /**
+     * The one signature algorithm this module mints under and the only one it will verify.
+     *
+     * <p>A message-authentication algorithm rather than a public-key one, because a token minted and
+     * verified by the same module has no second party needing a separate verification key.</p>
+     */
+    private static final MacAlgorithm SIGNATURE_ALGORITHM = MacAlgorithm.HS256;
+
+    /**
+     * Platform algorithm name for {@link #SIGNATURE_ALGORITHM}.
+     *
+     * <p>The two names describe one algorithm at two layers - the registered name the token header
+     * carries, and the name the platform knows the keyed hash by. This one is stated so the signing key
+     * is rendered as a key <em>for</em> that algorithm rather than as an unattributed block of bytes.</p>
+     */
+    private static final String MAC_KEY_ALGORITHM = "HmacSHA256";
+
+    /**
+     * Shortest signing secret {@link #SIGNATURE_ALGORITHM} may be used with, in bytes.
+     *
+     * <p>It is a property of the fixed algorithm, which is why it lives beside the algorithm rather than
+     * being restated as configuration that could disagree with it. Checking it here converts a
+     * key-length failure raised from inside the signing library on the first mint - that is, during a
+     * request - into a start-up failure that names the configuration key at fault. It is a cryptographic
+     * floor and not a capacity, latency or timing figure of any kind.</p>
+     */
+    private static final int MINIMUM_SECRET_BYTES = 32;
+
+    /** Mints signed tokens. Holds the signing key; never exposed. */
+    private final JwtEncoder encoder;
+
+    /**
+     * Verifies signature, the presence and openness of the expiry, and issuer. Holds the signing key;
+     * never exposed.
+     */
+    private final JwtDecoder decoder;
+
+    /** Time source for the issue instant, and the same source the expiry check uses. */
+    private final Clock clock;
+
+    /** How long a minted token stays usable. */
+    private final Duration expiration;
+
+    /** Value a minted token claims as its origin, and the value a presented token must carry. */
+    private final String issuer;
+
+    /**
+     * Reads the authoritative security state of an identity, and fingerprints it.
+     *
+     * <p>Held here rather than at the filter because minting and checking must agree exactly on what
+     * is covered and how, and the only way to guarantee that is for one collaborator to compose both.
+     * The dependency runs configuration-to-service, the direction the module's layering permits.</p>
+     */
+    private final SignOnStateService signOnStateService;
+
+    /**
+     * Builds the minting and verifying sides from validated configuration.
+     *
+     * <p>The signing material arrives only through {@link JwtProperties}, which binds it from the
+     * {@value JwtProperties#PREFIX} key group. Nothing here reads the environment, and nothing here
+     * substitutes a value: there is no default, no generated fallback, no development key and no
+     * convenience literal, because a defaulted signing secret violates the no-hardcoded-credentials
+     * constraint exactly as thoroughly as a literal one would. The shared configuration baseline
+     * declares no secret at all and the production profile resolves it from a bare environment
+     * reference, so a deployment that has not supplied one cannot reach a running state.</p>
+     *
+     * <p>The material is described once as a JOSE symmetric key, from which the minting side takes a key
+     * set of one and the verifying side takes the platform secret key its builder requires. The
+     * intermediate byte array is then cleared. Clearing it is hygiene rather than a guarantee - the key
+     * retains the material, as it must - but it removes one copy that would otherwise sit in the heap
+     * for the life of the process for no purpose, since the key takes its own.</p>
+     *
+     * <p>The presence and length checks are raised here rather than left to the signing library because
+     * the library would raise them on the first attempt to mint a token, which happens during a request
+     * rather than at start-up, and its message names an algorithm rather than the configuration key that
+     * has to be corrected. The length check is also the mechanism that catches an unresolved placeholder:
+     * configuration-properties binding resolves placeholders leniently, so an unset environment variable
+     * binds the reference's own text, which is present and not blank and therefore satisfies the bound
+     * record's constraints - but cannot meet this algorithm's key-length floor.</p>
+     *
+     * @param properties validated token settings; the secret must be present and long enough for the
+     *                   fixed algorithm
+     * @param clock      time source for minting and for judging expiry, so that both come from one
+     *                   source and a test can move it
+     * @param signOnStateService reader and fingerprinter of the authoritative user-security record, so
+     *                   that a minted token names the record it was minted from and a presented token
+     *                   can be checked against the record as it stands now
+     * @throws IllegalStateException if the configured signing secret is absent, blank, or shorter than
+     *                               the fixed algorithm permits. The message names the configuration key
+     *                               and the required length, and discloses nothing about the value
+     * @throws NullPointerException  if any argument is {@code null}
+     */
+    public JwtTokenProvider(final JwtProperties properties, final Clock clock,
+            final SignOnStateService signOnStateService) {
+        Objects.requireNonNull(properties, "properties must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.signOnStateService = Objects.requireNonNull(signOnStateService,
+                "signOnStateService must not be null");
+
+        if (!properties.hasSecret()) {
+            throw new IllegalStateException(JwtProperties.PREFIX
+                    + ".secret must be configured; no signing secret is defaulted anywhere in this module");
+        }
+        final byte[] keyMaterial = properties.secret().getBytes(StandardCharsets.UTF_8);
+        try {
+            if (keyMaterial.length < MINIMUM_SECRET_BYTES) {
+                // The shortfall is deliberately not stated. Naming the required length tells a deployer
+                // what to supply; naming the configured length would disclose a property of the secret.
+                throw new IllegalStateException(JwtProperties.PREFIX + ".secret must encode at least "
+                        + MINIMUM_SECRET_BYTES + " bytes for " + SIGNATURE_ALGORITHM.getName()
+                        + "; the configured value is too short");
+            }
+            final OctetSequenceKey signingKey = new OctetSequenceKey.Builder(keyMaterial).build();
+            this.encoder = new NimbusJwtEncoder(new ImmutableJWKSet<>(new JWKSet(signingKey)));
+
+            final JwtTimestampValidator windowValidator = new JwtTimestampValidator();
+            windowValidator.setClock(clock);
+            final NimbusJwtDecoder tokenDecoder =
+                    NimbusJwtDecoder.withSecretKey(signingKey.toSecretKey(MAC_KEY_ALGORITHM))
+                            .macAlgorithm(SIGNATURE_ALGORITHM)
+                            .build();
+            // Three requirements, all mandatory, and the first of them exists because the second does not
+            // cover it. The framework's window validator judges the expiry and the not-before claim only
+            // when the presented token carries them, so a token carrying NEITHER passes it - it has no
+            // window to be outside of, and it would then be usable for as long as the signing key stands.
+            // This class states that every token it verifies has an expiry, so the requirement is enforced
+            // rather than assumed: the presence check runs first and the window check judges what it
+            // admits. The not-before claim is deliberately not required, because this class never mints one
+            // and requiring a claim nothing issues would refuse every token it produced.
+            tokenDecoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+                    new RequiredExpiryValidator(), windowValidator,
+                    new JwtIssuerValidator(properties.issuer())));
+            this.decoder = tokenDecoder;
+        } finally {
+            Arrays.fill(keyMaterial, (byte) 0);
+        }
+
+        this.issuer = properties.issuer();
+        this.expiration = properties.expiration();
+    }
+
+    /**
+     * Mints a signed token establishing a signed-on identity and its user type.
+     *
+     * <p>The two facts placed in the token are exactly the two the legacy communication area carried
+     * forward out of the sign-on program. A third claim accompanies them, and it is not a fact of that
+     * area: it is the fingerprint of the user-security record these two facts were read from, which is
+     * what lets a later request find out whether they are still true. Nothing else is added. The issue
+     * instant comes from this class's clock and the expiry is that instant advanced by the configured
+     * lifetime, so a token's window is determined entirely by when it was minted and never by when it
+     * is presented.</p>
+     *
+     * <p><strong>Two conditions are re-checked here even though the caller has already established
+     * them.</strong> The record is read anyway, because the fingerprint can only come from it, so
+     * checking it costs nothing beyond the read. A record that has disappeared, and a record whose
+     * stored type code is no longer the code being minted, both mean the record changed underneath the
+     * sign-on that is about to be answered; a session must not be issued in either case, and refusing
+     * is the only answer that cannot be mistaken for success. Both are raised rather than returned
+     * because both are unreachable through the delivered sign-on path - it reads the code from this
+     * same record, in the same request - so reaching either means a concurrent administrative change or
+     * a caller that invented its arguments.</p>
+     *
+     * <p><strong>What is deliberately not checked: that the stored code equals the resolved authority's
+     * own code.</strong> Such a check would be a defect. The legacy route split tests the administrator
+     * letter once and its alternative is unconditional, so a record carrying any other value - including
+     * one the estate never declared - signs on successfully and resolves to the standard authority. For
+     * such a record the stored code and the standard authority's code are different strings, and requiring
+     * them to match would refuse a session to an operator the sign-on had just admitted, surfacing as a
+     * server failure on a successful sign-on. The two facts are
+     * carried in two claims and each is checked against what it is actually a fact about: the stored code
+     * against the record, and the resolved authority against the two codes the estate declares.</p>
+     *
+     * @param userId   the signed-on user identifier, already upper-cased by the sign-on path as the
+     *                 legacy program upper-cases it, and placed in the subject claim verbatim at the
+     *                 fixed width of the user record's key - it is neither trimmed, re-cased nor parsed
+     * @param userType the authority the sign-on resolved the stored code to, which decides what a
+     *                 verified token is permitted to do
+     * @param userTypeCode the stored one-character type code exactly as the record holds it, which
+     *                 becomes the role claim and is what a later currency check compares the record
+     *                 against
+     * @return the compact serialized token
+     * @throws IllegalStateException if no user-security record carries that identifier, or if the record
+     *                               carries a different type code from the one being minted
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    @Override
+    public String issue(final String userId, final UserType userType, final String userTypeCode) {
+        Objects.requireNonNull(userId, "userId must not be null");
+        Objects.requireNonNull(userType, "userType must not be null");
+        Objects.requireNonNull(userTypeCode, "userTypeCode must not be null");
+
+        final SignOnStateService.SignOnState state = this.signOnStateService.currentStateOf(userId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "No user-security record carries the identifier a session was requested for; "
+                                + "no session is issued"));
+        if (!userTypeCode.equals(state.userTypeCode())) {
+            // The identifier is deliberately absent from the message: it is the subject of a credential
+            // being minted, and this text can reach a log or an error surface.
+            throw new IllegalStateException(
+                    "The user-security record no longer carries the user type a session was requested "
+                            + "for; no session is issued");
+        }
+
+        final Instant issuedAt = this.clock.instant();
+        final JwtClaimsSet claims = JwtClaimsSet.builder()
+                .issuer(this.issuer)
+                .subject(userId)
+                .issuedAt(issuedAt)
+                .expiresAt(issuedAt.plus(this.expiration))
+                .claim(ROLE_CLAIM, userTypeCode)
+                .claim(AUTHORITY_CLAIM, userType.getCode())
+                .claim(SECURITY_STATE_CLAIM, state.fingerprint())
+                .build();
+
+        return this.encoder.encode(JwtEncoderParameters.from(
+                JwsHeader.with(SIGNATURE_ALGORITHM).build(), claims)).getTokenValue();
+    }
+
+    /**
+     * Verifies a presented token and answers its claims, or nothing at all.
+     *
+     * <p>Signature, expiry and issuer are all required, and the algorithm is the one fixed by this class
+     * rather than the one the presented token names. <strong>Expiry is required in two senses:</strong> the
+     * claim has to be present, which the library's window validator does not by itself insist on, and the
+     * instant it names has to be open against this class's clock. An empty result means the token may not
+     * be trusted and carries no indication of which requirement it failed, deliberately: the caller's next
+     * action is identical in every case, and a caller handed the distinction could relay it to whoever
+     * presented the token.</p>
+     *
+     * @param token the presented compact token; {@code null} and blank both yield an empty result rather
+     *              than a failure, because an absent credential is an ordinary condition and not an error
+     * @return the verified claims, or empty when the token is absent or may not be trusted
+     */
+    public Optional<Jwt> verify(final String token) {
+        if (token == null || token.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(this.decoder.decode(token));
+        } catch (final JwtException rejected) {
+            // The exception TYPE is recorded and its message is not: a verification-failure message can
+            // quote the offending token, and a token is a credential.
+            LOG.debug("Rejected a presented bearer token; verification failed as {}",
+                    rejected.getClass().getSimpleName());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Reads the user type a verified token carries.
+     *
+     * <p><strong>Read from {@link #AUTHORITY_CLAIM} and not from {@link #ROLE_CLAIM}.</strong> The role
+     * claim carries the record's stored code, which for a record the estate never declared is a value no
+     * lookup can resolve; the authority claim carries the type the sign-on route split already resolved
+     * that code to, and the minting side puts one of the two declared codes there and nothing else. So
+     * this method asks the claim that is a fact about entitlement rather than the claim that is a fact
+     * about the record, which is what lets an operator whose stored code is neither declared letter hold
+     * a usable session with the standard authority - exactly the outcome the unconditional alternative at
+     * {@code app/cbl/COSGN00C.cbl} L230-L240 produces.</p>
+     *
+     * <p>A token carrying no authority claim, or one carrying a code the estate does not declare, yields
+     * an empty result and therefore grants no authority - it does not fall back to the lesser of the two
+     * types, because a token whose entitlement cannot be read is a token whose entitlement is unknown.
+     * Resolution never throws.</p>
+     *
+     * @param jwt a token already verified by {@link #verify(String)}
+     * @return the user type the token carries, or empty when it carries none this estate declares
+     * @throws NullPointerException if {@code jwt} is {@code null}
+     */
+    public Optional<UserType> userTypeOf(final Jwt jwt) {
+        Objects.requireNonNull(jwt, "jwt must not be null");
+        return UserType.fromCode(jwt.getClaimAsString(AUTHORITY_CLAIM));
+    }
+
+    /**
+     * Reports whether a verified token still names the record it was minted from.
+     *
+     * <p>A verified token proves only that this module minted it and that its window is open. It does
+     * not prove that the two facts it carries are still true, and the whole of what is asked here is
+     * whether they are: the record must still exist, its fingerprint must still match the one the token
+     * carries, and its type code must still be the one the token claims. A token minted before this
+     * claim existed carries none, and is refused rather than admitted, so the mechanism cannot be
+     * bypassed by presenting an older token.</p>
+     *
+     * <p>The composition of the fingerprint, the constant-time comparison, and the decision to refuse
+     * rather than raise when the record cannot be reached, all belong to {@link SignOnStateService};
+     * this method reads three claims and delegates, so that minting and checking cannot drift apart on
+     * what is covered. Like {@link #verify(String)}, it never reports which of the requirements failed
+     * - the caller's next action is identical in every case.</p>
+     *
+     * <p><strong>A fourth requirement, on the token's own two type claims.</strong> A token carries the
+     * record's stored code and, separately, the authority that code was resolved to. Those two are
+     * consistent by construction on the minting path, which reads both from one record in one request -
+     * but consistency that is only guaranteed by construction is not guaranteed at all once the value is
+     * outside the process, so it is re-established here rather than assumed. The authority claim must be
+     * the authority the stored code resolves to under the legacy route split: the administrator letter
+     * resolves to the administrative authority and every other value resolves to the standard one. A
+     * token whose two claims disagree establishes nothing, which means a stored code the estate never
+     * declared can never be paired with the administrative authority.</p>
+     *
+     * @param jwt a token already verified by {@link #verify(String)}
+     * @return {@code true} only when the record still exists and still matches the token's claims
+     * @throws NullPointerException if {@code jwt} is {@code null}
+     */
+    public boolean namesCurrentState(final Jwt jwt) {
+        Objects.requireNonNull(jwt, "jwt must not be null");
+        final String storedTypeCode = jwt.getClaimAsString(ROLE_CLAIM);
+        if (!authorityClaimResolvesFrom(jwt, storedTypeCode)) {
+            LOG.debug("Refusing a presented bearer token; its type claims disagree with each other");
+            return false;
+        }
+        return this.signOnStateService.stillNames(jwt.getSubject(),
+                storedTypeCode, jwt.getClaimAsString(SECURITY_STATE_CLAIM));
+    }
+
+    /**
+     * Reports whether the token's authority claim is the authority its stored type code resolves to.
+     *
+     * <p>The resolution is the legacy route split and nothing more: the administrator code reaches the
+     * administrative type and every other value, declared or not, reaches the standard type. An absent
+     * stored code resolves to nothing at all rather than to the standard type, because a token that names
+     * no record field cannot be reconciled with a record and is refused a step later in any case.</p>
+     *
+     * @param jwt a verified token
+     * @param storedTypeCode the stored type code the token claims, possibly {@code null}
+     * @return {@code true} only when both claims are present and agree
+     */
+    private static boolean authorityClaimResolvesFrom(final Jwt jwt, final String storedTypeCode) {
+        if (storedTypeCode == null) {
+            return false;
+        }
+        final UserType resolved = UserType.fromCode(storedTypeCode).orElse(UserType.USER);
+        return resolved.getCode().equals(jwt.getClaimAsString(AUTHORITY_CLAIM));
+    }
+
+    /**
+     * Names the granted authority a user type carries.
+     *
+     * <p>The estate declares exactly two user types and this module grants exactly two authorities, so
+     * the mapping is total and needs no fallback. Only the administrative type reaches the
+     * administrative authority, mirroring the single condition the sign-on program tests at
+     * {@code app/cbl/COSGN00C.cbl} L230; every other type reaches the standard authority, mirroring the
+     * unconditional alternative at L235.</p>
+     *
+     * @param userType the user type to translate
+     * @return {@link #ADMIN_AUTHORITY} for the administrative type, {@link #USER_AUTHORITY} otherwise
+     * @throws NullPointerException if {@code userType} is {@code null}
+     */
+    public static String authorityOf(final UserType userType) {
+        Objects.requireNonNull(userType, "userType must not be null");
+        return userType.isAdmin() ? ADMIN_AUTHORITY : USER_AUTHORITY;
+    }
+
+    /**
+     * The lifetime a minted token is given.
+     *
+     * <p>Exposed so that a sign-on response can tell a client how long the credential it was just handed
+     * remains usable, which is the one piece of the token's configuration a client legitimately needs.
+     * It is a credential lifetime and not a service level, a latency budget or a time-out.</p>
+     *
+     * @return the configured token lifetime
+     */
+    public Duration tokenLifetime() {
+        return this.expiration;
+    }
+
+    /**
+     * Requires a presented token to carry an expiry at all, which the framework's window validator does
+     * not.
+     *
+     * <p><strong>Why this exists.</strong> The window validator judges the expiry and the not-before claim
+     * against a clock, but it judges each of them only <em>if the token carries it</em>: a token with
+     * neither claim has no window, so nothing about time can refuse it and it verifies for as long as the
+     * signing key stands. Every token this class mints carries an expiry, and this class states that it
+     * verifies expiry - so the absence of the claim has to be a refusal rather than a gap. It is checked
+     * before the window validator runs, so that the window validator only ever judges a claim that is
+     * present.</p>
+     *
+     * <p><strong>What it deliberately does not require.</strong> The not-before claim. Nothing in this
+     * module mints one, so requiring it would refuse every token the module issues; the window validator
+     * still honours one if a presented token carries it.</p>
+     *
+     * <p><strong>What it deliberately does not disclose.</strong> The failure carries the standard
+     * invalid-token code and a description naming the missing claim, and nothing else. The caller's own
+     * handling collapses every verification failure into one answer anyway, and the description never
+     * reaches whoever presented the token - {@link #verify(String)} records the failure type and discards
+     * the message.</p>
+     *
+     * <p>A nested type rather than a class of its own, because this package's type inventory is fixed and
+     * this validator has exactly one collaborator and one caller.</p>
+     */
+    private static final class RequiredExpiryValidator implements OAuth2TokenValidator<Jwt> {
+
+        /** Description of the refusal, naming the claim rather than anything about the token. */
+        private static final String MISSING_EXPIRY_DESCRIPTION =
+                "The token carries no expiry claim, so it declares no window and is not trusted";
+
+        /** Creates the validator. Stateless and therefore safe to share across every verification. */
+        private RequiredExpiryValidator() {
+        }
+
+        /**
+         * Admits a token that carries an expiry and refuses one that does not.
+         *
+         * @param token the decoded token whose claims are being judged; never {@code null} here, because
+         *              the decoder only runs validators over a token it has already parsed and verified
+         *              the signature of
+         * @return success when the expiry claim is present, otherwise a failure carrying the standard
+         *         invalid-token code
+         */
+        @Override
+        public OAuth2TokenValidatorResult validate(final Jwt token) {
+            if (token.getExpiresAt() == null) {
+                return OAuth2TokenValidatorResult.failure(new OAuth2Error(
+                        OAuth2ErrorCodes.INVALID_TOKEN, MISSING_EXPIRY_DESCRIPTION, null));
+            }
+            return OAuth2TokenValidatorResult.success();
+        }
+    }
+}

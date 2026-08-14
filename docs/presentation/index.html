@@ -1,0 +1,1532 @@
+<!--
+Copyright Amazon.com, Inc. or its affiliates.
+All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License").
+You may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+either express or implied. See the License for the specific
+language governing permissions and limitations under the License
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AWS CardDemo — Migration Summary Deck — z/OS COBOL to Java 25 and Spring Boot</title>
+<meta name="description" content="Six-slide summary of the AWS CardDemo migration from z/OS COBOL, CICS, VSAM and JCL onto Java 25 and Spring Boot: the estate, the construct mapping, the target module, the load-bearing decisions, the eight validation gates and where the detail lives.">
+<meta name="author" content="AWS CardDemo migration">
+<!-- An empty data URI, declared so the browser does not fall back to requesting /favicon.ico from
+     whatever root this file is opened under. That default request is the one fetch this deck cannot
+     otherwise avoid, and it answers 404 both from a file system and from the published site, putting an
+     error in the console of a page whose whole point is that it needs nothing from the network. A data URI
+     is not a request, so declaring it removes the fetch rather than redirecting it. -->
+<link rel="icon" href="data:,">
+<style>
+/* Single self-contained stylesheet. No external sheet, no import, no web font:
+   the deck must render from the file system, from the published documentation
+   site and from an offline runner alike. Colours are literal rather than custom
+   properties, and the base rules leave every slide visible so that the deck is
+   complete for a reader with scripting turned off. */
+
+html {
+  box-sizing: border-box;
+  scroll-behavior: smooth;
+  scroll-padding-top: 12px;
+}
+/* The sticky control bar exists only once the script reveals it, so only then does
+   an anchor target need to clear its height. This value is only the starting point:
+   the bar's controls wrap onto extra rows on a narrow viewport, so the script measures
+   the rendered bar and keeps this offset in step with it. */
+html.enhanced { scroll-padding-top: 68px; }
+
+/* A reader who has asked the platform to reduce motion gets instant jumps instead of
+   animated ones. This governs anchor navigation, and the script reads the same query
+   so the scripted slide jumps cannot drift away from the preference. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+*, *::before, *::after { box-sizing: inherit; }
+
+body {
+  margin: 0;
+  background: #e8edf4;
+  color: #14243a;
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu,
+        Cantarell, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+/* SECTION: masthead */
+
+.masthead {
+  background: #10203a;
+  color: #ffffff;
+  padding: 20px 22px 18px;
+}
+.masthead > div { max-width: 1040px; margin: 0 auto; }
+h1 {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.25;
+  letter-spacing: 0.005em;
+}
+.masthead p.kicker {
+  margin: 4px 0 0;
+  color: #a9bcd4;
+  font-size: 14px;
+}
+.masthead dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 14px;
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: #cfdcec;
+}
+.masthead dt { color: #8fa7c4; }
+.masthead dd { margin: 0; }
+/* The global `code` rule paints a near-white pill, which collides with the light
+   text colour inherited here. Restate both so the provenance identifiers stay
+   legible on the dark masthead.
+   `overflow-wrap: anywhere` is load-bearing rather than cosmetic. These chips hold
+   unbreakable identifiers — a 40-character commit hash, a release stamp, a Maven
+   coordinate — and the `break-word` inherited from the global rule wraps a line but
+   does NOT reduce a box's intrinsic min-content width. Below the narrow breakpoint the
+   list becomes a single grid column, whose track and item both take min-content as
+   their automatic minimum, so the widest chip would pin the masthead wider than the
+   viewport and scroll the whole document sideways. `anywhere` reduces that intrinsic
+   minimum too, so the hash wraps instead. */
+.masthead code {
+  background: #22375a;
+  border-color: #40587a;
+  color: #f2f7fd;
+  overflow-wrap: anywhere;
+}
+
+/* SECTION: table of contents */
+
+nav.toc {
+  background: #ffffff;
+  border-bottom: 1px solid #ccd6e3;
+  padding: 10px 22px;
+}
+nav.toc > div { max-width: 1040px; margin: 0 auto; }
+nav.toc h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: #4d5f75;
+  margin: 0 0 6px;
+}
+/* The row gap is larger than the column gap on purpose. Each pill's touch target is enlarged to 44px
+   tall by the rule in the touch-target section below, which is taller than the pill it belongs to, so
+   the extra height has to land somewhere: with the original 6px row gap the two enlarged targets of
+   vertically adjacent pills would have overlapped by 6px, and a point in that overlap belongs to
+   whichever pill happens to win the hit test. Widening the row gap keeps every enlarged target
+   unambiguous. Only wrapped layouts see it - the six pills sit on one row at any desktop width. */
+nav.toc ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 8px;
+  margin: 0;
+  padding: 0;
+  counter-reset: toc;
+}
+nav.toc li { counter-increment: toc; }
+nav.toc a {
+  display: inline-block;
+  border: 1px solid #ccd6e3;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 13.5px;
+  text-decoration: none;
+  color: #123a86;
+  background: #f4f7fc;
+}
+nav.toc a::before { content: counter(toc) ". "; color: #4d5f75; }
+nav.toc a:hover, nav.toc a:focus { background: #e6eefb; border-color: #123a86; }
+
+/* SECTION: slides */
+
+main { max-width: 1040px; margin: 0 auto; padding: 22px 16px 24px; }
+
+section.slide {
+  background: #ffffff;
+  border: 1px solid #ccd6e3;
+  border-radius: 10px;
+  padding: 26px 30px 30px;
+  margin: 0 0 22px;
+}
+section.slide > h2 {
+  margin: 0;
+  font-size: 23px;
+  line-height: 1.3;
+}
+section.slide > h2 .n {
+  display: inline-block;
+  min-width: 1.7em;
+  color: #4d5f75;
+  font-variant-numeric: tabular-nums;
+}
+p.lede { margin: 6px 0 18px; color: #40536b; }
+h3 { font-size: 16.5px; margin: 24px 0 8px; }
+p { margin: 10px 0; }
+
+a { color: #123a86; }
+a:hover, a:focus { color: #0b2a63; }
+
+/* SECTION: tables */
+
+/* Every table on this deck is wider than a phone. Each carries a 460px floor below, because a
+   three-column table crushed into a 356px column is unreadable in a different way, so each is
+   wrapped in a frame that scrolls sideways. Measured: at a 1440px viewport the frame is 946px and
+   all seven tables fit inside it with nothing to scroll; at 390px the frame is 356px and all seven
+   overflow it by 104px. A frame that scrolls silently is worse than one that clips, because the
+   reader has no way to know a column is missing - and this deck's tables carry decision-bearing
+   final columns ("What it is", "What had to survive", "What it verifies"), which are exactly the
+   ones that fall off the right edge first.
+
+   Three things therefore declare the scroll, and deliberately not one:
+
+     - A visible cue, from the four-layer scroll-shadow pattern. The two "cover" layers are
+       attached `local`, so they travel with the content and mask the shadow at whichever end the
+       reader has already reached; the two "shadow" layers are attached `scroll`, so they stay
+       pinned to the frame itself. The result is a shadow at exactly the edges where content
+       continues, painted at rest, adjusting itself as the reader scrolls, and vanishing entirely
+       when the table happens to fit. No script is involved. This matters more than it sounds:
+       a browser drawing OVERLAY scrollbars reserves no space and paints no scrollbar at all until
+       the reader is already scrolling, so the scrollbar cannot be the cue.
+     - A textual cue, in each table's caption, which says the frame scrolls and how to pan it from
+       the keyboard. It survives with CSS off, in a screen reader and in print, none of which is
+       true of a shadow.
+     - role="region" with tabindex="0" and a name taken from the caption, in the markup below, so
+       the frame is reachable and announced rather than merely scrollable.
+
+   Because the frame is focusable it must show where focus is, which is what the outline is for. */
+.scroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  margin: 8px 0 16px;
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(to right, #ffffff 40%, rgba(255, 255, 255, 0)),
+    linear-gradient(to left, #ffffff 40%, rgba(255, 255, 255, 0)),
+    radial-gradient(farthest-side at 0 50%, rgba(20, 36, 58, 0.30), rgba(20, 36, 58, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(20, 36, 58, 0.30), rgba(20, 36, 58, 0));
+  background-position: left center, right center, left center, right center;
+  background-repeat: no-repeat;
+  background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+.scroller:focus-visible { outline: 3px solid #123a86; outline-offset: 2px; }
+/* Retained for engines that implement :focus but not :focus-visible, so the indicator is never absent. */
+.scroller:focus { outline: 3px solid #123a86; outline-offset: 2px; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 460px;
+  font-size: 14.5px;
+}
+caption {
+  caption-side: top;
+  text-align: left;
+  font-size: 13px;
+  color: #40536b;
+  padding: 0 0 6px;
+}
+/* The caption names the table, and the scroll region around it borrows that name - which is why it
+   is wrapped in an element of its own rather than left as bare text: a region named from the whole
+   caption would have read the panning instruction out as part of its name every time a reader
+   tabbed onto it.
+
+   The instruction itself sits OUTSIDE the frame, in the paragraph rule below, and that placement was
+   measured rather than assumed. While it lived inside the caption it lived inside the scroll
+   container with it, so at a phone width the sentence telling the reader that the frame pans was
+   itself panned off the right edge - the reader saw about the first four fifths of an instruction
+   about how to read the rest. Outside the frame it is always whole. It stays associated with the
+   region programmatically through aria-describedby, so a screen reader announces the region's name
+   and then how to operate it, which is the same order a sighted reader gets. */
+p.scrollnote {
+  margin: -10px 0 16px;
+  font-size: 12.5px;
+  color: #4d5f75;
+}
+th, td {
+  border-bottom: 1px solid #dde4ee;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+/* The fill carries a hair of transparency rather than being flat. The edge shadow that tells the
+   reader the frame scrolls is painted on the frame, so it sits behind the cells; an opaque header
+   fill would punch a gap through that cue across the whole height of the head, and the head is the
+   tallest single row in most of these tables. Over the frame's own #ffffff this resolves to the
+   same colour the flat fill produced, so nothing about the design changes. */
+thead th {
+  background: rgba(241, 245, 251, 0.86);
+  border-bottom: 2px solid #ccd6e3;
+  font-weight: 600;
+}
+tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody th { font-weight: 600; }
+
+/* SECTION: inline code */
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Liberation Mono", monospace;
+  font-size: 13.5px;
+  background: #f1f5fb;
+  border: 1px solid #e1e8f2;
+  border-radius: 4px;
+  padding: 0 4px;
+  overflow-wrap: break-word;
+}
+th code, thead code { background: #ffffff; }
+
+/* SECTION: statistic grid */
+
+ul.stats {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 12px;
+  margin: 8px 0 18px;
+  padding: 0;
+}
+ul.stats li {
+  background: #f6f9fd;
+  border: 1px solid #dde4ee;
+  border-left: 4px solid #1f4c9c;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+ul.stats b {
+  display: block;
+  font-size: 25px;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+ul.stats span { display: block; color: #40536b; font-size: 13px; margin-top: 2px; }
+
+/* SECTION: callouts */
+
+.note, .caution {
+  border: 1px solid #dde4ee;
+  border-left: 4px solid #1f4c9c;
+  background: #f6f9fd;
+  border-radius: 0 8px 8px 0;
+  padding: 12px 16px;
+  margin: 16px 0;
+  font-size: 14.5px;
+}
+.caution { border-left-color: #8a5000; background: #fdf8f1; }
+.note > :first-child, .caution > :first-child { margin-top: 0; }
+.note > :last-child, .caution > :last-child { margin-bottom: 0; }
+
+/* SECTION: lists */
+
+ul, ol { margin: 10px 0 14px; padding-left: 24px; }
+li { margin: 6px 0; }
+dl.terms { margin: 10px 0 14px; }
+dl.terms dt { font-weight: 600; margin-top: 12px; }
+dl.terms dd { margin: 3px 0 0; }
+
+/* SECTION: figures */
+
+/* The minimum track is capped at the available width: a bare minmax(300px, 1fr) cannot shrink below
+   300px, and on a 320px viewport the section padding and borders leave less than that, which pushes
+   the whole document into horizontal overflow. min() lets the track collapse to one full-width
+   column instead. */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  gap: 18px;
+  margin: 14px 0 4px;
+}
+figure {
+  margin: 0;
+  border: 1px solid #dde4ee;
+  border-radius: 8px;
+  background: #f6f9fd;
+  padding: 10px;
+}
+/* The dark fill is deliberate: it holds the figure's box while the image loads, and it holds it at the
+   right aspect ratio when the image does not arrive at all, so nothing on the slide shifts. That second
+   case is what the colour declaration below is for. When an image fails, the alt text becomes the sighted
+   reader's only copy of it, and it is painted by the img element itself - so it inherits the body colour,
+   which is near-black and was landing on this near-black fill at a contrast ratio of 1.04:1: present,
+   announced to assistive technology, and invisible to everyone else. Declaring the light colour here
+   pairs it with the fill it is actually drawn on, and it costs nothing when the image does arrive,
+   because a loaded image paints over its own text. */
+figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #10203a;
+  color: #f6f9fd;
+  border: 1px solid #ccd6e3;
+  border-radius: 4px;
+}
+figcaption { font-size: 13px; color: #40536b; margin-top: 8px; }
+figcaption b { color: #14243a; }
+/* The caption's closing reference to the asset in the repository. Set apart from the described content so
+   the caption still reads as a description first. */
+figcaption span.assetref { display: block; margin-top: 6px; font-size: 12.5px; }
+
+/* SECTION: footer */
+
+footer.deck {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 4px 16px 44px;
+  color: #40536b;
+  font-size: 13px;
+}
+footer.deck p { margin: 6px 0; }
+
+/* SECTION: optional presenter mode
+   These rules do nothing until the inline script adds the "presenting" class to
+   the root element, which it only does when a reader asks for it. With scripting
+   unavailable the class is never added, so every slide stays visible and the deck
+   reads as one continuous document. */
+
+/* The no-script notice belongs to the header stack, so it is banded exactly the way .deckbar below is
+   banded: the outer element carries the background, the rule beneath it and the horizontal padding, and an
+   inner element carries the measure. Putting both on one element is what made this strip read as a floating
+   inset bar above 1040px - its white fill and its 1px rule stopped roughly 200px short of each viewport
+   edge while the masthead above and the slide band below ran full width. The selectors stay descended from
+   noscript so the browser's own noscript { display: none } still hides all of it when scripting is
+   available; nothing here makes the notice visible to a reader who does not need it. */
+noscript .noscriptband {
+  padding: 10px 22px;
+  background: #ffffff;
+  border-bottom: 1px solid #ccd6e3;
+}
+noscript p.noscript {
+  max-width: 1040px;
+  margin: 0 auto;
+  color: #40536b;
+  font-size: 13px;
+}
+.deckbar { display: none; }
+html.enhanced .deckbar {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #ffffff;
+  border-bottom: 1px solid #ccd6e3;
+  padding: 8px 22px;
+}
+/* Row gap wider than column gap, for the reason given on the table of contents list: the enlarged
+   44px touch target of each button is taller than the button, and vertically adjacent controls must
+   not end up sharing points. The bar is a single row at any desktop width, so this is visible only
+   where the controls wrap. */
+html.enhanced .deckbar > div {
+  max-width: 1040px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 10px;
+  align-items: center;
+  font-size: 13px;
+  color: #40536b;
+}
+.deckbar button {
+  font: inherit;
+  font-size: 13px;
+  color: #123a86;
+  background: #f4f7fc;
+  border: 1px solid #ccd6e3;
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.deckbar button:hover:enabled, .deckbar button:focus { background: #e6eefb; border-color: #123a86; }
+.deckbar button:active:enabled { background: #d3e1f7; border-color: #0b2a63; }
+/* At the first or last slide the corresponding control genuinely has nothing to do, so it
+   is disabled rather than left as a silent no-op. The muted treatment still clears 4.5:1
+   against its own background, so the label stays readable while reading as unavailable. */
+.deckbar button:disabled {
+  color: #54637a;
+  background: #eef1f6;
+  border-color: #dde4ee;
+  cursor: default;
+}
+/* The table of contents deliberately stays visible in presenter mode, where it doubles as
+   a slide selector: hiding it would leave its click handler unreachable through the UI. */
+html.presenting section.slide[hidden] { display: none; }
+html.presenting section.slide { min-height: 60vh; }
+
+/* SECTION: touch targets
+
+   Every control on this deck is a button or a button-shaped pill, and each was sized by its text:
+   the three bar buttons rendered about 33px tall and the six slide pills about 32px, against a
+   44x44 minimum. Both families are corrected here, in one rule, because they have the same defect.
+
+   The correction enlarges the TARGET without resizing the CONTROL. A transparent pseudo-element,
+   centred on the button and 44px tall, extends the area the pointer and the finger can land on;
+   because it is generated by the button itself, a hit anywhere inside it resolves to that button.
+   The painted box - its fill, its border, its radius, its text - is untouched, so the bar and the
+   pill row look exactly as they did. Growing the controls themselves would have been the obvious
+   alternative and was rejected: it would have deepened the sticky bar and pushed the first slide
+   down on every viewport, to fix a defect nobody can see.
+
+   width: 100% takes the control's own width, which already exceeds 44px for every label here;
+   min-width holds the floor anyway, so a future shorter label cannot reintroduce the defect in one
+   dimension while fixing it in the other. */
+
+.deckbar button,
+nav.toc a { position: relative; }
+
+.deckbar button::after,
+nav.toc a::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  min-width: 44px;
+  height: 44px;
+}
+
+/* SECTION: narrow viewports */
+
+@media (max-width: 620px) {
+  h1 { font-size: 21px; }
+  section.slide { padding: 20px 16px 22px; border-radius: 0; }
+  section.slide > h2 { font-size: 20px; }
+  main { padding: 14px 0 18px; }
+  /* minmax(0, 1fr) rather than a bare 1fr: the shorthand's automatic minimum is
+     min-content, which would let a single wide identifier hold the track open past the
+     viewport. Zero is the explicit floor. */
+  .masthead dl { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
+  .masthead dt { margin-top: 6px; }
+  /* The caption cannot leave the frame - it is the table's own name, and the scroll region borrows
+     it - so unlike the panning instruction beside it, it cannot be moved out of the scrolled box.
+     What it can do is stop being as wide as the table. A caption's containing block is the table,
+     which carries a 460px floor here, so its text was wrapping at 460px and the longest line ran
+     about 18px past the frame's visible edge: the table's own name was the one thing on the slide
+     still readable only by panning. Capping it just inside the frame makes it wrap where the frame
+     ends instead.
+
+     The 60px is not the frame's inset. That inset is 34px - the slide's two 16px paddings and its two
+     1px borders - and subtracting exactly that would have been correct only on the engines this was
+     measured on. 100vw is the viewport INCLUDING any space reserved for a classic scrollbar, while
+     the frame is laid out inside the space that remains, so on a platform that reserves 15 to 17px
+     the two disagree by that much and a 34px subtraction would put the caption back over the edge by
+     roughly the amount this rule exists to remove. The extra allowance covers the widest common
+     reservation and leaves a few pixels over. Wrapping a couple of dozen pixels earlier than
+     strictly necessary costs nothing in a left-aligned prose caption; being wrong on someone else's
+     scrollbar costs the whole fix. It is a cap rather than a width, so above this breakpoint - where
+     the frame is wide and nothing is clipped - it never binds at all. */
+  caption { max-width: calc(100vw - 60px); }
+}
+
+/* SECTION: print */
+
+@media print {
+  body { background: #ffffff; font-size: 11pt; }
+  .masthead { background: #ffffff; color: #000000; border-bottom: 2px solid #000000; }
+  .masthead code { background: transparent; border-color: #999999; color: #000000; }
+  h1 { font-size: 18pt; }
+  .masthead p.kicker, .masthead dl, .masthead dt { color: #333333; }
+  nav.toc, .deckbar, html.enhanced .deckbar, noscript .noscriptband { display: none; }
+  main { padding: 0; max-width: none; }
+  section.slide {
+    border: none;
+    border-radius: 0;
+    padding: 0 0 12pt;
+    margin: 0;
+    break-inside: avoid;
+    break-after: page;
+  }
+  section.slide[hidden] { display: block; }
+  /* Presenter mode is transient screen state and must never subtract content from a printout. The
+     two presenter rules above are more specific than the plain `section.slide` print rules, so they
+     would otherwise win inside this block and print a single slide out of six. These two overrides
+     restate those exact selectors, which ties the specificity and lets source order decide — and
+     this block is last. Printing therefore yields the whole deck whether presenter mode happened to
+     be on or off. */
+  html.presenting section.slide[hidden] { display: block; }
+  html.presenting section.slide { min-height: 0; }
+  a { color: #000000; text-decoration: underline; }
+  figure img { max-height: 8cm; max-width: 100%; width: auto; }
+  /* On paper there is no scrolling to recover from, so the frame stops being a frame. The edge
+     shadows would only spend ink suggesting an interaction the medium cannot offer, and a clip on
+     paper is permanent rather than recoverable. Every table lays out to its container because each
+     carries width: 100%, so releasing the frame prints the whole table instead of pushing it off
+     the sheet. The sentence telling the reader how to pan it goes with the frame, for the same
+     reason: it describes a screen affordance, and on paper it would describe nothing. */
+  .scroller { overflow: visible; background: none; }
+  .scrollnote { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div>
+    <h1>AWS CardDemo — from z/OS COBOL to Java 25 and Spring Boot</h1>
+    <p class="kicker">Migration summary deck &middot; six slides &middot; the estate, the mapping, the
+    load-bearing decisions and how the result is verified</p>
+    <dl>
+      <dt>Analysed checkout</dt>
+      <dd><code>7756d895ffeb65f7ea72aaa609e356d9899afcec</code></dd>
+      <dt>Upstream release stamp</dt>
+      <dd><code>CardDemo_v1.0-15-g27d6c6f-68</code>, dated 2022-07-19</dd>
+      <dt>Target module</dt>
+      <dd><code>carddemo-java/</code> &middot; base package <code>com.carddemo</code> &middot; coordinate
+      <code>com.carddemo:carddemo-java:1.0.0</code></dd>
+    </dl>
+  </div>
+</header>
+
+<noscript>
+  <div class="noscriptband">
+    <p class="noscript">Scripting is unavailable, so the optional presenter mode is not offered. Nothing is
+    missing: every slide below is visible and the deck reads as one continuous document.</p>
+  </div>
+</noscript>
+
+<div class="deckbar">
+  <div>
+    <button type="button" id="modeToggle" aria-pressed="false">Presenter mode</button>
+    <button type="button" id="prevSlide" hidden>Previous</button>
+    <button type="button" id="nextSlide" hidden>Next</button>
+    <span id="deckStatus" aria-live="polite">Reading as one continuous document. Presenter mode shows one
+    slide at a time and responds to the arrow keys.</span>
+  </div>
+</div>
+
+<nav class="toc" aria-label="Slides">
+  <div>
+    <h2>Slides</h2>
+    <ol>
+      <li><a href="#estate">What was migrated</a></li>
+      <li><a href="#mapping">What each construct became</a></li>
+      <li><a href="#module">The target module</a></li>
+      <li><a href="#decisions">Faithful beats idiomatic</a></li>
+      <li><a href="#gates">How it is verified</a></li>
+      <li><a href="#documents">Where the detail lives</a></li>
+    </ol>
+  </div>
+</nav>
+
+<main>
+
+<section class="slide" id="estate" aria-labelledby="estate-h">
+  <h2 id="estate-h"><span class="n">1.</span> What was migrated</h2>
+  <p class="lede">The whole estate, not a representative subset. Every program, every copybook and every job
+  member was read and accounted for; a single copybook with no inclusion anywhere was deliberately left
+  behind, and that exclusion is recorded as a decision rather than an omission.</p>
+
+  <ul class="stats">
+    <li><b>28</b>
+    <span>COBOL programs — 17 online CICS transactions, 10 batch programs, 1 shared
+    date-validation subprogram</span></li>
+    <li><b>19,254</b>
+    <span>lines of COBOL source read as reference</span></li>
+    <li><b>28</b>
+    <span>copybooks — data layouts, lookup tables, two procedural, one macro</span></li>
+    <li><b>17</b>
+    <span>screen mapsets and their 17 generated symbolic maps</span></li>
+    <li><b>29</b>
+    <span>job members plus 2 cataloged procedures</span></li>
+    <li><b>544</b>
+    <span>procedure units, every one carried on a matrix row</span></li>
+  </ul>
+
+  <p>The 544 is <strong>528</strong> paragraphs across the programs' procedure divisions plus
+  <strong>14</strong> from the date-validation copybook and <strong>2</strong> from the attention-key
+  copybook. Each has a row in <a href="../traceability-matrix/">the traceability matrix</a> naming its
+  source member, its source line, its target class, its target method and the test that covers it.</p>
+
+  <h3>The inventory, and why two totals are both load-bearing</h3>
+  <div class="scroller" role="region" tabindex="0" aria-labelledby="tbl-inventory-name" aria-describedby="tbl-inventory-note">
+    <table>
+      <caption><span class="capname" id="tbl-inventory-name">Measured at the analysed checkout. Counts are reproduced from
+      <a href="../architecture/">architecture.md</a>, which is the authority for them.</span></caption>
+      <thead>
+        <tr><th scope="col">Legacy artifact</th><th scope="col" class="num">Count</th><th scope="col">What it is</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">COBOL programs</th><td class="num">28</td><td>17 online, 10 batch, 1 shared subprogram</td></tr>
+        <tr><th scope="row">Copybooks</th><td class="num">28</td><td>layouts, lookup tables, 2 procedural, 1 macro</td></tr>
+        <tr><th scope="row">Screen mapsets</th><td class="num">17</td><td>the 24&times;80 layout authority</td></tr>
+        <tr><th scope="row">Generated symbolic maps</th><td class="num">17</td><td>the field-level screen contract</td></tr>
+        <tr><th scope="row">Job members</th><td class="num">29</td><td>batch definitions and dataset provisioning</td></tr>
+        <tr><th scope="row">Cataloged procedures</th><td class="num">2</td><td>the reporting procedure and the copy procedure</td></tr>
+        <tr><th scope="row">Online resource definition</th><td class="num">1</td><td>transactions, programs, mapsets and one queue</td></tr>
+        <tr><th scope="row">Utility control cards</th><td class="num">1</td><td>the copy-utility control statements</td></tr>
+        <tr><th scope="row">Catalog listing</th><td class="num">1</td><td>dataset attributes, read for key offsets and record sizes</td></tr>
+        <tr><th scope="row">Sample datasets</th><td class="num">21</td><td>9 ASCII fixtures and 12 encoded sequential datasets</td></tr>
+        <tr><th scope="row"><strong>Legacy subtotal</strong></th><td class="num"><strong>145</strong></td><td>the artifacts with a Java counterpart</td></tr>
+        <tr><th scope="row">Other substantive files</th><td class="num">24</td><td>diagrams, emulator samples, documentation and root metadata</td></tr>
+        <tr><th scope="row"><strong>Substantive repository files</strong></th><td class="num"><strong>169</strong></td><td>the scope the migration was assessed over</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollnote" id="tbl-inventory-note">Where this table is wider than the slide, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.</p>
+  <p>Both totals are stated because they answer different questions: <strong>169</strong> is the scope that
+  was assessed, <strong>145</strong> is the subtotal that has a Java counterpart. The shared date-validation
+  subprogram is counted once, as a subprogram — it is <em>not</em> an eighteenth interactive program, and
+  describing it as one would misstate both the online inventory and the injection graph.</p>
+
+  <div class="note">
+    <p><strong>The legacy tree was never copied and never edited.</strong> The Java module is physically
+    disjoint at <code>carddemo-java/</code>, and everything under <code>app/</code> remains byte-identical to
+    the analysed checkout — which is exactly what keeps the matrix verifiable against it. <strong>No legacy
+    source text is reproduced in the module or in this deck for traceability purposes</strong> — not a
+    program, not a paragraph, not a statement, and not in a comment. Traceability is <strong>by citation,
+    never by transcription</strong>: member names, paragraph names, line numbers, record widths, byte offsets
+    and key positions are interface metadata and appear freely; source lines do not appear at all. The claim
+    is mechanically checkable rather than asserted — a grep over the module's Java comments for a COBOL or
+    CICS verb carrying one of the legacy program's own identifiers, literals or argument lists returns
+    nothing.</p>
+    <p><strong>One category of legacy text does appear in the module, and naming it is the point of a
+    certification.</strong> Where a preservation requirement obliges the module to <em>emit</em> legacy text
+    byte for byte, that text is present as <strong>contract data</strong> rather than as a transcription: the
+    seventeen fixed 80-column job-submission card images and their end-of-file sentinel in
+    <code>util/JclCardImageBuilder</code>, the 80- and 100-byte statement template literals, and the seven
+    sign-on message texts. Emitting those is what <em>"external system interfaces MUST maintain identical
+    contracts"</em> requires — the card images are verified by draining them back out of a real queue — and it
+    is a different act from carrying a paragraph's implementation across, which nothing here does.</p>
+    <p>The repository carries no Git tags, so the checkout commit is the only precise anchor on the source
+    side of every mapping. The release stamp is carried in the trailer of <strong>78</strong> legacy members,
+    which is how the estate identifies its own vintage.</p>
+  </div>
+
+  <h3>What the application does, as the estate itself documents it</h3>
+  <div class="gallery">
+    <figure>
+      <img src="../diagrams/Application-Flow-User.png" width="1017" height="515"
+           alt="Tree diagram of the end-user navigation flow, described in full in the caption below.">
+      <figcaption><b>End-user flow.</b> Sign-on leads to the main menu, which fans out into four groups:
+      account management (view and update an account, reaching view card), card management (list, view and
+      update a card), transactions (view details, list, add, and request a report) and bill payment. Every
+      one of these screens becomes a REST endpoint group; none becomes a web page.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Application-Flow-User.png" target="_blank"
+      rel="noopener">diagrams/Application-Flow-User.png in the repository (external)</a></span></figcaption>
+    </figure>
+    <figure>
+      <img src="../diagrams/Application-Flow-Admin.png" width="1017" height="515"
+           alt="Tree diagram of the administrator navigation flow, described in full in the caption below.">
+      <figcaption><b>Administrator flow.</b> Sign-on leads to a separate administrative menu, reached only
+      by the delivered user type, and from there to user management, which fans out into add, update, list
+      and delete a user. The split is reproduced as role gating on the corresponding endpoints rather than
+      as a second application.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Application-Flow-Admin.png" target="_blank"
+      rel="noopener">diagrams/Application-Flow-Admin.png in the repository (external)</a></span></figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="slide" id="mapping" aria-labelledby="mapping-h">
+  <h2 id="mapping-h"><span class="n">2.</span> What each construct became</h2>
+  <p class="lede">The construct pairing below is a <strong>requirement of the refactor</strong>, not a
+  stylistic preference: each row fixes what the Java equivalent is <em>and</em> what has to survive the
+  crossing. Every row was checked against the estate before it was applied, because five of the ten describe
+  a construct differently from the way this estate actually uses it.</p>
+
+  <div class="scroller" role="region" tabindex="0" aria-labelledby="tbl-mapping-name" aria-describedby="tbl-mapping-note">
+    <table>
+      <caption><span class="capname" id="tbl-mapping-name">The mandated construct mapping, with the preservation obligation each row carries.</span></caption>
+      <thead>
+        <tr>
+          <th scope="col">Legacy construct</th>
+          <th scope="col">Java or Spring equivalent</th>
+          <th scope="col">What must be preserved</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">Data division picture and usage clauses</th><td>plain objects holding <code>BigDecimal</code></td><td>decimal precision identical; no floating-point substitution anywhere</td></tr>
+        <tr><th scope="row">Paragraph and section</th><td>methods on service and component classes</td><td>control-flow semantics: range invocation, jumps, fall-through</td></tr>
+        <tr><th scope="row">Copybook inclusion and replacement</th><td>shared types, injected singletons or one parameterised call</td><td>every field mapped; replacement directives honoured</td></tr>
+        <tr><th scope="row">File section descriptors</th><td>Spring Data repositories and fixed-width file services</td><td>record layouts to the byte; sequential and keyed access patterns</td></tr>
+        <tr><th scope="row">External ordering</th><td>Java comparators and query predicates</td><td>key semantics, direction and duplicate handling identical</td></tr>
+        <tr><th scope="row">Static program linkage</th><td>method calls on constructor-injected beans</td><td>the linkage areas, carried as parameter objects</td></tr>
+        <tr><th scope="row">Job control: step, dataset, condition code</th><td>Spring Batch jobs, Spring profiles, the build pipeline</td><td>step sequencing, condition-code logic, resource allocation</td></tr>
+        <tr><th scope="row">Multi-way selection and nested tests</th><td><code>switch</code> constructs and <code>if</code> chains</td><td>condition evaluation order, because the legacy stops at the first match</td></tr>
+        <tr><th scope="row">String assembly and inspection</th><td>named string utilities</td><td>delimiter behaviour, pointer semantics and tallying identical</td></tr>
+        <tr><th scope="row">File status codes</th><td>status enums plus exceptions</td><td>every status code mapped to equivalent handling</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollnote" id="tbl-mapping-note">Where this table is wider than the slide, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.</p>
+
+  <h3>Runtime and platform concerns, replaced together</h3>
+  <p>Thirteen concerns were replaced in one pass. Each replacement was chosen so that the legacy behaviour
+  stays <em>expressible</em> rather than merely approximable.</p>
+  <div class="scroller" role="region" tabindex="0" aria-labelledby="tbl-concerns-name" aria-describedby="tbl-concerns-note">
+    <table>
+      <caption><span class="capname" id="tbl-concerns-name">Thirteen runtime and platform concerns, and the obligation each replacement inherits.</span></caption>
+      <thead>
+        <tr><th scope="col">Legacy</th><th scope="col">Target</th><th scope="col">What had to survive</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">3270 terminal interface over 17 mapsets</th><td>Spring MVC controllers and transport contracts</td><td>field widths, numeric typing, message text, page sizes</td></tr>
+        <tr><th scope="row">A communication area carried between turns</th><td>signed claims plus an echoed navigation context</td><td>the pseudo-conversation, with no server-side session</td></tr>
+        <tr><th scope="row">25 program-transfer dispatches, 19 re-arms</th><td>route constants returned in the response body</td><td>the dispatch graph; the client drives the next call</td></tr>
+        <tr><th scope="row">Ten keyed VSAM clusters, three alternate indexes</th><td>PostgreSQL 16, eleven tables, Flyway migrations in two profile-scoped locations</td><td>record layouts to the byte; business keys, never surrogates</td></tr>
+        <tr><th scope="row">Sequential browse in both directions</th><td><code>Pageable</code> repository queries</td><td>page size <em>and</em> fill direction, which differ per screen</td></tr>
+        <tr><th scope="row">29 job members</th><td>nine Spring Batch job configurations</td><td>step sequencing and the four condition-code gates</td></tr>
+        <tr><th scope="row">One transient-data-queue write</th><td>an <strong>SQS FIFO</strong> queue publish</td><td>80-character fixed records, append order, ignore-on-error</td></tr>
+        <tr><th scope="row">27 static call sites</th><td>constructor-injected beans</td><td>the linkage areas, as typed parameter objects</td></tr>
+        <tr><th scope="row">External sort utility specifications</th><td>per-job comparators and query predicates</td><td>per-job key <em>typing</em> — one field is typed two different ways by two jobs</td></tr>
+        <tr><th scope="row">Terminal sign-on and a cleartext compare</th><td>Spring Security with hashed credentials</td><td>the role split carried by the delivered user type</td></tr>
+        <tr><th scope="row">Console write statements as the only diagnostic</th><td>structured logging, Actuator, Micrometer, trace export</td><td>the diagnostics, now queryable rather than scraped</td></tr>
+        <tr><th scope="row">Language-environment abort and date services</th><td>an abend exception and strict date parsing</td><td>the terminal path, and rejection of impossible calendar dates</td></tr>
+        <tr><th scope="row">No test harness of any kind</th><td>JUnit 5, Mockito, AssertJ, Testcontainers</td><td>nothing — this tier was created, not carried across</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollnote" id="tbl-concerns-note">Where this table is wider than the slide, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.</p>
+
+  <h3>The screen contract that became a machine contract</h3>
+  <p>The mapsets are consumed as <strong>field-level contract authorities</strong> — names, lengths, numeric
+  typing, required-field flags and the two-state error decoration behind the attribute bytes. They are not
+  consumed as a visual design.</p>
+  <div class="gallery">
+    <figure>
+      <img src="../diagrams/Signon-Screen.png" width="3518" height="1640"
+           alt="Screen capture of the rendered 3270 sign-on screen, described in the caption below.">
+      <figcaption><b>Sign-on, transaction CC00, program COSGN00C.</b> A header strip carries the transaction,
+      program, application and system identifiers beside the date and time; the body carries the prompt to
+      type an identifier and press ENTER, two empty eight-character input fields, and a key legend offering
+      sign-on and exit. The seven operator-visible message texts this screen can emit are part of the
+      external contract and are reproduced character for character, and the eight-character field widths
+      survive as request-contract constraints.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Signon-Screen.png" target="_blank"
+      rel="noopener">diagrams/Signon-Screen.png in the repository (external)</a></span></figcaption>
+    </figure>
+    <figure>
+      <img src="../diagrams/Main-Menu.png" width="3518" height="1640"
+           alt="Screen capture of the rendered 3270 main menu, described in the caption below.">
+      <figcaption><b>Main menu, transaction CM00, program COMEN01C.</b> Ten numbered options: account view,
+      account update, credit card list, view and update, transaction list, view and add, transaction reports,
+      and bill payment &mdash; followed by a two-character option field. The ten are carried as a catalog
+      rather than as a screen. The legacy rule that an option whose target program is a placeholder answers
+      "coming soon" survives, and so does the blank-to-zero normalisation of a right-justified two-character
+      entry.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Main-Menu.png" target="_blank"
+      rel="noopener">diagrams/Main-Menu.png in the repository (external)</a></span></figcaption>
+    </figure>
+    <figure>
+      <img src="../diagrams/Admin-Menu.png" width="3518" height="1640"
+           alt="Screen capture of the rendered 3270 administrative menu, described in the caption below.">
+      <figcaption><b>Administrative menu, transaction CA00, program COADM01C.</b> The same layout as the main
+      menu, carrying the four user-management options and its own two-character option field, and reached
+      only by the administrative user type. The destination the delivered type decides is reproduced as role
+      gating on the corresponding endpoints.
+      <span class="assetref"><a href="https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/diagrams/Admin-Menu.png" target="_blank"
+      rel="noopener">diagrams/Admin-Menu.png in the repository (external)</a></span></figcaption>
+    </figure>
+  </div>
+
+  <div class="caution">
+    <p><strong>No browser interface is built, and that is a scope decision rather than an omission.</strong>
+    The mandated target stack names no frontend technology, no component library and no design system, and
+    the correct rendering of a terminal contract under a no-feature-expansion constraint is a machine
+    contract. The screens therefore become request and response contracts exercised by tests, with the
+    machine-readable interface description published by the module itself. Attention-key handling is
+    centralised, including the legacy behaviour that the upper twelve function keys fold onto the same
+    twelve actions as the lower twelve rather than being distinct.</p>
+  </div>
+</section>
+
+<section class="slide" id="module" aria-labelledby="module-h">
+  <h2 id="module-h"><span class="n">3.</span> The target module</h2>
+  <p class="lede">One self-contained Maven module at <code>carddemo-java/</code>, carrying everything needed
+  to build, run, migrate, observe and verify itself. A clean checkout needs a JDK and a container runtime and
+  nothing else — no preinstalled build tool, no mainframe asset, no external procedure. The base package is
+  <code>com.carddemo</code>, and the doubled <code>d</code> is deliberate: every package, every import and
+  every configuration key sits beneath that exact spelling.</p>
+
+  <h3>The pinned toolchain</h3>
+  <div class="scroller" role="region" tabindex="0" aria-labelledby="tbl-versions-name" aria-describedby="tbl-versions-note">
+    <table>
+      <caption><span class="capname" id="tbl-versions-name">Every version is an exact coordinate. No range, no floating alias, no placeholder.</span></caption>
+      <thead>
+        <tr><th scope="col">Concern</th><th scope="col">Choice</th><th scope="col">Role</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">Language and runtime</th><td>Java 25 LTS, Eclipse Temurin <strong>25.0.3+9</strong></td><td>compiles at <code>release 25</code> with all lint categories promoted to errors</td></tr>
+        <tr><th scope="row">Framework</th><td>Spring Boot <strong>3.5.16</strong></td><td>web, data access, batch, security, validation and Actuator</td></tr>
+        <tr><th scope="row">Build</th><td>Maven <strong>3.9.16</strong> through a committed wrapper</td><td>the wrapper is script-only, so the build is reproducible from a bare checkout</td></tr>
+        <tr><th scope="row">Persistence</th><td>Spring Data JPA over <strong>PostgreSQL 16</strong>, schema by Flyway</td><td>eleven tables and forward-only migrations replace ten cluster definitions</td></tr>
+        <tr><th scope="row">Orchestration</th><td>Spring Batch</td><td>nine job configurations replace the application job steps</td></tr>
+        <tr><th scope="row">Cloud services</th><td>AWS <strong>S3</strong>, <strong>SQS FIFO</strong> and <strong>SNS</strong>, through Spring Cloud AWS <strong>3.4.2</strong></td><td>S3 stages batch files, the SQS FIFO queue carries the single online-to-batch bridge, SNS fans out completion</td></tr>
+        <tr><th scope="row">Test tier</th><td>JUnit 5, Mockito, AssertJ, Testcontainers <strong>1.21.4</strong></td><td>unit, container-backed integration and end-to-end tiers</td></tr>
+        <tr><th scope="row">Coverage and supply chain</th><td>JaCoCo <strong>0.8.15</strong>, dependency check <strong>12.1.3</strong>, Surefire and Failsafe <strong>3.5.6</strong></td><td>a build-failing coverage floor and an executed vulnerability scan</td></tr>
+        <tr><th scope="row">Local stack</th><td>Compose bringing up PostgreSQL 16 and <strong>LocalStack Community</strong></td><td>every criterion runs locally; the Community edition needs no LocalStack licence and no authentication token, and no AWS account or cloud credential is involved at any point</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollnote" id="tbl-versions-note">Where this table is wider than the slide, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.</p>
+
+  <div class="note">
+    <p><strong>Two versions are deliberate and should not be helpfully advanced.</strong> Spring Boot
+    <strong>3.5.16</strong> is the newest generally-available release on the 3.x line; a 4.x release exists,
+    but the requirement pins the 3.x line and the narrower qualifier governs. Testcontainers
+    <strong>1.21.4</strong> is what the Spring Boot 3.5.16 dependency management pins; a 2.x release is
+    published, and staying managed by the bill of materials avoids an unmanaged major-version override.</p>
+  </div>
+
+  <h3>Layers, and a dependency direction that only runs downward</h3>
+  <div class="scroller" role="region" tabindex="0" aria-labelledby="tbl-packages-name" aria-describedby="tbl-packages-note">
+    <table>
+      <caption><span class="capname" id="tbl-packages-name">The permitted edges. <a href="../architecture/">architecture.md</a> is the authority, and
+      records the import census that verifies the direction rather than asserting it.</span></caption>
+      <thead>
+        <tr><th scope="col">Package</th><th scope="col">May depend on</th><th scope="col">What lives there</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row"><code>api</code>, <code>api.dto</code></th><td>service, domain, util, exception</td><td>controllers and the transport contracts derived from the symbolic maps</td></tr>
+        <tr><th scope="row"><code>batch</code>, <code>batch.step</code></th><td>service, repository, domain, util, exception, config</td><td>nine job configurations and their step components over one shared template</td></tr>
+        <tr><th scope="row"><code>service</code></th><td>repository, domain, util, exception</td><td>thirty-seven <code>*Service</code> classes: twenty-six translation-bearing, eleven support, among sixty-three package files. The 544 procedure units resolve to <strong>twenty-two</strong> owning classes &mdash; twenty-one of those services, plus one utility class &mdash; one method each</td></tr>
+        <tr><th scope="row"><code>repository</code></th><td>domain <strong>only</strong></td><td>eleven Spring Data interfaces; the three alternate indexes became finders and one declared range query</td></tr>
+        <tr><th scope="row"><code>domain</code>, <code>domain.id</code>, <code>domain.enums</code></th><td>itself</td><td>entities at their verified widths, composite business keys, and nine enums drawn from 508 condition names</td></tr>
+        <tr><th scope="row"><code>util</code>, <code>exception</code></th><td>domain, and nothing above</td><td>the zoned-decimal codec, <strong>twelve</strong> hand-written fixed-width mappers over eleven persisted record layouts, formatters and the failure types</td></tr>
+        <tr><th scope="row"><code>config</code></th><td>the layers it wires</td><td>security, batch, cloud clients, observability, auditing and migration locations</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollnote" id="tbl-packages-note">Where this table is wider than the slide, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.</p>
+  <p><strong>Nothing depends upward.</strong> Two isolations give that rule its meaning: fixed-width record
+  knowledge — offsets, widths and the overpunched sign convention — lives only in <code>util</code>, so it
+  never leaks into business logic, and <code>domain</code> imports no framework type beyond persistence
+  annotations. Every persistence and validation annotation is a <code>jakarta</code> import; the production
+  tree carries no legacy-namespace import line at all and no wildcard import anywhere, which is what lets the
+  unsafe-code audit be performed by inspection.</p>
+
+  <div class="note">
+    <p><strong>Where the 544 units actually live, because "twenty-six services own them all" is the tidy
+    version and it is wrong in two directions.</strong> Counted from the target-class column of
+    <a href="../traceability-matrix/">traceability-matrix.md</a>, the rows resolve to
+    <strong>twenty-two</strong> owning classes: twenty-one services, plus <code>util.PfKeyTranslator</code>,
+    which owns the two paragraphs of the attention-key copybook and is a utility precisely because five
+    online programs include that copybook rather than one owning it.</p>
+    <p><strong>Five of the twenty-six translation-bearing services own no paragraph at all, and that is
+    correct rather than a gap.</strong> The validation-lookup, navigation, message-catalogue, abend and
+    job-submission services derive from copybooks and cross-cutting constructs rather than from procedure
+    divisions — a lookup table, a dispatch graph, a message catalogue, an abend structure and a queue write
+    are each data or a mechanism that paragraphs use, not paragraphs themselves. So saying twenty-six
+    services own all 544 would credit five classes with rows they do not have <em>and</em> hide the one
+    utility class that does own rows.</p>
+  </div>
+
+  <h3>The batch tier is nine jobs, and the reason is a measurement</h3>
+  <p>Most job steps in the estate do not run an application program at all: they define, delete, copy or
+  toggle datasets. <strong>Only nine steps invoke an application program</strong>, which is why the module
+  carries nine job configurations rather than one per step. Everything else is absorbed by the Flyway
+  migrations, the Compose service definitions and the test fixtures. The step-level accounting is recorded in
+  <a href="../decision-log/">the decision log</a>.</p>
+  <div class="note">
+    <p><strong>There is no master orchestrator class, and none is implied.</strong> Each job is
+    independently launchable, and the order in which the jobs are normally run is an <strong>operational
+    convention</strong> documented in <a href="../architecture/">architecture.md</a> — not a coded
+    dependency between jobs. One job is defined without any legacy driver at all, because the program it
+    reproduces is complete but is invoked by no job member, procedure or resource definition. It is
+    <strong>registered as launchable by name like the other eight and excluded from every sequence</strong>:
+    nothing selects it implicitly, so it runs only when an operator or a test names it. Unsequenced is not
+    unreachable, and the decision log records the distinction so the job is not read as dead
+    configuration.</p>
+  </div>
+</section>
+
+<section class="slide" id="decisions" aria-labelledby="decisions-h">
+  <h2 id="decisions-h"><span class="n">4.</span> Faithful beats idiomatic</h2>
+  <p class="lede">One tie-break decided every hard case: <strong>where faithful reproduction and idiomatic
+  Java conflict, faithful wins, and the divergence is written down rather than resolved by taste.</strong>
+  The decisions below are the ones that would otherwise have compiled cleanly, read plausibly and been
+  wrong — and would have been invisible to a test written under the same misunderstanding.</p>
+
+  <dl class="terms">
+    <dt>Arithmetic truncates, because nothing in the estate rounds</dt>
+    <dd>The rounding keyword occurs <strong>zero</strong> times across every program and copybook in the
+    estate. An arithmetic store without it truncates toward zero, so every monetary scale operation uses
+    <code>RoundingMode.DOWN</code>. The conventional <code>HALF_EVEN</code> would differ by one cent on
+    roughly half of all interest computations, and a single codec owns the policy so that no service can
+    introduce a second one.</dd>
+
+    <dt>Expression order is reproduced operand for operand</dt>
+    <dd>Truncation makes arithmetic non-associative, so an algebraically identical rearrangement moves the
+    truncation point and changes the result. Multiplication that precedes a division stays in that order.
+    One report program contains no arithmetic at all, and none was introduced into it.</dd>
+
+    <dt>Zoned decimal, not packed decimal</dt>
+    <dd>No persisted monetary or rate field in the estate uses packed decimal, so no packed decoder is
+    required. What is required is a codec for the <strong>overpunched sign convention</strong>, where the
+    final byte carries both the low-order digit and the sign. Every monetary field becomes a
+    <code>BigDecimal</code> whose scale matches its picture clause exactly; no field anywhere becomes a
+    binary floating-point type.</dd>
+
+    <dt>The statement generator is a state machine, not a loop</dt>
+    <dd>That program is a <strong>hand-rolled dispatcher</strong>: a work field holds the name of the next
+    phase, each phase sets it and jumps <em>backward</em> to the dispatcher, and the dispatcher re-branches
+    on the new value. Nested method calls cannot reproduce re-entry into a dispatcher after a state change,
+    so the service is an explicit state enum driven by a loop over a <code>switch</code>. Of
+    <strong>134</strong> unconditional jumps estate-wide, <strong>125</strong> jump forward to an exit label
+    and become a plain return; only <strong>9</strong> jump backward and form loops, and six of those nine
+    belong to this one program.</dd>
+
+    <dt>Evaluation order is the contract</dt>
+    <dd><strong>111</strong> multi-way selections become <code>switch</code> constructs with clause order
+    preserved, because the legacy evaluates top to bottom and stops at the first match — so reordering
+    clauses changes behaviour wherever conditions overlap. The 508 condition names become enum constants with
+    predicate methods, which converts flag-string comparison into type-checked state.</dd>
+
+    <dt>The queue bridge is adapted, not reinvented</dt>
+    <dd>The single online-to-batch bridge becomes a first-in-first-out queue publish that preserves all three
+    contractual properties: <strong>80-character fixed records</strong>, append ordering, and ignore-on-error
+    semantics — so a publish failure logs and continues rather than aborting the caller, exactly as the
+    legacy resource definition specifies.</dd>
+
+    <dt>Record mappers are hand-written, because the reflection budget is zero</dt>
+    <dd>All <strong>twelve</strong> mapper classes slice their record image by explicit offset arithmetic:
+    one per <strong>eleven</strong> persisted record layouts, plus one for the statement job&rsquo;s transient
+    work record, which is written and re-read inside a single job and never stored. That is a design
+    constraint rather than a preference: a zero reflection count rules out every annotation-driven mapping
+    library, and it is also why no annotation processor appears anywhere in the dependency set.</dd>
+
+    <dt>One macro expansion becomes one method</dt>
+    <dd>A macro copybook carrying three substitution slots is expanded <strong>39</strong> times in a single
+    program, against 39 distinct validation flags and field names. Honouring the directive means
+    collapsing those expansions into 39 calls to one field-decoration method — the largest single
+    de-duplication in the refactor — while keeping the two error states the macro distinguishes as separate states on the error
+    contract, and keeping the behaviour that decoration fires only on re-submission.</dd>
+  </dl>
+
+  <h3>Defects are reproduced, never propagated and never quietly corrected</h3>
+  <ul>
+    <li>An <strong>empty fee-computation paragraph</strong> is genuinely invoked and implements nothing. It
+    survives as an explicitly documented no-op method. <strong>No fee logic was invented to fill it</strong>,
+    because that would be feature expansion and would change what an interest run emits.</li>
+    <li>Two account-update fields carry <strong>no validation constraint in the Java contract, for two
+    different reasons</strong>, and collapsing them would misrepresent both. The <strong>second address
+    line</strong> is genuinely never validated by the legacy program — decorated for error display and
+    nothing more — so attaching no constraint is <em>faithful translation</em>. The <strong>middle
+    name</strong> is not: the legacy program <em>does</em> validate it, through its optional-alphabetic edit,
+    and its not-OK flag is tested when the cursor is placed; the comment beside its decoration macro claims
+    no edits are coded and is wrong about the code it sits next to. Java attaches no constraint regardless,
+    because the migration direction said not to — so that one is a <strong>directive-driven
+    divergence</strong>, recorded as an exception rather than presented as fidelity.</li>
+    <li>A commented-out alternative label for one menu option <strong>stays inactive</strong>, exactly as it
+    is in the source.</li>
+    <li>An alphabetic check written as blank-the-letters-and-trim therefore <strong>passes embedded
+    spaces</strong>. The faithful predicate is "every character is a letter or a space", not a per-character
+    letter test, which would reject two-part names the legacy accepts.</li>
+    <li>An upper-casing step uses a strict 26-character substitution table, so it is reproduced as an
+    ASCII-only fold rather than a locale-sensitive, Unicode-aware case conversion.</li>
+    <li>Identifier generation reads the highest existing key and adds one inside the same transaction. A
+    database sequence would diverge permanently after the first rollback, so none is used.</li>
+    <li><strong>Thirty-one source anomalies</strong> — misspelled field names, a duplicated paragraph label,
+    a duplicated step name, a conflicting generation limit, a dangling program definition — are recorded in
+    the anomaly register in <a href="../decision-log/">the decision log</a>. Fourteen of the thirty-one were
+    named in the migration plan, together with a fifteenth observation; the remaining sixteen were found at
+    the same checkout during translation. Where correcting one would alter a
+    record layout or an external contract, it is preserved as-is and the defect is noted instead.</li>
+  </ul>
+
+  <h3>Two departures, both labelled as improvements rather than reproductions</h3>
+  <div class="caution">
+    <p>The legacy compares a stored eight-character cleartext credential directly. The target stores
+    <strong>BCrypt hashes</strong> only. This is the one place the migration knowingly does not reproduce
+    legacy behaviour, and it is recorded as a <strong>deliberate, documented parity exception</strong> —
+    reproducing the cleartext compare would have satisfied parity and violated the credential constraint.
+    Beyond that, the production profile resolves every confidential configuration value from an environment
+    variable <strong>with no fallback default</strong>, so a missing one fails startup instead of silently
+    binding a placeholder, and the seeded identities used locally are hashes scoped to non-production
+    profiles.</p>
+    <p>Every legacy file is defined with uncommitted reads, no recovery and no journalling, with correctness
+    resting on record locking plus the programs' own before-and-after image comparison. The target runs
+    PostgreSQL read-committed isolation with JPA versioning. Both changes are <strong>strictly stronger than
+    the baseline</strong>, and saying so explicitly is what stops a reviewer reading the stronger posture as
+    a behavioural regression.</p>
+  </div>
+
+  <h3>What is deliberately not implemented</h3>
+  <p>No feature was added. Nothing in the target does anything the estate did not already do — no new screen,
+  field, report or job — and the boundary is drawn in four named places:</p>
+  <ul>
+    <li>The illustrative product, fee and feature entities on the data-model diagram have no copybook,
+    program or dataset behind them, so <strong>they are not implemented</strong>.</li>
+    <li>Three job members that enabled or disabled online access to a file, or drove the
+    resource-definition utility, have no runtime equivalent once the keyed clusters are replaced. They are
+    documented as <strong>intentionally unmigrated, not dropped</strong>.</li>
+    <li>One copybook has no inclusion anywhere in the estate. Migrating it would have created dead Java code,
+    so it is recorded as a <strong>decision</strong> rather than an omission.</li>
+    <li>No browser interface and no application cache: the first is outside the named stack, and the second
+    would change latency and consistency characteristics the estate never had.</li>
+    <li><strong>Transport security needs a distinction, because one half of it <em>is</em> delivered.</strong>
+    The application terminates TLS itself on the production profile &mdash; the listener is switched on there
+    and it consumes externally supplied key-store material, resolved from the environment with no fallback, so
+    a missing value fails start-up rather than quietly serving plaintext. What is <em>not</em> in scope is the
+    infrastructure around it: no ingress or reverse proxy is provisioned, and no certificate is issued,
+    renewed or rotated here. Saying "no transport termination" would understate the delivery; saying transport
+    security is complete would overstate it. The application listens over TLS when configured to; the
+    surrounding estate is somebody else's provisioning step.</li>
+  </ul>
+</section>
+
+<section class="slide" id="gates" aria-labelledby="gates-h">
+  <h2 id="gates-h"><span class="n">5.</span> How it is verified</h2>
+  <p class="lede">Eight <strong>acceptance criteria</strong>, every one of them executable locally. None
+  requires a production environment, a staging environment or a running mainframe: each runs against the
+  Compose stack or against a container the test itself starts. This slide states what each criterion
+  <em>verifies</em>; <a href="../gate-evidence/">gate-evidence.md</a> is the single authority for what any
+  given run recorded, and it names the command and the artefact behind every result.</p>
+
+  <div class="scroller" role="region" tabindex="0" aria-labelledby="tbl-gates-name" aria-describedby="tbl-gates-note">
+    <table>
+      <caption><span class="capname" id="tbl-gates-name">The eight acceptance criteria and the obligation each one discharges.</span></caption>
+      <thead>
+        <tr><th scope="col" class="num">#</th><th scope="col">Criterion</th><th scope="col">What it verifies</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row" class="num">1</th><td>End-to-end boundary</td>
+          <td>that a production-representative input is processed end to end locally and the emitted records
+          are <strong>byte-equivalent</strong> to committed golden files at the
+          <strong>four contractual widths</strong> this criterion is frozen at &mdash; <strong>80</strong>,
+          <strong>100</strong>, <strong>133</strong> and <strong>430</strong> bytes &mdash; each compared
+          from a single seeded pipeline pass. A further <strong>40</strong>-byte record, the
+          category-balance report line, carries a committed golden of its own and is compared the same way
+          from a dedicated run of the job that emits
+          it, because that job is the one emitter the primary pipeline does not drive; that comparison is
+          <strong>supplemental</strong> evidence beside the criterion rather than a fifth width of it. The
+          comparison is byte-array equality on fixed-width records, so a trailing space or a sign overpunch
+          fails rather than passing quietly. <strong>Mocked input and output does not satisfy it.</strong></td>
+        </tr>
+        <tr>
+          <th scope="row" class="num">2</th><td>Zero-warning build</td>
+          <td>that a clean checkout compiles with <strong>every lint category enabled and warnings promoted
+          to errors</strong> at <code>release 25</code>. The criterion is mechanical rather than reviewed: a
+          warning is a build <em>failure</em>, not an entry in a report, so warnings cannot accumulate
+          silently.</td>
+        </tr>
+        <tr>
+          <th scope="row" class="num">3</th><td>Performance baseline</td>
+          <td>that elapsed time, peak memory and records per second are measured inside the run that takes
+          them and recorded with the fixture volumes they were measured over. Timers on every endpoint and
+          every batch step <em>corroborate</em> the shape; the quoted figure comes from the run-scoped
+          recorder rather than from a scrape. <strong>This criterion establishes the first Java baseline; it
+          does not test a threshold</strong> &mdash; see the note below.</td>
+        </tr>
+        <tr>
+          <th scope="row" class="num">4</th><td>Named validation artefacts</td>
+          <td>that the <strong>nine</strong> ASCII fixtures and <strong>twelve</strong> encoded sequential
+          datasets are named individually, present at their measured byte counts, and driven through the
+          primary batch pipeline &mdash; together with the seeded identities and the five lookup cardinalities
+          (<strong>490</strong> phone area codes, being <strong>410</strong> general-purpose plus
+          <strong>80</strong> easily-recognisable; <strong>56</strong> state codes; <strong>240</strong>
+          state and postal-prefix combinations).</td>
+        </tr>
+        <tr>
+          <th scope="row" class="num">5</th><td>Interface contract verification</td>
+          <td>that each external interface is exercised against the <em>real</em> contract rather than
+          self-certified: the fixed-width file formats, the operator-visible sign-on message texts and the
+          routing the delivered user type decides, and the batch-trigger card image drained back out of a
+          real queue rather than read off a builder's return value.</td>
+        </tr>
+        <tr>
+          <th scope="row" class="num">6</th><td>Unsafe and low-level code audit</td>
+          <td>that the counts of raw query-string assembly, process launching, reflection, unchecked casts
+          and suppressed warnings are <strong>documented</strong>. The audit is scoped to the production Java
+          tree, which matters: an unscoped scan would count the versioned schema migrations as raw query text
+          and inflate the figure. The warning suppression is the single exception and is counted over
+          <strong>both</strong> source trees, because criterion 2 forbids the construct outright and the
+          annotation hides a warning wherever it is written.</td>
+        </tr>
+        <tr>
+          <th scope="row" class="num">7</th><td>Scope matching</td>
+          <td>that the extended tier is genuinely covered &mdash; multi-subsystem batch, file input and
+          output, inter-program calls, job orchestration and cloud-service integration &mdash; behind an
+          <strong>enforced, build-failing floor on line coverage</strong>.</td>
+        </tr>
+        <tr>
+          <th scope="row" class="num">8</th><td>Integration sign-off</td>
+          <td>that all seven of the above hold together, plus a dependency vulnerability scan that runs
+          inside the build over the compile, runtime and test graph and <em>fails</em> it at the critical and
+          high threshold &mdash; where a finding an analyst has determined to be a false match must be carried
+          by a written, artifact-scoped, self-expiring determination that is published rather than silent,
+          because such a finding is still a finding and an obligation that let it be rounded away would be the
+          reason a reader stops checking. <strong>What any given scan found belongs to the evidence page and is
+          deliberately not reproduced here</strong>: read it in
+          <a href="../gate-evidence/#gate-8-integration-sign-off-checklist">Gate Evidence</a>, dated and
+          beside its report, and re-run the scan before any sign-off, because a scan result ages. Plus
+          traceability covering <strong>100%</strong> of the estate's procedure units.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollnote" id="tbl-gates-note">Where this table is wider than the slide, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.</p>
+
+  <h3>Three conventions that keep the evidence honest</h3>
+  <dl class="terms">
+    <dt>A measurement is never a threshold</dt>
+    <dd>No numeric service level of any kind exists anywhere in the estate &mdash; not in the COBOL, not in
+    the job streams, not in the resource definitions. There is therefore nothing to compare against, which is
+    exactly why the third criterion <strong>establishes</strong> a baseline instead of asserting one. This
+    deck publishes no such figure at all, and any figure belonging to one run on one machine is recorded in
+    <a href="../gate-evidence/">gate-evidence.md</a> beside the date and the machine, to be re-measured
+    rather than quoted.</dd>
+
+    <dt>The coverage floor is on line coverage, and only line coverage is gated</dt>
+    <dd>That floor fails the build. Branch, method and instruction coverage are reported for information and
+    are <strong>not</strong> thresholds &mdash; presenting a branch figure as one would misstate the
+    criterion.</dd>
+
+    <dt>This deck states obligations; the evidence page states outcomes</dt>
+    <dd><strong>No measured run outcome is reproduced here</strong> &mdash; no recorded result, no coverage
+    percentage, no elapsed time or throughput figure, and no vulnerability verdict or identifier. The counts
+    this deck does carry describe the <em>estate and the delivery</em>, which do not change when a suite is
+    re-run: 28 programs, 544 procedure units, eleven record layouts, nine fixtures. The separation is
+    deliberate: a summary that restates a measured figure goes stale the moment the figure is re-measured, and
+    a reader would then hold two answers with no way to tell which is current. There is one authority for
+    outcomes, and it is <a href="../gate-evidence/">gate-evidence.md</a>.</dd>
+  </dl>
+</section>
+
+<section class="slide" id="documents" aria-labelledby="documents-h">
+  <h2 id="documents-h"><span class="n">6.</span> Where the detail lives</h2>
+  <p class="lede">This deck is a summary and is deliberately not an authority. Every figure on it is carried
+  by one of the five pages below, which own the detail, the evidence and the reasoning.</p>
+
+  <div class="scroller" role="region" tabindex="0" aria-labelledby="tbl-documents-name" aria-describedby="tbl-documents-note">
+    <table>
+      <caption><span class="capname" id="tbl-documents-name">The five documentation pages, each linked relative to this deck.</span></caption>
+      <thead>
+        <tr><th scope="col">If you are asking</th><th scope="col">Read</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Which Java method is this COBOL paragraph, and what covers it?</th>
+          <td><a href="../traceability-matrix/">traceability-matrix.md</a> &mdash; one row per procedure
+          unit, each naming the source member, the source line, the target class, the target method and the
+          covering test, with both provenance identifiers in its header.</td>
+        </tr>
+        <tr>
+          <th scope="row">Why does it behave like that instead of the obvious way?</th>
+          <td><a href="../decision-log/">decision-log.md</a> &mdash; every judgement where faithful
+          reproduction and idiomatic Java diverged, the anomaly register at its thirty-one legacy defects, and
+          the record of conflicts between legacy artifacts and how each was resolved.</td>
+        </tr>
+        <tr>
+          <th scope="row">How is the module put together?</th>
+          <td><a href="../architecture/">architecture.md</a> &mdash; the layer map and its verified
+          dependency direction, the package responsibilities, the entity model, the alternate-index
+          equivalents, the complete table of contractual output widths, and why the batch tier is shaped the
+          way it is.</td>
+        </tr>
+        <tr>
+          <th scope="row">How do I build it, run it and drive the criteria myself?</th>
+          <td><a href="../onboarding-guide/">onboarding-guide.md</a> &mdash; prerequisites, the build
+          commands and what each one proves, bringing up the local stack, signing on, and running the
+          criteria.</td>
+        </tr>
+        <tr>
+          <th scope="row">What did a run actually record?</th>
+          <td><a href="../gate-evidence/">gate-evidence.md</a> &mdash; the command, the artefact and the
+          recorded status behind each of the eight criteria, the audit counts, the named artefact inventory
+          and the recorded baseline figures.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollnote" id="tbl-documents-note">Where this table is wider than the slide, the frame around it scrolls sideways; it can also be focused with the keyboard and panned with the arrow keys.</p>
+
+  <div class="note">
+    <p>Those five targets are written in the published site's own page form rather than as file names, so
+    inside the published documentation site &mdash; where the reader arrives here from the documentation
+    home &mdash; every one of them resolves as a page, including the deep link into the eighth criterion.
+    Opening this file straight off a file system is the other case and is worth stating plainly: a page path
+    has no directory to resolve against there, so those five links will not open, and the Markdown they are
+    built from sits one directory up, beside the folder holding this file. The images on slides 1 and 2 are
+    linked read-only from the repository's diagram folder and are never copied or modified; where that folder
+    sits outside a publication root the images may not resolve, which is why every one of them carries a
+    caption that states its content in words &mdash; and, for the same reason, a link to the asset in the
+    repository, so the figure is reachable even where the image itself is not.</p>
+  </div>
+
+  <h3>On provenance, and on where the obligations came from</h3>
+  <p>Two identifiers are the durable link between this module and the estate it came from, and they are the
+  only correct answer to "which COBOL did this Java come from?": the analysed checkout commit
+  <code>7756d895ffeb65f7ea72aaa609e356d9899afcec</code> and the upstream release stamp
+  <code>CardDemo_v1.0-15-g27d6c6f-68</code> of 2022-07-19. Both appear in the header of the traceability
+  matrix and of the decision log.</p>
+  <p>Two bodies of binding content are easy to misattribute, so they are named for what they are. The
+  construct pairing on slide 2 is a <strong>requirement</strong> of the refactor. The eight criteria on slide
+  5 are <strong>acceptance criteria</strong>, and their evidence is published on
+  <a href="../gate-evidence/">gate-evidence.md</a>. Separately, <strong>no user-specified rules were
+  provided for this engagement</strong> &mdash; a verified absence rather than an unread document. That is not
+  licence to lower the standard: the work is held to enterprise-standard best practice instead, as a
+  conscious position, and the two standards binding this page in particular are licence continuity, which is
+  why the Apache-2.0 header opens the file, and the prohibition on credential values in source, which is why
+  no credential, password, secret, token or key <em>value</em> appears anywhere on it — not a real one, and
+  not a placeholder shaped like one. <strong>Identifiers are the opposite case and appear freely</strong>:
+  the checkout commit, the release stamp, the module coordinate, transaction and program names, paragraph
+  names, record widths and byte offsets are all metadata, and naming them is precisely what makes a citation
+  checkable against the estate.</p>
+</section>
+
+</main>
+
+<footer class="deck">
+  <p>Analysed checkout <code>7756d895ffeb65f7ea72aaa609e356d9899afcec</code> &middot; upstream release stamp
+  <code>CardDemo_v1.0-15-g27d6c6f-68</code>, dated 2022-07-19. The repository carries no Git tags, so the
+  commit is the anchor.</p>
+  <p>The legacy estate under <code>app/</code> is unchanged and read as reference only. No COBOL, job
+  control, screen-definition, copybook or resource-definition source text appears on this page.</p>
+  <p>Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. Licensed under the Apache License,
+  Version 2.0.</p>
+</footer>
+
+<script>
+/* Progressive enhancement only. Everything above is complete and readable without
+   this script: the base stylesheet leaves every slide visible, so a reader with
+   scripting unavailable simply scrolls the whole deck. The script adds an opt-in
+   presenter mode that shows one slide at a time; it never hides anything until a
+   reader asks it to, and it restores the full document when switched off. */
+(function () {
+  "use strict";
+
+  var root = document.documentElement;
+  var slides = Array.prototype.slice.call(document.querySelectorAll("main section.slide"));
+  var bar = document.querySelector(".deckbar");
+  var toggle = document.getElementById("modeToggle");
+  var previous = document.getElementById("prevSlide");
+  var following = document.getElementById("nextSlide");
+  var status = document.getElementById("deckStatus");
+
+  if (!slides.length || !bar || !toggle || !previous || !following || !status) {
+    return;
+  }
+
+  var presenting = false;
+  var index = 0;
+  var idleText = "Reading as one continuous document. Presenter mode shows one slide at a time and " +
+    "responds to the arrow keys.";
+  /* The same query the stylesheet uses to relax scrolling, read here so a scripted jump and an
+     anchor jump honour the reader's motion preference identically. */
+  var calmed = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+
+  /* Reveal the control bar only now that the script is known to be running. */
+  root.className = root.className ? root.className + " enhanced" : "enhanced";
+
+  /* The bar is sticky, and its controls plus its status sentence wrap onto extra rows as the
+     viewport narrows, so the height a jump has to clear is measured rather than assumed. The
+     stylesheet's 68px covers only the instant before this first runs. */
+  function syncOffset() {
+    root.style.scrollPaddingTop = (bar.offsetHeight + 6) + "px";
+  }
+
+  function jumpBehaviour() {
+    return calmed && calmed.matches ? "auto" : "smooth";
+  }
+
+  /* Moving focus to the heading keeps the reader's place visible after a keyboard jump, and keeps
+     focus out of a subtree that has just been hidden. The tabindex is what makes a heading
+     focusable at all; -1 keeps it out of the tab order, and it is removed again on blur so the
+     document is left as it was found. */
+  function focusSlide(slide) {
+    var target = slide.querySelector("h2") || slide;
+    if (!target.hasAttribute("tabindex")) {
+      target.setAttribute("tabindex", "-1");
+      target.addEventListener("blur", function () {
+        target.removeAttribute("tabindex");
+      }, { once: true });
+    }
+    target.focus({ preventScroll: true });
+  }
+
+  /* A shortcut must not be taken from a control or a text field that wants the same key. The
+     deck's own control bar is deliberately exempt: it exists to drive this navigation, it never
+     sits inside a slide, and so a shortcut fired from it can neither surprise the reader nor
+     strand focus. */
+  function claimsKeys(node) {
+    if (!node || node === document.body || !node.closest) {
+      return false;
+    }
+    if (bar.contains(node)) {
+      return false;
+    }
+    return node.isContentEditable ||
+      !!node.closest("a[href], button, input, select, textarea, [contenteditable]");
+  }
+
+  function render() {
+    var active = document.activeElement;
+    var stranded = false;
+
+    slides.forEach(function (slide, position) {
+      if (presenting && position !== index) {
+        if (active && slide.contains(active)) {
+          stranded = true;
+        }
+        slide.setAttribute("hidden", "hidden");
+      } else {
+        slide.removeAttribute("hidden");
+      }
+    });
+
+    /* At either end the control has nothing left to reach, so it reports that rather than
+       accepting a click and doing nothing. */
+    previous.disabled = !presenting || index <= 0;
+    following.disabled = !presenting || index >= slides.length - 1;
+
+    status.textContent = presenting
+      ? "Slide " + (index + 1) + " of " + slides.length +
+        ". Arrow keys, Home and End move between slides; Escape leaves presenter mode."
+      : idleText;
+
+    /* Focus was inside a slide that has just been hidden. Rescuing it is not optional: left
+       alone, the browser drops focus to the document and the reader loses their position. */
+    if (stranded) {
+      focusSlide(slides[index]);
+    }
+    /* Revealing or hiding the Previous and Next controls, and rewriting the status sentence,
+       both change the bar's height on a narrow viewport. */
+    syncOffset();
+  }
+
+  function go(target, moveFocus) {
+    var bounded = target;
+    if (bounded < 0) {
+      bounded = 0;
+    }
+    if (bounded > slides.length - 1) {
+      bounded = slides.length - 1;
+    }
+    index = bounded;
+    render();
+    slides[index].scrollIntoView({ block: "start", behavior: jumpBehaviour() });
+    if (moveFocus) {
+      focusSlide(slides[index]);
+    }
+  }
+
+  /* Which slide is the reader actually on? Entering presenter mode at slide 1 when they have
+     scrolled to slide 4 throws their place away, so the slide whose top has passed the reading
+     line wins. This must be measured before any slide is hidden, because hiding collapses the
+     document and every rectangle after that describes a layout the reader never saw. */
+  function slideInView() {
+    var line = bar.offsetHeight + 12;
+    var chosen = 0;
+    slides.forEach(function (slide, position) {
+      if (slide.getBoundingClientRect().top <= line) {
+        chosen = position;
+      }
+    });
+    return chosen;
+  }
+
+  function setPresenting(on) {
+    /* Read the reader's place first, while the layout is still the one they were looking at:
+       revealing the Previous and Next controls can add a row to the bar, and that would move
+       every measurement taken after it. */
+    var entry = on ? slideInView() : index;
+
+    presenting = on;
+    toggle.setAttribute("aria-pressed", on ? "true" : "false");
+    toggle.textContent = on ? "Leave presenter mode" : "Presenter mode";
+    previous.hidden = !on;
+    following.hidden = !on;
+
+    if (on) {
+      root.className = root.className + " presenting";
+      go(entry, false);
+    } else {
+      root.className = root.className.replace(/\s*presenting\b/, "");
+      render();
+      /* Every slide is back, which moves the one being read; keep it where the reader left it. */
+      slides[index].scrollIntoView({ block: "start", behavior: jumpBehaviour() });
+    }
+  }
+
+  toggle.addEventListener("click", function () {
+    setPresenting(!presenting);
+  });
+  /* A click leaves focus on the control the reader is using, so these do not move it. */
+  previous.addEventListener("click", function () {
+    go(index - 1, false);
+  });
+  following.addEventListener("click", function () {
+    go(index + 1, false);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (!presenting || event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+    if (claimsKeys(event.target)) {
+      return;
+    }
+
+    switch (event.key) {
+      case "ArrowRight":
+      case "PageDown":
+        go(index + 1, true);
+        event.preventDefault();
+        break;
+      case "ArrowLeft":
+      case "PageUp":
+        go(index - 1, true);
+        event.preventDefault();
+        break;
+      case "Home":
+        go(0, true);
+        event.preventDefault();
+        break;
+      case "End":
+        go(slides.length - 1, true);
+        event.preventDefault();
+        break;
+      case "Escape":
+        setPresenting(false);
+        event.preventDefault();
+        break;
+      default:
+        break;
+    }
+  });
+
+  /* The table of contents stays on screen in presenter mode, where it works as a slide selector:
+     a link there has to bring its slide out of hiding before the anchor can reach it. With
+     presenter mode off the browser's own anchor handling is all that is needed. */
+  Array.prototype.forEach.call(document.querySelectorAll('nav.toc a[href^="#"]'), function (link) {
+    link.addEventListener("click", function () {
+      if (!presenting) {
+        return;
+      }
+      var id = link.getAttribute("href").slice(1);
+      slides.forEach(function (slide, position) {
+        if (slide.id === id) {
+          go(position, false);
+        }
+      });
+    });
+  });
+
+  /* The bar also rewraps when the window resizes, with no state change to trigger it. */
+  window.addEventListener("resize", syncOffset);
+
+  render();
+}());
+</script>
+
+</body>
+</html>

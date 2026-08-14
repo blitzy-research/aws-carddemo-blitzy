@@ -1,0 +1,129 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# ===========================================================================
+# CardDemo - Grafana data source provisioning
+# ===========================================================================
+#
+# PROVENANCE
+#   Legacy estate checkout SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec
+#   Upstream release stamp     : CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)
+#
+#   This file has no legacy antecedent. Nothing in the mainframe estate
+#   corresponds to it, so it is a net-new artifact rather than the
+#   translation of a COBOL program, a copybook or a job stream. Traceability
+#   to the legacy estate is by citation only - path and line number - and no
+#   legacy source text is reproduced anywhere in this module.
+#
+# PURPOSE
+#   This is the presentation half of the observability layer that replaces
+#   the legacy estate's only diagnostic channel, the DISPLAY statement.
+#   Grafana reads this file while it starts, so the data source exists
+#   before anyone opens the UI and no manual import step is required.
+#
+#   The collection half is config/prometheus/prometheus.yml, which scrapes
+#   the application's Micrometer exposition at /actuator/prometheus and
+#   stamps job="carddemo-app" onto every series it collects. This file
+#   points Grafana at the Prometheus holding those series. It does nothing
+#   else, and deliberately so - see PERFORMANCE GATE below.
+#
+# THE uid IS A CONTRACT, NOT A LOCAL NAME
+#   Grafana resolves a provisioned dashboard's panels by data source `uid`,
+#   never by `name`. config/grafana/dashboards/carddemo-overview.json names
+#   uid `carddemo-prometheus` in every one of its panels, which makes that
+#   string an interface between two files rather than an identifier this
+#   file is free to choose.
+#
+#   Omit the key and Grafana generates a random uid instead; change it on
+#   one side only and the panels resolve to nothing. Both failures are
+#   SILENT - the container still reports healthy, the dashboard still
+#   appears in the sidebar, and every panel reads "Datasource not found".
+#   There is no log line to catch it and no exit code to fail on, which is
+#   why this file is verified against Grafana's own API, by asking
+#   /api/datasources/uid/carddemo-prometheus for the record it should have
+#   created, rather than by looking at container state.
+#
+# PERFORMANCE GATE
+#   The performance gate ESTABLISHES the first Java baseline. It asserts NO
+#   threshold. No numeric latency, throughput, availability or capacity
+#   target exists anywhere in the legacy estate - not in the COBOL, not in
+#   the job streams, not in the CICS resource definitions - so there is
+#   nothing to test against. Elapsed time, peak memory and records per
+#   second are measured and written up in docs/gate-evidence.md.
+#
+#   That is why this file sets no query timeout, no sampling override, no
+#   cache setting and no concurrency limit. Their absence is a decision
+#   rather than an oversight: each one would encode a service level that
+#   this migration is expressly forbidden from inventing, and a reader who
+#   finds the data source bare should read that as intent. Sampling cadence
+#   belongs to the collector, which states it once.
+#
+# SCOPE - LOCAL VALIDATION STACK ONLY
+#   The `grafana` service of the sibling docker-compose.yml mounts
+#   config/grafana/provisioning read-only, which places this file at
+#   /etc/grafana/provisioning/datasources/datasource.yml, the location
+#   Grafana scans while it starts. The URL below is a Compose service name
+#   on the project network, and the connection is plaintext and anonymous -
+#   all three correct for a collector and a viewer that share one machine
+#   under the `local` profile, and all three unfit for a deployment running
+#   the `prod` profile.
+#
+#   This file therefore presents NO credential of any kind. Grafana's own
+#   sign-in values come from the compose environment, and a 401 answered by
+#   the scrape endpoint would be a matter for
+#   com.carddemo.config.SecurityConfig, never something to resolve by
+#   writing a secret into a committed file.
+# ===========================================================================
+
+apiVersion: 1
+
+# Reconcile the persistent Grafana database with this file on every start. `prune` removes any
+# provisioned data source this file no longer declares. The explicit deletion below handles the
+# withdrawn tracing source immediately, including named volumes created before pruning was enabled.
+prune: true
+deleteDatasources:
+  - name: Jaeger
+    orgId: 1
+
+# Exactly one data source. Prometheus is the only metrics store this module
+# runs, the legacy estate had no second one, and provisioning a data source
+# for a system nothing scrapes would be feature expansion. The tracing back
+# end remains reachable through its own UI; the obsolete Grafana source is
+# deleted above because no panel references it.
+datasources:
+  - name: Prometheus
+    # Load-bearing; see THE uid IS A CONTRACT above. Every panel of
+    # carddemo-overview.json resolves against this exact string.
+    uid: carddemo-prometheus
+    type: prometheus
+    # Server-side proxying. Never `direct`, which moves the request into the
+    # browser - and a browser off the project network cannot resolve the
+    # Compose service name below.
+    access: proxy
+    # The Compose service name, never the loopback address: inside this
+    # container the loopback address is Grafana itself, so such a URL would
+    # never reach Prometheus while the stack still reported healthy.
+    url: http://prometheus:9090
+    # A second line of defence behind the uid, so that a panel naming no
+    # data source at all still resolves to this one.
+    isDefault: true
+    # Version-controlled rather than UI-mutated: this file is the source of
+    # truth, and an edit made in the browser would not survive a restart.
+    editable: false
+    jsonData:
+      # Carries long PromQL in the request body rather than the query
+      # string. The dashboard's histogram_quantile panels are long enough
+      # to want it. This is transport shape, not a tuning figure.
+      httpMethod: POST

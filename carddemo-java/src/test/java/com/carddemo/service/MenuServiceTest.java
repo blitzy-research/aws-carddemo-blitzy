@@ -1,0 +1,796 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.service;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import com.carddemo.config.MenuOptionCatalog;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Optional;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
+import org.slf4j.LoggerFactory;
+
+import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
+import com.carddemo.exception.AbendException;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+
+/**
+ * Unit tests for the two CardDemo menu transactions.
+ *
+ * <p>The class under test is the migrated form of {@code app/cbl/COMEN01C.cbl} (transaction
+ * {@code CM00}, 7 paragraphs) and {@code app/cbl/COADM01C.cbl} (transaction {@code CA00}, 7
+ * paragraphs), reading the option tables of {@code app/cpy/COMEN02Y.cpy} and
+ * {@code app/cpy/COADM02Y.cpy}. Every expected message, route token and rendered header item below is a
+ * literal declared in this test class, so the oracle is independent of the code it judges: no expected
+ * value is obtained by calling the service, the message catalog, the navigation service or the option
+ * catalog. Fixed-width padding is written as an explicit repeat count so the count is visible to a
+ * reviewer and cannot be stripped by an editor, and no fixed-width value is trimmed before
+ * comparison.</p>
+ *
+ * <p>Three behaviours carry parity traps and are asserted deliberately rather than incidentally.</p>
+ *
+ * <ol>
+ *   <li><em>Option normalisation is right-justified before it is zero-filled.</em> A single typed digit
+ *       must become a zero-filled two-digit value, and an entry wider than the two-character field must
+ *       lose its excess on the right, because the field cannot hold it.</li>
+ *   <li><em>The rejection message carries no space before its three full stops.</em> That distinguishes
+ *       it from the sign-on messages, which do carry one.</li>
+ *   <li><em>Two branches are unreachable in the shipped estate and are covered here anyway.</em> The
+ *       administrator-only gate cannot fire because every entry of the user table carries the
+ *       standard-user code, and the placeholder message cannot be composed because no entry names a
+ *       program that suppresses dispatch. Both are driven directly, through a stubbed catalog, so the
+ *       exact text of each is pinned even though the legacy can never present it.</li>
+ * </ol>
+ *
+ * <p>The two placeholder texts are <strong>deliberately different</strong>, because their source members
+ * differ. The user menu delimits the option name by space and supplies no separating space, so its text
+ * runs the name's first word into the trailing literal. The administrator menu has the name commented
+ * out of the composition altogether, so its text carries no name and reads correctly. Neither is
+ * corrected towards the other.</p>
+ *
+ * <p>The clock is fixed so the two rendered header items are exact rather than approximate. No test here
+ * touches a database, a queue, a container or the file system.</p>
+ */
+@DisplayName("Menu service: the user and administrator menu transactions")
+class MenuServiceTest {
+
+    /**
+     * A fixed instant, so the rendered header is an exact value. Chosen as the release timestamp carried
+     * in the trailer of both legacy members.
+     */
+    private static final Clock FIXED_CLOCK =
+            Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
+
+    /** The rendered date the fixed instant produces, in the two-digit month, day and year form. */
+    private static final String EXPECTED_HEADER_DATE = "07/19/22";
+
+    /** The rendered time the fixed instant produces. */
+    private static final String EXPECTED_HEADER_TIME = "23:12:33";
+
+    /** The rejection message, declared here rather than read from the service. */
+    private static final String EXPECTED_RANGE_MESSAGE = "Please enter a valid option number...";
+
+    /** The administrator-only denial message, whose trailing space is part of the literal. */
+    private static final String EXPECTED_ADMIN_ONLY_MESSAGE = "No access - Admin Only option... ";
+
+    /** The malformed user-menu placeholder text for option 1, first word only and no separating space. */
+    private static final String EXPECTED_USER_PLACEHOLDER = "This option Accountis coming soon ...";
+
+    /** The administrator-menu placeholder text, which carries no option name at all. */
+    private static final String EXPECTED_ADMIN_PLACEHOLDER = "This option is coming soon ...";
+
+    /** Declared width of the shared common-message items. */
+    private static final int COMMON_MESSAGE_WIDTH = 50;
+
+    /** Visible portion of the shared invalid-key message. */
+    private static final String INVALID_KEY_TEXT = "Invalid key pressed. Please see below...";
+
+    /** The shared invalid-key message at its declared width, padded by an explicit repeat count. */
+    private static final String EXPECTED_INVALID_KEY_MESSAGE =
+            INVALID_KEY_TEXT + " ".repeat(COMMON_MESSAGE_WIDTH - INVALID_KEY_TEXT.length());
+
+    /** The ten user-menu route tokens, in table order. */
+    private static final List<String> USER_ROUTES = List.of("account-view", "account-update",
+            "card-list", "card-detail", "card-update", "transaction-list", "transaction-view",
+            "transaction-add", "report-request", "bill-payment");
+
+    /** The four administrator-menu route tokens, in table order. */
+    private static final List<String> ADMIN_ROUTES =
+            List.of("user-list", "user-add", "user-update", "user-delete");
+
+    private final MenuOptionCatalog catalog = new MenuOptionCatalog();
+
+    private final MenuService service = new MenuService(new NavigationService(),
+            new MessageCatalogService(), catalog, FIXED_CLOCK);
+
+    /** A state marked as a re-entry, which is what makes a turn consult the attention key. */
+    private static ConversationState reEntry() {
+        return ConversationState.empty().withReEntry();
+    }
+
+    /**
+     * A signed-on carried state at the requested entry mode.
+     *
+     * <p>Five fields rather than sixteen: the identity and cardholder members of the communication-area
+     * contract are not part of the state a service reads, and their pass-through and identity
+     * reconciliation are asserted where they now happen, on the API-boundary adapter.
+     */
+    private static ConversationState signedOnState(final ConversationState.EntryMode entryMode) {
+        return new ConversationState("CC00", "COSGN00C", null, null, entryMode);
+    }
+
+    /** A catalog stub that renders the real rows but answers a single lookup with {@code entry}. */
+    private static MenuOptionCatalog userCatalogAnswering(MenuOptionCatalog real, int number,
+            MenuOptionCatalog.UserMenuOption entry) {
+        MenuOptionCatalog stub = Mockito.mock(MenuOptionCatalog.class);
+        Mockito.when(stub.userMenuOptionCount()).thenReturn(real.userMenuOptions().size());
+        Mockito.when(stub.userMenuOptions()).thenReturn(real.userMenuOptions());
+        Mockito.when(stub.findUserOption(number)).thenReturn(Optional.of(entry));
+        return stub;
+    }
+
+    private MenuService serviceWith(MenuOptionCatalog stub) {
+        return new MenuService(new NavigationService(), new MessageCatalogService(), stub, FIXED_CLOCK);
+    }
+
+    @Nested
+    @DisplayName("Option normalisation right-justifies before it zero-fills")
+    class OptionNormalisation {
+
+        @Test
+        @DisplayName("a single typed digit becomes a zero-filled two-digit value")
+        void singleDigitBecomesZeroFilledTwoDigitValue() {
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "5", UserType.USER).nextRoute())
+                    .isEqualTo("card-update");
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER).nextRoute())
+                    .isEqualTo("account-view");
+            // The echo is observable on a re-sent screen, and it carries the normalised two-digit form.
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "0", UserType.USER).echoedOption())
+                    .isEqualTo("00");
+        }
+
+        @Test
+        @DisplayName("a leading blank, a trailing blank and a full two-digit entry all agree")
+        void leadingAndTrailingBlanksNormaliseIdentically() {
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "1 ", UserType.USER).nextRoute())
+                    .isEqualTo("account-view");
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, " 1", UserType.USER).nextRoute())
+                    .isEqualTo("account-view");
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "10", UserType.USER).nextRoute())
+                    .isEqualTo("bill-payment");
+        }
+
+        @Test
+        @DisplayName("an entry wider than the field loses its excess on the right")
+        void overLongEntryIsBoundedToTheFieldWidth() {
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, "123", UserType.USER);
+            assertThat(reply.echoedOption()).isEqualTo("12");
+            assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("a blank field normalises to the zero option rather than to a non-numeric one")
+        void blankFieldNormalisesToTheZeroOption() {
+            for (String blank : List.of("", " ", "  ")) {
+                MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, blank, UserType.USER);
+                assertThat(reply.echoedOption()).as("entry '%s'", blank).isEqualTo("00");
+                assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
+            }
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, null, UserType.USER).echoedOption())
+                    .isEqualTo("00");
+        }
+    }
+
+    @Nested
+    @DisplayName("The range check rejects before it indexes, with one exact message")
+    class RangeCheck {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"0", "00", "11", "12", "99", "A", "1X", "-1", "", "  "})
+        @DisplayName("zero, above the count and non-numeric all produce the same exact text")
+        void rejectedEntriesProduceTheExactMessage(String entry) {
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, entry, UserType.USER);
+            assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
+            assertThat(reply.errorFlag()).isTrue();
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.ERROR);
+            assertThat(reply.nextRoute()).isEqualTo("user-menu");
+            assertThat(reply.focusScreenFieldId()).isEqualTo("OPTION");
+            assertThat(reply.rows()).hasSize(USER_ROUTES.size());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"0", "5", "6", "9", "10", "B"})
+        @DisplayName("the administrator menu rejects on its own smaller count")
+        void administratorRejectionsUseTheAdministratorCount(String entry) {
+            MenuService.MenuScreen reply = service.adminMenu(reEntry(), KeyAction.ENTER, entry);
+            assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
+            assertThat(reply.errorFlag()).isTrue();
+            assertThat(reply.nextRoute()).isEqualTo("admin-menu");
+            assertThat(reply.rows()).hasSize(ADMIN_ROUTES.size());
+        }
+
+        @Test
+        @DisplayName("the message carries no space before its three full stops")
+        void messageCarriesNoSpaceBeforeTheThreeFullStops() {
+            assertThat(MenuService.INVALID_OPTION_MESSAGE).isEqualTo(EXPECTED_RANGE_MESSAGE);
+            assertThat(EXPECTED_RANGE_MESSAGE).doesNotContain(" ...");
+            assertThat(EXPECTED_RANGE_MESSAGE).endsWith("number...");
+        }
+
+        @Test
+        @DisplayName("a rejected entry never reaches the option table")
+        void rejectedEntryNeverIndexesTheTable() {
+            MenuOptionCatalog watched = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(watched.userMenuOptionCount()).thenReturn(USER_ROUTES.size());
+            Mockito.when(watched.userMenuOptions()).thenReturn(catalog.userMenuOptions());
+            Mockito.when(watched.findUserOption(ArgumentMatchers.anyInt())).thenThrow(
+                    new AssertionError("the option table must not be indexed for a rejected entry"));
+            MenuService guarded = serviceWith(watched);
+            for (String entry : List.of("11", "12", "0", "99", "A")) {
+                assertThat(guarded.userMenu(reEntry(), KeyAction.ENTER, entry, UserType.USER).message())
+                        .as("entry '%s'", entry)
+                        .isEqualTo(EXPECTED_RANGE_MESSAGE);
+            }
+
+            MenuOptionCatalog watchedAdmin = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(watchedAdmin.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
+            Mockito.when(watchedAdmin.adminMenuOptions()).thenReturn(catalog.adminMenuOptions());
+            Mockito.when(watchedAdmin.findAdminOption(ArgumentMatchers.anyInt())).thenThrow(
+                    new AssertionError("the option table must not be indexed for a rejected entry"));
+            MenuService guardedAdmin = serviceWith(watchedAdmin);
+            for (String entry : List.of("5", "6", "9", "0")) {
+                assertThat(guardedAdmin.adminMenu(reEntry(), KeyAction.ENTER, entry).message())
+                        .as("entry '%s'", entry)
+                        .isEqualTo(EXPECTED_RANGE_MESSAGE);
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("Dispatch reaches every catalogued option and hands off the originating identity")
+    class Dispatch {
+
+        @Test
+        @DisplayName("each of the ten user options reaches its own destination")
+        void everyUserOptionReachesItsOwnDestination() {
+            for (int option = 1; option <= USER_ROUTES.size(); option++) {
+                MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER,
+                        String.valueOf(option), UserType.USER);
+                assertThat(reply.nextRoute()).as("option %d", option)
+                        .isEqualTo(USER_ROUTES.get(option - 1));
+                assertThat(reply.errorFlag()).isFalse();
+                assertThat(reply.message()).isNull();
+                assertThat(reply.severity()).isNull();
+            }
+        }
+
+        @Test
+        @DisplayName("each of the four administrator options reaches its own destination")
+        void everyAdministratorOptionReachesItsOwnDestination() {
+            for (int option = 1; option <= ADMIN_ROUTES.size(); option++) {
+                MenuService.MenuScreen reply =
+                        service.adminMenu(reEntry(), KeyAction.ENTER, String.valueOf(option));
+                assertThat(reply.nextRoute()).as("option %d", option)
+                        .isEqualTo(ADMIN_ROUTES.get(option - 1));
+                assertThat(reply.errorFlag()).isFalse();
+                assertThat(reply.message()).isNull();
+            }
+        }
+
+        @Test
+        @DisplayName("the originating identity is saved and the destination opens on a first entry")
+        void originatingIdentityIsSavedAndDestinationOpensOnFirstEntry() {
+            MenuService.MenuScreen reply = service.userMenu(signedOnState(
+                    ConversationState.EntryMode.RE_ENTRY), KeyAction.ENTER, "9", UserType.USER);
+            ConversationState handOff = reply.conversationState();
+
+            assertThat(reply.nextRoute()).isEqualTo("report-request");
+            assertThat(handOff.fromTransactionId()).isEqualTo("CM00");
+            assertThat(handOff.fromProgram()).isEqualTo("COMEN01C");
+            assertThat(handOff.firstEntry()).isTrue();
+
+            // The nomination the client sent is left alone: this screen records where the conversation
+            // came FROM and never overwrites where it was going.
+            assertThat(handOff.toTransactionId()).isNull();
+            assertThat(handOff.toProgram()).isNull();
+
+            // The identity and cardholder members of the communication-area contract are deliberately
+            // absent from the state a service reads, so there is nothing here for this turn to have
+            // disturbed and nothing it could have trusted. Their pass-through, and the replacement of
+            // the echoed identity with the authenticated one, are asserted on the API-boundary adapter
+            // where they now happen - see ConversationStateAdapterTest.
+            assertThat(ConversationState.class.getRecordComponents())
+                    .as("the carried state models the five routing and entry members and no others")
+                    .hasSize(5);
+        }
+
+        @Test
+        @DisplayName("the administrator menu hands off its own transaction and program identity")
+        void administratorDispatchSavesItsOwnIdentity() {
+            MenuService.MenuScreen reply = service.adminMenu(
+                    signedOnState(ConversationState.EntryMode.RE_ENTRY), KeyAction.ENTER, "3");
+            assertThat(reply.nextRoute()).isEqualTo("user-update");
+            assertThat(reply.conversationState().fromTransactionId()).isEqualTo("CA00");
+            assertThat(reply.conversationState().fromProgram()).isEqualTo("COADM01C");
+            assertThat(reply.conversationState().firstEntry()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a transfer renders no header and hints no focus, yet still carries its rows")
+        void transferRendersNoHeaderAndHintsNoFocus() {
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER);
+            assertThat(reply.currentDate()).isNull();
+            assertThat(reply.currentTime()).isNull();
+            assertThat(reply.focusScreenFieldId()).isNull();
+            assertThat(reply.rows()).hasSize(USER_ROUTES.size());
+        }
+    }
+
+    @Nested
+    @DisplayName("The administrator-only gate: unreachable in the estate, covered here")
+    class AdministratorOnlyGate {
+
+        @Test
+        @DisplayName("it fires for a standard user and keeps the literal's trailing space")
+        void firesForAStandardUserAndKeepsTheTrailingSpace() {
+            MenuService gated = serviceWith(userCatalogAnswering(catalog, 8,
+                    new MenuOptionCatalog.UserMenuOption(8, "Transaction Add", "COTRN02C", "A")));
+            MenuService.MenuScreen reply = gated.userMenu(reEntry(), KeyAction.ENTER, "8", UserType.USER);
+
+            assertThat(reply.message()).isEqualTo(EXPECTED_ADMIN_ONLY_MESSAGE);
+            assertThat(reply.message()).endsWith("... ");
+            assertThat(reply.errorFlag()).isTrue();
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.ERROR);
+            assertThat(reply.nextRoute()).isEqualTo("user-menu");
+            assertThat(reply.echoedOption()).isEqualTo("08");
+            assertThat(MenuService.ADMIN_ONLY_OPTION_MESSAGE).isEqualTo(EXPECTED_ADMIN_ONLY_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("an administrator and an absent type satisfy neither condition, so neither trips it")
+        void neitherAnAdministratorNorAnAbsentTypeTripsTheGate() {
+            MenuService gated = serviceWith(userCatalogAnswering(catalog, 8,
+                    new MenuOptionCatalog.UserMenuOption(8, "Transaction Add", "COTRN02C", "A")));
+            assertThat(gated.userMenu(reEntry(), KeyAction.ENTER, "8", UserType.ADMIN).nextRoute())
+                    .isEqualTo("transaction-add");
+            assertThat(gated.userMenu(reEntry(), KeyAction.ENTER, "8", null).nextRoute())
+                    .isEqualTo("transaction-add");
+        }
+
+        @Test
+        @DisplayName("no shipped user option can trip it, and option 8 is not role-gated")
+        void noShippedOptionCanTripTheGate() {
+            for (MenuOptionCatalog.UserMenuOption option : catalog.userMenuOptions()) {
+                assertThat(option.userType()).as("option %d", option.number()).isEqualTo("U");
+            }
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "8", UserType.USER).nextRoute())
+                    .isEqualTo("transaction-add");
+        }
+
+        @Test
+        @DisplayName("the administrator menu has no such gate at all")
+        void administratorMenuHasNoSuchGate() {
+            for (int option = 1; option <= ADMIN_ROUTES.size(); option++) {
+                assertThat(service.adminMenu(reEntry(), KeyAction.ENTER, String.valueOf(option))
+                        .errorFlag()).as("option %d", option).isFalse();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("The placeholder message: malformed in one member, name-free in the other")
+    class PlaceholderMessage {
+
+        @Test
+        @DisplayName("the user menu renders the first word only, with no separating space")
+        void userMenuRendersFirstWordOnlyWithNoSeparatingSpace() {
+            MenuService withDummy = serviceWith(userCatalogAnswering(catalog, 1,
+                    new MenuOptionCatalog.UserMenuOption(1, "Account View", "DUMMYPGM", "U")));
+            MenuService.MenuScreen reply = withDummy.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER);
+
+            assertThat(reply.message()).isEqualTo(EXPECTED_USER_PLACEHOLDER);
+            assertThat(reply.message()).doesNotContain("Account is");
+            assertThat(reply.message()).doesNotContain("Account View");
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.INFORMATIONAL);
+            assertThat(reply.errorFlag()).isFalse();
+            assertThat(reply.nextRoute()).isEqualTo("user-menu");
+            assertThat(reply.focusScreenFieldId()).isEqualTo("OPTION");
+            assertThat(reply.echoedOption()).isEqualTo("01");
+        }
+
+        @Test
+        @DisplayName("a multi-word name is truncated at its first space, whichever option it is")
+        void aMultiWordNameIsTruncatedAtItsFirstSpace() {
+            MenuService withDummy = serviceWith(userCatalogAnswering(catalog, 6,
+                    new MenuOptionCatalog.UserMenuOption(6, "Transaction List", "DUMMY001", "U")));
+            assertThat(withDummy.userMenu(reEntry(), KeyAction.ENTER, "6", UserType.USER).message())
+                    .isEqualTo("This option Transactionis coming soon ...");
+        }
+
+        @Test
+        @DisplayName("a name filling the whole field with no space is transferred entire")
+        void aNameWithNoSpaceAtAllIsTransferredEntire() {
+            // Every shipped label is shorter than its 35-character field and is therefore space-filled,
+            // so the space delimiter always stops inside the field. A label that fills the field with no
+            // space leaves nothing to stop on, and the whole field is transferred instead.
+            String unbrokenName = "A".repeat(35);
+            MenuService withDummy = serviceWith(userCatalogAnswering(catalog, 4,
+                    new MenuOptionCatalog.UserMenuOption(4, unbrokenName, "DUMMY002", "U")));
+            assertThat(withDummy.userMenu(reEntry(), KeyAction.ENTER, "4", UserType.USER).message())
+                    .isEqualTo("This option " + unbrokenName + "is coming soon ...");
+        }
+
+        @Test
+        @DisplayName("the administrator menu carries no option name, because the source comments it out")
+        void administratorMenuCarriesNoOptionName() {
+            MenuOptionCatalog stub = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(stub.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
+            Mockito.when(stub.userMenuOptions()).thenReturn(catalog.userMenuOptions());
+            Mockito.when(stub.findAdminOption(2)).thenReturn(Optional.of(
+                    new MenuOptionCatalog.AdminMenuOption(2, "User Add (Security)", "DUMMYPGM")));
+
+            MenuService.MenuScreen reply = serviceWith(stub).adminMenu(reEntry(), KeyAction.ENTER, "2");
+            assertThat(reply.message()).isEqualTo(EXPECTED_ADMIN_PLACEHOLDER);
+            assertThat(reply.message()).doesNotContain("User");
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.INFORMATIONAL);
+            assertThat(reply.errorFlag()).isFalse();
+        }
+
+        @Test
+        @DisplayName("no shipped option names a suppressing program, so neither text can be presented")
+        void noShippedOptionNamesASuppressingProgram() {
+            for (MenuOptionCatalog.UserMenuOption option : catalog.userMenuOptions()) {
+                assertThat(option.programName()).as("option %d", option.number())
+                        .doesNotStartWith("DUMMY");
+            }
+            for (MenuOptionCatalog.AdminMenuOption option : catalog.adminMenuOptions()) {
+                assertThat(option.programName()).as("option %d", option.number())
+                        .doesNotStartWith("DUMMY");
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("The main paragraph's four arms")
+    class MainParagraph {
+
+        @Test
+        @DisplayName("a turn carrying no prior state returns to sign-on and carries nothing forward")
+        void noPriorStateReturnsToSignOnCarryingNothingForward() {
+            for (ConversationState absent : List.of(ConversationState.empty())) {
+                MenuService.MenuScreen reply = service.userMenu(absent, null, null, null);
+                assertThat(reply.nextRoute()).isEqualTo("sign-on");
+                assertThat(reply.conversationState()).isEqualTo(ConversationState.empty());
+                assertThat(reply.errorFlag()).isFalse();
+                assertThat(reply.message()).isNull();
+                assertThat(reply.rows()).hasSize(USER_ROUTES.size());
+            }
+            assertThat(service.userMenu(null, null, null, null).nextRoute()).isEqualTo("sign-on");
+
+            MenuService.MenuScreen adminReply = service.adminMenu(null, null, null);
+            assertThat(adminReply.nextRoute()).isEqualTo("sign-on");
+            assertThat(adminReply.conversationState()).isEqualTo(ConversationState.empty());
+            assertThat(adminReply.rows()).hasSize(ADMIN_ROUTES.size());
+        }
+
+        @Test
+        @DisplayName("a first entry sends the screen, marks the state as a re-entry and echoes nothing")
+        void firstEntrySendsTheScreenAndMarksTheStateAsReEntry() {
+            MenuService.MenuScreen reply = service.userMenu(
+                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY), null, null, UserType.USER);
+
+            assertThat(reply.conversationState().reEntry()).isTrue();
+            assertThat(reply.echoedOption()).isNull();
+            assertThat(reply.message()).isNull();
+            assertThat(reply.severity()).isNull();
+            assertThat(reply.errorFlag()).isFalse();
+            assertThat(reply.nextRoute()).isEqualTo("user-menu");
+            assertThat(reply.focusScreenFieldId()).isEqualTo("OPTION");
+            // The transaction and program names are the transport's own per-menu constants, supplied by
+            // the response factory the adapter chooses; what identifies the menu here is the kind.
+            assertThat(reply.kind()).isEqualTo(MenuService.MenuKind.USER_MENU);
+            assertThat(reply.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
+            assertThat(reply.currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
+            assertThat(reply.rows()).hasSize(USER_ROUTES.size());
+            assertThat(reply.rows().get(0).number()).isEqualTo(1);
+            assertThat(reply.rows().get(0).label()).isEqualTo("Account View");
+            assertThat(reply.rows().get(9).number()).isEqualTo(10);
+            assertThat(reply.rows().get(9).label()).isEqualTo("Bill Payment");
+        }
+
+        @Test
+        @DisplayName("a first entry on the administrator menu identifies its own transaction")
+        void firstEntryOnTheAdministratorMenuIdentifiesItself() {
+            MenuService.MenuScreen reply = service.adminMenu(
+                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY), null, null);
+            assertThat(reply.kind()).isEqualTo(MenuService.MenuKind.ADMIN_MENU);
+            assertThat(reply.adminMenu()).isTrue();
+            assertThat(reply.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
+            assertThat(reply.currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
+            assertThat(reply.nextRoute()).isEqualTo("admin-menu");
+            assertThat(reply.rows()).hasSize(ADMIN_ROUTES.size());
+            assertThat(reply.rows().get(0).label()).isEqualTo("User List (Security)");
+            assertThat(reply.rows().get(3).label()).isEqualTo("User Delete (Security)");
+        }
+
+        @Test
+        @DisplayName("the exit key returns to sign-on even when the client nominated somewhere else")
+        void exitKeyReturnsToSignOnOverAnyClientNomination() {
+            ConversationState nominatingElsewhere = new ConversationState(null, "COACTVWC", null,
+                    "COBIL00C", ConversationState.EntryMode.RE_ENTRY);
+            MenuService.MenuScreen reply =
+                    service.userMenu(nominatingElsewhere, KeyAction.PFK03, null, UserType.USER);
+            assertThat(reply.nextRoute()).isEqualTo("sign-on");
+            assertThat(reply.errorFlag()).isFalse();
+            assertThat(reply.conversationState()).isEqualTo(ConversationState.empty());
+            assertThat(service.adminMenu(nominatingElsewhere, KeyAction.PFK03, null).nextRoute())
+                    .isEqualTo("sign-on");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"PFK01", "PFK04", "PFK07", "PFK12", "CLEAR", "PA1", "PA2"})
+        @DisplayName("every other key raises the error switch and carries the untrimmed common message")
+        void everyOtherKeyRaisesTheErrorSwitch(String keyName) {
+            KeyAction key = KeyAction.valueOf(keyName);
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), key, "1", UserType.USER);
+            assertThat(reply.message()).isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
+            assertThat(reply.message()).hasSize(COMMON_MESSAGE_WIDTH);
+            assertThat(reply.errorFlag()).isTrue();
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.ERROR);
+            assertThat(reply.echoedOption()).isNull();
+            assertThat(reply.nextRoute()).isEqualTo("user-menu");
+            assertThat(service.adminMenu(reEntry(), key, "1").message())
+                    .isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("an absent key takes the same arm as any unmapped one")
+        void anAbsentKeyTakesTheUnmappedArm() {
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), null, "1", UserType.USER);
+            assertThat(reply.message()).isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
+            assertThat(reply.errorFlag()).isTrue();
+            assertThat(service.adminMenu(reEntry(), null, "1").message())
+                    .isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
+        }
+    }
+
+    @Nested
+    @DisplayName("The two failure paths, both unreachable while the catalog and the routes agree")
+    class FailurePaths {
+
+        @Test
+        @DisplayName("a table that disagrees with its own count terminates rather than showing a screen")
+        void aTableDisagreeingWithItsCountTerminates() {
+            MenuOptionCatalog inconsistent = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(inconsistent.userMenuOptionCount()).thenReturn(USER_ROUTES.size());
+            Mockito.when(inconsistent.findUserOption(3)).thenReturn(Optional.empty());
+            MenuService broken = serviceWith(inconsistent);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> broken.userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER))
+                    .satisfies(abend -> {
+                        assertThat(abend.code()).isEqualTo("9999");
+                        assertThat(abend.culprit()).isEqualTo("COMEN01C");
+                        assertThat(abend.reason()).hasSizeLessThanOrEqualTo(50);
+                        assertThat(abend.getMessage()).contains("MENU OPTION 3");
+                    });
+
+            MenuOptionCatalog inconsistentAdmin = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(inconsistentAdmin.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
+            Mockito.when(inconsistentAdmin.findAdminOption(2)).thenReturn(Optional.empty());
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> serviceWith(inconsistentAdmin)
+                            .adminMenu(reEntry(), KeyAction.ENTER, "2"))
+                    .satisfies(abend -> assertThat(abend.culprit()).isEqualTo("COADM01C"));
+        }
+
+        @Test
+        @DisplayName("an option naming an unreachable program terminates as the legacy transfer would")
+        void anOptionNamingAnUnreachableProgramTerminates() {
+            MenuService broken = serviceWith(userCatalogAnswering(catalog, 3,
+                    new MenuOptionCatalog.UserMenuOption(3, "Credit Card List", "COZZZZZZ", "U")));
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> broken.userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER))
+                    .satisfies(abend -> {
+                        assertThat(abend.code()).isEqualTo("9999");
+                        assertThat(abend.culprit()).isEqualTo("COMEN01C");
+                        assertThat(abend.reason()).isEqualTo("XCTL TO UNRESOLVABLE PROGRAM NAME");
+                    });
+
+            MenuOptionCatalog stub = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(stub.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
+            Mockito.when(stub.userMenuOptions()).thenReturn(catalog.userMenuOptions());
+            Mockito.when(stub.findAdminOption(1)).thenReturn(Optional.of(
+                    new MenuOptionCatalog.AdminMenuOption(1, "User List (Security)", "COZZZZZZ")));
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> serviceWith(stub).adminMenu(reEntry(), KeyAction.ENTER, "1"))
+                    .satisfies(abend -> assertThat(abend.culprit()).isEqualTo("COADM01C"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Construction")
+    class Construction {
+
+        @Test
+        @DisplayName("every collaborator is required")
+        void everyCollaboratorIsRequired() {
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new MenuService(
+                    null, new MessageCatalogService(), catalog, FIXED_CLOCK));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new MenuService(
+                    new NavigationService(), null, catalog, FIXED_CLOCK));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new MenuService(
+                    new NavigationService(), new MessageCatalogService(), null, FIXED_CLOCK));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() -> new MenuService(
+                    new NavigationService(), new MessageCatalogService(), catalog, null));
+        }
+
+        @Test
+        @DisplayName("the published identifiers match the legacy work-storage values")
+        void publishedIdentifiersMatchTheLegacyValues() {
+            assertThat(MenuService.USER_MENU_TRANSACTION_ID).isEqualTo("CM00");
+            assertThat(MenuService.USER_MENU_PROGRAM_NAME).isEqualTo("COMEN01C");
+            assertThat(MenuService.ADMIN_MENU_TRANSACTION_ID).isEqualTo("CA00");
+            assertThat(MenuService.ADMIN_MENU_PROGRAM_NAME).isEqualTo("COADM01C");
+            assertThat(MenuService.SIGN_ON_PROGRAM_NAME).isEqualTo("COSGN00C");
+            assertThat(MenuService.OPTION_FIELD_WIDTH).isEqualTo(2);
+            assertThat(MenuService.OPTION_SCREEN_FIELD_ID).isEqualTo("OPTION");
+        }
+    }
+    /**
+     * What a menu abend leaves in the log.
+     *
+     * <h2>Why this group exists</h2>
+     *
+     * <p>An abend path that builds its failure directly leaves a terminated menu dispatch with
+     * <strong>no log record at all</strong>: not the culprit, not the reason, nothing.
+     * The exception reaches the boundary, is rendered to the caller, and the operator has only the response
+     * to work from - on a path that only fires when the option catalog and the destination table disagree,
+     * which is exactly the condition an operator needs told about.
+     *
+     * <p>Both paths now record through the centralised online abend diagnostic, which is the same record
+     * every other abend site in the estate writes: one line, under the abend category, naming the abend
+     * code, the culprit and the reason, with the operation where one exists. Every value in it is a literal
+     * this class authored or an option number it derived from a validated selection.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-312.
+     */
+    @Nested
+    @DisplayName("a menu abend is recorded, which it previously was not")
+    class AMenuAbendIsRecorded {
+
+        /** Captures the centralised abend category. */
+        private ListAppender<ILoggingEvent> recorder;
+
+        /** The abend category. */
+        private Logger abendLogger;
+
+        /** Its level before this group pinned it. */
+        private Level originalLevel;
+
+        @BeforeEach
+        void captureTheAbendCategory() {
+            this.abendLogger = (Logger) LoggerFactory.getLogger(AbendService.class);
+            this.originalLevel = this.abendLogger.getLevel();
+            this.abendLogger.setLevel(Level.ERROR);
+            this.recorder = new ListAppender<>();
+            this.recorder.setContext(this.abendLogger.getLoggerContext());
+            this.recorder.start();
+            this.abendLogger.addAppender(this.recorder);
+        }
+
+        @AfterEach
+        void releaseTheAbendCategory() {
+            this.abendLogger.detachAppender(this.recorder);
+            this.recorder.stop();
+            this.abendLogger.setLevel(this.originalLevel);
+        }
+
+        /** The records captured, formatted. */
+        private List<String> recorded() {
+            return this.recorder.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        }
+
+        @Test
+        @DisplayName("an option with no catalog entry records the culprit, the reason and the option, on "
+                + "one line, where nothing was recorded before")
+        void anOptionWithNoCatalogEntryIsRecorded() {
+            MenuOptionCatalog inconsistent = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(inconsistent.userMenuOptionCount()).thenReturn(USER_ROUTES.size());
+            Mockito.when(inconsistent.findUserOption(3)).thenReturn(Optional.empty());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> serviceWith(inconsistent)
+                            .userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER));
+
+            assertThat(recorded())
+                    .singleElement()
+                    .isEqualTo("ABENDING PROGRAM abendCode=9999 culprit=COMEN01C"
+                            + " reason=MENU OPTION TABLE HOLDS NO SELECTED ENTRY"
+                            + " operation=SELECT OPTION 3");
+        }
+
+        @Test
+        @DisplayName("an option naming an unreachable program records the transfer that failed")
+        void anUnreachableProgramIsRecorded() {
+            MenuService broken = serviceWith(userCatalogAnswering(catalog, 3,
+                    new MenuOptionCatalog.UserMenuOption(3, "Credit Card List", "COZZZZZZ", "U")));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> broken.userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER));
+
+            assertThat(recorded())
+                    .singleElement()
+                    .isEqualTo("ABENDING PROGRAM abendCode=9999 culprit=COMEN01C"
+                            + " reason=XCTL TO UNRESOLVABLE PROGRAM NAME operation=XCTL");
+        }
+
+        @Test
+        @DisplayName("the administrative menu records under its own culprit, so one record identifies which "
+                + "of the two transactions terminated")
+        void theAdministrativeMenuRecordsItsOwnCulprit() {
+            MenuOptionCatalog inconsistent = Mockito.mock(MenuOptionCatalog.class);
+            Mockito.when(inconsistent.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
+            Mockito.when(inconsistent.findAdminOption(2)).thenReturn(Optional.empty());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> serviceWith(inconsistent)
+                            .adminMenu(reEntry(), KeyAction.ENTER, "2"));
+
+            assertThat(recorded())
+                    .singleElement()
+                    .asString()
+                    .contains("culprit=COADM01C")
+                    .contains("operation=SELECT OPTION 2");
+        }
+
+        @Test
+        @DisplayName("the record carries no fixed-width abend image, which is the other half of the same "
+                + "finding: the area's message slot is not log content")
+        void theRecordCarriesNoContextImage() {
+            MenuService broken = serviceWith(userCatalogAnswering(catalog, 3,
+                    new MenuOptionCatalog.UserMenuOption(3, "Credit Card List", "COZZZZZZ", "U")));
+            abendLogger.setLevel(Level.TRACE);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> broken.userMenu(reEntry(), KeyAction.ENTER, "3", UserType.USER));
+
+            assertThat(recorded())
+                    .allSatisfy(line -> assertThat(line)
+                            .doesNotContain("abendContext=")
+                            .doesNotContain("contextLength="));
+        }
+    }
+}

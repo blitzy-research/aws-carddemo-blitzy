@@ -1,8 +1,100 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
 site_name: 'blitzy-card-demo'
+# MkDocs cannot emit a single sitemap <loc> without an absolute site_url, so an absent one publishes
+# sitemap.xml and sitemap.xml.gz as a bare, empty <urlset>. The host is the GitHub Pages domain of the
+# organisation named in catalog-info.yaml's github.com/project-slug annotation; only the sitemap and the
+# per-page canonical link consume it, because every in-page link stays relative - which is what lets
+# Backstage TechDocs (techdocs-ref: dir:.) serve this same build under a path of its own choosing.
+#
+# THE PATH IS DELIBERATELY THE SITE ROOT, AND A SUB-PATH HERE BREAKS THE ERROR PAGE. MkDocs renders
+# error templates with base_url = urlsplit(site_url).path, because a 404 can be served for a URL at any
+# depth and its asset references therefore have to be absolute rather than relative. Any sub-path would
+# be baked into 404.html as /<sub-path>/assets/..., which resolves nowhere when the build is served from
+# its own root - the themed error page would arrive completely unstyled, with its stylesheet, its script
+# bundle and its eight-entry navigation all 404. A root path keeps those references at /assets/..., the
+# same shape the page carried before this file declared a site_url at all.
+site_url: https://blitzy-sandbox.github.io/
 nav:
   - Home: index.md
+  - Architecture: architecture.md
+  - Onboarding Guide: onboarding-guide.md
+  - Traceability Matrix: traceability-matrix.md
+  - Decision Log: decision-log.md
+  - Gate Evidence: gate-evidence.md
   - Project Guide: project-guide.md
   - Technical Specifications: technical-specifications.md
+# PLUGIN ORDER IS LOAD-BEARING, AND THE OBVIOUS ORDER FAILS THE BUILD. techdocs-core is what switches
+# the theme to material, and material/search resolves material's own templates during on_config, so
+# naming material/search first aborts the build with jinja2 TemplateNotFound 'partials/language.html'.
+#
+# WHY material/search IS NAMED AT ALL. techdocs-core registers a search plugin itself, under the key
+# `search`. mkdocs-material's partials/header.html gates the search UI on `"material/search" in
+# config.plugins`, so that key is the only spelling that renders a search box; without it the site
+# publishes a multi-megabyte search index no reader can reach. The same drift has a second symptom:
+# material no longer declares `search_index_only`, so mkdocs' own contrib search plugin appends
+# `search/main.js`, which reads a `base_url` global that only the mkdocs theme defines - one
+# ReferenceError on every themed page. use_material_search: true replaces that plugin with material's,
+# which carries its own worker and needs no such global, and removes the error at its source.
 plugins:
-  - techdocs-core
-  - mermaid2
+  - techdocs-core:
+      use_material_search: true
+  - material/search
+# WHY NO DIAGRAM RENDERER IS CONFIGURED HERE, AND WHY THAT IS THE FIX RATHER THAN A LOSS.
+# The official TechDocs publication path builds this file inside the spotify/techdocs image, which ships
+# mkdocs, mkdocs-material, mkdocs-techdocs-core and pymdown-extensions and NO mermaid plugin. A `- mermaid2`
+# plugin entry and a `!!python/name:mermaid2.fence_mermaid` fence format therefore both abort that build
+# outright with "cannot find module 'mermaid2'" - the format line as surely as the plugin line, because YAML
+# resolves the Python name while parsing the configuration. Neither is present now.
+#
+# Two further defects went with it, and neither could have been fixed while the renderer stayed. The
+# renderer fetched mermaid 10.4.0 from unpkg.com at page load, so every diagram vanished offline and on any
+# network that does not reach a CDN. And it derived a pie chart's coordinate system from the width of the
+# element it drew into while placing the legend at an offset taken from the label text, so below roughly
+# 790px the legend was laid out beyond the edge of that coordinate system and the SVG root clipped it away -
+# at a phone width the ten-slice chart on the project guide lost its entire key. The compensating script
+# that grew the viewBox back could never run in the official path either: `extra_javascript` is one of the
+# keys the TechDocs CLI strips, which it reports as "Removed the following unsupported configuration keys".
+#
+# Every diagram is now pre-rendered to a static SVG under docs/diagrams/ beside its .mmd source, with its
+# geometry fixed at authoring time and its labels emitted as SVG <text> rather than HTML in a foreignObject
+# - the latter matters because a foreignObject does not render at all when an SVG is loaded through <img>.
+# Each figure carries alt text, a caption that states what the diagram conveys, and a labelled scroll
+# region, so the content survives with no renderer, no CDN and no script. The `extra_javascript` key is
+# gone with the script it named, and this configuration now publishes identically in both modes.
+#
+# THE THEME IS DECLARED EXPLICITLY, AND font: false IS THE OFFLINE FIX. techdocs-core keeps a theme object
+# whose name is already material and only appends to it, and the TechDocs CLI injects a theme of its own
+# only when this file declares none or declares one with no `font` key. Declaring it here therefore takes
+# precedence in both modes, and `font: false` is what stops the theme emitting its Google Fonts link - the
+# last external request either mode made. `navigation.top` restores the back-to-top control on the very
+# long pages and `toc.follow` keeps the table of contents tracking the reading position; both are theme
+# features that survive publication, unlike anything a script could do.
+theme:
+  name: material
+  # A supported theme override, carrying only the accessibility ATTRIBUTES a stylesheet cannot
+  # express: an accessible name, aria-modal, aria-current, a column scope, a per-heading permalink
+  # label, and the removal of a tabindex on a zero-by-zero element. overrides/main.html renders each
+  # upstream block through super() and rewrites named substrings in the result, so no upstream markup
+  # is copied and every upstream change still flows through. It sits at the repository root because
+  # MkDocs resolves custom_dir relative to this file and rejects a directory inside docs_dir.
+  custom_dir: overrides
+  font: false
+  features:
+    - navigation.top
+    - toc.follow
+extra_css:
+  - stylesheets/extra.css

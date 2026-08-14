@@ -1,0 +1,1851 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ===================================================================
+  Copyright Amazon.com, Inc. or its affiliates.
+  All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License").
+  You may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific
+  language governing permissions and limitations under the License
+  ===================================================================
+  CardDemo :: Java migration target :: single build manifest
+
+  ===================================================================
+  This module reproduces the observable behaviour of the AWS CardDemo mainframe
+  estate. No program, copybook, screen map, job stream or resource definition
+  text is copied here; traceability is carried by citation only.
+
+    origin checkout commit SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec
+    upstream release stamp     : CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)
+
+  Four acceptance criteria are enforced by this build rather than asserted by a
+  reviewer, because a plugin that is declared but not bound satisfies none of
+  them:
+
+    zero-warning build   javac at release 25 with every lint category enabled
+                         and all diagnostics promoted to errors.
+    coverage floor       merged unit and integration execution data, checked at
+                         eighty per cent LINE coverage. LINE is the gated
+                         counter; branch, method and instruction coverage are
+                         reported for information only.
+    supply chain         the vulnerability scan is bound to verify and fails the
+                         build on any finding scoring 7.0 or above, so it is
+                         executed rather than merely declared.
+    parity tier          surefire and failsafe partition the suite into strictly
+                         non-overlapping tiers, which lets the container-backed
+                         parity tests run as a phase of their own.
+
+  The legacy estate was built by three cataloged compile procedures, each driven
+  by its own job stream, with a shared copybook library on the compiler search
+  path and the result stored as a load module member. All of that collapses into
+  one ./mvnw clean verify. One contrast is a deliberate tightening rather than a
+  translation: the legacy link step accepted diagnostics and gated the following
+  step on a return code of four or lower, whereas this build accepts nothing
+  above zero.
+
+  Every coordinate is pinned to an exact version read back out of an executed
+  resolution - no range, no moving alias, no unresolved placeholder. Where the
+  parent already manages a coordinate the declaration is intentionally version
+  free so a single bill of materials stays the one source of truth. This
+  module's own version string appears exactly once, as this artefact's
+  coordinate, and is not a placeholder.
+
+  Deliberately absent, each exclusion protecting an acceptance criterion:
+
+    No annotation processor or compile-time code generator. The low-level code
+    audit commits to a reflection count of zero, which is what obliges the
+    fixed-width record mappers to be written by hand with explicit offsets, and
+    generated sources are a live source of diagnostics under -Werror.
+
+    No template engine. Statement output must match the legacy record images to
+    the byte at fixed widths of 80 and 100 characters, so the emitting code uses
+    literal constants; an engine would introduce whitespace and ordering
+    variance.
+
+    No application-level cache. The legacy system has none, and adding one would
+    change the latency and consistency profile the performance baseline measures.
+
+    No in-memory database. Repository and batch integration tests run against a
+    real PostgreSQL container, because mocked input and output cannot establish
+    end-to-end equivalence.
+
+    No browser-facing asset, component library or design system. The screen
+    contract is exposed as REST and consumed by tests.
+
+    No legacy namespace bridge artefact: every persistence, validation, servlet
+    and transaction annotation resolves from the jakarta namespace.
+
+    No explicit AWS SDK coordinate; the SDK artefacts are governed by the cloud
+    bill of materials imported below.
+
+  Clearing the supply chain threshold required seven managed version overrides
+  plus one analyzer change, each established by running the scanner against a
+  warm vulnerability database. The overrides are expressed as bill-of-materials
+  property overrides and never as direct declarations, so the graph stays fully
+  BOM governed, and each is annotated at its declaration site with the finding
+  it clears.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    The parent supplies dependency management, plugin management and the default plugin
+    configuration for the whole module. The migration contract names 3.x explicitly, so 3.x is a
+    ceiling rather than a floor: 3.5.16 is the generally available 3.x release this module is
+    pinned to, and a 4.x release is outside the contract however current it becomes.
+
+    relativePath is deliberately empty: this module is standalone, there is no parent descriptor
+    on disk, and an empty element stops Maven searching the enclosing directory.
+  -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.16</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.carddemo</groupId>
+  <artifactId>carddemo-java</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <name>carddemo-java</name>
+  <description>
+    AWS CardDemo mainframe estate migrated to Java 25 LTS and Spring
+    Boot 3.5.x. Online transactions are exposed as REST endpoints,
+    job streams become Spring Batch jobs, indexed datasets become
+    PostgreSQL tables reached through Spring Data JPA, sequential
+    staging becomes object storage, and the single online to batch
+    queue bridge becomes an ordered message queue.
+  </description>
+
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <properties>
+
+    <!-- ==============================================================
+         Toolchain and encoding
+
+         The compiler release level is stated twice on purpose - as the property the parent's
+         plugin management reads, and as a literal on the compiler plugin so the contract is
+         explicit at the point of use. The two must stay identical. Source and target levels are
+         never used: only the release flag also constrains the platform API surface.
+    -->
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <!-- Reproducible-build clock. The fallback is the upstream estate's release date expressed as
+         epoch seconds; CI and container builds override source.date.epoch with the current source
+         commit's author timestamp. Maven accepts epoch seconds for project.build.outputTimestamp,
+         and every archive/build-info producer reads this one value. -->
+    <source.date.epoch>1658188800</source.date.epoch>
+    <project.build.outputTimestamp>${source.date.epoch}</project.build.outputTimestamp>
+    <!-- A plain Maven build has no trustworthy Git context, so it says so. Container and CI builds
+         override this with the exact commit they are packaging and verify the generated build-info
+         value before an image can be emitted. -->
+    <build.revision>not-supplied</build.revision>
+
+    <!-- ==============================================================
+         Third party versions the Spring Boot bill of materials does not manage. These three are
+         the only explicit dependency versions in the file.
+         ============================================================== -->
+    <spring-cloud-aws.version>3.4.2</spring-cloud-aws.version>
+    <logstash-logback-encoder.version>9.0</logstash-logback-encoder.version>
+    <springdoc-openapi.version>2.8.17</springdoc-openapi.version>
+
+    <!-- ==============================================================
+         The tracing family, and this property now answers TWO reasons rather than one. It began as a
+         forward-compatibility override with no advisory behind it - the heading said so - and an
+         advisory has since arrived against the release it selected, so the security reason is stated
+         first and the original floor is kept underneath it.
+
+         THE SECURITY REASON. GHSA-rcgg-9c38-7xpx / CVE-2026-45292 is unbounded memory and processor
+         allocation (CWE-770) in W3C baggage propagation, affecting io.opentelemetry:opentelemetry-api
+         and io.opentelemetry:opentelemetry-extension-trace-propagators at every release below 1.62.0
+         and fixed in 1.62.0, which bounds a baggage header at 8,192 bytes and 64 entries. Both
+         artefacts are DEPLOYED - they sit in the repackaged jar's BOOT-INF/lib - and the parser is
+         REACHABLE BEFORE AUTHENTICATION, because tracing is enabled with the framework's default W3C
+         trace-context and baggage propagators, so a request carrying a baggage header traverses the
+         parser on its way to a refusal.
+
+         WHY THE SUPPLY-CHAIN GATE DID NOT CATCH IT, WHICH IS THE PART WORTH REMEMBERING. The NVD
+         record is advisory-first and carries NO CPE configuration at all, so dependency-check has
+         nothing to match the jar against and reports nothing, whatever its threshold; the record also
+         carries two secondary scores, 5.3 from the advisory database and 7.5 from a second source. A
+         green scan is therefore necessary and not sufficient, and this value is what closes the
+         finding rather than a suppression - nothing is accepted here.
+
+         THE ORIGINAL FLOOR, RETAINED. The framework parent's bill of materials selects 1.49.0. On
+         that release the span processor's queue is a shaded copy of a lock-free queue library that
+         takes field offsets through sun.misc.Unsafe, so the runtime writes three lines to the process
+         error stream at every start-up: a terminal-deprecation notice, the caller
+         (io.opentelemetry.internal.shaded.jctools.util.UnsafeAccess, inside opentelemetry-sdk-trace),
+         and a removal warning. They arrive before any appender exists, carry no timestamp, level or
+         logger, and in the production profile they land in a stream that is otherwise one JSON object
+         per line - so a collector that parses per line reports three failures on every restart.
+
+         Measured rather than assumed, at both releases. 1.49.0 and 1.52.0 ship the shaded
+         UnsafeAccess class and reference sun/misc/Unsafe from five classes. The published 1.62.0
+         artefacts were fetched and read the same way: opentelemetry-sdk-trace-1.62.0.jar ships no
+         UnsafeAccess class and no class in it references sun/misc/Unsafe, so raising the value to
+         close the advisory does not reopen the notice this property was written for.
+
+         The alternative was the platform's sun.misc.Unsafe memory-access selector, set to allow on
+         the image entry point, which suppresses the notice while leaving the call in place for the
+         release that turns it into a hard failure. Removing the caller is preferred for the same
+         reason DL-115 preferred moving the transport over tracking its notice.
+
+         Governed through the bill of materials' own property name, so one value moves the API, SDK,
+         exporter and propagator artefacts together and no direct dependency version is introduced.
+         The two logger categories this module silences on the exporter - documented at DL-311 - were
+         re-read on 1.62.0 rather than carried forward: io.opentelemetry.exporter.internal.http
+         .HttpExporter and io.opentelemetry.exporter.internal.grpc.GrpcExporter are both present at
+         exactly those names in opentelemetry-exporter-common-1.62.0.jar, so the suppression they
+         belong to still applies. See docs/decision-log.md DL-366, which supersedes the release
+         selection in DL-358 and leaves its reasoning intact.
+         ============================================================== -->
+    <opentelemetry.version>1.62.0</opentelemetry.version>
+
+    <!-- ==============================================================
+         Security remediation overrides. Each entry below is a managed version override the
+         supply-chain gate requires, never a direct dependency declaration. Each states which
+         coordinate it governs, how that coordinate reaches the classpath, and the finding the value
+         clears. Reproduce any of them with `./mvnw -B verify`, which executes the scan.
+         ============================================================== -->
+
+    <!-- Servlet container, embedded by the web starter. Clears a cluster
+         of high severity findings against the container this framework
+         line ships by default.
+
+         One finding stands open against this coordinate, and it is carried
+         as a written determination rather than concealed.
+         owasp-suppressions.xml holds exactly ONE rule; it is scoped to the
+         three embed artifacts and to that single identifier, and it records
+         the identifier, the fixed release, the measured exposure of this
+         deployment and the commands that reproduce both halves of the
+         determination. That file is the authority on all four, so those
+         values are stated there once instead of here as well.
+         failBuildOnUnusedSuppressionRule is true, so the rule fails the
+         build the moment it stops matching, which is what stops an accepted
+         risk from outliving the finding it was written for. Concealing a
+         finding to obtain a green gate is the one remedy this build
+         refuses; a determination is readable, scoped to one coordinate and
+         self-expiring.
+
+         This value is raised to the fixed release once that release
+         resolves, which retires the rule - and an unused rule fails the
+         build, so the retirement cannot be forgotten. The reasoning is
+         recorded in docs/decision-log.md DL-159, with the rule's own
+         justification in the sibling DL-244 entry. -->
+    <tomcat.version>10.1.57</tomcat.version>
+
+    <!-- Asynchronous transport used by the AWS SDK object storage
+         client. This value selects the 4.2 line, because the transport
+         module on the 4.1 line carries a high severity finding whose fix
+         range begins at 4.2.16.
+
+         Whose value this is. The plan's dependency inventory does not
+         freeze this coordinate. It enumerates the coordinates this file
+         declares, and separately the artifacts that arrive transitively at
+         versions the framework parent pins and which this file must not
+         redeclare - the core, batch, data access, security, persistence
+         API, servlet container, JSON, pooling and logging artifacts.
+         Netty appears in none of those lists, in no exclusion and in no
+         drift blacklist, so this value is an override chosen here for
+         security. What the plan freezes is the outcome: a supply chain
+         gate tolerating zero critical and zero high findings, bound to
+         the verify phase so it is executed rather than declared. Under
+         that gate an upgrade is the only remedy that resolves the
+         finding, because declaring the finding acceptable would conceal
+         it, and the module ships inside the deployable jar at runtime
+         scope.
+
+         Why the 4.2 module layout is not an obstacle. The 4.2 line does
+         split the codec module into separate base, compression,
+         marshalling and protobuf artifacts, and the original codec module
+         arrives as a vestigial shell - confirmed by resolving the tree.
+         That does not break the SDK transport client: the whole suite
+         passes on this value, and the queue and object storage tiers that
+         drive this transport are exercised against a real emulated
+         endpoint in the integration tier rather than against a mock, so
+         the layout question is settled by exercising the runtime rather
+         than by argument. This line also carries no terminally deprecated
+         platform call on the direct buffer fast path, so the integration
+         tier runs it without a runtime notice.
+
+         Scope bounds the residual risk. Every netty module reaches this
+         build at runtime scope only, by way of the SDK transport client,
+         so no source in this module compiles against netty and this value
+         cannot influence compilation. It influences resolution and the
+         shipped image, which is precisely the surface the gate covers.
+
+         Recorded in docs/decision-log.md DL-115. -->
+    <netty.version>4.2.16.Final</netty.version>
+
+    <!-- Database driver. Clears an 8.2 finding that affects the range
+         ending at the version this framework line would otherwise
+         select. -->
+    <postgresql.version>42.7.13</postgresql.version>
+
+
+    <!-- Reaches the classpath only as the logging bridge pulled in by
+         the default logging starter. Newest release on the 2.x line;
+         clears a finding whose base score crosses the gate threshold
+         even though its newer scoring vector sits below it. -->
+    <log4j2.version>2.26.1</log4j2.version>
+
+    <!-- Semantic conventions artifact used by the tracing bridge.
+         Clears two findings at 7.3 and 7.0. -->
+    <opentelemetry-semconv.version>1.43.0</opentelemetry-semconv.version>
+
+    <!-- Logging backend, reached through the default logging starter and
+         through the structured encoder that writes this module's
+         machine-facing output. Raised above the release this framework
+         line manages to clear CVE-2026-13006, arbitrary code execution
+         in the Janino-backed conditional processing of a configuration
+         file, which the vendor reports as affecting every release up to
+         and including 1.5.36.
+
+         THIS IS A FINDING NEITHER THE SCAN NOR THE ADVISORY DATABASE
+         REPORTS, and the reason is worth carrying next to the value: the
+         record has no CPE configuration published, so the CPE-matching
+         scan has nothing to match the jar against even though it
+         assigns that jar a logback CPE, and the advisory database
+         carries no entry for it at all. It was found by sweeping the
+         vulnerability registry by product name. A green scan is
+         therefore necessary and not sufficient, which is the same
+         lesson DL-366 records for the tracing family.
+
+         This deployment was not exposed, and the value moves anyway.
+         Three independent conditions each break the attack: the Janino
+         library is absent from the whole dependency graph, this
+         module's logback-spring.xml contains no conditional element,
+         and the runtime filesystem is read-only so no configuration
+         file can be written. A fix outranks a determination when both
+         are available, so the fix is taken rather than the three
+         disproofs written down as an acceptance.
+
+         1.5.37 is the release that removes Janino conditional
+         processing outright; 1.5.38 is the newest on the line and
+         additionally repairs a hardened-deserialisation filter that had
+         been letting one class type through. The newer of the two is
+         selected because the second repair is also security work.
+         Governed through the framework bill of materials' own property
+         name, so one value moves the core and classic artifacts
+         together and no direct dependency declaration is introduced.
+         Recorded in docs/decision-log.md DL-367. -->
+    <logback.version>1.5.38</logback.version>
+
+    <!-- General purpose text utility library. Reaches the classpath only
+         through the API documentation starter and the document model it
+         embeds; nothing in this module references it directly. The
+         version this framework line would otherwise select carries an
+         uncontrolled recursion finding whose fixed release is 3.18.0,
+         so the whole graph is held above it on the 3.x line.
+         Governed through the framework bill of materials' own property
+         name, so a single value moves every artifact of the family and
+         no direct dependency declaration is introduced. -->
+    <commons-lang3.version>3.20.0</commons-lang3.version>
+
+    <!-- Archive and compression library. Reaches the classpath only in
+         the test tier, as the tar writer the container testing library
+         uses to copy files into a container; the scan covers the test
+         scope, so it is inside the gate's surface. The version the
+         container library selects carries two findings fixed on the 1.26
+         line, so the whole graph is held above them. No bill of materials
+         on this framework line governs it, so it is pinned as a managed
+         entry below. -->
+    <commons-compress.version>1.28.0</commons-compress.version>
+
+    <!-- Second generation JSON library, which is the serialisation
+         layer of the whole request and response surface. This value
+         overrides the version the framework line selects, by exactly
+         one patch release, for the security reason set out below. It is
+         stated explicitly for two reasons. It makes the operative
+         version visible at the single place a reader looks for one, and
+         because the property is the family bill of materials' own
+         property name, one value governs the streaming core, the
+         databind layer and every data format, data type and module
+         artifact together, so none of those can drift forward alone and
+         none can be left behind on the version being patched away from.
+         The annotations artifact is the deliberate exception, and it
+         is worth stating rather than glossing. Neither bill of
+         materials ties annotations to the patch version: the second
+         generation one versions it minor-only, and the third
+         generation one, having no annotations module of its own,
+         reuses the second generation artifact at the newest 2.x
+         release. The third generation declaration is the one that
+         wins here. So annotations resolves one minor ahead of the rest
+         of the family by upstream design, not by drift. That is safe
+         because the 2.x annotations contract is compatible across the
+         line - which is exactly why both bills of materials treat it
+         separately and why the third generation reuses it instead of
+         shipping a replacement - and because the frozen inventory
+         names the databind coordinate, which this value fixes to a
+         release of that same coordinate.
+         The value is one patch release ahead of the version the
+         inventory records, and that is a security patch of the very
+         coordinate the inventory names rather than a substitution of
+         something else. An executed supply chain scan reports
+         CVE-2026-54515 against 2.21.4, scoring 5.3 and network
+         reachable: under a vulnerable annotation combination a
+         property excluded by an ignore-properties declaration becomes
+         writable again. The fix is 2.21.5. This module uses no such
+         combination today, which lowers exploitability and settles
+         nothing, because the affected deserialiser is on the request
+         and response classpath regardless of which annotations the
+         current sources happen to carry - the next writer of a data
+         transfer object decides that, not this comment. Applicability
+         is therefore not accepted as a defence, the finding is not
+         suppressed, and no suppression rule is written for it: the one
+         rule owasp-suppressions.xml carries names a different
+         identifier on different artifacts, so no rule in this build
+         covers this coordinate. The inventory freezes which library is
+         used, not the right to take that library's security patches,
+         and a finding below the gate threshold is still a reported
+         finding. Recorded in docs/decision-log.md DL-090.
+         This value leaves the annotations divergence exactly where it
+         is, because that has the separate upstream cause described
+         above and is not attributable to this property.
+         This is entirely separate from the third generation
+         coordinates governed by tools-jackson.version below, which
+         reach the classpath only through the logging encoder. That
+         override stands; the two generations are distinct coordinate
+         families and neither value constrains the other, save for the
+         shared annotations artifact noted above. -->
+    <jackson-bom.version>2.21.5</jackson-bom.version>
+
+    <!-- The structured logging encoder is built against the third
+         major generation of the JSON library, which reaches the
+         classpath through that encoder alone. This override is
+         entirely separate from the second generation coordinates that
+         remain governed by the framework bill of materials. -->
+    <tools-jackson.version>3.2.1</tools-jackson.version>
+
+    <!-- Container engine client used by the container testing library,
+         reached only through that library and therefore test scope
+         only. All coordinates of this family move together so the
+         client model, transport contract and transport implementation
+         remain mutually consistent. -->
+    <docker-java.version>3.7.1</docker-java.version>
+
+    <!-- HTTP Core used by the non-shaded Docker transport below. The
+         former zerodep transport embedded 5.3.6 inside its own jar,
+         beyond dependency management's reach, where CVE-2026-54399 and
+         CVE-2026-54428 both scored 7.5. Excluding that shaded transport
+         and selecting the ordinary HttpClient 5 transport makes this
+         fixed 5.4.3 release govern both core and HTTP/2 modules. -->
+    <httpcomponents-core5.version>5.4.3</httpcomponents-core5.version>
+
+    <!-- The HTTP client the same non-shaded Docker transport uses, and
+         therefore test scope only - it is not in the repackaged
+         artifact. Raised to the fixed release for CVE-2026-64607, a
+         connection leak on an invalid Content-Encoding header in the
+         classic i/o path, whose record ends the affected range
+         immediately below 5.6.3.
+
+         WHY THIS MOVED NOW RATHER THAN STAYING A DISCLOSED FINDING.
+         The scan reports this one - it is a 5.3 medium, below the 7.0
+         gate, and it was recorded in docs/gate-evidence.md as accepted
+         and disclosed, "to be re-evaluated when a fixed release of the
+         artefact is published". That release now exists, so the
+         module's own re-evaluation trigger has fired and the standing
+         rule that a fix outranks a determination applies.
+
+         The upgrade is drop-in and was checked rather than assumed:
+         5.6.3's parent pins HTTP Core at 5.4.3, which is exactly the
+         release httpcomponents-core5.version above already selects, so
+         the client moves without dragging the core family with it. The
+         container-backed integration tier drives this transport on
+         every run, which is where a transport regression would surface
+         first. Governed through the framework bill of materials' own
+         property name. Recorded in docs/decision-log.md DL-368. -->
+    <httpclient5.version>5.6.3</httpclient5.version>
+
+    <!-- Annotation-only companion required to read the Docker transport's
+         published signatures under -Xlint:all. The processor-bearing
+         `org.immutables:value` artifact is deliberately not added. -->
+    <immutables.version>2.10.1</immutables.version>
+
+    <!-- ==============================================================
+         Declared plugin versions, one property per declared plugin. Plugins the parent
+         contributes through default lifecycle bindings have no property here.
+         ============================================================== -->
+    <maven-compiler-plugin.version>3.14.1</maven-compiler-plugin.version>
+    <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
+    <maven-failsafe-plugin.version>3.5.6</maven-failsafe-plugin.version>
+    <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
+    <dependency-check-maven.version>12.1.3</dependency-check-maven.version>
+
+    <!-- ==============================================================
+         Gate thresholds, surfaced as properties so a reviewer can see
+         the enforced numbers without reading plugin configuration.
+         ============================================================== -->
+
+    <!-- Coverage gate. Applied to the merged unit plus integration
+         execution data, on the LINE counter only. -->
+    <jacoco.line.coverage.minimum>0.80</jacoco.line.coverage.minimum>
+
+    <!-- Companion to the ratio gate above, and the reason both exist.
+         A bundle-wide ratio is an average, so a class with no test at
+         all contributes only its own lines to the shortfall and stays
+         invisible for as long as the rest of the module carries it.
+         That is precisely how a set of wholly untested foundation
+         classes reached review. This limit closes the averaging gap by
+         counting classes rather than lines: JaCoCo's CLASS counter
+         treats a class as missed when not one of its methods executed,
+         so a maximum of zero means every class must be reached by at
+         least one test, whatever the bundle average happens to be. It
+         deliberately does not impose a per-class percentage, which
+         would be an arbitrary new standard rather than the guarantee
+         the module actually needs. -->
+    <jacoco.wholly.untested.classes.maximum>0</jacoco.wholly.untested.classes.maximum>
+
+    <!-- Supply chain gate. The scanner compares against the highest
+         base score it holds for a finding, so this threshold also
+         catches findings whose newest scoring vector is lower. -->
+    <dependency-check.failBuildOnCVSS>7.0</dependency-check.failBuildOnCVSS>
+
+    <!-- The scan runs as part of verify by default, because a gate
+         that is skipped by default is not a gate. Pass -D with this
+         property set true only for a deliberately offline or fast
+         inner loop build; the scan requires network access and will
+         report that it cannot run when Maven is offline. -->
+    <dependency-check.skip>false</dependency-check.skip>
+
+    <!-- Scan every dependency the build loads, including the test graph.
+         The test graph executes privileged container-engine code on
+         developer and CI hosts, so excluding it would hide risk in the
+         build even when none of those jars ships in the product. The
+         former shaded Docker transport has been replaced rather than
+         suppressed, making this full-scope claim enforceable. -->
+    <dependency-check.skipTestScope>false</dependency-check.skipTestScope>
+
+    <!-- Vulnerability database location. Resolved from the build
+         user's home directory so the same value works on a developer
+         machine and on a hosted runner, where the directory should be
+         restored from cache to avoid a full download.
+
+         The property is named exactly as the scanner documents its own user property rather than
+         being namespaced like the two above. Namespacing it would let an explicit value in the
+         plugin configuration outrank a documented -DdataDirectory flag and silently discard it,
+         sending the database to this default while a caller cached a different directory and paid
+         for a full download on every run. -->
+    <dataDirectory>${user.home}/.dependency-check-data</dataDirectory>
+
+    <!-- ==============================================================
+         Shared test runtime arguments, applied to both tiers.
+
+         Dynamic agent loading is enabled and class data sharing disabled because the mocking
+         framework attaches its agent at run time on this platform version and would otherwise
+         warn. Locale, region, time zone and file encoding are pinned so fixed-width formatting,
+         decimal rendering and date parsing are deterministic - byte-level parity assertions would
+         otherwise depend on the machine running them. Kept on one line so the value cannot be
+         reflowed with embedded whitespace.
+         ============================================================== -->
+    <test.jvm.args>-XX:+EnableDynamicAgentLoading -Xshare:off -Duser.language=en -Duser.country=US -Duser.timezone=UTC -Dfile.encoding=UTF-8</test.jvm.args>
+
+    <!-- ==============================================================
+         Unit tier report destination.
+
+         The default is exactly the path Surefire would have used on its own, so declaring it
+         changes nothing about an ordinary build. It exists because Surefire's reportsDirectory
+         parameter declares no user property of its own, which means -Dsurefire.reportsDirectory is
+         accepted on the command line and then silently ignored. Routing the parameter through a
+         property here is what makes the destination genuinely overridable.
+
+         The continuous integration locale gate re-runs this tier with the default locale changed.
+         Without an overridable destination that re-run would overwrite the reports the pinned run
+         produced, and the published evidence would describe the wrong execution while appearing
+         intact. Overriding this property per locale keeps each execution attributable.
+         ============================================================== -->
+    <test.reports.dir>${project.build.directory}/surefire-reports</test.reports.dir>
+
+    <!-- ==============================================================
+         WHERE THE UNIT TIER'S COVERAGE EVIDENCE IS WRITTEN, overridable for the same reason
+         test.reports.dir above is overridable, and paired with it.
+
+         The coverage agent's destination and the unit report's directory were fixed literals, so
+         any second execution of the unit tier wrote over the first one's evidence. That is a real
+         problem rather than a theoretical one: the continuous integration locale gate re-runs the
+         whole unit tier twice after the build gate has already produced and checked coverage, so a
+         fixed destination meant the uploaded .exec and the uploaded unit report both described an
+         ar-EG run while claiming to describe the pinned one.
+
+         The alternative that was REJECTED is switching the agent off for those runs with
+         -Djacoco.skip. That property is on this module's prohibited list, because a switch that
+         disables a gate mechanism is indistinguishable, in a log, from a gate that was never wired.
+         Overriding a destination keeps the agent running and keeps every execution attributable;
+         switching it off would have kept neither.
+
+         The merge step deliberately includes only the fixed name, so an override writes a file the
+         merge does not pick up - which is correct, because a hostile-locale run is a determinism
+         check and not a contribution to the coverage figure.
+         ============================================================== -->
+    <jacoco.unit.exec>${jacoco.exec.dir}/jacoco.exec</jacoco.unit.exec>
+    <jacoco.unit.report.dir>${jacoco.report.root}/jacoco</jacoco.unit.report.dir>
+
+    <!-- ==============================================================
+         WHERE EVERY TIER'S COVERAGE EVIDENCE IS ROOTED, and why the two roots exist.
+
+         The unit destination above was overridable and the other four were literals, which left one
+         hole the pair could not close. A deliberately scoped diagnostic run - the `scoped-tests`
+         profile below, which relaxes the coverage thresholds precisely because a subset of the suite
+         cannot reach a whole-module floor - reached `verify` and wrote its integration data, its
+         merged data and all three reports over the canonical paths. What was left behind at
+         target/site/jacoco-merged was then a RELAXED report sitting exactly where the gate evidence
+         is read from, indistinguishable from a full unscoped run's. A reader, a reviewer or an
+         evidence page quoting that report would have quoted a fraction of the suite as the gate
+         figure and been wrong without any way to notice.
+
+         Routing all five destinations through these two roots is what closes it: the profile
+         redirects the roots and every artefact follows, so the canonical exec files and the
+         canonical report directories are reserved for an unscoped `./mvnw -B clean verify` and
+         nothing else can occupy them. Recorded as DL-284.
+
+         The merge step still includes only the two fixed file NAMES, within whichever directory
+         these roots resolve to. That is deliberate and unchanged: the locale determinism gate
+         overrides jacoco.unit.exec to a different name in the same directory, and its execution must
+         stay out of the coverage figure.
+         ============================================================== -->
+    <jacoco.exec.dir>${project.build.directory}</jacoco.exec.dir>
+    <jacoco.report.root>${project.reporting.outputDirectory}</jacoco.report.root>
+    <jacoco.it.exec>${jacoco.exec.dir}/jacoco-it.exec</jacoco.it.exec>
+    <jacoco.it.report.dir>${jacoco.report.root}/jacoco-it</jacoco.it.report.dir>
+    <jacoco.merged.exec>${jacoco.exec.dir}/jacoco-merged.exec</jacoco.merged.exec>
+    <jacoco.merged.report.dir>${jacoco.report.root}/jacoco-merged</jacoco.merged.report.dir>
+
+  </properties>
+
+  <!-- ================================================================
+       DEPENDENCY MANAGEMENT
+
+       No browser asset bundle is governed here, and none may be. The
+       build manifest declares no front end coordinate of any kind,
+       because no browser interface is in scope for this migration; the
+       one such bundle that would otherwise arrive transitively is
+       removed at its single point of entry, in the interface
+       documentation dependency further down.
+
+       There is deliberately no container testing bill of materials
+       here. The Spring Boot parent already manages that family at
+       1.21.4, and importing a different major line would replace a
+       managed version with an unmanaged override for no benefit. The container engine client
+       that family depends on is pinned below instead, which remediates
+       the finding without moving the testing library itself.
+       ================================================================ -->
+  <dependencyManagement>
+    <dependencies>
+
+      <!-- Third generation JSON library. Reaches the classpath solely
+           through the structured logging encoder declared below.
+           Governed here as a bill of materials so that its core and
+           databind artifacts stay aligned with each other. -->
+      <dependency>
+        <groupId>tools.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${tools-jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- Semantic conventions artifact reached through the tracing
+           bridge. Pinned directly because no imported bill of
+           materials on this framework line governs it. -->
+      <dependency>
+        <groupId>io.opentelemetry.semconv</groupId>
+        <artifactId>opentelemetry-semconv</artifactId>
+        <version>${opentelemetry-semconv.version}</version>
+      </dependency>
+
+      <!-- Archive library reached through the container testing
+           library in the test tier only. Pinned directly because no
+           imported bill of materials on this framework line governs
+           it and the version the container library selects is
+           affected. -->
+      <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-compress</artifactId>
+        <version>${commons-compress.version}</version>
+      </dependency>
+
+      <!-- Governs the three cloud starters below and, transitively,
+           every AWS SDK artifact they require. This import is the
+           reason no SDK coordinate is ever declared explicitly. -->
+      <dependency>
+        <groupId>io.awspring.cloud</groupId>
+        <artifactId>spring-cloud-aws-dependencies</artifactId>
+        <version>${spring-cloud-aws.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- Container engine client, reached only through the container
+           testing library and therefore only ever test scoped. The API,
+           transport contract and non-shaded HttpClient implementation
+           are pinned as one family so their binary surfaces cannot
+           drift. The shaded zerodep implementation is intentionally not
+           managed because it is excluded from the graph. -->
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-api</artifactId>
+        <version>${docker-java.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-transport</artifactId>
+        <version>${docker-java.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-transport-httpclient5</artifactId>
+        <version>${docker-java.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.core5</groupId>
+        <artifactId>httpcore5</artifactId>
+        <version>${httpcomponents-core5.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.core5</groupId>
+        <artifactId>httpcore5-h2</artifactId>
+        <version>${httpcomponents-core5.version}</version>
+      </dependency>
+
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+
+    <!-- ==============================================================
+         FRAMEWORK AND RUNTIME - all six starters version free; the parent manages them. Each
+         replaces a specific legacy platform service.
+         ============================================================== -->
+
+    <!-- REST endpoints replacing the seventeen terminal screen
+         transactions. Also supplies the embedded servlet container. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- Repository layer replacing keyed and browse access over the
+         ten indexed clusters, including the paging semantics that the
+         browse cursor verbs provided. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+
+    <!-- Job and step orchestration replacing the nine application
+         steps across the job streams, including the condition code
+         gates on four of them. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-batch</artifactId>
+    </dependency>
+
+    <!-- Authentication and role gating replacing the external
+         security manager and the resource definition transaction
+         table. Also supplies the password hashing used in place of
+         the legacy plaintext comparison. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!-- Declarative field validation for the request objects derived
+         from the screen field contract. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Health, information and metrics endpoints. This is the
+         measurement surface for the performance baseline gate. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!--
+      Token support for the stateless conversation state that replaces the communication area
+      carried across pseudo-conversational turns. Part of the framework's own security project and
+      managed by the parent, so it introduces no explicit version; it supplies the encoder and
+      decoder abstractions. A standalone token library was rejected because it would have required
+      inventing a version no executed resolution had established.
+    -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-oauth2-jose</artifactId>
+    </dependency>
+
+    <!-- ==============================================================
+         PERSISTENCE AND SCHEMA
+         ============================================================== -->
+
+    <!-- Driver for the relational store that replaces the indexed
+         clusters. Runtime scope: no compile time reference to a
+         vendor class exists anywhere in the module. -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Versioned forward only schema evolution, replacing the
+         cluster definition job streams. -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+
+    <!--
+      Vendor dialect support. Mandatory and separate: on this migration tool's major line the core
+      artefact no longer bundles vendor dialects, so omitting it fails at run time the moment a
+      migration is attempted.
+    -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <!-- ==============================================================
+         CLOUD SERVICE INTEGRATION - version free; governed by the imported cloud bill of
+         materials, which also governs every SDK artefact underneath.
+
+         All three starters carry the same single exclusion, and it is a LOGGING exclusion rather
+         than a security one. Each starter reaches the synchronous Apache transport of the SDK, that
+         transport reaches HttpClient 4.5, and HttpClient 4.5 declares the original Commons Logging
+         facade. The framework already supplies that facade's API through spring-jcl, so with both on
+         the class path the bridge writes two lines to the process error stream at every start - "
+         Standard Commons Logging discovery in action with spring-jcl: please remove
+         commons-logging.jar from classpath" - before any appender exists to carry them. Those two
+         lines are the only diagnostics this deployment emits that do not flow through the configured
+         pipeline, and in the production profile they land unstructured in a stream that is otherwise
+         one JSON object per line.
+
+         The exclusion is repeated on each starter rather than declared once, because a Maven
+         exclusion is scoped to the path it is written on: the transport appears beneath all three
+         starters and is merely reported as a duplicate under the second and third, so excluding it
+         on one path leaves the artefact resolvable through its siblings. Nothing loses its log: the
+         transport keeps calling the same facade and spring-jcl routes it to SLF4J, which is where
+         every other library in this module already logs. See docs/decision-log.md DL-357.
+         ============================================================== -->
+
+    <!-- Object storage replacing sequential dataset staging and the
+         generation data group retention model. -->
+    <dependency>
+      <groupId>io.awspring.cloud</groupId>
+      <artifactId>spring-cloud-aws-starter-s3</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- Ordered queue replacing the single transient data queue that
+         bridges the online tier to the batch tier. The legacy queue
+         is defined with fixed eighty byte records, append
+         disposition and errors ignored, and all three properties are
+         reproduced by the adapter built on this starter. -->
+    <dependency>
+      <groupId>io.awspring.cloud</groupId>
+      <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- Notification fan out for job completion. -->
+    <dependency>
+      <groupId>io.awspring.cloud</groupId>
+      <artifactId>spring-cloud-aws-starter-sns</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- ==============================================================
+         OBSERVABILITY - replaces the legacy system's only diagnostic channel, 217 console display
+         statements, with metrics, traces and structured logs.
+         ============================================================== -->
+
+    <!-- Metric exposition for scraping. Brings the metrics core
+         artifact transitively, which is why that artifact is not
+         declared separately. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <!-- Trace context propagation across the boundary between the
+         REST tier and the batch tier. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-bridge-otel</artifactId>
+    </dependency>
+
+    <!--
+      Trace export to the collector provided by the local validation stack.
+
+      The exclusion is a supply chain remediation, not a preference: this artefact's default
+      transport is a third-party HTTP client that brings its own language runtime with it, and that
+      runtime is the subject of a critical finding the gate reports. The replacement sender uses the
+      platform HTTP client, which removes both the client and its runtime from the graph, and is
+      behaviourally equivalent here because trace export is configured over HTTP with protobuf
+      encoding.
+    -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>io.opentelemetry</groupId>
+          <artifactId>opentelemetry-exporter-sender-okhttp</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- Replacement transport for the exporter above. Version free:
+         the tracing bill of materials the parent imports governs this
+         coordinate at the same version as the exporter itself. -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-sender-jdk</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Structured JSON log encoding. Not governed by the framework
+         bill of materials, so the version is explicit. -->
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>${logstash-logback-encoder.version}</version>
+    </dependency>
+
+    <!-- ==============================================================
+         INTERFACE DOCUMENTATION
+         ==============================================================
+         Publishes a machine readable description of the endpoints
+         derived from the screen field contract, which is what gives
+         the interface contract gate something to verify against
+         rather than a prose assertion.
+
+         THE BROWSER ASSET BUNDLE IS REMOVED, NOT PINNED. This starter
+         carries a static browser bundle for the interactive
+         documentation page. No browser interface, component library or
+         design system is in scope for this migration: the terminal
+         screen contract is exposed as endpoints and consumed by tests,
+         so the bundle is deliverable weight that nothing here serves.
+         It is also the module's only source of scanner findings from
+         third party script embedded inside a jar, and the supply chain
+         gate admits no finding at or above its threshold.
+
+         Excluding it at the single point of entry resolves both
+         concerns at once and without touching the dependency
+         inventory: no coordinate and no version is declared, and the
+         documentation starter itself stays at the contracted version.
+         The machine readable description this dependency exists for is
+         served from the endpoint the interface contract gate reads and
+         is unaffected; only the interactive page is absent. Pinning a
+         newer bundle instead would add a front end coordinate to a
+         manifest that is required to carry none, and suppressing the
+         finding would leave the vulnerable script in the artifact.
+         ============================================================== -->
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>${springdoc-openapi.version}</version>
+      <exclusions>
+        <!-- Browser asset bundle only. The version locator this
+             starter uses to resolve static resources is deliberately
+             retained, so the starter's own configuration classes load
+             exactly as they do with the bundle present.
+
+             Because the assets are gone, the shipped configuration
+             declares no viewer path, no viewer bundle version and no
+             viewer display option, and holds the viewer switch
+             disabled in the shared baseline under every profile - the
+             library's own default for that switch is true, so leaving
+             it unstated would route an address that answers
+             not-found. This build defines no swagger-ui.version
+             property and filters no resource, so a configuration file
+             must not reference one either. See
+             docs/decision-log.md DL-088. -->
+        <exclusion>
+          <groupId>org.webjars</groupId>
+          <artifactId>swagger-ui</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- ==============================================================
+         TEST - every coordinate version free and test scoped. The legacy estate shipped no test
+         harness of any kind, so the whole test estate is new.
+         ============================================================== -->
+
+    <!-- Unit test framework, mocking, and fluent assertions. The
+         assertion library is what performs the byte array equality
+         checks against the golden fixed width fixtures. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Job and step launcher utilities for the batch tier. -->
+    <dependency>
+      <groupId>org.springframework.batch</groupId>
+      <artifactId>spring-batch-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Authenticated request simulation for the role gated
+         endpoints. -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Container lifecycle for integration tests. Managed by the
+         parent at 1.21.4; a newer major line is published but
+         adopting it would replace a managed version with an
+         unmanaged override. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>com.github.docker-java</groupId>
+          <artifactId>docker-java-transport-zerodep</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- Non-shaded Docker transport. Unlike zerodep, its HTTP Core
+         dependency remains visible to dependency management and to the
+         full-scope vulnerability scan. -->
+    <dependency>
+      <groupId>com.github.docker-java</groupId>
+      <artifactId>docker-java-transport-httpclient5</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- The non-shaded transport's API is annotated with Immutables
+         metadata that its own POM marks provided. Supplying the
+         annotation-only artifact prevents missing-annotation warnings
+         without introducing an annotation processor. -->
+    <dependency>
+      <groupId>org.immutables</groupId>
+      <artifactId>value-annotations</artifactId>
+      <version>${immutables.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- A real relational database for repository and batch
+         integration tests. Mocked input and output does not satisfy
+         the end to end gate. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Local emulation of the object store, the ordered queue and
+         the notification topic. The community edition covers all
+         three, so no licensed component enters the stack. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>localstack</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- ==============================================================
+         DECLARED SO THE VULNERABILITY GATE CAN SEE IT, AND FOR NO
+         OTHER REASON. Nothing in this module compiles or tests
+         against it.
+         ==============================================================
+         The repackaging step writes this library into BOOT-INF/lib of
+         the deployable jar, and the container image then EXECUTES it:
+         Dockerfile runs `java -Djarmode=tools -jar <jar> extract` to
+         split the archive into its layers, so the library is both
+         shipped and run. It is a supply-chain input by every
+         meaningful test.
+
+         It was nevertheless invisible to the scan, and the reason is
+         worth stating because it is not the obvious one. This
+         artifact is NOT a resolved dependency that someone forgot to
+         declare - it is a RESOURCE EMBEDDED INSIDE THE BUILD TOOL.
+         spring-boot-loader-tools carries it at
+         META-INF/jarmode/spring-boot-jarmode-tools.jar, and the
+         repackage goal copies that resource out of itself into the
+         archive; the byte streams are identical. So it never passed
+         through dependency resolution at all, and no amount of
+         reading this project's graph could have found it. Measured
+         before this declaration: 178 of the 179 bundled libraries
+         resolved from the repository and exactly this one did not.
+
+         SCOPE IS runtime, DELIBERATELY, and it is the narrowest
+         scope that does the whole job. The library must SHIP, because
+         the container image executes it, and `runtime` is what the
+         repackaging step bundles; it must be SCANNED, and the gate
+         scans the runtime graph while skipping only the test graph.
+         Nothing compiles against it, so `compile` would widen the
+         compile classpath for no reason. `provided` was tried first
+         and is wrong on both counts: the repackaging step includes
+         provided-scope libraries too, so the collision below still
+         occurred, and a provided library that the image genuinely
+         runs is a misdescription of how it reaches the runtime.
+         The plugin's own includeTools extraction is turned off in the
+         build section so that this declaration is the single writer
+         of the library - see the note there, which records the
+         "Duplicate library" refusal that forced the choice.
+
+         Version comes from the parent, which manages
+         spring-boot-jarmode-tools at the same 3.5.16 the plugin
+         embeds, so the scanned coordinate and the shipped bytes
+         cannot drift apart. DeployableSupplyChainIT asserts that
+         every bundled library resolves, so a future library arriving
+         by this same embedded-resource route fails the build instead
+         of quietly leaving the report one short. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-jarmode-tools</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+
+    <!-- Stable artifact name so the container image definition and
+         the documentation can reference one predictable path. -->
+    <finalName>${project.artifactId}-${project.version}</finalName>
+
+    <!-- ==============================================================
+         PLUGINS
+
+         Declaration order is load bearing: when several executions bind to the same phase, Maven
+         runs them in the order their plugins are declared here. Failsafe must precede the
+         coverage plugin so integration execution data exists before it is merged and checked, and
+         inside the coverage plugin the merge and report executions must precede the check.
+
+         Six plugins are declared. The resources, jar, install, deploy and clean plugins are
+         intentionally absent: the parent contributes them through the default lifecycle bindings
+         at versions it manages, so redeclaring them would add drift risk without changing
+         behaviour.
+         ============================================================== -->
+    <plugins>
+
+      <!-- ============================================================
+           ZERO-WARNING BUILD
+           ============================================================
+           Promoting diagnostics to errors makes this self-enforcing: a warning stops the build
+           rather than waiting to be noticed in a report.
+
+           The release level is a literal here rather than a property reference so the enforced
+           platform version is visible at the point of use. Source and target levels are never
+           used; only the release flag also constrains the platform API surface, which is what
+           prevents accidental use of an API newer than the declared target.
+
+           Method parameter names are retained because constructor injection is used throughout
+           and no code generator is present to synthesise the metadata.
+
+           The configuration is deliberately minimal: enabling all lint categories already
+           produces every diagnostic, so separate show-warnings and show-deprecation switches add
+           nothing and were removed after an executed negative test confirmed a raw-type usage
+           fails the build identically without them.
+           ============================================================ -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>${maven-compiler-plugin.version}</version>
+        <configuration>
+          <release>25</release>
+          <compilerArgs>
+            <arg>-Xlint:all</arg>
+            <arg>-Werror</arg>
+            <arg>-parameters</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+
+      <!-- ============================================================
+           UNIT TEST TIER
+           ============================================================
+           The include and exclude sets here and on the integration tier are strictly
+           complementary, so no test class is picked up twice and none falls through the gap. This
+           tier runs only fast in-process tests; anything needing a container, a database or a
+           queue belongs to the tier below. End-to-end classes carry a plain test suffix, so they
+           are excluded here by name and by package and claimed explicitly below.
+
+           The argument line preserves the coverage agent placeholder before appending the shared
+           deterministic runtime settings. Dropping the placeholder would silently disable
+           coverage measurement and make the coverage check vacuous.
+           ============================================================ -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${maven-surefire-plugin.version}</version>
+        <configuration>
+          <argLine>@{argLine} ${test.jvm.args}</argLine>
+          <reportsDirectory>${test.reports.dir}</reportsDirectory>
+          <includes>
+            <include>**/*Test.java</include>
+          </includes>
+          <excludes>
+            <exclude>**/*IT.java</exclude>
+            <exclude>**/*E2ETest.java</exclude>
+            <exclude>**/e2e/**/*.java</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+
+      <!-- ============================================================
+           INTEGRATION AND END-TO-END TIER
+           ============================================================
+           Runs after the artefact is built, against real containers, and reports its failures at
+           verify so resources are always torn down.
+
+           The execution identifier is deliberately the one the parent's plugin management already
+           defines: reusing it merges with the managed execution and keeps the phase binding
+           explicit here. Any other identifier would add a second execution of the same goals and
+           run the whole integration suite twice.
+           ============================================================ -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>${maven-failsafe-plugin.version}</version>
+        <configuration>
+          <argLine>@{argLine} ${test.jvm.args}</argLine>
+          <includes>
+            <include>**/*IT.java</include>
+            <include>**/*E2ETest.java</include>
+            <include>**/e2e/**/*Test.java</include>
+          </includes>
+          <systemPropertyVariables>
+            <!-- Handed to the integration tier so DeployableSupplyChainIT can check that every
+                 library bundled inside the deployable jar came out of dependency resolution.
+                 That is the property the vulnerability gate depends on and cannot verify for
+                 itself: it scans the resolved graph, so a library reaching the archive by any
+                 other route - a resource copied out of a build tool, for instance - ships
+                 unscanned and the report is simply one short with nothing reporting the
+                 shortfall. Resolving the location from the running build rather than guessing
+                 the conventional path keeps the check correct under a custom repository. -->
+            <carddemo.maven.repository>${settings.localRepository}</carddemo.maven.repository>
+            <!-- Handed to the integration tier so that the three gate-evidence files it emits - the
+                 Gate 1 byte comparison, the Gate 3 baselines and the Gate 8 sign-off - can each name
+                 the commit the build was told it was packaging. It is the SAME property the generated
+                 build information carries as source-revision, deliberately: the published artefact and
+                 the evidence measured against it then name one commit rather than two independently
+                 editable ones. A plain local build leaves it at the declared default and the stamp
+                 says so instead of inventing a revision. Recorded in docs/decision-log.md DL-315.
+
+                 WHAT THE SIGN-OFF FILE THIS TIER EMITS IS, AND WHAT IT IS NOT. This runner is bound to
+                 integration-test. The vulnerability report and the merged coverage report are written
+                 later - the merge and the merged report at post-integration-test, the coverage check and
+                 the scan at verify - so a checklist row whose evidence is one of those CANNOT have its
+                 evidence when this tier writes the checklist. No reordering inside this file changes
+                 that: moving the writer later would move the tests that measure everything else later
+                 with it, and binding the scan earlier would make evidence conditional on gates ahead of
+                 it, which the jacoco comment below rejects for the same reason. So the emitted table is
+                 deliberately an INTERIM record and states its own standing on a `Sign-off status:` line -
+                 PROVISIONAL while a row awaits a later phase, FINAL when none does. The mechanism that
+                 turns one into the other is not in this file at all: it is the workflow's post-verify
+                 reconciliation step, which discharges each outstanding row against the artefact that by
+                 then exists and writes final-sign-off.md. Reasoned in docs/decision-log.md DL-340. -->
+            <carddemo.build.revision>${build.revision}</carddemo.build.revision>
+          </systemPropertyVariables>
+        </configuration>
+        <executions>
+          <execution>
+            <id>default</id>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- ============================================================
+           GATE 8 MECHANISM :: supply chain scan, executed not declared
+           ============================================================
+           Bound to verify and enabled by default, so an ordinary
+           ./mvnw clean verify actually performs the scan. A plugin
+           that is present but skipped would satisfy the letter of the
+           gate and none of its intent.
+
+           WHY THIS PLUGIN IS DECLARED BEFORE THE COVERAGE PLUGIN
+           Executions bound to the same phase run in the order their
+           plugins are declared, so declaration order decides which
+           gate gets to run at all. THIS SCAN MUST BE DECLARED FIRST
+           AMONG THE VERIFY PHASE GATES. Declared behind a coverage
+           check that halts on failure, a project under the coverage
+           floor never reaches the scan and produces no scan report -
+           so the run that most needs supply chain evidence is the one
+           guaranteed not to have any. Declared first, its report
+           exists regardless of what the coverage check later decides.
+           Neither gate is softened by the ordering; both still end the
+           build on failure. The ordering has no other effect, because
+           nothing this plugin does depends on coverage instrumentation
+           and nothing the coverage plugin does depends on the scan.
+
+           Reports are written in three formats. The machine readable
+           ones let the recorded evidence document quote exact scores
+           instead of paraphrasing them.
+
+           The external component report analyzer is switched off on
+           purpose. That service now rejects unauthenticated requests,
+           and its per artifact failures abort the goal even when no
+           finding breaches the threshold. Switching it off was
+           verified not to hide anything: the same scan was rerun with
+           the analyzer off against the unremediated dependency set
+           and every finding still appeared, which proves the findings
+           come from the primary vulnerability database and that the
+           remediations, not this switch, are what cleared the gate.
+
+           Test scoped artifacts are INCLUDED. They execute privileged
+           container-engine code on developer and hosted-runner machines,
+           so treating them as outside the supply chain would be a false
+           product-only claim about a build gate. The former shaded
+           Docker transport embedded a vulnerable HTTP Core release
+           beyond dependency management's reach. It is now excluded and
+           replaced by the ordinary HttpClient 5 transport, whose visible
+           HTTP Core dependency is pinned to the fixed release declared
+           above. That remediation involves no suppression and no scope
+           exception; the one determination this gate does carry is
+           described immediately below.
+
+           WHAT THIS GATE CLAIMS, STATED AS THE ONE INVARIANT IT
+           ACTUALLY ENFORCES
+
+           Zero UNSUPPRESSED critical or high findings across the
+           compile, runtime and test graph, plus EXACTLY ONE written
+           analyst determination that is part of the audited result
+           rather than a silence. Nothing else. The threshold that
+           fails the build is 7.0 and is unchanged; the scope is the
+           whole graph and is unchanged.
+
+           That one determination is CVE-2026-66299 at 7.5 against the
+           three embedded servlet container artifacts, and four
+           properties are what make it a determination rather than a
+           lowered gate: it is DISCLOSED - here, in
+           owasp-suppressions.xml, in the Gate 8 section of README.md
+           and in docs/decision-log.md at DL-159 with its sibling
+           DL-244; it is SCOPED to one identifier and three named
+           artifacts, with no wildcard platform record and no
+           coordinate regex broad enough to absorb a finding nobody has
+           examined; it carries a CHECKABLE false-match argument
+           rather than a tolerability opinion, with the commands that
+           reproduce both halves of it; and it is SELF-EXPIRING,
+           because failBuildOnUnusedSuppressionRule fails the build the
+           moment the rule stops matching. Its shape is asserted by
+           BuildAndCiContractTest and its scope by
+           GateVerificationTest, so it cannot be widened, unscoped or
+           disarmed without a failing test.
+
+           SO THE CLAIM IS NOT ZERO FINDINGS, AND MUST NOT BE WRITTEN
+           AS ONE. One analyst determination is configured above, so a
+           note claiming no qualifying finding and no determination of
+           any kind would overstate the gate - which is the same class
+           of defect as a gate quietly softened, because both leave a
+           reader believing something the build does not enforce. The
+           accurate claim is narrower: exactly one determination is
+           read, it is scoped and self-expiring, and every other
+           qualifying finding ends the build.
+
+           NOTHING IS CLOSED BY RELABELLING IT. A finding is closed by
+           removing the exposure, which is what leaves the one
+           remaining determination credible, and it is why neither of
+           the findings named next is suppressed or counted here.
+
+           The transport family finding, CVE-2026-56816, is closed by
+           the pinned transport line, where the finding does not apply.
+           The pin is validated by execution rather than by reading a
+           version range: the full suite passes, and the thirty-nine
+           container-backed integration tests that drive the messaging
+           client through this transport all pass, which is the tier
+           that would break first if the module layout were wrong. The
+           same pin keeps the direct-buffer fast path off a terminally
+           deprecated platform method, so the integration tier prints
+           no runtime notice when it exercises the transport.
+
+           The two HTTP Core findings, CVE-2026-54399 and
+           CVE-2026-54428, were closed by replacing the shaded transport
+           and pinning visible `httpcore5` and `httpcore5-h2` coordinates
+           at 5.4.3. The full test graph is scanned, so a future transport
+           regression is a failing gate rather than residual exposure.
+
+           DeployableSupplyChainIT remains useful for a separate claim:
+           test libraries do not enter the repackaged product. It no
+           longer justifies excluding those libraries from this scan.
+
+           ONE finding remains BELOW THE THRESHOLD, scoring 5.3, and it
+           is ACCEPTED RATHER THAN SUPPRESSED - it is reported on every
+           run, no rule names it, and nothing hides it. Below the
+           threshold and unsuppressed is a third state, distinct both
+           from the determination above and from a finding that was
+           fixed. It is in the tracing semantic conventions
+           artifact, and its report text describes another language's
+           implementation of that specification: the matched product
+           identifier names the Go platform and the defect it describes
+           is in that implementation's baggage header parsing, so the
+           match is a version number coincidence with a Java artifact
+           of a similar name. There is no version to move to, because
+           the affected product is not on this class path at all.
+
+           There were two. The other was in the second generation JSON
+           library, and it was CLOSED BY UPGRADING rather than accepted:
+           the reasoning that its precondition is absent from this
+           configuration was a statement about today's sources and not
+           about the class path, so it was not treated as a disproof of
+           applicability. The property comment near the top of this file
+           and docs/decision-log.md DL-090 set out that decision, which
+           was taken, reverted and restored.
+
+           Because one finding is reported, this plugin prints one
+           informational console line summarising it. That line is
+           the scanner's own summary and is deliberately left enabled;
+           it is evidence for the supply chain gate, not a build
+           diagnostic. The zero warning gate concerns compiler
+           diagnostics, of which a successful build emits none.
+
+           First run cost: with no local vulnerability database the
+           initial download is long. Point the data directory at a
+           cached location, and supply an API key for the
+           vulnerability database when one is available, to keep
+           subsequent runs to seconds.
+           ============================================================ -->
+      <plugin>
+        <groupId>org.owasp</groupId>
+        <artifactId>dependency-check-maven</artifactId>
+        <version>${dependency-check-maven.version}</version>
+        <configuration>
+          <skip>${dependency-check.skip}</skip>
+          <failBuildOnCVSS>${dependency-check.failBuildOnCVSS}</failBuildOnCVSS>
+          <dataDirectory>${dataDirectory}</dataDirectory>
+          <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
+          <skipTestScope>${dependency-check.skipTestScope}</skipTestScope>
+          <!-- The .NET assembly analyzer needs a dotnet runtime and, when
+               it cannot find one while any native binary has been seen, it
+               reports its own failure to initialise as an error on every
+               run. The only native binaries in this graph are the Windows
+               JNI dispatch libraries carried inside the mocking agent and
+               the native access library. Those are native libraries, not
+               managed assemblies, so the analyzer has no assembly metadata
+               to read from them even when it does initialise, and the jars
+               carrying them are scanned in full as Java archives either
+               way. Turning it off therefore removes recurring error output
+               from the gate log without narrowing what is examined, which
+               matters because that output would otherwise sit alongside
+               genuine errors in the archived report. -->
+          <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
+          <!-- Analyst determinations, and the flag that makes each one self-expiring.
+
+               Every rule in the suppression file is narrowly scoped and carries the commands that
+               reproduce both halves of the determination it records: the finding as the scanner
+               reports it, and the reason the module is not exposed to it. The rule the file
+               currently holds covers a HIGH finding raised against the embedded servlet container
+               for a vulnerability in the examples web application, which an embedded container does
+               not carry. The file's own header states the three rules that govern what may be
+               written in it, and the case this module deliberately does NOT suppress, which is
+               documented under Gate 8 in README.md.
+
+               failBuildOnUnusedSuppressionRule is what keeps each determination honest, and it is
+               set true whether or not any rule currently needs policing. A rule that has stopped
+               matching fails the build instead of being quietly kept, so an accepted risk cannot
+               outlive the finding it was written for: once a patched container release is adopted
+               the rule stops matching and the build demands its removal. That is a sharper trigger
+               than a review date, which fires on the calendar whether or not anything has
+               changed. -->
+          <suppressionFiles>
+            <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
+          </suppressionFiles>
+          <failBuildOnUnusedSuppressionRule>true</failBuildOnUnusedSuppressionRule>
+          <nvdValidForHours>24</nvdValidForHours>
+          <formats>
+            <format>HTML</format>
+            <format>JSON</format>
+            <format>XML</format>
+          </formats>
+        </configuration>
+        <executions>
+          <execution>
+            <id>owasp-dependency-check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- ============================================================
+           GATE 7 MECHANISM :: coverage floor as a build failure
+           ============================================================
+           Six executions, in the order they must run:
+
+             1. instrument the unit tier
+             2. report on the unit tier
+             3. instrument the integration tier
+             4. report on the integration tier
+             5. merge both execution data files and report on the merge
+             6. check the merged data and fail below the floor
+
+           Only the last of those is a gate, and it is the only one bound
+           to verify. Every report is produced in an earlier phase, so a
+           gate failure anywhere cannot leave a reviewer without the
+           reports that explain it.
+
+           The merge step is essential rather than decorative. The
+           coverage floor is specified across combined unit and
+           integration execution, and checking only the unit data file
+           would understate real coverage and gate on the wrong number.
+
+           Exactly one rule is configured, on the LINE counter. Branch,
+           method and instruction coverage are produced in the reports
+           for information and are deliberately not gated, which is a
+           conscious decision and not an omission.
+
+           Until sources and tests exist the goals report that they are
+           skipping for want of execution data. That is expected: the
+           gate begins to bite as soon as there is something to
+           measure, and it fails the build rather than filing a report
+           when the floor is missed.
+           ============================================================ -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco-maven-plugin.version}</version>
+        <executions>
+
+          <execution>
+            <id>jacoco-prepare-agent</id>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+            <configuration>
+              <destFile>${jacoco.unit.exec}</destFile>
+            </configuration>
+          </execution>
+
+          <!-- Per-tier report for the unit run. Bound to test, and this plugin is declared after
+               the unit runner, so the data file exists by the time the report is produced. -->
+          <execution>
+            <id>jacoco-report-unit</id>
+            <phase>test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+            <configuration>
+              <dataFile>${jacoco.unit.exec}</dataFile>
+              <outputDirectory>${jacoco.unit.report.dir}</outputDirectory>
+            </configuration>
+          </execution>
+
+          <execution>
+            <id>jacoco-prepare-agent-integration</id>
+            <goals>
+              <goal>prepare-agent-integration</goal>
+            </goals>
+            <configuration>
+              <destFile>${jacoco.it.exec}</destFile>
+            </configuration>
+          </execution>
+
+          <!-- Per-tier report for the integration and end-to-end run. Keeping the two tiers
+               separately reportable shows which tier covers which class, not just the combined
+               figure the check measures. -->
+          <execution>
+            <id>jacoco-report-integration</id>
+            <phase>post-integration-test</phase>
+            <goals>
+              <goal>report-integration</goal>
+            </goals>
+            <configuration>
+              <dataFile>${jacoco.it.exec}</dataFile>
+              <outputDirectory>${jacoco.it.report.dir}</outputDirectory>
+            </configuration>
+          </execution>
+
+          <!-- Merge and the merged report are bound BEFORE verify on
+               purpose. Everything bound to verify is a gate, and a gate
+               can end the build; anything bound alongside a gate is
+               therefore only produced when the gates ahead of it happen
+               to pass. Evidence must not be conditional on the verdict
+               it supports, so the merged data file and the merged report
+               are produced in the last phase before the gates run, and
+               they exist whatever the gates then decide. -->
+          <execution>
+            <id>jacoco-merge-all</id>
+            <phase>post-integration-test</phase>
+            <goals>
+              <goal>merge</goal>
+            </goals>
+            <configuration>
+              <fileSets>
+                <fileSet>
+                  <directory>${jacoco.exec.dir}</directory>
+                  <includes>
+                    <include>jacoco.exec</include>
+                    <include>jacoco-it.exec</include>
+                  </includes>
+                </fileSet>
+              </fileSets>
+              <destFile>${jacoco.merged.exec}</destFile>
+            </configuration>
+          </execution>
+
+          <execution>
+            <id>jacoco-report-merged</id>
+            <phase>post-integration-test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+            <configuration>
+              <dataFile>${jacoco.merged.exec}</dataFile>
+              <outputDirectory>${jacoco.merged.report.dir}</outputDirectory>
+            </configuration>
+          </execution>
+
+          <execution>
+            <id>jacoco-check-line-coverage</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+            <configuration>
+              <dataFile>${jacoco.merged.exec}</dataFile>
+              <haltOnFailure>true</haltOnFailure>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>${jacoco.line.coverage.minimum}</minimum>
+                    </limit>
+                    <!-- No class may be wholly untested. See the property
+                         declaration for why a bundle ratio alone cannot
+                         enforce this: an average hides a single absent
+                         test suite behind the coverage of every other
+                         class. Counting missed classes does not. -->
+                    <limit>
+                      <counter>CLASS</counter>
+                      <value>MISSEDCOUNT</value>
+                      <maximum>${jacoco.wholly.untested.classes.maximum}</maximum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
+
+        </executions>
+      </plugin>
+
+
+      <!-- Executable artefact packaging. Version free; the parent supplies it. Layered packaging
+           lets the container image cache dependency layers separately from application classes. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <mainClass>com.carddemo.CardDemoApplication</mainClass>
+          <layers>
+            <enabled>true</enabled>
+          </layers>
+          <!-- THE JARMODE TOOLS LIBRARY COMES FROM THE DEPENDENCY
+               GRAPH, NOT FROM INSIDE THE BUILD TOOL. Set to false
+               deliberately, and the effect is a change of SOURCE
+               rather than a removal: the library still ships in
+               BOOT-INF/lib and the container image still runs
+               `java -Djarmode=tools -jar <jar> extract`.
+               Left at its default, the plugin extracts
+               META-INF/jarmode/spring-boot-jarmode-tools.jar out of
+               spring-boot-loader-tools and writes that resource into
+               the archive. A resource copied out of a build tool never
+               passes through dependency resolution, so the
+               vulnerability gate - which scans the resolved graph -
+               cannot see it, and a library that is both shipped and
+               executed went unscanned. Measured: 178 of the 179
+               bundled libraries resolved from the repository and
+               exactly this one did not.
+               Declaring the artifact fixes the visibility, and then
+               the two writers collide: the plugin refuses outright
+               with "Duplicate library
+               spring-boot-jarmode-tools-3.5.16.jar", which is correct
+               behaviour and is why this flag is set rather than the
+               declaration abandoned. Turning off the extraction
+               leaves exactly one writer - the graph - so the archive
+               carries the library once and the gate scans the
+               coordinate that produced it.
+               NOTHING ABOUT THE ARTEFACT CHANGES. The jar resolved
+               from the repository and the resource embedded in the
+               build tool are the same bytes, sha256
+               d05beb46a7eac0f1a06733c75828b190a1cb250076ce03be2213aca4a5c0f03f,
+               so the shipped bytes are identical either way and only
+               their provenance differs. DeployableSupplyChainIT
+               asserts the digest and the single copy rather than
+               assuming them, and it asserts that every bundled
+               library resolves - so a future library arriving by the
+               embedded-resource route fails the build instead of
+               quietly leaving the report one short. -->
+          <includeTools>false</includeTools>
+        </configuration>
+        <executions>
+          <!-- This execution id is deliberately the one the parent already declares in its
+               plugin management: Maven merges executions that share an id, so stating the goal
+               makes repackaging visible here without running it twice. Any other id would add a
+               second execution and repackage the artefact twice. -->
+          <execution>
+            <id>repackage</id>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+          <!-- Build identity, written to META-INF/build-info.properties during generate-resources
+               and read back at run time by the build information contributor behind the info
+               endpoint. Without this execution that contributor has nothing to publish, so the
+               endpoint answers with the Java and process detail alone while the configuration
+               describes it as a build identity surface - a claim the artefact did not support.
+               Binding the goal is what makes the claim true, and it is the only way to make it
+               true, because the file is generated at build time and cannot be authored by hand
+               without becoming stale.
+               The group, artifact, version, build timestamp and source revision are the whole
+               payload. A plain Maven build stamps the explicit non-claim "not-supplied"; a container
+               build overrides it with the Git commit passed by its caller and refuses to emit an image
+               unless the generated file carries that exact value. No environment value is
+               contributed implicitly: the info endpoint's environment contributor stays disabled in
+               configuration precisely so that a property whose name happens to begin with the
+               exposed prefix can never be published, and nothing here re-opens it.
+               The published version is the module's own coordinate, which is also what the API
+               documentation configuration reports once this file exists: that configuration reads
+               the build properties when they are present and falls back to a constant when they
+               are not, so the contract version stops being a hand-maintained constant and starts
+               tracking the artefact. Recorded in docs/decision-log.md DL-091. -->
+          <execution>
+            <id>build-info</id>
+            <goals>
+              <goal>build-info</goal>
+            </goals>
+            <configuration>
+              <time>${project.build.outputTimestamp}</time>
+              <additionalProperties>
+                <source-revision>${build.revision}</source-revision>
+              </additionalProperties>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+  </build>
+
+  <!-- ================================================================
+       Profiles. Exactly one, opt-in, and it changes no plugin, no
+       dependency and no goal binding - only two of the threshold
+       properties declared above.
+       ================================================================ -->
+  <profiles>
+
+    <!-- Diagnosing one failing test should not require knowing which
+         two properties to override.
+
+         The coverage gate is bound to `verify`, and `verify` is the
+         phase a Failsafe run has to reach, so a deliberately SCOPED
+         run - `-Dit.test=SomeIT` or `-Dtest=SomeTest` - measures the
+         coverage of a fraction of the suite against the whole module's
+         floor and fails for a reason that has nothing to do with the
+         tests being run. The failure is real but it is misattributed,
+         and misattribution during diagnosis is expensive: the reader
+         has to rule out a coverage regression before believing the
+         test result in front of them.
+
+         This profile bundles the two overrides that remove that
+         misattribution, so a scoped run is one flag rather than a
+         remembered incantation:
+
+             ./mvnw -B verify -Pscoped-tests -Dit.test='*RepositoryIT'
+             ./mvnw -B test   -Pscoped-tests -Dtest='SomeTest'
+
+         It is activated only by name. No activation block, no
+         property trigger, no file trigger, no default - so `mvn verify`,
+         `mvn install`, the release build and the CI workflow are all
+         byte-for-byte unaffected and continue to enforce the full
+         thresholds. It relaxes ONLY the two coverage properties; the
+         supply-chain gate, the compiler's -Werror, every test and
+         `failsafe:verify` itself all still run exactly as they do
+         without it, which is what keeps this an ergonomic convenience
+         rather than a second, weaker definition of a passing build.
+
+         The corollary is the part that matters: a green scoped run is
+         NOT a green build. Coverage is a property of the whole suite,
+         so it is only ever established by a full unscoped `verify`.
+         Recorded as DL-206.
+
+         THAT COROLLARY IS ENFORCED RATHER THAN REMEMBERED. A profile that
+         relaxed the thresholds and still wrote its execution data and its
+         three reports over the canonical paths would leave a RELAXED
+         merged report at exactly target/site/jacoco-merged, where gate
+         evidence is read from, with nothing about the artefact saying
+         which run produced it. The two root overrides below make that
+         impossible: a scoped run's evidence lands under target/scoped and
+         target/scoped-site, and the canonical paths stay reserved for an
+         unscoped verify. Recorded as DL-284.
+
+         The relaxation and the relocation belong together. Relaxing
+         without relocating is the defect; relocating without relaxing
+         would fail the run for a reason that is not the reader's
+         question. Neither override touches a plugin, a goal binding or a
+         dependency, so an unscoped build remains byte-for-byte
+         unaffected. -->
+    <profile>
+      <id>scoped-tests</id>
+      <properties>
+        <jacoco.line.coverage.minimum>0.00</jacoco.line.coverage.minimum>
+        <jacoco.wholly.untested.classes.maximum>2147483647</jacoco.wholly.untested.classes.maximum>
+        <jacoco.exec.dir>${project.build.directory}/scoped</jacoco.exec.dir>
+        <jacoco.report.root>${project.build.directory}/scoped-site</jacoco.report.root>
+      </properties>
+    </profile>
+
+  </profiles>
+
+</project>
